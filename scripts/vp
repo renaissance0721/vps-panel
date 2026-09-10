@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly INSTALL_DIR="/opt/vps-panel"
+readonly DEPLOY_DIR="${INSTALL_DIR}/deploy"
+readonly COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yml"
+readonly ENVIRONMENT_FILE="${DEPLOY_DIR}/.env"
+readonly COMMAND_PATH="/usr/local/bin/vp"
+readonly REMOTE_INSTALLER="https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh"
+
+fail() {
+  printf '[vps-panel] Error: %s\n' "$*" >&2
+  exit 1
+}
+
+run_compose() {
+  docker compose --project-directory "$DEPLOY_DIR" -f "$COMPOSE_FILE" "$@"
+}
+
+require_installation() {
+  [[ ${EUID} -eq 0 ]] || fail "run vp as root"
+  command -v docker >/dev/null 2>&1 || fail "Docker is not installed"
+  docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin is missing"
+  [[ -f "$COMPOSE_FILE" ]] || fail "VPS Panel is not installed in ${INSTALL_DIR}"
+}
+
+current_domain() {
+  local domain=""
+  if [[ -f "$ENVIRONMENT_FILE" ]]; then
+    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$ENVIRONMENT_FILE" | tail -n 1)"
+  fi
+  printf '%s\n' "${domain:-:80}"
+}
+
+run_latest_installer() {
+  local domain="$1"
+  local temporary_installer=""
+  local exit_code=0
+
+  command -v curl >/dev/null 2>&1 || fail "curl is not installed"
+  temporary_installer="$(mktemp)"
+  curl --proto '=https' --tlsv1.2 -fsSL "$REMOTE_INSTALLER" -o "$temporary_installer"
+  bash "$temporary_installer" --domain "$domain" || exit_code=$?
+  rm -f -- "$temporary_installer"
+  return "$exit_code"
+}
+
+update_panel() {
+  local domain
+  domain="$(current_domain)"
+  printf '[vps-panel] Updating Panel with domain %s...\n' "$domain"
+  run_latest_installer "$domain"
+}
+
+change_domain() {
+  local domain=""
+  printf 'New domain (example: panel.example.com): '
+  IFS= read -r domain
+  [[ -n "$domain" ]] || {
+    printf '[vps-panel] Domain was not changed.\n'
+    return
+  }
+  run_latest_installer "$domain"
+}
+
+show_status() {
+  printf '[vps-panel] Domain: %s\n' "$(current_domain)"
+  run_compose ps
+}
+
+show_logs() {
+  run_compose logs --tail=100 -f panel caddy || true
+}
+
+restart_panel() {
+  run_compose restart
+  run_compose ps
+}
+
+uninstall_panel() {
+  local confirmation=""
+  local delete_data=""
+  local -a down_arguments=(down --remove-orphans --rmi local)
+
+  printf 'Type uninstall to remove VPS Panel: '
+  IFS= read -r confirmation
+  if [[ "$confirmation" != "uninstall" ]]; then
+    printf '[vps-panel] Uninstall cancelled.\n'
+    return
+  fi
+
+  printf 'Also permanently delete SQLite data and Caddy certificates? [y/N]: '
+  IFS= read -r delete_data
+  if [[ "$delete_data" == "y" || "$delete_data" == "Y" ]]; then
+    down_arguments+=(--volumes)
+  fi
+
+  run_compose "${down_arguments[@]}"
+
+  [[ "$INSTALL_DIR" == "/opt/vps-panel" ]] || fail "unexpected installation path"
+  [[ "$COMMAND_PATH" == "/usr/local/bin/vp" ]] || fail "unexpected command path"
+  rm -f -- "$COMMAND_PATH"
+  rm -rf -- "$INSTALL_DIR"
+
+  if [[ "$delete_data" == "y" || "$delete_data" == "Y" ]]; then
+    printf '[vps-panel] Panel, database, and certificates removed.\n'
+  else
+    printf '[vps-panel] Panel removed. Docker volumes were preserved for reinstall.\n'
+  fi
+  exit 0
+}
+
+usage() {
+  cat <<'EOF'
+Usage: vp [command]
+
+Commands:
+  update      Download and install the latest version
+  domain      Change the Panel domain and refresh HTTPS
+  status      Show container and domain status
+  logs        Follow Panel and Caddy logs
+  restart     Restart Panel and Caddy
+  uninstall   Remove VPS Panel interactively
+  help        Show this help message
+
+Run vp without a command to open the interactive menu.
+EOF
+}
+
+pause_menu() {
+  printf '\nPress Enter to return to the menu...'
+  IFS= read -r _
+}
+
+menu() {
+  [[ -t 0 ]] || fail "interactive menu requires a terminal; use vp help"
+
+  while true; do
+    cat <<EOF
+
+VPS Panel Management
+====================
+Domain: $(current_domain)
+
+1) Update Panel
+2) Change domain
+3) Show status
+4) View logs
+5) Restart Panel
+6) Uninstall Panel
+0) Exit
+EOF
+    printf 'Select an option: '
+    IFS= read -r selection
+
+    case "$selection" in
+      1) update_panel ;;
+      2) change_domain ;;
+      3)
+        show_status
+        pause_menu
+        ;;
+      4)
+        show_logs
+        pause_menu
+        ;;
+      5)
+        restart_panel
+        pause_menu
+        ;;
+      6) uninstall_panel ;;
+      0) exit 0 ;;
+      *) printf '[vps-panel] Invalid option.\n' ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  help | -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+require_installation
+
+case "${1:-menu}" in
+  menu) menu ;;
+  update) update_panel ;;
+  domain) change_domain ;;
+  status) show_status ;;
+  logs) show_logs ;;
+  restart) restart_panel ;;
+  uninstall) uninstall_panel ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

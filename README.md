@@ -30,6 +30,25 @@ curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scri
 
 脚本会在缺少 Docker 时通过 Docker 官方软件源安装 Docker Engine、Buildx 和 Compose 插件，然后把项目安装到 `/opt/vps-panel`、启动容器，并等待 Panel 与公网 HTTPS 健康检查通过。Caddy 会自动申请、保存和续期域名证书。再次执行相同命令即可更新，交互时直接按回车会保留已有域名配置。
 
+安装完成后，输入以下命令打开管理菜单：
+
+```bash
+vp
+```
+
+菜单支持更新、修改域名、查看状态、查看日志、重启和卸载。也可以直接执行：
+
+```bash
+vp update
+vp domain
+vp status
+vp logs
+vp restart
+vp uninstall
+```
+
+卸载需要输入 `uninstall` 二次确认，并且默认保留 SQLite 数据和 Caddy 证书；只有再次明确确认时才会删除持久卷。
+
 > 一键安装地址只有在本次代码推送到 GitHub `main` 分支后才会生效。
 
 ### 手动安装

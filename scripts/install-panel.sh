@@ -211,6 +211,8 @@ tar -xzf "$archive_path" -C "$temporary_dir"
 install -d -m 0755 "$INSTALL_DIR"
 cp -a "${source_dir}/." "$INSTALL_DIR/"
 touch "$INSTALL_MARKER"
+install -d -m 0755 /usr/local/bin
+install -m 0755 "${INSTALL_DIR}/scripts/vp" /usr/local/bin/vp
 
 printf 'PANEL_DOMAIN=%s\n' "$requested_domain" >"$ENVIRONMENT_FILE"
 chmod 0600 "$ENVIRONMENT_FILE"
@@ -225,6 +227,8 @@ if ! wait_for_panel; then
   docker compose logs --tail=50 panel caddy >&2
   fail "Panel did not become healthy within 60 seconds"
 fi
+
+log "Management command installed: vp"
 
 if [[ "$requested_domain" == ":80" ]]; then
   log "Installation complete. Open http://YOUR_VPS_IP"

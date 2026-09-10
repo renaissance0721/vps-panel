@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,7 +38,7 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
 	registered, err := registerAgent(
-		context.Background(), server.Client(), server.URL+"/", "one-time-token", configPath,
+		context.Background(), server.Client(), server.URL+"/", "one-time-token", configPath, false,
 	)
 	if err != nil {
 		t.Fatalf("registerAgent() error = %v", err)
@@ -69,7 +70,7 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 	}
 
 	if _, err := registerAgent(
-		context.Background(), server.Client(), server.URL, "another-token", configPath,
+		context.Background(), server.Client(), server.URL, "another-token", configPath, false,
 	); err == nil || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("second registerAgent() error = %v, want already registered", err)
 	}
@@ -80,11 +81,102 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 
 func TestRegisterAgentRejectsInvalidServerURL(t *testing.T) {
 	_, err := registerAgent(
-		context.Background(), http.DefaultClient, "file:///tmp/panel", "token", filepath.Join(t.TempDir(), "config.json"),
+		context.Background(), http.DefaultClient, "file:///tmp/panel", "token", filepath.Join(t.TempDir(), "config.json"), false,
 	)
 	if err == nil {
 		t.Fatal("registerAgent() accepted a non-HTTP server URL")
 	}
+}
+
+func TestForceRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	if err := prepareConfigTarget(configPath, false); err != nil {
+		t.Fatalf("prepare config: %v", err)
+	}
+	oldConfig := config{PanelURL: "https://old.example.com", ServerID: 3, AgentID: 4, AgentToken: "old-token"}
+	if err := saveConfig(configPath, oldConfig); err != nil {
+		t.Fatalf("save old config: %v", err)
+	}
+
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatalf("read old config during registration: %v", err)
+		}
+		var current config
+		if err := json.Unmarshal(data, &current); err != nil || current != oldConfig {
+			t.Fatalf("config during registration = (%+v, %v), want old config", current, err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_id":8,"server_id":3,"agent_token":"new-token"}`))
+	}))
+	defer panel.Close()
+
+	replaced, err := registerAgent(
+		context.Background(), panel.Client(), panel.URL, "new-enrollment", configPath, true,
+	)
+	if err != nil {
+		t.Fatalf("force registerAgent() error = %v", err)
+	}
+	if replaced.AgentID != 8 || replaced.ServerID != oldConfig.ServerID || replaced.AgentToken != "new-token" {
+		t.Fatalf("force registerAgent() = %+v", replaced)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read replaced config: %v", err)
+	}
+	var stored config
+	if err := json.Unmarshal(data, &stored); err != nil || stored != replaced {
+		t.Fatalf("replaced config = (%+v, %v), want %+v", stored, err, replaced)
+	}
+	if temporaryFiles, err := filepath.Glob(filepath.Join(filepath.Dir(configPath), ".config-*")); err != nil || len(temporaryFiles) != 0 {
+		t.Fatalf("temporary config files = (%v, %v), want none", temporaryFiles, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatalf("stat replaced config: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("replaced config permissions = %o, want 600", info.Mode().Perm())
+		}
+	}
+}
+
+func TestForceRegistrationFailurePreservesExistingConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	if err := prepareConfigTarget(configPath, false); err != nil {
+		t.Fatalf("prepare config: %v", err)
+	}
+	oldConfig := config{PanelURL: "https://old.example.com", ServerID: 3, AgentID: 4, AgentToken: "old-token"}
+	if err := saveConfig(configPath, oldConfig); err != nil {
+		t.Fatalf("save old config: %v", err)
+	}
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read original config: %v", err)
+	}
+
+	rejectingPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid enrollment", http.StatusUnauthorized)
+	}))
+	defer rejectingPanel.Close()
+	if _, err := registerAgent(
+		context.Background(), rejectingPanel.Client(), rejectingPanel.URL, "invalid", configPath, true,
+	); err == nil {
+		t.Fatal("force registration unexpectedly succeeded with invalid enrollment")
+	}
+	assertFileContents(t, configPath, original)
+
+	unavailableClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("Panel unavailable")
+	})}
+	if _, err := registerAgent(
+		context.Background(), unavailableClient, "https://panel.example.com", "token", configPath, true,
+	); err == nil {
+		t.Fatal("force registration unexpectedly succeeded while Panel was unavailable")
+	}
+	assertFileContents(t, configPath, original)
 }
 
 func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
@@ -104,7 +196,7 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 	defer panel.Close()
 
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
-	if err := prepareConfigTarget(configPath); err != nil {
+	if err := prepareConfigTarget(configPath, false); err != nil {
 		t.Fatalf("prepare config: %v", err)
 	}
 	if err := saveConfig(configPath, config{
@@ -153,5 +245,22 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("WebSocket handler did not observe disconnect")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func assertFileContents(t *testing.T, path string, expected []byte) {
+	t.Helper()
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read preserved config: %v", err)
+	}
+	if string(actual) != string(expected) {
+		t.Fatalf("config changed after failed registration\ngot:  %q\nwant: %q", actual, expected)
 	}
 }

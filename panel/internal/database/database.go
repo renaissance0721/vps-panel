@@ -69,6 +69,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			archived_at INTEGER,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -101,7 +102,27 @@ func migrate(db *sql.DB) error {
 	if err := migrateUserRoles(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerArchive(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateServerArchive(ctx context.Context, db *sql.DB) error {
+	var archivedAtColumnCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'archived_at'`,
+	).Scan(&archivedAtColumnCount); err != nil {
+		return fmt.Errorf("inspect server archived_at column: %w", err)
+	}
+	if archivedAtColumnCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN archived_at INTEGER`,
+		); err != nil {
+			return fmt.Errorf("add server archived_at column: %w", err)
+		}
+	}
 	return nil
 }
 

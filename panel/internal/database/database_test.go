@@ -77,6 +77,15 @@ func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {
 		)`,
 		`INSERT INTO sessions (user_id, token_hash, expires_at, created_at)
 			VALUES (2, 'session-hash', 100, 2)`,
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+			VALUES (12, 'Legacy Server', 'offline', 3, 3)`,
 	} {
 		if _, err := legacyDB.Exec(statement); err != nil {
 			legacyDB.Close()
@@ -129,5 +138,16 @@ func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {
 		if count != expected {
 			t.Fatalf("preserved %s count = %d, want %d", table, count, expected)
 		}
+	}
+	var serverID int64
+	var serverName string
+	var archivedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT id, name, archived_at FROM servers WHERE id = 12`,
+	).Scan(&serverID, &serverName, &archivedAt); err != nil {
+		t.Fatalf("read migrated server: %v", err)
+	}
+	if serverID != 12 || serverName != "Legacy Server" || archivedAt.Valid {
+		t.Fatalf("migrated server = (%d, %q, archived %v), want preserved active server", serverID, serverName, archivedAt.Valid)
 	}
 }

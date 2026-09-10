@@ -60,7 +60,7 @@ func run(arguments []string) error {
 		return runRegistration(arguments[1:])
 	}
 	if len(arguments) != 0 {
-		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
+		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN [--force]]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,6 +72,7 @@ func runRegistration(arguments []string) error {
 	flags.SetOutput(io.Discard)
 	serverURL := flags.String("server", "", "Panel URL")
 	enrollmentToken := flags.String("token", "", "one-time enrollment token")
+	force := flags.Bool("force", false, "replace an existing Agent config after registration succeeds")
 	if err := flags.Parse(arguments); err != nil {
 		return fmt.Errorf("parse registration arguments: %w", err)
 	}
@@ -87,6 +88,7 @@ func runRegistration(arguments []string) error {
 		*serverURL,
 		*enrollmentToken,
 		defaultConfigPath,
+		*force,
 	)
 	if err != nil {
 		return err
@@ -101,6 +103,7 @@ func registerAgent(
 	panelURL string,
 	enrollmentToken string,
 	configPath string,
+	force bool,
 ) (config, error) {
 	panelURL, err := normalizePanelURL(panelURL)
 	if err != nil {
@@ -109,7 +112,7 @@ func registerAgent(
 	if strings.TrimSpace(enrollmentToken) == "" {
 		return config{}, errors.New("enrollment token is required")
 	}
-	if err := prepareConfigTarget(configPath); err != nil {
+	if err := prepareConfigTarget(configPath, force); err != nil {
 		return config{}, err
 	}
 
@@ -168,7 +171,7 @@ func normalizePanelURL(value string) (string, error) {
 	return value, nil
 }
 
-func prepareConfigTarget(path string) error {
+func prepareConfigTarget(path string, force bool) error {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
@@ -177,7 +180,10 @@ func prepareConfigTarget(path string) error {
 		return fmt.Errorf("secure config directory: %w", err)
 	}
 	if _, err := os.Stat(path); err == nil {
-		return errors.New("Agent is already registered on this machine")
+		if !force {
+			return errors.New("Agent is already registered on this machine")
+		}
+		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check Agent config: %w", err)
 	}

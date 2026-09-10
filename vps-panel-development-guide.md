@@ -2,7 +2,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5 和 Phase 5A 已完成；下一步补 Phase 4.6，完成兼容回归后再进入 Phase 5B。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6 和 Phase 5A 已完成；下一步进入 Phase 5B。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -852,42 +852,47 @@ admin / vip 查询 Server 时读取同一张 `servers` 表。
 
 ---
 
-# 4.6 Phase 4.6：Agent 重新安装与凭据重置
+# 4.6 Phase 4.6：Server 安全移除与 Agent 重新绑定
+
+> 当前状态：已实现并完成与 Phase 5A WebSocket 的兼容回归。
 
 ## 目标
 
-解决 VPS 重装系统、误删 Agent 配置、Agent 长期凭据泄露或损坏以后无法重新接入现有 Server 的问题。
+解决 Server 被移除后丢失长期档案，以及 VPS 重装系统、误删 Agent 配置、Agent 长期凭据泄露或损坏以后无法重新接入原 Server 的问题。
 
-Server 详情页提供受控操作：
+固定语义：
 
 ```text
-重新安装 Agent / 重置 Agent 凭据
+Server = 长期业务实体
+Agent = 可更换、可轮换凭据的执行端身份
 ```
 
-该操作不创建新的 Server，也不复制原 Server 数据。
+普通 `DELETE /api/servers/{id}` 只设置 `archived_at`、撤销 Agent 凭据并隐藏 Server；只有 admin 执行单独的“彻底删除”操作时才物理删除。重新绑定不创建新的 Server，也不复制原 Server 数据。
 
 ---
 
 ## 4.6.1 行为
 
-确认重置后：
+安全移除与重新绑定流程：
 
-1. 为现有 Server 生成新的、一次性的 Enrollment Token。
-2. 原 Agent 长期 Token 立即失效。
-3. 如果原 Agent 仍有有效 WebSocket，后续进入 WebSocket Phase 后应主动关闭该连接。
-4. Server 状态进入：
+1. 移除 Server 时写入 `archived_at`，保留 Server ID 和档案。
+2. 原 Agent 长期 Token 立即失效，未使用 Enrollment Token 被清理。
+3. 如果原 Agent 仍有有效 WebSocket，Panel 主动关闭该连接。
+4. admin 可以为已移除 Server 生成新的、一次性的 Enrollment Token。
+5. Enrollment Token 继续绑定原 `server_id`，Server 状态进入：
    ```text
    pending
    ```
-5. Panel 返回新的 Agent 安装命令。
-6. 用户在目标 VPS 执行安装命令。
-7. 新 Agent 使用 Enrollment Token 注册。
-8. 注册成功后为该 Server 写入新的长期 Agent Token hash。
-9. Server 回到：
+6. Panel 返回带 `--force` 的 Agent 安装命令。
+7. `--force` 先完成注册，再使用已 fsync 的临时文件原子替换旧配置。
+8. 注册失败或 Panel 不可达时，旧配置保持不变。
+9. 新 Agent 使用 Enrollment Token 注册，并得到新的长期 Agent Token。
+10. 注册成功后清除 `archived_at`，Server 回到：
    ```text
    offline
    ```
-   等待后续 WebSocket 建立后再变为 `online`。
+11. WebSocket 建立后再变为 `online`。
+12. 只有“彻底删除”才物理删除归档 Server 及关联数据。
 
 保持固定关系：
 
@@ -902,7 +907,7 @@ Server 详情页提供受控操作：
 
 ## 4.6.2 数据处理
 
-由于 `agents.server_id` 是唯一关系，重新注册时优先更新 / 轮换现有 Agent 身份记录，而不是制造同一 Server 的多个有效 Agent。
+由于 `agents.server_id` 是唯一关系，重新绑定时删除旧 Agent 认证记录并创建新记录，不制造同一 Server 的多个有效 Agent。
 
 必须保证：
 
@@ -917,16 +922,17 @@ Server 详情页提供受控操作：
 
 ## 4.6.3 UI
 
-Server 详情页增加：
+服务器页面增加“正常服务器 / 已移除”入口。已移除列表提供：
 
 ```text
-重新安装 Agent
+重新绑定 Agent
+彻底删除
 ```
 
 点击后必须二次确认，并明确提示：
 
 ```text
-重置后，当前 Agent 凭据会立即失效，需要使用新安装命令重新注册。
+重新绑定会生成新的 Agent 身份；彻底删除会永久删除 Server 及全部关联数据。
 ```
 
 成功后只显示一次：
@@ -947,16 +953,18 @@ Server 详情页增加：
 
 ## 4.6.5 验收
 
-1. 已注册 Server 可以生成新的重装 Token。
+1. 普通移除不物理删除 Server，默认列表隐藏它，已移除列表可以查看。
 2. 原 Server ID 保持不变。
 3. 原 Agent Token 失效。
-4. 原 Agent 无法继续使用旧凭据认证。
+4. 在线 Agent 连接被主动关闭，断开回调不会恢复归档 Server。
 5. 新 Enrollment Token 只能使用一次。
 6. 新 Agent 注册后仍绑定原 Server。
-7. Server 资料和流量设置不丢失。
+7. 注册成功后清除 `archived_at`，状态为 `offline`。
 8. 不产生第二个有效 Agent 身份。
-9. admin 可以执行，vip 不可执行。
-10. 原有 Server / Agent 注册测试继续通过。
+9. `--force` 失败时保留旧配置，成功时以 0600 权限原子替换。
+10. 重新绑定和彻底删除仅允许 admin。
+11. 只有彻底删除才物理删除 Server。
+12. 原有 Server / Agent 注册和 WebSocket 测试继续通过。
 
 完成 Phase 4.6 后停止。
 
@@ -3393,27 +3401,15 @@ Phase 16
 
 # 30. 当前下一步
 
-当前先不要继续系统监控。Phase 4.5 和 Phase 5A 已完成。
+当前先不要继续系统监控。Phase 4.5、Phase 4.6 和 Phase 5A 已完成。
 
 下一步固定为：
-
-```text
-Phase 4.6：Agent 重新安装与凭据重置
-```
-
-完成并验证以后，重新确认：
-
-```text
-Phase 5A：Agent WebSocket 基础连接兼容性
-```
-
-然后：
 
 ```text
 Phase 5B：Heartbeat + 自动重连
 ```
 
-再然后：
+完成并验证以后：
 
 ```text
 Phase 6A：静态系统信息

@@ -1,6 +1,6 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 4.5** 和 **Phase 5A**：提供 admin / vip 两级邀请制账号认证、Server 管理、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 4.6** 和 **Phase 5A**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
 当前 Agent 只支持注册、保存长期凭据和建立一次认证 WebSocket 连接，尚未实现 Heartbeat、自动重连、监控、代理内核或端口转发。
 
@@ -82,6 +82,8 @@ Agent 安装位置：
 ```
 
 注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。
+
+普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在“已移除”列表为原 Server ID 生成新的重新绑定命令；目标 VPS 已存在 Agent 配置时，命令会使用 `--force`，并且只有注册成功后才会原子替换旧配置。只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
 
 ### `vp` 管理命令
 

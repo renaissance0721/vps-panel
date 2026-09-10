@@ -42,6 +42,7 @@ type ServerRecord = {
   id: number
   name: string
   status: 'pending' | 'online' | 'offline'
+  archived_at?: string
   created_at: string
   updated_at: string
 }
@@ -57,16 +58,19 @@ const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const invitations = ref<Invitation[]>([])
 const servers = ref<ServerRecord[]>([])
+const archivedServers = ref<ServerRecord[]>([])
 const selectedServer = ref<ServerRecord | null>(null)
 const createdServer = ref<CreatedServer | null>(null)
 const serverName = ref('')
 const currentPage = ref<'overview' | 'servers'>('overview')
+const serverListMode = ref<'active' | 'archived'>('active')
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
 const copiedEnrollment = ref<'token' | 'command' | ''>('')
+const enrollmentMode = ref<'install' | 'rebind'>('install')
 
 const username = ref('')
 const password = ref('')
@@ -122,8 +126,12 @@ async function loadInvitations() {
 }
 
 async function loadServers() {
-  const response = await api<{ servers: ServerRecord[] }>('/api/servers')
-  servers.value = response.servers
+  const [activeResponse, archivedResponse] = await Promise.all([
+    api<{ servers: ServerRecord[] }>('/api/servers'),
+    api<{ servers: ServerRecord[] }>('/api/servers?archived=true'),
+  ])
+  servers.value = activeResponse.servers
+  archivedServers.value = archivedResponse.servers
 }
 
 function validatePasswords(): boolean {
@@ -188,6 +196,7 @@ async function logout() {
     health.value = null
     invitations.value = []
     servers.value = []
+    archivedServers.value = []
     selectedServer.value = null
     createdServer.value = null
     generatedLink.value = ''
@@ -233,6 +242,7 @@ async function createServerRecord() {
     selectedServer.value = createdServer.value.server
     serverName.value = ''
     copiedEnrollment.value = ''
+    enrollmentMode.value = 'install'
     await loadServers()
   })
 }
@@ -244,11 +254,42 @@ async function viewServer(id: number) {
   })
 }
 
-async function deleteServer(value: ServerRecord) {
-  if (!window.confirm(`确定删除服务器“${value.name}”吗？`)) return
+async function archiveServer(value: ServerRecord) {
+  if (
+    !window.confirm(
+      `确定移除服务器“${value.name}”吗？\n\n移除后将从服务器列表隐藏，并立即撤销当前 Agent 凭据，但服务器资料和历史数据会保留。之后可以重新绑定 Agent。`,
+    )
+  )
+    return
   await submit(async () => {
     await api(`/api/servers/${value.id}`, { method: 'DELETE' })
     if (selectedServer.value?.id === value.id) selectedServer.value = null
+    if (createdServer.value?.server.id === value.id) createdServer.value = null
+    await loadServers()
+  })
+}
+
+async function rebindAgent(value: ServerRecord) {
+  if (!window.confirm(`确定为服务器“${value.name}”生成新的 Agent 注册令牌吗？`)) return
+  await submit(async () => {
+    createdServer.value = await api<CreatedServer>(`/api/servers/${value.id}/enrollment`, {
+      method: 'POST',
+    })
+    enrollmentMode.value = 'rebind'
+    copiedEnrollment.value = ''
+    await loadServers()
+  })
+}
+
+async function permanentlyDeleteServer(value: ServerRecord) {
+  if (
+    !window.confirm(
+      `确定彻底删除服务器“${value.name}”吗？\n\n这将永久删除该服务器及全部历史数据，无法通过重新安装 Agent 恢复。`,
+    )
+  )
+    return
+  await submit(async () => {
+    await api(`/api/servers/${value.id}/permanent`, { method: 'DELETE' })
     if (createdServer.value?.server.id === value.id) createdServer.value = null
     await loadServers()
   })
@@ -523,7 +564,26 @@ onMounted(async () => {
         </template>
 
         <template v-else>
-          <div class="server-grid">
+          <div class="admin-nav server-list-nav" aria-label="服务器列表">
+            <n-button
+              size="small"
+              :type="serverListMode === 'active' ? 'primary' : 'default'"
+              :secondary="serverListMode === 'active'"
+              @click="serverListMode = 'active'"
+            >
+              正常服务器
+            </n-button>
+            <n-button
+              size="small"
+              :type="serverListMode === 'archived' ? 'primary' : 'default'"
+              :secondary="serverListMode === 'archived'"
+              @click="serverListMode = 'archived'"
+            >
+              已移除
+            </n-button>
+          </div>
+
+          <div v-if="serverListMode === 'active'" class="server-grid">
             <n-card title="新增服务器" :bordered="true">
               <p class="card-copy">创建后将生成一个 24 小时有效的注册令牌。</p>
               <form class="server-form" @submit.prevent="createServerRecord">
@@ -551,11 +611,23 @@ onMounted(async () => {
           <n-card
             v-if="createdServer"
             class="enrollment-card"
-            title="保存注册令牌"
+            :title="enrollmentMode === 'rebind' ? '保存重新绑定凭据' : '保存注册令牌'"
             :bordered="true"
           >
-            <n-alert type="warning" title="此注册令牌仅显示一次，请立即保存">
-              请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
+            <n-alert
+              type="warning"
+              :title="
+                enrollmentMode === 'rebind'
+                  ? '新的注册令牌仅显示一次，请立即保存'
+                  : '此注册令牌仅显示一次，请立即保存'
+              "
+            >
+              <template v-if="enrollmentMode === 'rebind'">
+                请执行下方带 --force 的命令安全替换旧 Agent 身份，无需手工删除配置文件。
+              </template>
+              <template v-else>
+                请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
+              </template>
             </n-alert>
             <dl class="server-details enrollment-summary">
               <div><dt>服务器名称</dt><dd>{{ createdServer.server.name }}</dd></div>
@@ -592,7 +664,7 @@ onMounted(async () => {
             </div>
           </n-card>
 
-          <n-card title="服务器" :bordered="true">
+          <n-card v-if="serverListMode === 'active'" title="正常服务器" :bordered="true">
             <n-empty v-if="servers.length === 0" description="当前没有服务器" />
             <div v-else class="server-table-wrap">
               <table class="server-table">
@@ -627,10 +699,58 @@ onMounted(async () => {
                         type="error"
                         secondary
                         :disabled="submitting"
-                        @click="deleteServer(value)"
+                        @click="archiveServer(value)"
                       >
-                        删除
+                        移除
                       </n-button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </n-card>
+
+          <n-card v-if="serverListMode === 'archived'" title="已移除服务器" :bordered="true">
+            <n-empty v-if="archivedServers.length === 0" description="当前没有已移除服务器" />
+            <div v-else class="server-table-wrap">
+              <table class="server-table">
+                <thead>
+                  <tr>
+                    <th>服务器 ID</th>
+                    <th>名称</th>
+                    <th>移除时间</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="value in archivedServers" :key="value.id">
+                    <td>#{{ value.id }}</td>
+                    <td>{{ value.name }}</td>
+                    <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
+                    <td>{{ formatTime(value.created_at) }}</td>
+                    <td class="server-actions">
+                      <template v-if="state.user?.role === 'admin'">
+                        <n-button
+                          size="small"
+                          type="primary"
+                          secondary
+                          :disabled="submitting"
+                          @click="rebindAgent(value)"
+                        >
+                          重新绑定 Agent
+                        </n-button>
+                        <n-button
+                          size="small"
+                          type="error"
+                          secondary
+                          :disabled="submitting"
+                          @click="permanentlyDeleteServer(value)"
+                        >
+                          彻底删除
+                        </n-button>
+                      </template>
+                      <span v-else>—</span>
                     </td>
                   </tr>
                 </tbody>

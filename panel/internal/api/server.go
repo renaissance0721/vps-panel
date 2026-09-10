@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -24,10 +25,12 @@ import (
 const sessionCookieName = "vps_panel_session"
 
 type server struct {
-	db          *sql.DB
-	authService *auth.Service
-	servers     *serverstore.Service
-	webRoot     string
+	db            *sql.DB
+	authService   *auth.Service
+	servers       *serverstore.Service
+	webRoot       string
+	connectionsMu sync.Mutex
+	connections   map[int64]map[*websocket.Conn]struct{}
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
@@ -36,6 +39,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 		authService: auth.NewService(db),
 		servers:     serverstore.NewService(db),
 		webRoot:     webRoot,
+		connections: make(map[int64]map[*websocket.Conn]struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
@@ -53,6 +57,8 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
+	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createRebindEnrollment))
+	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -93,11 +99,12 @@ type createServerRequest struct {
 }
 
 type serverResponse struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 type createdServerResponse struct {
@@ -240,11 +247,16 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
+	s.trackAgentConnection(agent.ServerID, connection)
 
 	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = s.servers.SetAgentOnline(statusContext, agent.ServerID)
 	cancel()
 	if err != nil {
+		s.untrackAgentConnection(agent.ServerID, connection)
+		if errors.Is(err, serverstore.ErrArchived) || errors.Is(err, serverstore.ErrNotFound) {
+			return
+		}
 		log.Printf("set agent %d server %d online: %v", agent.ID, agent.ServerID, err)
 		_ = connection.Close(websocket.StatusInternalError, "server status update failed")
 		return
@@ -253,11 +265,17 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	disconnected := connection.CloseRead(context.Background())
 	<-disconnected.Done()
+	if !s.untrackAgentConnection(agent.ServerID, connection) {
+		return
+	}
 
 	statusContext, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	err = s.servers.SetAgentOffline(statusContext, agent.ServerID)
 	cancel()
 	if err != nil {
+		if errors.Is(err, serverstore.ErrNotFound) {
+			return
+		}
 		log.Printf("set agent %d server %d offline: %v", agent.ID, agent.ServerID, err)
 		return
 	}
@@ -303,7 +321,13 @@ func (s *server) revokeInvitation(w http.ResponseWriter, r *http.Request, _ auth
 }
 
 func (s *server) listServers(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	values, err := s.servers.List(r.Context())
+	var values []serverstore.Server
+	var err error
+	if r.URL.Query().Get("archived") == "true" {
+		values, err = s.servers.ListArchived(r.Context())
+	} else {
+		values, err = s.servers.List(r.Context())
+	}
 	if err != nil {
 		writeInternalError(w)
 		return
@@ -325,18 +349,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 		writeServerError(w, err)
 		return
 	}
-	baseURL := requestBaseURL(r)
-	writeJSON(w, http.StatusCreated, createdServerResponse{
-		Server:                   toServerResponse(created.Server),
-		EnrollmentToken:          created.EnrollmentToken,
-		EnrollmentTokenExpiresAt: created.EnrollmentExpiresAt,
-		AgentInstallationCommand: fmt.Sprintf(
-			"curl -fsSL %s/install-agent.sh | bash -s -- \\\n  --server %s \\\n  --token %s",
-			baseURL,
-			baseURL,
-			created.EnrollmentToken,
-		),
-	})
+	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r), false))
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -357,10 +370,37 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 	if !ok {
 		return
 	}
-	if err := s.servers.Delete(r.Context(), id); err != nil {
+	if err := s.servers.Archive(r.Context(), id); err != nil {
 		writeServerError(w, err)
 		return
 	}
+	s.closeAgentConnections(id)
+	writeNoContent(w)
+}
+
+func (s *server) createRebindEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	created, err := s.servers.CreateRebindEnrollment(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r), true))
+}
+
+func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	if err := s.servers.PermanentlyDelete(r.Context(), id); err != nil {
+		writeServerError(w, err)
+		return
+	}
+	s.closeAgentConnections(id)
 	writeNoContent(w)
 }
 
@@ -464,11 +504,65 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 
 func toServerResponse(value serverstore.Server) serverResponse {
 	return serverResponse{
-		ID:        value.ID,
-		Name:      value.Name,
-		Status:    value.Status,
-		CreatedAt: value.CreatedAt,
-		UpdatedAt: value.UpdatedAt,
+		ID:         value.ID,
+		Name:       value.Name,
+		Status:     value.Status,
+		ArchivedAt: value.ArchivedAt,
+		CreatedAt:  value.CreatedAt,
+		UpdatedAt:  value.UpdatedAt,
+	}
+}
+
+func toCreatedServerResponse(
+	created serverstore.CreatedServer,
+	baseURL string,
+	force bool,
+) createdServerResponse {
+	command := fmt.Sprintf(
+		"curl -fsSL %s/install-agent.sh | bash -s -- \\\n  --server %s \\\n  --token %s",
+		baseURL,
+		baseURL,
+		created.EnrollmentToken,
+	)
+	if force {
+		command += " \\\n  --force"
+	}
+	return createdServerResponse{
+		Server:                   toServerResponse(created.Server),
+		EnrollmentToken:          created.EnrollmentToken,
+		EnrollmentTokenExpiresAt: created.EnrollmentExpiresAt,
+		AgentInstallationCommand: command,
+	}
+}
+
+func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn) {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	if s.connections[serverID] == nil {
+		s.connections[serverID] = make(map[*websocket.Conn]struct{})
+	}
+	s.connections[serverID][connection] = struct{}{}
+}
+
+func (s *server) untrackAgentConnection(serverID int64, connection *websocket.Conn) bool {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	connections := s.connections[serverID]
+	delete(connections, connection)
+	if len(connections) != 0 {
+		return false
+	}
+	delete(s.connections, serverID)
+	return true
+}
+
+func (s *server) closeAgentConnections(serverID int64) {
+	s.connectionsMu.Lock()
+	connections := s.connections[serverID]
+	delete(s.connections, serverID)
+	s.connectionsMu.Unlock()
+	for connection := range connections {
+		connection.CloseNow()
 	}
 }
 

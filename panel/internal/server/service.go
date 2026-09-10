@@ -26,14 +26,16 @@ var (
 	ErrInvalidEnrollment   = errors.New("invalid, used, or expired enrollment token")
 	ErrInvalidAgentVersion = errors.New("agent version must be 1-64 characters")
 	ErrInvalidAgentToken   = errors.New("invalid agent token")
+	ErrArchived            = errors.New("server is archived")
 )
 
 type Server struct {
-	ID        int64
-	Name      string
-	Status    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         int64
+	Name       string
+	Status     string
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type CreatedServer struct {
@@ -117,9 +119,21 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 }
 
 func (s *Service) List(ctx context.Context) ([]Server, error) {
+	return s.list(ctx, false)
+}
+
+func (s *Service) ListArchived(ctx context.Context) ([]Server, error) {
+	return s.list(ctx, true)
+}
+
+func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
+	archiveCondition := "archived_at IS NULL"
+	if archived {
+		archiveCondition = "archived_at IS NOT NULL"
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, status, created_at, updated_at
-		 FROM servers ORDER BY created_at DESC, id DESC`,
+		`SELECT id, name, status, archived_at, created_at, updated_at
+		 FROM servers WHERE `+archiveCondition+` ORDER BY created_at DESC, id DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)
@@ -142,7 +156,8 @@ func (s *Service) List(ctx context.Context) ([]Server, error) {
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT id, name, status, created_at, updated_at FROM servers WHERE id = ?`, id,
+		`SELECT id, name, status, archived_at, created_at, updated_at
+		 FROM servers WHERE id = ? AND archived_at IS NULL`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
@@ -153,19 +168,118 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	return value, nil
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM servers WHERE id = ?`, id)
+func (s *Service) Archive(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("delete server: %w", err)
+		return fmt.Errorf("begin server archive: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE servers SET status = ?, archived_at = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`,
+		StatusOffline, now, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("archive server: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read deleted server count: %w", err)
+		return fmt.Errorf("read archived server count: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
+		return fmt.Errorf("revoke archived server agent: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
+	); err != nil {
+		return fmt.Errorf("remove unused agent enrollments: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit server archive: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) PermanentlyDelete(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM servers WHERE id = ? AND archived_at IS NOT NULL`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("permanently delete server: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read permanently deleted server count: %w", err)
 	}
 	if count == 0 {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Service) CreateRebindEnrollment(ctx context.Context, id int64) (CreatedServer, error) {
+	tokenValue, tokenHash, err := token.New()
+	if err != nil {
+		return CreatedServer{}, err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := now.Add(EnrollmentLifetime)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("begin Agent rebind: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE servers SET status = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NOT NULL`,
+		StatusPending, now.Unix(), id,
+	)
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("prepare server rebind: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("read prepared server count: %w", err)
+	}
+	if count == 0 {
+		return CreatedServer{}, ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
+		return CreatedServer{}, fmt.Errorf("revoke previous Agent: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
+	); err != nil {
+		return CreatedServer{}, fmt.Errorf("remove previous Agent enrollment: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO agent_enrollments (server_id, token_hash, expires_at, created_at)
+		 VALUES (?, ?, ?, ?)`,
+		id, tokenHash, expiresAt.Unix(), now.Unix(),
+	); err != nil {
+		return CreatedServer{}, fmt.Errorf("create Agent rebind enrollment: %w", err)
+	}
+	value, err := scanServer(tx.QueryRowContext(ctx,
+		`SELECT id, name, status, archived_at, created_at, updated_at FROM servers WHERE id = ?`, id,
+	))
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("read server prepared for rebind: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return CreatedServer{}, fmt.Errorf("commit Agent rebind: %w", err)
+	}
+	return CreatedServer{
+		Server:              value,
+		EnrollmentToken:     tokenValue,
+		EnrollmentExpiresAt: expiresAt,
+	}, nil
 }
 
 func (s *Service) RegisterAgent(
@@ -205,6 +319,9 @@ func (s *Service) RegisterAgent(
 	if err != nil {
 		return RegisteredAgent{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, serverID); err != nil {
+		return RegisteredAgent{}, fmt.Errorf("replace previous Agent: %w", err)
+	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO agents
 		 (server_id, token_hash, version, registered_at, created_at, updated_at)
@@ -236,7 +353,7 @@ func (s *Service) RegisterAgent(
 	}
 
 	result, err = tx.ExecContext(ctx,
-		`UPDATE servers SET status = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE servers SET status = ?, archived_at = NULL, updated_at = ? WHERE id = ?`,
 		StatusOffline, now.Unix(), serverID,
 	)
 	if err != nil {
@@ -267,7 +384,9 @@ func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Age
 
 	var agent Agent
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, server_id FROM agents WHERE token_hash = ?`, token.Hash(agentToken),
+		`SELECT agents.id, agents.server_id FROM agents
+		 JOIN servers ON servers.id = agents.server_id
+		 WHERE agents.token_hash = ? AND servers.archived_at IS NULL`, token.Hash(agentToken),
 	).Scan(&agent.ID, &agent.ServerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, ErrInvalidAgentToken
@@ -283,12 +402,17 @@ func (s *Service) SetAgentOnline(ctx context.Context, serverID int64) error {
 }
 
 func (s *Service) SetAgentOffline(ctx context.Context, serverID int64) error {
-	return s.setStatus(ctx, serverID, StatusOffline)
+	err := s.setStatus(ctx, serverID, StatusOffline)
+	if errors.Is(err, ErrArchived) {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) ResetOnline(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE servers SET status = ?, updated_at = ? WHERE status = ?`,
+		`UPDATE servers SET status = ?, updated_at = ?
+		 WHERE status = ? AND archived_at IS NULL`,
 		StatusOffline, s.now().UTC().Truncate(time.Second).Unix(), StatusOnline,
 	)
 	if err != nil {
@@ -299,7 +423,8 @@ func (s *Service) ResetOnline(ctx context.Context) error {
 
 func (s *Service) setStatus(ctx context.Context, serverID int64, status string) error {
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE servers SET status = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE servers SET status = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`,
 		status, s.now().UTC().Truncate(time.Second).Unix(), serverID,
 	)
 	if err != nil {
@@ -310,6 +435,19 @@ func (s *Service) setStatus(ctx context.Context, serverID int64, status string) 
 		return fmt.Errorf("read updated server count: %w", err)
 	}
 	if count != 1 {
+		var archivedAt sql.NullInt64
+		err := s.db.QueryRowContext(ctx,
+			`SELECT archived_at FROM servers WHERE id = ?`, serverID,
+		).Scan(&archivedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("read server lifecycle state: %w", err)
+		}
+		if archivedAt.Valid {
+			return ErrArchived
+		}
 		return ErrNotFound
 	}
 	return nil
@@ -321,9 +459,14 @@ type rowScanner interface {
 
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
+	var archivedAt sql.NullInt64
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.Name, &value.Status, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&value.ID, &value.Name, &value.Status, &archivedAt, &createdAt, &updatedAt); err != nil {
 		return Server{}, err
+	}
+	if archivedAt.Valid {
+		archivedTime := time.Unix(archivedAt.Int64, 0).UTC()
+		value.ArchivedAt = &archivedTime
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

@@ -116,6 +116,10 @@ h1 {
   gap: 8px;
 }
 
+.server-list-nav {
+  margin-bottom: 20px;
+}
+
 .account-actions {
   display: flex;
   align-items: center;

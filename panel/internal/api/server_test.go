@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -248,6 +249,8 @@ func TestServerAPILifecycle(t *testing.T) {
 		{http.MethodPost, "/api/servers"},
 		{http.MethodGet, "/api/servers/1"},
 		{http.MethodDelete, "/api/servers/1"},
+		{http.MethodPost, "/api/servers/1/enrollment"},
+		{http.MethodDelete, "/api/servers/1/permanent"},
 	} {
 		response := performRequest(t, handler, request.method, request.path, map[string]string{"name": "test"}, nil)
 		if response.Code != http.StatusUnauthorized {
@@ -323,16 +326,118 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 	getDeletedResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getDeletedResponse.Code != http.StatusNotFound {
-		t.Fatalf("get deleted server status = %d, want %d", getDeletedResponse.Code, http.StatusNotFound)
+		t.Fatalf("get archived server status = %d, want %d", getDeletedResponse.Code, http.StatusNotFound)
 	}
-	var enrollmentCount int
+	archivedResponse := performRequest(t, handler, http.MethodGet, "/api/servers?archived=true", nil, sessionCookie)
+	if archivedResponse.Code != http.StatusOK ||
+		!strings.Contains(archivedResponse.Body.String(), "JP Native 01") ||
+		!strings.Contains(archivedResponse.Body.String(), `"archived_at"`) {
+		t.Fatalf("archived server list = (%d, %q), want archived server", archivedResponse.Code, archivedResponse.Body.String())
+	}
+	var enrollmentCount, serverCount int
+	var archivedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT COUNT(*), archived_at FROM servers WHERE id = ?`, created.Server.ID,
+	).Scan(&serverCount, &archivedAt); err != nil {
+		t.Fatalf("read archived server: %v", err)
+	}
+	if serverCount != 1 || !archivedAt.Valid {
+		t.Fatalf("archived server state = (count %d, archived %v), want preserved", serverCount, archivedAt.Valid)
+	}
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM agent_enrollments WHERE server_id = ?`, created.Server.ID,
 	).Scan(&enrollmentCount); err != nil {
 		t.Fatalf("count enrollments: %v", err)
 	}
 	if enrollmentCount != 0 {
-		t.Fatalf("enrollment count after server delete = %d, want 0", enrollmentCount)
+		t.Fatalf("unused enrollment count after server archive = %d, want 0", enrollmentCount)
+	}
+}
+
+func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	handler := NewHandler(db, t.TempDir())
+
+	initializeResponse := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin",
+		"password": "strong-password",
+	}, nil)
+	if initializeResponse.Code != http.StatusCreated {
+		t.Fatalf("initialize status = %d, body = %q", initializeResponse.Code, initializeResponse.Body.String())
+	}
+	adminCookie := initializeResponse.Result().Cookies()[0]
+	createInvitationResponse := performRequest(t, handler, http.MethodPost, "/api/admin/invitations", nil, adminCookie)
+	if createInvitationResponse.Code != http.StatusCreated {
+		t.Fatalf("create invitation status = %d, body = %q", createInvitationResponse.Code, createInvitationResponse.Body.String())
+	}
+	var invitation invitationResponse
+	if err := json.Unmarshal(createInvitationResponse.Body.Bytes(), &invitation); err != nil {
+		t.Fatalf("decode invitation: %v", err)
+	}
+	vipResponse := performRequest(t, handler, http.MethodPost, "/api/auth/register", map[string]string{
+		"token": invitation.Token, "username": "vip-user", "password": "another-password",
+	}, nil)
+	if vipResponse.Code != http.StatusCreated {
+		t.Fatalf("register VIP status = %d, body = %q", vipResponse.Code, vipResponse.Body.String())
+	}
+	vipCookie := vipResponse.Result().Cookies()[0]
+
+	createdResponse := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]string{
+		"name": "Rebind Server",
+	}, adminCookie)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create server status = %d, body = %q", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created createdServerResponse
+	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created server: %v", err)
+	}
+	serverPath := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
+	archiveResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, vipCookie)
+	if archiveResponse.Code != http.StatusNoContent {
+		t.Fatalf("VIP archive status = %d, body = %q", archiveResponse.Code, archiveResponse.Body.String())
+	}
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, serverPath + "/enrollment"},
+		{http.MethodDelete, serverPath + "/permanent"},
+	} {
+		response := performRequest(t, handler, request.method, request.path, nil, vipCookie)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("VIP %s %s status = %d, want %d", request.method, request.path, response.Code, http.StatusForbidden)
+		}
+	}
+
+	rebindResponse := performRequest(t, handler, http.MethodPost, serverPath+"/enrollment", nil, adminCookie)
+	if rebindResponse.Code != http.StatusCreated {
+		t.Fatalf("admin rebind status = %d, body = %q", rebindResponse.Code, rebindResponse.Body.String())
+	}
+	var rebind createdServerResponse
+	if err := json.Unmarshal(rebindResponse.Body.Bytes(), &rebind); err != nil {
+		t.Fatalf("decode rebind response: %v", err)
+	}
+	if rebind.Server.ID != created.Server.ID || rebind.EnrollmentToken == "" ||
+		!strings.Contains(rebind.AgentInstallationCommand, "--force") {
+		t.Fatalf("rebind response = %+v, want same server, token and --force command", rebind)
+	}
+
+	permanentResponse := performRequest(t, handler, http.MethodDelete, serverPath+"/permanent", nil, adminCookie)
+	if permanentResponse.Code != http.StatusNoContent {
+		t.Fatalf("admin permanent delete status = %d, body = %q", permanentResponse.Code, permanentResponse.Body.String())
+	}
+	var serverCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers WHERE id = ?`, created.Server.ID).Scan(&serverCount); err != nil {
+		t.Fatalf("count permanently deleted server: %v", err)
+	}
+	if serverCount != 0 {
+		t.Fatalf("server count after permanent delete = %d, want 0", serverCount)
 	}
 }
 

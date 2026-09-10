@@ -46,9 +46,9 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/agent/ws", s.agentWebSocket)
-	mux.HandleFunc("GET /api/admin/invitations", s.requireAuthentication(s.listInvitations))
-	mux.HandleFunc("POST /api/admin/invitations", s.requireAuthentication(s.createInvitation))
-	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAuthentication(s.revokeInvitation))
+	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
+	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))
+	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAdmin(s.revokeInvitation))
 	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
@@ -75,6 +75,7 @@ type registrationRequest struct {
 type userResponse struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
+	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -399,6 +400,18 @@ func (s *server) requireAuthentication(
 	}
 }
 
+func (s *server) requireAdmin(
+	next func(http.ResponseWriter, *http.Request, auth.User),
+) http.HandlerFunc {
+	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
+		if user.Role != auth.RoleAdmin {
+			writeError(w, http.StatusForbidden, "仅管理员可以执行此操作")
+			return
+		}
+		next(w, r, user)
+	})
+}
+
 func readSessionToken(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
@@ -436,7 +449,7 @@ func clearSessionCookie(w http.ResponseWriter, secure bool) {
 }
 
 func toUserResponse(user auth.User) userResponse {
-	return userResponse{ID: user.ID, Username: user.Username, CreatedAt: user.CreatedAt}
+	return userResponse{ID: user.ID, Username: user.Username, Role: user.Role, CreatedAt: user.CreatedAt}
 }
 
 func toInvitationResponse(invitation auth.Invitation) invitationResponse {

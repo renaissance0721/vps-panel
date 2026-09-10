@@ -14,6 +14,7 @@ import {
 type User = {
   id: number
   username: string
+  role: 'admin' | 'vip'
   created_at: string
 }
 
@@ -103,7 +104,11 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
   if (state.value.authenticated) {
-    await Promise.all([loadHealth(), loadInvitations(), loadServers()])
+    const requests = [loadHealth(), loadServers()]
+    if (state.value.user?.role === 'admin') {
+      requests.push(loadInvitations())
+    }
+    await Promise.all(requests)
   }
 }
 
@@ -325,9 +330,9 @@ onMounted(async () => {
         class="auth-card"
         :bordered="true"
       >
-        <p class="eyebrow">管理员邀请</p>
-        <h1>创建管理员账户</h1>
-        <p class="description">此邀请仅可使用一次，并将在创建后 24 小时过期。</p>
+        <p class="eyebrow">账号邀请</p>
+        <h1>创建 VIP 账户</h1>
+        <p class="description">此邀请仅可使用一次，注册后账号权限为 VIP。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="register">
           <label>
@@ -405,7 +410,7 @@ onMounted(async () => {
       <n-card v-else-if="!state.authenticated" class="auth-card" :bordered="true">
         <p class="eyebrow">VPS 管理</p>
         <h1>登录 VPS 管理面板</h1>
-        <p class="description">仅管理员可以访问管理页面。</p>
+        <p class="description">请使用已注册账号登录。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="login">
           <label>
@@ -477,8 +482,8 @@ onMounted(async () => {
               </div>
             </n-card>
 
-            <n-card title="邀请管理员" :bordered="true">
-              <p class="card-copy">生成 24 小时有效的一次性注册链接。所有管理员权限相同。</p>
+            <n-card v-if="state.user?.role === 'admin'" title="邀请 VIP 账号" :bordered="true">
+              <p class="card-copy">生成 24 小时有效的一次性 VIP 注册链接。</p>
               <n-button type="primary" :loading="submitting" @click="createInvitation">
                 生成邀请链接
               </n-button>
@@ -492,7 +497,7 @@ onMounted(async () => {
             </n-card>
           </div>
 
-          <n-card title="有效邀请" :bordered="true">
+          <n-card v-if="state.user?.role === 'admin'" title="有效邀请" :bordered="true">
             <n-empty v-if="invitations.length === 0" description="当前没有未过期的邀请" />
             <div v-else class="invitation-list">
               <div v-for="invitation in invitations" :key="invitation.id" class="invitation-row">

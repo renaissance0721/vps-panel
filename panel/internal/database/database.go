@@ -43,6 +43,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -97,7 +98,37 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("migrate sqlite: %w", err)
 		}
 	}
+	if err := migrateUserRoles(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateUserRoles(ctx context.Context, db *sql.DB) error {
+	var roleColumnCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'role'`,
+	).Scan(&roleColumnCount); err != nil {
+		return fmt.Errorf("inspect user role column: %w", err)
+	}
+	if roleColumnCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
+			 CHECK (role IN ('admin', 'vip'))`,
+		); err != nil {
+			return fmt.Errorf("add user role column: %w", err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE users
+		SET role = CASE
+			WHEN id = (SELECT MIN(id) FROM users) THEN 'admin'
+			ELSE 'vip'
+		END`); err != nil {
+		return fmt.Errorf("migrate user roles: %w", err)
+	}
 	return nil
 }
 

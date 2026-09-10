@@ -26,16 +26,19 @@ func TestInitializeCreatesOnlyFirstUserWithHashedPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if user.Username != "admin" {
-		t.Fatalf("Initialize() username = %q, want admin", user.Username)
+	if user.Username != "admin" || user.Role != RoleAdmin {
+		t.Fatalf("Initialize() user = %+v, want admin role", user)
 	}
 
-	var passwordHash string
-	if err := db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, user.ID).Scan(&passwordHash); err != nil {
+	var passwordHash, role string
+	if err := db.QueryRow(`SELECT password_hash, role FROM users WHERE id = ?`, user.ID).Scan(&passwordHash, &role); err != nil {
 		t.Fatalf("read password hash: %v", err)
 	}
 	if passwordHash == testPassword || passwordHash == "" {
 		t.Fatalf("password was not safely hashed")
+	}
+	if role != RoleAdmin {
+		t.Fatalf("stored first user role = %q, want %q", role, RoleAdmin)
 	}
 
 	if _, err := service.Initialize(ctx, "second", testPassword); !errors.Is(err, ErrAlreadyInitialized) {
@@ -59,7 +62,7 @@ func TestLoginSessionAndLogout(t *testing.T) {
 		t.Fatalf("Login() wrong password error = %v, want ErrInvalidCredentials", err)
 	}
 	loggedIn, err := service.Login(ctx, "ADMIN", testPassword)
-	if err != nil || loggedIn.ID != user.ID {
+	if err != nil || loggedIn.ID != user.ID || loggedIn.Role != RoleAdmin {
 		t.Fatalf("Login() = (%+v, %v), want user %d", loggedIn, err, user.ID)
 	}
 
@@ -75,7 +78,7 @@ func TestLoginSessionAndLogout(t *testing.T) {
 		t.Fatalf("session token was not stored as its hash")
 	}
 	authenticated, err := service.Authenticate(ctx, token)
-	if err != nil || authenticated.ID != user.ID {
+	if err != nil || authenticated.ID != user.ID || authenticated.Role != RoleAdmin {
 		t.Fatalf("Authenticate() = (%+v, %v), want user %d", authenticated, err, user.ID)
 	}
 	if err := service.Logout(ctx, token); err != nil {
@@ -116,8 +119,12 @@ func TestInvitationIsHashedAndSingleUse(t *testing.T) {
 	if err != nil || len(active) != 1 || active[0].CreatedByUsername != owner.Username {
 		t.Fatalf("ListActiveInvitations() = (%+v, %v), want one owner invitation", active, err)
 	}
-	if _, err := service.RegisterWithInvitation(ctx, created.Token, "invited", testPassword); err != nil {
+	invited, err := service.RegisterWithInvitation(ctx, created.Token, "invited", testPassword)
+	if err != nil {
 		t.Fatalf("RegisterWithInvitation() error = %v", err)
+	}
+	if invited.Role != RoleVIP {
+		t.Fatalf("invited user role = %q, want %q", invited.Role, RoleVIP)
 	}
 	if _, err := service.RegisterWithInvitation(ctx, created.Token, "another", testPassword); !errors.Is(err, ErrInvalidInvitation) {
 		t.Fatalf("reused invitation error = %v, want ErrInvalidInvitation", err)

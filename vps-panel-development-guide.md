@@ -2,7 +2,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 4 已完成；先补 Phase 4.5 账号层级与全局共享资源，再进入 Phase 5A。  
+> 当前基线：Phase 1–4、Phase 4.5 和 Phase 5A 已完成；下一步补 Phase 4.6，完成兼容回归后再进入 Phase 5B。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -591,7 +591,7 @@ Chain 属于后续高级功能。
 
 但原先“所有邀请账号与首个管理员权限一致”的设计已经废弃。
 
-新的固定要求将在 Phase 4.5 调整为：
+新的固定要求已在 Phase 4.5 调整为：
 
 ```text
 第一个初始化账号 = admin
@@ -662,7 +662,7 @@ online  = Agent 当前有效在线
 - systemd 安装
 - Agent 注册后 Server 从 pending → offline
 
-当前 Agent 启动后暂时只是读取配置并保持进程运行。
+当前 Agent 启动后会读取配置，并与 Panel 保持经过认证的 WebSocket 长连接。
 
 ---
 
@@ -963,6 +963,8 @@ Server 详情页增加：
 ---
 
 # 5. Phase 5A：Agent WebSocket 基础连接
+
+> 当前状态：已实现；补齐 Phase 4.6 后需要重新执行兼容回归。
 
 ## 目标
 
@@ -3391,33 +3393,27 @@ Phase 16
 
 # 30. 当前下一步
 
-当前先不要继续系统监控。
+当前先不要继续系统监控。Phase 4.5 和 Phase 5A 已完成。
 
 下一步固定为：
-
-```text
-Phase 4.5：admin / vip 两级账号 + 全局共享资源权限
-```
-
-完成并验证以后：
 
 ```text
 Phase 4.6：Agent 重新安装与凭据重置
 ```
 
-然后：
+完成并验证以后，重新确认：
 
 ```text
-Phase 5A：Agent WebSocket 基础连接
+Phase 5A：Agent WebSocket 基础连接兼容性
 ```
 
-再然后：
+然后：
 
 ```text
 Phase 5B：Heartbeat + 自动重连
 ```
 
-之后才进入：
+再然后：
 
 ```text
 Phase 6A：静态系统信息
@@ -3558,7 +3554,7 @@ Linux Server
 
 后续如果架构发生明确变化，在这里记录。
 
-## 当前固定决策
+## 当前固定决策（勾选表示设计已确定，不代表对应功能已经实现）
 
 - [x] Panel 使用 Go。
 - [x] SQLite。

@@ -16,6 +16,8 @@ import (
 const (
 	InvitationLifetime = 24 * time.Hour
 	SessionLifetime    = 7 * 24 * time.Hour
+	RoleAdmin          = "admin"
+	RoleVIP            = "vip"
 )
 
 var (
@@ -34,6 +36,7 @@ var (
 type User struct {
 	ID        int64
 	Username  string
+	Role      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -90,8 +93,8 @@ func (s *Service) Initialize(ctx context.Context, username, password string) (Us
 
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		username, passwordHash, now.Unix(), now.Unix(),
+		`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		username, passwordHash, RoleAdmin, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return User{}, fmt.Errorf("create first user: %w", err)
@@ -104,7 +107,7 @@ func (s *Service) Initialize(ctx context.Context, username, password string) (Us
 		return User{}, fmt.Errorf("commit initialization: %w", err)
 	}
 
-	return User{ID: id, Username: username, CreatedAt: now, UpdatedAt: now}, nil
+	return User{ID: id, Username: username, Role: RoleAdmin, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (s *Service) Login(ctx context.Context, username, password string) (User, error) {
@@ -113,9 +116,9 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 	var passwordHash string
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&user.ID, &user.Username, &passwordHash, &createdAt, &updatedAt)
+	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrInvalidCredentials
 	}
@@ -166,12 +169,12 @@ func (s *Service) Authenticate(ctx context.Context, tokenValue string) (User, er
 	var user User
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT users.id, users.username, users.created_at, users.updated_at
+		SELECT users.id, users.username, users.role, users.created_at, users.updated_at
 		FROM sessions
 		JOIN users ON users.id = sessions.user_id
 		WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
 		token.Hash(tokenValue), s.now().UTC().Unix(),
-	).Scan(&user.ID, &user.Username, &createdAt, &updatedAt)
+	).Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUnauthenticated
 	}
@@ -309,8 +312,8 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 	}
 
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		username, passwordHash, now.Unix(), now.Unix(),
+		`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		username, passwordHash, RoleVIP, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return User{}, fmt.Errorf("create invited user: %w", err)
@@ -338,7 +341,7 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 		return User{}, fmt.Errorf("commit invited registration: %w", err)
 	}
 
-	return User{ID: userID, Username: username, CreatedAt: now, UpdatedAt: now}, nil
+	return User{ID: userID, Username: username, Role: RoleVIP, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func prepareCredentials(username, password string) (string, string, error) {

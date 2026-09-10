@@ -89,6 +89,9 @@ func TestAuthenticationAndInvitationLifecycle(t *testing.T) {
 	if initializeResponse.Code != http.StatusCreated {
 		t.Fatalf("initialize status = %d, body = %q", initializeResponse.Code, initializeResponse.Body.String())
 	}
+	if !strings.Contains(initializeResponse.Body.String(), `"role":"admin"`) {
+		t.Fatalf("initialize body = %q, want admin role", initializeResponse.Body.String())
+	}
 	cookies := initializeResponse.Result().Cookies()
 	if len(cookies) != 1 {
 		t.Fatalf("initialize cookies = %d, want 1", len(cookies))
@@ -131,6 +134,9 @@ func TestAuthenticationAndInvitationLifecycle(t *testing.T) {
 	if registerResponse.Code != http.StatusCreated {
 		t.Fatalf("register status = %d, body = %q", registerResponse.Code, registerResponse.Body.String())
 	}
+	if !strings.Contains(registerResponse.Body.String(), `"role":"vip"`) {
+		t.Fatalf("register body = %q, want vip role", registerResponse.Body.String())
+	}
 	invitedCookies := registerResponse.Result().Cookies()
 	if len(invitedCookies) != 1 {
 		t.Fatalf("register cookies = %d, want 1", len(invitedCookies))
@@ -143,6 +149,31 @@ func TestAuthenticationAndInvitationLifecycle(t *testing.T) {
 	}, nil)
 	if reuseResponse.Code != http.StatusBadRequest {
 		t.Fatalf("reused invitation status = %d, want %d", reuseResponse.Code, http.StatusBadRequest)
+	}
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/admin/invitations"},
+		{http.MethodPost, "/api/admin/invitations"},
+		{http.MethodDelete, "/api/admin/invitations/" + strconv.FormatInt(invitation.ID, 10)},
+	} {
+		response := performRequest(t, handler, request.method, request.path, nil, invitedCookies[0])
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("vip %s %s status = %d, want %d", request.method, request.path, response.Code, http.StatusForbidden)
+		}
+	}
+
+	sharedServer := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]string{
+		"name": "Shared Server",
+	}, sessionCookie)
+	if sharedServer.Code != http.StatusCreated {
+		t.Fatalf("admin create shared server status = %d, body = %q", sharedServer.Code, sharedServer.Body.String())
+	}
+	vipServers := performRequest(t, handler, http.MethodGet, "/api/servers", nil, invitedCookies[0])
+	if vipServers.Code != http.StatusOK || !strings.Contains(vipServers.Body.String(), "Shared Server") {
+		t.Fatalf("vip shared servers = (%d, %q), want shared server", vipServers.Code, vipServers.Body.String())
 	}
 
 	logoutResponse := performRequest(t, handler, http.MethodPost, "/api/auth/logout", nil, invitedCookies[0])

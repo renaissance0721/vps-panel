@@ -1,6 +1,6 @@
 # VPS Panel
 
-多 VPS 管理面板。目前处于 **Phase 5A**：提供邀请制多管理员认证、Server 管理、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 4.5** 和 **Phase 5A**：提供 admin / vip 两级邀请制账号认证、Server 管理、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
 当前 Agent 只支持注册、保存长期凭据和建立一次认证 WebSocket 连接，尚未实现 Heartbeat、自动重连、监控、代理内核或端口转发。
 
@@ -67,7 +67,7 @@ vps-panel-linux-arm64.tar.gz
 systemctl status vps-panel
 ```
 
-首次打开会进入初始化页面，用于创建第一个管理员。创建成功后初始化入口永久关闭，后续管理员只能由已登录管理员生成的 24 小时一次性邀请链接注册。
+首次打开会进入初始化页面，用于创建唯一的 admin。创建成功后初始化入口永久关闭；后续账号只能通过 admin 生成的 24 小时一次性邀请链接注册，且统一为 vip。
 
 ## Agent 安装
 

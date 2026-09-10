@@ -3,10 +3,15 @@
 set -Eeuo pipefail
 
 readonly INSTALL_DIR="/opt/vps-panel"
-readonly DEPLOY_DIR="${INSTALL_DIR}/deploy"
-readonly COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.yml"
-readonly ENVIRONMENT_FILE="${DEPLOY_DIR}/.env"
+readonly DATA_DIR="/var/lib/vps-panel"
+readonly CONFIG_DIR="/etc/vps-panel"
+readonly CONFIG_FILE="${CONFIG_DIR}/environment"
+readonly SERVICE_FILE="/etc/systemd/system/vps-panel.service"
+readonly SERVICE_NAME="vps-panel.service"
 readonly COMMAND_PATH="/usr/local/bin/vp"
+readonly CADDY_FILE="/etc/caddy/Caddyfile"
+readonly CADDY_SNIPPET="/etc/caddy/vps-panel.caddy"
+readonly CADDY_IMPORT="import /etc/caddy/vps-panel.caddy"
 readonly REMOTE_INSTALLER="https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh"
 
 fail() {
@@ -14,23 +19,33 @@ fail() {
   exit 1
 }
 
-run_compose() {
-  docker compose --project-directory "$DEPLOY_DIR" -f "$COMPOSE_FILE" "$@"
-}
-
 require_installation() {
   [[ ${EUID} -eq 0 ]] || fail "run vp as root"
-  command -v docker >/dev/null 2>&1 || fail "Docker is not installed"
-  docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin is missing"
-  [[ -f "$COMPOSE_FILE" ]] || fail "VPS Panel is not installed in ${INSTALL_DIR}"
+  command -v systemctl >/dev/null 2>&1 || fail "systemctl is not installed"
+  [[ -x "${INSTALL_DIR}/vps-panel" && -f "$SERVICE_FILE" ]] || \
+    fail "VPS Panel is not installed in ${INSTALL_DIR}"
 }
 
 current_domain() {
   local domain=""
-  if [[ -f "$ENVIRONMENT_FILE" ]]; then
-    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$ENVIRONMENT_FILE" | tail -n 1)"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$CONFIG_FILE" | tail -n 1)"
   fi
   printf '%s\n' "${domain:-:80}"
+}
+
+wait_for_panel() {
+  local response=""
+  for _ in {1..30}; do
+    if response="$(curl -fsS --connect-timeout 2 --max-time 4 \
+      http://127.0.0.1:8080/api/health 2>/dev/null)"; then
+      if [[ "$response" == *'"status":"ok"'* ]]; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 run_latest_installer() {
@@ -40,48 +55,80 @@ run_latest_installer() {
 
   command -v curl >/dev/null 2>&1 || fail "curl is not installed"
   temporary_installer="$(mktemp)"
-  curl --proto '=https' --tlsv1.2 -fsSL "$REMOTE_INSTALLER" -o "$temporary_installer"
+  curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
+    "$REMOTE_INSTALLER" \
+    -o "$temporary_installer"
   bash "$temporary_installer" --domain "$domain" || exit_code=$?
   rm -f -- "$temporary_installer"
   return "$exit_code"
 }
 
 update_panel() {
-  local domain
+  local domain=""
   domain="$(current_domain)"
-  printf '[vps-panel] Updating Panel with domain %s...\n' "$domain"
+  printf '[vps-panel] Updating Panel from the latest GitHub Release...\n'
   run_latest_installer "$domain"
 }
 
 change_domain() {
   local domain=""
-  printf 'New domain (example: panel.example.com): '
+  printf 'New domain, or :80 for IP:8080 access: '
   IFS= read -r domain
-  [[ -n "$domain" ]] || {
+  if [[ -z "$domain" ]]; then
     printf '[vps-panel] Domain was not changed.\n'
     return
-  }
+  fi
   run_latest_installer "$domain"
 }
 
 show_status() {
-  printf '[vps-panel] Domain: %s\n' "$(current_domain)"
-  run_compose ps
+  local domain=""
+  domain="$(current_domain)"
+  if [[ "$domain" == ":80" ]]; then
+    printf '[vps-panel] Access: http://YOUR_VPS_IP:8080\n'
+  else
+    printf '[vps-panel] Access: https://%s\n' "$domain"
+  fi
+  systemctl status "$SERVICE_NAME" --no-pager
+  if [[ "$domain" != ":80" && -f "$CADDY_SNIPPET" ]]; then
+    systemctl status caddy.service --no-pager
+  fi
 }
 
 show_logs() {
-  run_compose logs --tail=100 -f panel caddy || true
+  journalctl -u "$SERVICE_NAME" -n 100 -f
 }
 
 restart_panel() {
-  run_compose restart
-  run_compose ps
+  command -v curl >/dev/null 2>&1 || fail "curl is not installed"
+  systemctl restart "$SERVICE_NAME"
+  if ! wait_for_panel; then
+    systemctl status "$SERVICE_NAME" --no-pager >&2 || true
+    fail "Panel did not become healthy within 60 seconds"
+  fi
+  printf '[vps-panel] Panel restarted successfully.\n'
+}
+
+remove_caddy_configuration() {
+  local filtered_caddyfile=""
+
+  rm -f -- "$CADDY_SNIPPET"
+  if [[ -f "$CADDY_FILE" ]] && grep -Fqx "$CADDY_IMPORT" "$CADDY_FILE"; then
+    filtered_caddyfile="$(mktemp)"
+    grep -Fvx "$CADDY_IMPORT" "$CADDY_FILE" >"$filtered_caddyfile" || true
+    install -m 0644 "$filtered_caddyfile" "$CADDY_FILE"
+    rm -f -- "$filtered_caddyfile"
+  fi
+  if command -v caddy >/dev/null 2>&1 && systemctl is-active --quiet caddy.service; then
+    if caddy validate --config "$CADDY_FILE" >/dev/null 2>&1; then
+      systemctl reload caddy.service
+    fi
+  fi
 }
 
 uninstall_panel() {
   local confirmation=""
   local delete_data=""
-  local -a down_arguments=(down --remove-orphans --rmi local)
 
   printf 'Type uninstall to remove VPS Panel: '
   IFS= read -r confirmation
@@ -90,24 +137,27 @@ uninstall_panel() {
     return
   fi
 
-  printf 'Also permanently delete SQLite data and Caddy certificates? [y/N]: '
+  printf 'Also permanently delete SQLite data? [y/N]: '
   IFS= read -r delete_data
-  if [[ "$delete_data" == "y" || "$delete_data" == "Y" ]]; then
-    down_arguments+=(--volumes)
-  fi
 
-  run_compose "${down_arguments[@]}"
+  systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+  remove_caddy_configuration
 
   [[ "$INSTALL_DIR" == "/opt/vps-panel" ]] || fail "unexpected installation path"
+  [[ "$DATA_DIR" == "/var/lib/vps-panel" ]] || fail "unexpected data path"
+  [[ "$CONFIG_DIR" == "/etc/vps-panel" ]] || fail "unexpected config path"
   [[ "$COMMAND_PATH" == "/usr/local/bin/vp" ]] || fail "unexpected command path"
-  rm -f -- "$COMMAND_PATH"
-  rm -rf -- "$INSTALL_DIR"
+  rm -f -- "$SERVICE_FILE"
+  systemctl daemon-reload
+  rm -rf -- "$INSTALL_DIR" "$CONFIG_DIR"
 
   if [[ "$delete_data" == "y" || "$delete_data" == "Y" ]]; then
-    printf '[vps-panel] Panel, database, and certificates removed.\n'
+    rm -rf -- "$DATA_DIR"
+    printf '[vps-panel] Panel and SQLite data removed.\n'
   else
-    printf '[vps-panel] Panel removed. Docker volumes were preserved for reinstall.\n'
+    printf '[vps-panel] Panel removed. SQLite data was preserved in %s.\n' "$DATA_DIR"
   fi
+  rm -f -- "$COMMAND_PATH"
   exit 0
 }
 
@@ -116,11 +166,11 @@ usage() {
 Usage: vp [command]
 
 Commands:
-  update      Download and install the latest version
-  domain      Change the Panel domain and refresh HTTPS
-  status      Show container and domain status
-  logs        Follow Panel and Caddy logs
-  restart     Restart Panel and Caddy
+  update      Download and install the latest GitHub Release
+  domain      Change the Panel domain or switch to IP:8080 access
+  status      Show systemd service status
+  logs        Follow Panel logs from journald
+  restart     Restart Panel and run a health check
   uninstall   Remove VPS Panel interactively
   help        Show this help message
 

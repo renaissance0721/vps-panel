@@ -1,15 +1,19 @@
 # VPS Panel
 
-多 VPS 管理面板。目前处于 **v0.2 / Phase 2**：在可部署的 Panel 基础上，提供邀请制多管理员认证、SQLite、健康检查和 Caddy 域名反代。
+多 VPS 管理面板。目前处于 **v0.2 / Phase 2**：提供邀请制多管理员认证、SQLite、健康检查，以及原生 Linux + systemd 部署。
 
 当前尚未实现服务器管理、Agent、监控、WebSocket、代理内核或端口转发。
 
 ## VPS 部署
 
+默认部署不依赖 Docker，也不需要在 VPS 安装 Go、Node.js 或 npm。GitHub Release 提供已经编译完成的 `linux-amd64` 和 `linux-arm64` 压缩包。
+
 要求：
 
-- Debian 或 Ubuntu VPS
-- 使用域名时，域名的 A/AAAA 记录已经指向 VPS，并放行 TCP 80、TCP/UDP 443
+- 使用 systemd 的 Debian 或 Ubuntu VPS
+- CPU 架构为 amd64 或 arm64
+- 使用 IP 直连时放行 TCP 8080
+- 使用域名时，A/AAAA 记录已指向 VPS，并放行 TCP 80、TCP/UDP 443
 
 ### 一键安装
 
@@ -19,7 +23,11 @@
 curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash
 ```
 
-交互式终端会询问 Panel 域名；直接按回车才会使用 VPS IP 和 HTTP。
+交互式终端会询问域名。直接按回车时，Panel 会监听 `0.0.0.0:8080`，安装完成后访问：
+
+```text
+http://VPS_IP:8080
+```
 
 使用域名并自动配置 HTTPS：
 
@@ -28,82 +36,90 @@ curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scri
   --domain panel.example.com
 ```
 
-脚本会在缺少 Docker 时通过 Docker 官方软件源安装 Docker Engine、Buildx 和 Compose 插件，然后把项目安装到 `/opt/vps-panel`、启动容器，并等待 Panel 与公网 HTTPS 健康检查通过。Caddy 会自动申请、保存和续期域名证书。再次执行相同命令即可更新，交互时直接按回车会保留已有域名配置。
+域名模式下，Panel 只监听 `127.0.0.1:8080`。安装脚本会在需要时通过 Caddy 官方 Debian/Ubuntu 软件源安装原生 Caddy，配置反向代理，并自动申请、保存和续期 HTTPS 证书。
 
-安装完成后，输入以下命令打开管理菜单：
+安装脚本会自动检测 CPU 架构，从最新 GitHub Release 下载对应文件：
 
-```bash
-vp
+```text
+vps-panel-linux-amd64.tar.gz
+vps-panel-linux-arm64.tar.gz
 ```
 
-菜单支持更新、修改域名、查看状态、查看日志、重启和卸载。也可以直接执行：
+不会安装 Docker，也不会在 VPS 上运行 Go 或 npm 构建。
+
+> 安装前必须至少发布一个包含上述文件的 GitHub Release。推送 `v*` tag 会触发 Release 工作流并生成文件。
+
+### 安装位置
+
+```text
+/opt/vps-panel/
+├── vps-panel
+└── web/
+
+/var/lib/vps-panel/        SQLite 持久化数据
+/etc/vps-panel/environment 运行配置
+/etc/systemd/system/vps-panel.service
+```
+
+服务安装后通过 systemd 自动启动：
 
 ```bash
-vp update
-vp domain
+systemctl status vps-panel
+```
+
+首次打开会进入初始化页面，用于创建第一个管理员。创建成功后初始化入口永久关闭，后续管理员只能由已登录管理员生成的 24 小时一次性邀请链接注册。
+
+### `vp` 管理命令
+
+安装完成后输入 `vp` 可打开交互菜单，也可以直接运行：
+
+```bash
 vp status
 vp logs
 vp restart
+vp update
 vp uninstall
 ```
 
-卸载需要输入 `uninstall` 二次确认，并且默认保留 SQLite 数据和 Caddy 证书；只有再次明确确认时才会删除持久卷。
+域名变更仍可使用：
 
-> 一键安装地址只有在本次代码推送到 GitHub `main` 分支后才会生效。
+```bash
+vp domain
+```
 
-### 手动安装
+`vp update` 会下载最新 Release，在不删除 `/var/lib/vps-panel` 数据的情况下替换程序文件并重启服务。健康检查失败时，安装脚本会尽可能恢复上一版程序。
 
-手动安装前需要自行准备 Docker Engine 和 Docker Compose 插件。
+从旧 Docker Compose 版本首次执行 `vp update` 时，脚本会停止旧容器，并将 `vps-panel_panel-data` 卷中的 SQLite 数据迁移到 `/var/lib/vps-panel`。旧 Docker 数据卷不会自动删除。
+
+`vp uninstall` 默认保留 SQLite 数据；只有在二次确认时才会删除 `/var/lib/vps-panel`。卸载不会自动移除 Caddy 软件包，以免影响 VPS 上的其他站点。
+
+## GitHub Release 构建
+
+[Release 工作流](.github/workflows/release.yml)支持手动验证构建。推送以 `v` 开头的 tag 时，会构建 Vue、交叉编译两个 Linux 架构，并创建或更新对应 GitHub Release：
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+每个压缩包的根目录只包含：
+
+```text
+vps-panel
+web/
+```
+
+## 可选 Docker 部署
+
+`Dockerfile` 和 `deploy/docker-compose.yml` 暂时保留用于开发或兼容，但不再是默认安装路径。
 
 ```bash
 git clone https://github.com/renaissance0721/vps-panel.git
 cd vps-panel/deploy
-cp .env.example .env
+PANEL_DOMAIN=panel.example.com docker compose up -d --build
 ```
 
-直接使用 VPS IP 访问时，保留 `.env` 中的默认值：
-
-```dotenv
-PANEL_DOMAIN=:80
-```
-
-使用域名和自动 HTTPS 时，改为自己的域名：
-
-```dotenv
-PANEL_DOMAIN=panel.example.com
-```
-
-启动：
-
-```bash
-docker compose up -d --build
-docker compose ps
-```
-
-随后访问 `http://VPS_IP`，或使用域名时访问 `https://panel.example.com`。Caddy 会自动申请并续期 HTTPS 证书。
-
-首次打开会进入初始化页面，用于创建第一个管理员。创建成功后初始化入口永久关闭，后续管理员只能由已登录管理员生成的 24 小时一次性邀请链接注册。用户名支持 3–64 位字母、数字、点、下划线或连字符，密码长度为 10–72 字节。
-
-健康检查：
-
-```bash
-docker compose exec panel /app/vps-panel healthcheck
-```
-
-查看日志：
-
-```bash
-docker compose logs -f
-```
-
-更新：
-
-```bash
-git pull
-docker compose up -d --build
-```
-
-`docker compose down` 不会删除 Panel 数据或 Caddy 证书。不要执行 `docker compose down -v`，除非确定要删除这些持久数据。
+直接使用 HTTP 时可将 `PANEL_DOMAIN` 设置为 `:80`。
 
 ## 本地开发
 

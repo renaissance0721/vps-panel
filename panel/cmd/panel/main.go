@@ -32,7 +32,7 @@ func main() {
 }
 
 func run() error {
-	listenAddr := envOrDefault("PANEL_LISTEN_ADDR", ":8080")
+	listenAddr := envOrDefault("PANEL_LISTEN_ADDR", "127.0.0.1:8080")
 	dataDir := envOrDefault("PANEL_DATA_DIR", "data")
 	webDir := envOrDefault("PANEL_WEB_DIR", "../web/dist")
 

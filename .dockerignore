@@ -2,6 +2,7 @@
 .gitignore
 .env
 **/.env
+.vps-panel-install
 **/node_modules
 **/dist
 **/data

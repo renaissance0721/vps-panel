@@ -12,6 +12,27 @@
 - Docker Engine 与 Docker Compose 插件
 - 使用域名时，域名的 A/AAAA 记录已经指向 VPS，并放行 TCP 80、TCP/UDP 443
 
+### 一键安装
+
+使用 VPS IP，通过 HTTP 访问：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash
+```
+
+使用域名并自动配置 HTTPS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- \
+  --domain panel.example.com
+```
+
+脚本会把项目安装到 `/opt/vps-panel`，启动 Docker Compose，并等待 Panel 健康检查通过。再次执行相同命令即可更新；不传 `--domain` 时会保留已有域名配置。
+
+> 一键安装地址只有在本次代码推送到 GitHub `main` 分支后才会生效。
+
+### 手动安装
+
 ```bash
 git clone https://github.com/renaissance0721/vps-panel.git
 cd vps-panel/deploy

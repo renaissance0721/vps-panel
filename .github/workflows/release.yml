@@ -103,6 +103,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$GITHUB_REF_NAME" release-assets/* \
-              --repo "$GITHUB_REPOSITORY" \
               --verify-tag --notes-from-tag --title "$GITHUB_REF_NAME"
           fi

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 const defaultConfigPath = "/etc/vps-panel-agent/config.json"
@@ -60,7 +62,9 @@ func run(arguments []string) error {
 	if len(arguments) != 0 {
 		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
 	}
-	return runIdle(defaultConfigPath)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return connectAgent(ctx, defaultConfigPath)
 }
 
 func runRegistration(arguments []string) error {
@@ -218,7 +222,7 @@ func saveConfig(path string, value config) error {
 	return nil
 }
 
-func runIdle(configPath string) error {
+func connectAgent(ctx context.Context, configPath string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read Agent config: %w", err)
@@ -231,9 +235,31 @@ func runIdle(configPath string) error {
 		return errors.New("Agent config is incomplete")
 	}
 
-	log.Printf("vps-panel-agent %s running for server %d", agentVersion, value.ServerID)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	<-ctx.Done()
-	return nil
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+value.AgentToken)
+	connection, response, err := websocket.Dial(
+		ctx,
+		value.PanelURL+"/api/agent/ws",
+		&websocket.DialOptions{HTTPHeader: header},
+	)
+	if err != nil {
+		if response != nil {
+			return fmt.Errorf("connect to Panel WebSocket: %s", response.Status)
+		}
+		return fmt.Errorf("connect to Panel WebSocket: %w", err)
+	}
+	defer connection.CloseNow()
+
+	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
+	disconnected := connection.CloseRead(context.Background())
+	select {
+	case <-ctx.Done():
+		_ = connection.Close(websocket.StatusNormalClosure, "Agent stopped")
+		return nil
+	case <-disconnected.Done():
+		if ctx.Err() != nil {
+			return nil
+		}
+		return errors.New("Panel WebSocket connection closed")
+	}
 }

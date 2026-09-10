@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
@@ -43,6 +45,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
+	mux.HandleFunc("GET /api/agent/ws", s.agentWebSocket)
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAuthentication(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAuthentication(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAuthentication(s.revokeInvitation))
@@ -212,6 +215,52 @@ func (s *server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		ServerID:   registered.ServerID,
 		AgentToken: registered.Token,
 	})
+}
+
+func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
+	authorization := strings.Fields(r.Header.Get("Authorization"))
+	if len(authorization) != 2 || !strings.EqualFold(authorization[0], "Bearer") {
+		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
+		return
+	}
+
+	agent, err := s.servers.AuthenticateAgent(r.Context(), authorization[1])
+	if errors.Is(err, serverstore.ErrInvalidAgentToken) {
+		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
+		return
+	}
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+
+	connection, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer connection.CloseNow()
+
+	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err = s.servers.SetAgentOnline(statusContext, agent.ServerID)
+	cancel()
+	if err != nil {
+		log.Printf("set agent %d server %d online: %v", agent.ID, agent.ServerID, err)
+		_ = connection.Close(websocket.StatusInternalError, "server status update failed")
+		return
+	}
+	log.Printf("agent %d connected to server %d", agent.ID, agent.ServerID)
+
+	disconnected := connection.CloseRead(context.Background())
+	<-disconnected.Done()
+
+	statusContext, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	err = s.servers.SetAgentOffline(statusContext, agent.ServerID)
+	cancel()
+	if err != nil {
+		log.Printf("set agent %d server %d offline: %v", agent.ID, agent.ServerID, err)
+		return
+	}
+	log.Printf("agent %d disconnected from server %d", agent.ID, agent.ServerID)
 }
 
 func (s *server) listInvitations(w http.ResponseWriter, r *http.Request, _ auth.User) {

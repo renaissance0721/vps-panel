@@ -3,6 +3,7 @@ module github.com/renaissance0721/vps-panel/panel
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.58.0
 )

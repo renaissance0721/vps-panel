@@ -13,6 +13,7 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 const defaultHealthcheckURL = "http://127.0.0.1:8080/api/health"
@@ -41,6 +42,12 @@ func run() error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	resetContext, cancelReset := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := serverstore.NewService(db).ResetOnline(resetContext); err != nil {
+		cancelReset()
+		return fmt.Errorf("prepare server states: %w", err)
+	}
+	cancelReset()
 
 	server := &http.Server{
 		Addr:              listenAddr,

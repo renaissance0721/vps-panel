@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前处于 **v0.4 / Phase 4**：提供邀请制多管理员认证、Server 管理、一次性 Agent 注册、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前处于 **Phase 5A**：提供邀请制多管理员认证、Server 管理、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
-当前 Agent 只支持注册、保存长期凭据和 systemd 运行，尚未实现 WebSocket、Heartbeat、监控、代理内核或端口转发。
+当前 Agent 只支持注册、保存长期凭据和建立一次认证 WebSocket 连接，尚未实现 Heartbeat、自动重连、监控、代理内核或端口转发。
 
 ## VPS 部署
 
@@ -81,7 +81,7 @@ Agent 安装位置：
 /etc/systemd/system/vps-panel-agent.service
 ```
 
-注册成功后 Server 状态为 `offline`；`online` 状态将在后续实现实际连接检测后使用。
+注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。
 
 ### `vp` 管理命令
 

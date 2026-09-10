@@ -107,8 +107,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${BINARY_PATH}
-Restart=on-failure
-RestartSec=3s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

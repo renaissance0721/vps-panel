@@ -10,6 +10,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
@@ -81,5 +84,74 @@ func TestRegisterAgentRejectsInvalidServerURL(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("registerAgent() accepted a non-HTTP server URL")
+	}
+}
+
+func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
+	connected := make(chan string, 1)
+	handlerResult := make(chan error, 1)
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			handlerResult <- err
+			return
+		}
+		defer connection.CloseNow()
+		connected <- r.Header.Get("Authorization")
+		<-connection.CloseRead(context.Background()).Done()
+		handlerResult <- nil
+	}))
+	defer panel.Close()
+
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	if err := prepareConfigTarget(configPath); err != nil {
+		t.Fatalf("prepare config: %v", err)
+	}
+	if err := saveConfig(configPath, config{
+		PanelURL:   panel.URL,
+		ServerID:   11,
+		AgentID:    7,
+		AgentToken: "long-term-token",
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- connectAgent(ctx, configPath) }()
+
+	select {
+	case authorization := <-connected:
+		if authorization != "Bearer long-term-token" {
+			t.Fatalf("Authorization = %q, want Bearer token", authorization)
+		}
+	case err := <-handlerResult:
+		t.Fatalf("WebSocket handler error = %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not establish WebSocket connection")
+	}
+
+	select {
+	case err := <-result:
+		t.Fatalf("connectAgent() returned before cancellation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("connectAgent() after cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("connectAgent() did not stop after cancellation")
+	}
+	select {
+	case err := <-handlerResult:
+		if err != nil {
+			t.Fatalf("WebSocket handler error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket handler did not observe disconnect")
 	}
 }

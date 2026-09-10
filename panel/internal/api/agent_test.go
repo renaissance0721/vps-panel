@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -102,6 +105,79 @@ func TestInstallAgentScript(t *testing.T) {
 	} {
 		if !strings.Contains(response.Body.String(), required) {
 			t.Fatalf("installer does not contain %q", required)
+		}
+	}
+	if strings.Contains(response.Body.String(), "Restart=on-failure") {
+		t.Fatal("installer enables automatic Agent reconnection")
+	}
+}
+
+func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "WebSocket Agent")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.0")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+
+	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	defer panel.Close()
+
+	invalidHeader := http.Header{}
+	invalidHeader.Set("Authorization", "Bearer invalid-token")
+	invalidConnection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{
+		HTTPHeader: invalidHeader,
+	})
+	if err == nil {
+		invalidConnection.CloseNow()
+		t.Fatal("invalid Agent Token opened a WebSocket")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid Agent Token response = %+v, want 401", response)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+registered.Token)
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{
+		HTTPHeader: header,
+	})
+	if err != nil {
+		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+
+	if err := connection.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+		t.Fatalf("close Agent WebSocket: %v", err)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+}
+
+func waitForServerStatus(t *testing.T, service *serverstore.Service, serverID int64, expected string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		value, err := service.Get(ctx, serverID)
+		if err != nil {
+			t.Fatalf("get server status: %v", err)
+		}
+		if value.Status == expected {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("server status = %q, want %q", value.Status, expected)
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }

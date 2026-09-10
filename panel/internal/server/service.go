@@ -25,6 +25,7 @@ var (
 	ErrNotFound            = errors.New("server not found")
 	ErrInvalidEnrollment   = errors.New("invalid, used, or expired enrollment token")
 	ErrInvalidAgentVersion = errors.New("agent version must be 1-64 characters")
+	ErrInvalidAgentToken   = errors.New("invalid agent token")
 )
 
 type Server struct {
@@ -45,6 +46,11 @@ type RegisteredAgent struct {
 	ID       int64
 	ServerID int64
 	Token    string
+}
+
+type Agent struct {
+	ID       int64
+	ServerID int64
 }
 
 type Service struct {
@@ -252,6 +258,61 @@ func (s *Service) RegisterAgent(
 		ServerID: serverID,
 		Token:    agentToken,
 	}, nil
+}
+
+func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Agent, error) {
+	if agentToken == "" {
+		return Agent{}, ErrInvalidAgentToken
+	}
+
+	var agent Agent
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, server_id FROM agents WHERE token_hash = ?`, token.Hash(agentToken),
+	).Scan(&agent.ID, &agent.ServerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, ErrInvalidAgentToken
+	}
+	if err != nil {
+		return Agent{}, fmt.Errorf("authenticate agent: %w", err)
+	}
+	return agent, nil
+}
+
+func (s *Service) SetAgentOnline(ctx context.Context, serverID int64) error {
+	return s.setStatus(ctx, serverID, StatusOnline)
+}
+
+func (s *Service) SetAgentOffline(ctx context.Context, serverID int64) error {
+	return s.setStatus(ctx, serverID, StatusOffline)
+}
+
+func (s *Service) ResetOnline(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET status = ?, updated_at = ? WHERE status = ?`,
+		StatusOffline, s.now().UTC().Truncate(time.Second).Unix(), StatusOnline,
+	)
+	if err != nil {
+		return fmt.Errorf("reset online servers: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) setStatus(ctx context.Context, serverID int64, status string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET status = ?, updated_at = ? WHERE id = ?`,
+		status, s.now().UTC().Truncate(time.Second).Unix(), serverID,
+	)
+	if err != nil {
+		return fmt.Errorf("update server status: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated server count: %w", err)
+	}
+	if count != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 type rowScanner interface {

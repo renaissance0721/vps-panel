@@ -64,6 +64,23 @@ func migrate(db *sql.DB) error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS agent_enrollments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_enrollments_server_id
+			ON agent_enrollments(server_id)`,
 	}
 
 	for _, statement := range statements {

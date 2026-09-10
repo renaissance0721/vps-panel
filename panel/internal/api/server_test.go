@@ -201,6 +201,110 @@ func TestRevokeInvitation(t *testing.T) {
 	}
 }
 
+func TestServerAPILifecycle(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	handler := NewHandler(db, t.TempDir())
+
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/servers"},
+		{http.MethodPost, "/api/servers"},
+		{http.MethodGet, "/api/servers/1"},
+		{http.MethodDelete, "/api/servers/1"},
+	} {
+		response := performRequest(t, handler, request.method, request.path, map[string]string{"name": "test"}, nil)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s %s status = %d, want %d", request.method, request.path, response.Code, http.StatusUnauthorized)
+		}
+	}
+
+	initializeResponse := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin",
+		"password": "strong-password",
+	}, nil)
+	if initializeResponse.Code != http.StatusCreated {
+		t.Fatalf("initialize status = %d, body = %q", initializeResponse.Code, initializeResponse.Body.String())
+	}
+	sessionCookie := initializeResponse.Result().Cookies()[0]
+
+	invalidResponse := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]string{"name": "  "}, sessionCookie)
+	if invalidResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid server status = %d, want %d", invalidResponse.Code, http.StatusBadRequest)
+	}
+
+	createRequest := jsonRequest(t, http.MethodPost, "/api/servers", map[string]string{"name": "JP Native 01"})
+	createRequest.Host = "panel.example.com"
+	createRequest.Header.Set("X-Forwarded-Proto", "https")
+	createRequest.AddCookie(sessionCookie)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create server status = %d, body = %q", createResponse.Code, createResponse.Body.String())
+	}
+	var created createdServerResponse
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created server: %v", err)
+	}
+	if created.Server.Name != "JP Native 01" || created.Server.Status != "pending" {
+		t.Fatalf("created server = %+v, want named pending server", created.Server)
+	}
+	if created.EnrollmentToken == "" {
+		t.Fatal("created enrollment token is empty")
+	}
+	if !strings.Contains(created.AgentInstallationCommand, "https://panel.example.com") ||
+		!strings.Contains(created.AgentInstallationCommand, created.EnrollmentToken) {
+		t.Fatalf("agent command = %q, want panel URL and enrollment token", created.AgentInstallationCommand)
+	}
+
+	var storedHash string
+	if err := db.QueryRow(
+		`SELECT token_hash FROM agent_enrollments WHERE server_id = ?`, created.Server.ID,
+	).Scan(&storedHash); err != nil {
+		t.Fatalf("read enrollment hash: %v", err)
+	}
+	if storedHash == created.EnrollmentToken {
+		t.Fatal("database contains the plaintext enrollment token")
+	}
+
+	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, sessionCookie)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), "JP Native 01") {
+		t.Fatalf("server list = (%d, %q), want created server", listResponse.Code, listResponse.Body.String())
+	}
+	if strings.Contains(listResponse.Body.String(), created.EnrollmentToken) {
+		t.Fatal("server list returned the plaintext enrollment token")
+	}
+
+	serverPath := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
+	getResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
+	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), created.EnrollmentToken) {
+		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
+	}
+
+	deleteResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, sessionCookie)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("delete server status = %d, body = %q", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	getDeletedResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
+	if getDeletedResponse.Code != http.StatusNotFound {
+		t.Fatalf("get deleted server status = %d, want %d", getDeletedResponse.Code, http.StatusNotFound)
+	}
+	var enrollmentCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM agent_enrollments WHERE server_id = ?`, created.Server.ID,
+	).Scan(&enrollmentCount); err != nil {
+		t.Fatalf("count enrollments: %v", err)
+	}
+	if enrollmentCount != 0 {
+		t.Fatalf("enrollment count after server delete = %d, want 0", enrollmentCount)
+	}
+}
+
 func performRequest(
 	t *testing.T,
 	handler http.Handler,

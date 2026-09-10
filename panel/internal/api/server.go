@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 const sessionCookieName = "vps_panel_session"
@@ -22,11 +24,17 @@ const sessionCookieName = "vps_panel_session"
 type server struct {
 	db          *sql.DB
 	authService *auth.Service
+	servers     *serverstore.Service
 	webRoot     string
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
-	s := &server{db: db, authService: auth.NewService(db), webRoot: webRoot}
+	s := &server{
+		db:          db,
+		authService: auth.NewService(db),
+		servers:     serverstore.NewService(db),
+		webRoot:     webRoot,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)
@@ -37,6 +45,10 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAuthentication(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAuthentication(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAuthentication(s.revokeInvitation))
+	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))
+	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
+	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
+	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -68,6 +80,25 @@ type invitationResponse struct {
 	ExpiresAt         time.Time `json:"expires_at"`
 	CreatedAt         time.Time `json:"created_at"`
 	Token             string    `json:"token,omitempty"`
+}
+
+type createServerRequest struct {
+	Name string `json:"name"`
+}
+
+type serverResponse struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type createdServerResponse struct {
+	Server                   serverResponse `json:"server"`
+	EnrollmentToken          string         `json:"enrollment_token"`
+	EnrollmentTokenExpiresAt time.Time      `json:"enrollment_token_expires_at"`
+	AgentInstallationCommand string         `json:"agent_installation_command"`
 }
 
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +220,68 @@ func (s *server) revokeInvitation(w http.ResponseWriter, r *http.Request, _ auth
 	writeNoContent(w)
 }
 
+func (s *server) listServers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	values, err := s.servers.List(r.Context())
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	response := make([]serverResponse, 0, len(values))
+	for _, value := range values {
+		response = append(response, toServerResponse(value))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
+}
+
+func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	var request createServerRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	created, err := s.servers.Create(r.Context(), request.Name)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	baseURL := requestBaseURL(r)
+	writeJSON(w, http.StatusCreated, createdServerResponse{
+		Server:                   toServerResponse(created.Server),
+		EnrollmentToken:          created.EnrollmentToken,
+		EnrollmentTokenExpiresAt: created.EnrollmentExpiresAt,
+		AgentInstallationCommand: fmt.Sprintf(
+			"curl -fsSL %s/install-agent.sh | bash -s -- \\\n  --server %s \\\n  --token %s",
+			baseURL,
+			baseURL,
+			created.EnrollmentToken,
+		),
+	})
+}
+
+func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	value, err := s.servers.Get(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(value)})
+}
+
+func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	if err := s.servers.Delete(r.Context(), id); err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
 func (s *server) startSession(w http.ResponseWriter, r *http.Request, user auth.User, status int) {
 	token, expiresAt, err := s.authService.CreateSession(r.Context(), user.ID)
 	if err != nil {
@@ -241,6 +334,14 @@ func secureRequest(r *http.Request) bool {
 	return strings.EqualFold(forwardedProtocol, "https")
 }
 
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if secureRequest(r) {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -264,6 +365,16 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 		CreatedByUsername: invitation.CreatedByUsername,
 		ExpiresAt:         invitation.ExpiresAt,
 		CreatedAt:         invitation.CreatedAt,
+	}
+}
+
+func toServerResponse(value serverstore.Server) serverResponse {
+	return serverResponse{
+		ID:        value.ID,
+		Name:      value.Name,
+		Status:    value.Status,
+		CreatedAt: value.CreatedAt,
+		UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -346,6 +457,26 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	default:
 		writeInternalError(w)
 	}
+}
+
+func writeServerError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, serverstore.ErrInvalidName):
+		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
+	case errors.Is(err, serverstore.ErrNotFound):
+		writeError(w, http.StatusNotFound, "服务器不存在")
+	default:
+		writeInternalError(w)
+	}
+}
+
+func readPositiveID(w http.ResponseWriter, value, errorMessage string) (int64, bool) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errorMessage)
+		return 0, false
+	}
+	return id, true
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

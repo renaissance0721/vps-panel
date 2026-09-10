@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	securetoken "github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
 const testPassword = "strong-password"
@@ -70,7 +71,7 @@ func TestLoginSessionAndLogout(t *testing.T) {
 	if err := db.QueryRow(`SELECT token_hash FROM sessions`).Scan(&storedHash); err != nil {
 		t.Fatalf("read session hash: %v", err)
 	}
-	if storedHash == token || storedHash != hashToken(token) {
+	if storedHash == token || storedHash != securetoken.Hash(token) {
 		t.Fatalf("session token was not stored as its hash")
 	}
 	authenticated, err := service.Authenticate(ctx, token)
@@ -107,7 +108,7 @@ func TestInvitationIsHashedAndSingleUse(t *testing.T) {
 	).Scan(&storedHash); err != nil {
 		t.Fatalf("read invitation hash: %v", err)
 	}
-	if storedHash == created.Token || storedHash != hashToken(created.Token) {
+	if storedHash == created.Token || storedHash != securetoken.Hash(created.Token) {
 		t.Fatalf("invitation token was not stored as its hash")
 	}
 

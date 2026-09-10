@@ -22,13 +22,19 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		t.Fatalf("database file was not created: %v", err)
 	}
 
-	for _, table := range []string{"users", "admin_invitations", "sessions"} {
+	for _, table := range []string{
+		"users",
+		"admin_invitations",
+		"sessions",
+		"servers",
+		"agent_enrollments",
+	} {
 		var name string
 		if err := db.QueryRow(
 			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
 			table,
 		).Scan(&name); err != nil {
-			t.Fatalf("authentication table %q was not created: %v", table, err)
+			t.Fatalf("table %q was not created: %v", table, err)
 		}
 	}
 }

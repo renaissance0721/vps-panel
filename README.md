@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前处于 **v0.2 / Phase 2**：提供邀请制多管理员认证、SQLite、健康检查，以及原生 Linux + systemd 部署。
+多 VPS 管理面板。目前处于 **v0.3 / Phase 3**：提供邀请制多管理员认证、Server 管理、一次性 Agent Enrollment Token、SQLite、健康检查，以及原生 Linux + systemd 部署。
 
-当前尚未实现服务器管理、Agent、监控、WebSocket、代理内核或端口转发。
+当前尚未实现 Agent 本体、Agent 注册、监控、WebSocket、代理内核或端口转发。创建 Server 后显示的 Agent 安装命令仅用于展示下一阶段的命令格式，暂不可执行。
 
 ## VPS 部署
 
@@ -98,8 +98,8 @@ vp domain
 [Release 工作流](.github/workflows/release.yml)支持手动验证构建。推送以 `v` 开头的 tag 时，会构建 Vue、交叉编译两个 Linux 架构，并创建或更新对应 GitHub Release：
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 每个压缩包的根目录只包含：

@@ -2,17 +2,14 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/token"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -135,7 +132,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 }
 
 func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time.Time, error) {
-	token, tokenHash, err := newToken()
+	tokenValue, tokenHash, err := token.New()
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -159,11 +156,11 @@ func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time
 	if err := tx.Commit(); err != nil {
 		return "", time.Time{}, fmt.Errorf("commit session: %w", err)
 	}
-	return token, expiresAt, nil
+	return tokenValue, expiresAt, nil
 }
 
-func (s *Service) Authenticate(ctx context.Context, token string) (User, error) {
-	if token == "" {
+func (s *Service) Authenticate(ctx context.Context, tokenValue string) (User, error) {
+	if tokenValue == "" {
 		return User{}, ErrUnauthenticated
 	}
 	var user User
@@ -173,7 +170,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (User, error) 
 		FROM sessions
 		JOIN users ON users.id = sessions.user_id
 		WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
-		hashToken(token), s.now().UTC().Unix(),
+		token.Hash(tokenValue), s.now().UTC().Unix(),
 	).Scan(&user.ID, &user.Username, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUnauthenticated
@@ -186,18 +183,18 @@ func (s *Service) Authenticate(ctx context.Context, token string) (User, error) 
 	return user, nil
 }
 
-func (s *Service) Logout(ctx context.Context, token string) error {
-	if token == "" {
+func (s *Service) Logout(ctx context.Context, tokenValue string) error {
+	if tokenValue == "" {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, hashToken(token)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, token.Hash(tokenValue)); err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	return nil
 }
 
 func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (CreatedInvitation, error) {
-	token, tokenHash, err := newToken()
+	tokenValue, tokenHash, err := token.New()
 	if err != nil {
 		return CreatedInvitation{}, err
 	}
@@ -216,7 +213,7 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (Create
 	}
 	return CreatedInvitation{
 		Invitation: Invitation{ID: id, CreatedBy: createdBy, ExpiresAt: expiresAt, CreatedAt: now},
-		Token:      token,
+		Token:      tokenValue,
 	}, nil
 }
 
@@ -274,8 +271,8 @@ func (s *Service) RevokeInvitation(ctx context.Context, invitationID int64) erro
 	return nil
 }
 
-func (s *Service) RegisterWithInvitation(ctx context.Context, token, username, password string) (User, error) {
-	if token == "" {
+func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, username, password string) (User, error) {
+	if tokenValue == "" {
 		return User{}, ErrInvalidInvitation
 	}
 	username, passwordHash, err := prepareCredentials(username, password)
@@ -293,7 +290,7 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, token, username, p
 	var invitationID int64
 	err = tx.QueryRowContext(ctx,
 		`SELECT id FROM admin_invitations WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
-		hashToken(token), now.Unix(),
+		token.Hash(tokenValue), now.Unix(),
 	).Scan(&invitationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrInvalidInvitation
@@ -357,18 +354,4 @@ func prepareCredentials(username, password string) (string, string, error) {
 		return "", "", fmt.Errorf("hash password: %w", err)
 	}
 	return username, string(passwordHash), nil
-}
-
-func newToken() (string, string, error) {
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		return "", "", fmt.Errorf("generate secure token: %w", err)
-	}
-	token := base64.RawURLEncoding.EncodeToString(random)
-	return token, hashToken(token), nil
-}
-
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }

@@ -5,6 +5,7 @@ set -Eeuo pipefail
 readonly REPOSITORY_ARCHIVE="https://github.com/renaissance0721/vps-panel/archive/refs/heads/main.tar.gz"
 readonly INSTALL_DIR="/opt/vps-panel"
 readonly INSTALL_MARKER="${INSTALL_DIR}/.vps-panel-install"
+readonly ENVIRONMENT_FILE="${INSTALL_DIR}/deploy/.env"
 
 requested_domain=""
 
@@ -34,6 +35,34 @@ validate_domain() {
   if [[ "$value" != ":80" && ! "$value" =~ $domain_pattern ]]; then
     fail "invalid domain '${value}'; use a hostname such as panel.example.com"
   fi
+}
+
+choose_domain() {
+  local existing_domain=""
+  local entered_domain=""
+
+  if [[ -f "$ENVIRONMENT_FILE" ]]; then
+    existing_domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$ENVIRONMENT_FILE" | tail -n 1)"
+  fi
+
+  if [[ -z "$requested_domain" && -t 1 && -r /dev/tty ]]; then
+    if [[ -n "$existing_domain" ]]; then
+      printf '[vps-panel] Panel domain [%s]: ' "$existing_domain" >/dev/tty
+    else
+      printf '[vps-panel] Panel domain (leave empty for IP/HTTP): ' >/dev/tty
+    fi
+    IFS= read -r entered_domain </dev/tty || true
+  fi
+
+  if [[ -n "$entered_domain" ]]; then
+    requested_domain="$entered_domain"
+  elif [[ -z "$requested_domain" && -n "$existing_domain" ]]; then
+    requested_domain="$existing_domain"
+  elif [[ -z "$requested_domain" ]]; then
+    requested_domain=":80"
+  fi
+
+  validate_domain "$requested_domain"
 }
 
 start_docker() {
@@ -93,6 +122,33 @@ EOF
   start_docker
 }
 
+wait_for_panel() {
+  for _ in {1..30}; do
+    if docker compose exec -T panel /app/vps-panel healthcheck >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+wait_for_https() {
+  local domain="$1"
+  local response=""
+
+  for _ in {1..30}; do
+    if response="$(curl --proto '=https' --tlsv1.2 -fsS \
+      --connect-timeout 2 --max-time 4 \
+      "https://${domain}/api/health" 2>/dev/null)"; then
+      if [[ "$response" == *'"status":"ok"'* ]]; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain)
@@ -121,6 +177,8 @@ fi
 for command_name in curl tar; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: ${command_name}"
 done
+
+choose_domain
 
 if ! command -v docker >/dev/null 2>&1; then
   install_docker
@@ -154,32 +212,29 @@ install -d -m 0755 "$INSTALL_DIR"
 cp -a "${source_dir}/." "$INSTALL_DIR/"
 touch "$INSTALL_MARKER"
 
-environment_file="${INSTALL_DIR}/deploy/.env"
-if [[ -n "$requested_domain" ]]; then
-  printf 'PANEL_DOMAIN=%s\n' "$requested_domain" >"$environment_file"
-elif [[ ! -f "$environment_file" ]]; then
-  printf 'PANEL_DOMAIN=:80\n' >"$environment_file"
-fi
-chmod 0600 "$environment_file"
+printf 'PANEL_DOMAIN=%s\n' "$requested_domain" >"$ENVIRONMENT_FILE"
+chmod 0600 "$ENVIRONMENT_FILE"
 
 cd "${INSTALL_DIR}/deploy"
 log "Building and starting containers..."
 docker compose up -d --build
 
 log "Waiting for Panel health check..."
-for _ in {1..30}; do
-  if docker compose exec -T panel /app/vps-panel healthcheck >/dev/null 2>&1; then
-    configured_domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$environment_file" | tail -n 1)"
-    if [[ "$configured_domain" == ":80" ]]; then
-      log "Installation complete. Open http://YOUR_VPS_IP"
-    else
-      log "Installation complete. Open https://${configured_domain}"
-    fi
-    exit 0
-  fi
-  sleep 2
-done
+if ! wait_for_panel; then
+  docker compose ps >&2
+  docker compose logs --tail=50 panel caddy >&2
+  fail "Panel did not become healthy within 60 seconds"
+fi
 
-docker compose ps >&2
-docker compose logs --tail=50 panel caddy >&2
-fail "Panel did not become healthy within 60 seconds"
+if [[ "$requested_domain" == ":80" ]]; then
+  log "Installation complete. Open http://YOUR_VPS_IP"
+  exit 0
+fi
+
+log "Waiting for HTTPS certificate and domain access..."
+if ! wait_for_https "$requested_domain"; then
+  docker compose logs --tail=80 caddy >&2
+  fail "HTTPS is not ready; verify the domain DNS records and that ports 80/443 are open"
+fi
+
+log "Installation complete. Open https://${requested_domain}"

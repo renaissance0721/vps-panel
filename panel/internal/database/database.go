@@ -81,6 +81,15 @@ func migrate(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_enrollments_server_id
 			ON agent_enrollments(server_id)`,
+		`CREATE TABLE IF NOT EXISTS agents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			version TEXT NOT NULL,
+			registered_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 
 	for _, statement := range statements {

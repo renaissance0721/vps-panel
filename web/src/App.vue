@@ -544,7 +544,7 @@ onMounted(async () => {
             :bordered="true"
           >
             <n-alert type="warning" title="This token is shown only once.">
-              Agent support will be added in the next phase. 下方命令目前仅展示未来安装格式，暂不可执行。
+              请立即保存，并在目标 Debian/Ubuntu VPS 上以 root 执行下方安装命令。
             </n-alert>
             <dl class="server-details enrollment-summary">
               <div><dt>Server Name</dt><dd>{{ createdServer.server.name }}</dd></div>
@@ -628,7 +628,7 @@ onMounted(async () => {
           </n-card>
         </template>
 
-        <p class="phase-note">v0.3 · Phase 3</p>
+        <p class="phase-note">v0.4 · Phase 4</p>
       </section>
     </main>
   </n-config-provider>

@@ -28,6 +28,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"sessions",
 		"servers",
 		"agent_enrollments",
+		"agents",
 	} {
 		var name string
 		if err := db.QueryRow(

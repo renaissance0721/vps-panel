@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -77,6 +78,104 @@ func TestCreateRejectsInvalidName(t *testing.T) {
 		if _, err := service.Create(context.Background(), name); !errors.Is(err, ErrInvalidName) {
 			t.Fatalf("Create(%q) error = %v, want ErrInvalidName", name, err)
 		}
+	}
+}
+
+func TestRegisterAgentConsumesEnrollmentAndStoresHashedToken(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(context.Background(), "JP Native 01")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	registered, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.4.0")
+	if err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
+	if registered.ID <= 0 || registered.ServerID != created.ID || registered.Token == "" {
+		t.Fatalf("RegisterAgent() = %+v, want agent for server %d with token", registered, created.ID)
+	}
+
+	var storedHash, version, status string
+	var usedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT agents.token_hash, agents.version, enrollments.used_at, servers.status
+		 FROM agents
+		 JOIN agent_enrollments AS enrollments ON enrollments.server_id = agents.server_id
+		 JOIN servers ON servers.id = agents.server_id
+		 WHERE agents.id = ?`, registered.ID,
+	).Scan(&storedHash, &version, &usedAt, &status); err != nil {
+		t.Fatalf("read registered agent: %v", err)
+	}
+	if storedHash == registered.Token || storedHash != token.Hash(registered.Token) {
+		t.Fatal("agent token was not stored as its hash")
+	}
+	if version != "v0.4.0" || !usedAt.Valid || status != StatusOffline {
+		t.Fatalf("registered state = (version %q, used %v, status %q)", version, usedAt.Valid, status)
+	}
+
+	if _, err := service.RegisterAgent(
+		context.Background(), created.EnrollmentToken, "v0.4.0",
+	); !errors.Is(err, ErrInvalidEnrollment) {
+		t.Fatalf("second RegisterAgent() error = %v, want ErrInvalidEnrollment", err)
+	}
+}
+
+func TestFailedAgentRegistrationDoesNotConsumeEnrollment(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(context.Background(), "Singapore 01")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if _, err := service.RegisterAgent(
+		context.Background(), "invalid-token", "v0.4.0",
+	); !errors.Is(err, ErrInvalidEnrollment) {
+		t.Fatalf("invalid token error = %v, want ErrInvalidEnrollment", err)
+	}
+	if _, err := service.RegisterAgent(
+		context.Background(), created.EnrollmentToken, " ",
+	); !errors.Is(err, ErrInvalidAgentVersion) {
+		t.Fatalf("invalid version error = %v, want ErrInvalidAgentVersion", err)
+	}
+
+	var usedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
+	).Scan(&usedAt); err != nil {
+		t.Fatalf("read enrollment: %v", err)
+	}
+	if usedAt.Valid {
+		t.Fatal("failed registration consumed enrollment token")
+	}
+	if _, err := service.RegisterAgent(
+		context.Background(), created.EnrollmentToken, "v0.4.0",
+	); err != nil {
+		t.Fatalf("valid RegisterAgent() after failures error = %v", err)
+	}
+}
+
+func TestExpiredEnrollmentCannotRegisterAgent(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(context.Background(), "Expired 01")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	service.now = func() time.Time { return created.EnrollmentExpiresAt.Add(time.Second) }
+
+	if _, err := service.RegisterAgent(
+		context.Background(), created.EnrollmentToken, "v0.4.0",
+	); !errors.Is(err, ErrInvalidEnrollment) {
+		t.Fatalf("expired enrollment error = %v, want ErrInvalidEnrollment", err)
+	}
+	var usedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
+	).Scan(&usedAt); err != nil {
+		t.Fatalf("read enrollment: %v", err)
+	}
+	if usedAt.Valid {
+		t.Fatal("expired enrollment token was consumed")
 	}
 }
 

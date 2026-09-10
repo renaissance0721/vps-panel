@@ -42,6 +42,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
+	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAuthentication(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAuthentication(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAuthentication(s.revokeInvitation))
@@ -49,6 +50,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
+	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -99,6 +101,17 @@ type createdServerResponse struct {
 	EnrollmentToken          string         `json:"enrollment_token"`
 	EnrollmentTokenExpiresAt time.Time      `json:"enrollment_token_expires_at"`
 	AgentInstallationCommand string         `json:"agent_installation_command"`
+}
+
+type agentRegistrationRequest struct {
+	EnrollmentToken string `json:"enrollment_token"`
+	AgentVersion    string `json:"agent_version"`
+}
+
+type agentRegistrationResponse struct {
+	AgentID    int64  `json:"agent_id"`
+	ServerID   int64  `json:"server_id"`
+	AgentToken string `json:"agent_token"`
 }
 
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
@@ -180,6 +193,25 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	clearSessionCookie(w, secureRequest(r))
 	writeNoContent(w)
+}
+
+func (s *server) registerAgent(w http.ResponseWriter, r *http.Request) {
+	var request agentRegistrationRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	registered, err := s.servers.RegisterAgent(
+		r.Context(), request.EnrollmentToken, request.AgentVersion,
+	)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, agentRegistrationResponse{
+		AgentID:    registered.ID,
+		ServerID:   registered.ServerID,
+		AgentToken: registered.Token,
+	})
 }
 
 func (s *server) listInvitations(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -465,6 +497,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, serverstore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在")
+	case errors.Is(err, serverstore.ErrInvalidEnrollment):
+		writeError(w, http.StatusUnauthorized, "Enrollment Token 无效、已使用或已过期")
+	case errors.Is(err, serverstore.ErrInvalidAgentVersion):
+		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
 	default:
 		writeInternalError(w)
 	}

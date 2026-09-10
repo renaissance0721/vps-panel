@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前处于 **v0.3 / Phase 3**：提供邀请制多管理员认证、Server 管理、一次性 Agent Enrollment Token、SQLite、健康检查，以及原生 Linux + systemd 部署。
+多 VPS 管理面板。目前处于 **v0.4 / Phase 4**：提供邀请制多管理员认证、Server 管理、一次性 Agent 注册、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
-当前尚未实现 Agent 本体、Agent 注册、监控、WebSocket、代理内核或端口转发。创建 Server 后显示的 Agent 安装命令仅用于展示下一阶段的命令格式，暂不可执行。
+当前 Agent 只支持注册、保存长期凭据和 systemd 运行，尚未实现 WebSocket、Heartbeat、监控、代理内核或端口转发。
 
 ## VPS 部署
 
@@ -69,6 +69,20 @@ systemctl status vps-panel
 
 首次打开会进入初始化页面，用于创建第一个管理员。创建成功后初始化入口永久关闭，后续管理员只能由已登录管理员生成的 24 小时一次性邀请链接注册。
 
+## Agent 安装
+
+在 Panel 的 `Servers` 页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 Debian/Ubuntu VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载对应 Agent 二进制、完成一次性注册并启用 `vps-panel-agent.service`。
+
+Agent 安装位置：
+
+```text
+/usr/local/bin/vps-panel-agent
+/etc/vps-panel-agent/config.json
+/etc/systemd/system/vps-panel-agent.service
+```
+
+注册成功后 Server 状态为 `offline`；`online` 状态将在后续实现实际连接检测后使用。
+
 ### `vp` 管理命令
 
 安装完成后输入 `vp` 可打开交互菜单，也可以直接运行：
@@ -98,8 +112,8 @@ vp domain
 [Release 工作流](.github/workflows/release.yml)支持手动验证构建。推送以 `v` 开头的 tag 时，会构建 Vue、交叉编译两个 Linux 架构，并创建或更新对应 GitHub Release：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 每个压缩包的根目录只包含：
@@ -107,6 +121,13 @@ git push origin v0.3.0
 ```text
 vps-panel
 web/
+```
+
+Release 同时直接提供：
+
+```text
+vps-panel-agent-linux-amd64
+vps-panel-agent-linux-arm64
 ```
 
 ## 可选 Docker 部署

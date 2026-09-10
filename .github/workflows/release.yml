@@ -55,11 +55,23 @@ jobs:
           cp -a web/dist/. package/web/
           tar -C package -czf "release-assets/$ARCHIVE" vps-panel web
 
+      - name: Build Agent
+        env:
+          GOARCH: ${{ matrix.arch }}
+          AGENT_BINARY: vps-panel-agent-linux-${{ matrix.arch }}
+        run: |
+          cd panel
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build \
+            -trimpath -ldflags="-s -w -X main.agentVersion=$GITHUB_REF_NAME" \
+            -o "../release-assets/$AGENT_BINARY" ./cmd/agent
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: vps-panel-linux-${{ matrix.arch }}
-          path: release-assets/vps-panel-linux-${{ matrix.arch }}.tar.gz
+          path: |
+            release-assets/vps-panel-linux-${{ matrix.arch }}.tar.gz
+            release-assets/vps-panel-agent-linux-${{ matrix.arch }}
           if-no-files-found: error
 
   release:
@@ -82,10 +94,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-assets/*.tar.gz \
+            gh release upload "$GITHUB_REF_NAME" release-assets/* \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" release-assets/*.tar.gz \
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
           fi

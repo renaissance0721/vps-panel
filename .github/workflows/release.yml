@@ -99,5 +99,5 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" release-assets/* \
               --repo "$GITHUB_REPOSITORY" \
-              --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+              --verify-tag --notes-from-tag --title "$GITHUB_REF_NAME"
           fi

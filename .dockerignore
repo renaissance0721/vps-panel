@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+**/.env
+**/node_modules
+**/dist
+**/data
+*.md
+LICENSE

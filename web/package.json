@@ -1,0 +1,21 @@
+{
+  "name": "vps-panel-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "naive-ui": "2.45.3",
+    "vue": "3.5.42"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vue-tsc": "3.3.11"
+  }
+}

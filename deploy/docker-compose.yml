@@ -1,0 +1,36 @@
+name: vps-panel
+
+services:
+  panel:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PANEL_LISTEN_ADDR: ":8080"
+      PANEL_DATA_DIR: /app/data
+      PANEL_WEB_DIR: /app/web
+    volumes:
+      - panel-data:/app/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      panel:
+        condition: service_healthy
+    environment:
+      PANEL_DOMAIN: "${PANEL_DOMAIN:-:80}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  panel-data:
+  caddy-data:
+  caddy-config:

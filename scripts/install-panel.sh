@@ -36,6 +36,63 @@ validate_domain() {
   fi
 }
 
+start_docker() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now docker
+  elif command -v service >/dev/null 2>&1; then
+    service docker start
+  else
+    fail "cannot start Docker: no supported service manager was found"
+  fi
+}
+
+install_docker() {
+  [[ -r /etc/os-release ]] || fail "cannot detect the operating system"
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+
+  local distribution="${ID:-}"
+  local codename="${VERSION_CODENAME:-}"
+  if [[ "$distribution" == "ubuntu" ]]; then
+    codename="${UBUNTU_CODENAME:-$codename}"
+  fi
+
+  case "$distribution" in
+    debian | ubuntu) ;;
+    *) fail "automatic Docker installation supports Debian and Ubuntu only" ;;
+  esac
+
+  [[ -n "$codename" ]] || fail "cannot determine the ${distribution} release codename"
+  command -v apt-get >/dev/null 2>&1 || fail "apt-get is required to install Docker"
+  command -v dpkg >/dev/null 2>&1 || fail "dpkg is required to install Docker"
+
+  local architecture
+  architecture="$(dpkg --print-architecture)"
+
+  log "Docker was not found; installing Docker Engine and Compose..."
+  apt-get update
+  apt-get install -y ca-certificates curl
+  install -d -m 0755 /etc/apt/keyrings
+  curl --proto '=https' --tlsv1.2 -fsSL \
+    "https://download.docker.com/linux/${distribution}/gpg" \
+    -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+
+  cat >/etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/${distribution}
+Suites: ${codename}
+Components: stable
+Architectures: ${architecture}
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  start_docker
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain)
@@ -61,11 +118,19 @@ if [[ ${EUID} -ne 0 ]]; then
   fail "run this installer as root, for example: curl ... | sudo bash"
 fi
 
-for command_name in curl tar docker; do
+for command_name in curl tar; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: ${command_name}"
 done
 
-docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin is required"
+if ! command -v docker >/dev/null 2>&1; then
+  install_docker
+fi
+
+docker compose version >/dev/null 2>&1 || fail "Docker is installed, but the Compose plugin is missing"
+if ! docker info >/dev/null 2>&1; then
+  log "Starting Docker daemon..."
+  start_docker
+fi
 docker info >/dev/null 2>&1 || fail "Docker daemon is not running"
 
 if [[ -d "$INSTALL_DIR" && ! -f "$INSTALL_MARKER" ]]; then

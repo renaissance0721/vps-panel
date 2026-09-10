@@ -9,7 +9,6 @@
 要求：
 
 - Debian 或 Ubuntu VPS
-- Docker Engine 与 Docker Compose 插件
 - 使用域名时，域名的 A/AAAA 记录已经指向 VPS，并放行 TCP 80、TCP/UDP 443
 
 ### 一键安装
@@ -27,11 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scri
   --domain panel.example.com
 ```
 
-脚本会把项目安装到 `/opt/vps-panel`，启动 Docker Compose，并等待 Panel 健康检查通过。再次执行相同命令即可更新；不传 `--domain` 时会保留已有域名配置。
+脚本会在缺少 Docker 时通过 Docker 官方软件源安装 Docker Engine、Buildx 和 Compose 插件，然后把项目安装到 `/opt/vps-panel`、启动容器，并等待 Panel 健康检查通过。再次执行相同命令即可更新；不传 `--domain` 时会保留已有域名配置。
 
 > 一键安装地址只有在本次代码推送到 GitHub `main` 分支后才会生效。
 
 ### 手动安装
+
+手动安装前需要自行准备 Docker Engine 和 Docker Compose 插件。
 
 ```bash
 git clone https://github.com/renaissance0721/vps-panel.git

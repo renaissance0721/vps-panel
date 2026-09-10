@@ -264,6 +264,12 @@ function statusType(status: ServerRecord['status']): 'warning' | 'success' | 'de
   return 'default'
 }
 
+function statusLabel(status: ServerRecord['status']): string {
+  if (status === 'pending') return '待注册'
+  if (status === 'online') return '在线'
+  return '离线'
+}
+
 async function submit(action: () => Promise<void>) {
   submitting.value = true
   error.value = ''
@@ -293,7 +299,7 @@ onMounted(async () => {
   try {
     await loadState()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法连接 Panel API'
+    error.value = reason instanceof Error ? reason.message : '无法连接管理面板 API'
   } finally {
     loading.value = false
   }
@@ -306,12 +312,12 @@ onMounted(async () => {
       <n-card v-if="loading" class="auth-card" :bordered="true">
         <div class="loading-row">
           <n-spin size="small" />
-          <span>正在连接 Panel…</span>
+          <span>正在连接管理面板…</span>
         </div>
       </n-card>
 
       <n-card v-else-if="!state" class="auth-card" :bordered="true">
-        <n-alert title="Panel 暂不可用" type="error">{{ error }}</n-alert>
+        <n-alert title="管理面板暂不可用" type="error">{{ error }}</n-alert>
       </n-card>
 
       <n-card
@@ -319,7 +325,7 @@ onMounted(async () => {
         class="auth-card"
         :bordered="true"
       >
-        <p class="eyebrow">ADMIN INVITATION</p>
+        <p class="eyebrow">管理员邀请</p>
         <h1>创建管理员账户</h1>
         <p class="description">此邀请仅可使用一次，并将在创建后 24 小时过期。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
@@ -358,8 +364,8 @@ onMounted(async () => {
       </n-card>
 
       <n-card v-else-if="state.requires_initialization" class="auth-card" :bordered="true">
-        <p class="eyebrow">FIRST-TIME SETUP</p>
-        <h1>初始化 VPS Panel</h1>
+        <p class="eyebrow">首次初始化</p>
+        <h1>初始化 VPS 管理面板</h1>
         <p class="description">创建首个管理员。完成后，此入口将永久关闭。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="initialize">
@@ -368,7 +374,7 @@ onMounted(async () => {
             <n-input
               v-model:value="username"
               :input-props="{ autocomplete: 'username' }"
-              placeholder="例如 admin"
+              placeholder="例如：管理员"
             />
           </label>
           <label>
@@ -397,8 +403,8 @@ onMounted(async () => {
       </n-card>
 
       <n-card v-else-if="!state.authenticated" class="auth-card" :bordered="true">
-        <p class="eyebrow">VPS MANAGEMENT</p>
-        <h1>登录 VPS Panel</h1>
+        <p class="eyebrow">VPS 管理</p>
+        <h1>登录 VPS 管理面板</h1>
         <p class="description">仅管理员可以访问管理页面。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="login">
@@ -424,8 +430,8 @@ onMounted(async () => {
       <section v-else class="admin-page">
         <header class="admin-header">
           <div class="brand-block">
-            <p class="eyebrow">VPS MANAGEMENT</p>
-            <h1>VPS Panel</h1>
+            <p class="eyebrow">VPS 管理</p>
+            <h1>VPS 管理面板</h1>
             <nav class="admin-nav" aria-label="管理导航">
               <n-button
                 size="small"
@@ -441,7 +447,7 @@ onMounted(async () => {
                 :secondary="currentPage === 'servers'"
                 @click="currentPage = 'servers'"
               >
-                Servers
+                服务器
               </n-button>
             </nav>
           </div>
@@ -461,12 +467,12 @@ onMounted(async () => {
               </template>
               <div class="health-grid">
                 <div>
-                  <span>Backend</span>
-                  <strong>{{ health?.status === 'ok' ? 'Healthy' : 'Unavailable' }}</strong>
+                  <span>后端服务</span>
+                  <strong>{{ health?.status === 'ok' ? '正常' : '不可用' }}</strong>
                 </div>
                 <div>
                   <span>SQLite</span>
-                  <strong>{{ health?.database === 'ok' ? 'Connected' : 'Unavailable' }}</strong>
+                  <strong>{{ health?.database === 'ok' ? '已连接' : '不可用' }}</strong>
                 </div>
               </div>
             </n-card>
@@ -514,12 +520,12 @@ onMounted(async () => {
         <template v-else>
           <div class="server-grid">
             <n-card title="新增服务器" :bordered="true">
-              <p class="card-copy">创建后将生成一个 24 小时有效的 Enrollment Token。</p>
+              <p class="card-copy">创建后将生成一个 24 小时有效的注册令牌。</p>
               <form class="server-form" @submit.prevent="createServerRecord">
                 <n-input
                   v-model:value="serverName"
                   maxlength="100"
-                  placeholder="例如 JP Native 01"
+                  placeholder="例如：日本服务器 01"
                 />
                 <n-button type="primary" attr-type="submit" :loading="submitting">
                   新增服务器
@@ -529,10 +535,10 @@ onMounted(async () => {
 
             <n-card v-if="selectedServer" title="服务器详情" :bordered="true">
               <dl class="server-details">
-                <div><dt>Name</dt><dd>{{ selectedServer.name }}</dd></div>
-                <div><dt>Status</dt><dd>{{ selectedServer.status }}</dd></div>
-                <div><dt>Created At</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
-                <div><dt>Updated At</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
+                <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
+                <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+                <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
+                <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
               </dl>
             </n-card>
           </div>
@@ -540,32 +546,32 @@ onMounted(async () => {
           <n-card
             v-if="createdServer"
             class="enrollment-card"
-            title="保存 Enrollment Token"
+            title="保存注册令牌"
             :bordered="true"
           >
-            <n-alert type="warning" title="This token is shown only once.">
-              请立即保存，并在目标 Debian/Ubuntu VPS 上以 root 执行下方安装命令。
+            <n-alert type="warning" title="此注册令牌仅显示一次，请立即保存">
+              请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
             </n-alert>
             <dl class="server-details enrollment-summary">
-              <div><dt>Server Name</dt><dd>{{ createdServer.server.name }}</dd></div>
-              <div><dt>Status</dt><dd>Pending</dd></div>
+              <div><dt>服务器名称</dt><dd>{{ createdServer.server.name }}</dd></div>
+              <div><dt>状态</dt><dd>{{ statusLabel(createdServer.server.status) }}</dd></div>
               <div>
-                <dt>Expires At</dt>
+                <dt>过期时间</dt>
                 <dd>{{ formatTime(createdServer.enrollment_token_expires_at) }}</dd>
               </div>
             </dl>
             <div class="secret-field">
-              <strong>Enrollment Token</strong>
+              <strong>注册令牌</strong>
               <n-input :value="createdServer.enrollment_token" readonly />
               <n-button
                 secondary
                 @click="copyEnrollment(createdServer.enrollment_token, 'token')"
               >
-                {{ copiedEnrollment === 'token' ? '已复制' : '复制 Token' }}
+                {{ copiedEnrollment === 'token' ? '已复制' : '复制令牌' }}
               </n-button>
             </div>
             <div class="secret-field">
-              <strong>Agent Installation Command</strong>
+              <strong>Agent 安装命令</strong>
               <n-input
                 :value="createdServer.agent_installation_command"
                 type="textarea"
@@ -581,15 +587,15 @@ onMounted(async () => {
             </div>
           </n-card>
 
-          <n-card title="Servers" :bordered="true">
+          <n-card title="服务器" :bordered="true">
             <n-empty v-if="servers.length === 0" description="当前没有服务器" />
             <div v-else class="server-table-wrap">
               <table class="server-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Created At</th>
+                    <th>名称</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -598,7 +604,7 @@ onMounted(async () => {
                     <td>{{ value.name }}</td>
                     <td>
                       <n-tag :type="statusType(value.status)" size="small">
-                        {{ value.status }}
+                        {{ statusLabel(value.status) }}
                       </n-tag>
                     </td>
                     <td>{{ formatTime(value.created_at) }}</td>
@@ -628,7 +634,7 @@ onMounted(async () => {
           </n-card>
         </template>
 
-        <p class="phase-note">v0.4 · Phase 4</p>
+        <p class="phase-note">v0.4 · 阶段 4</p>
       </section>
     </main>
   </n-config-provider>

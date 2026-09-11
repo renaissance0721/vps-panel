@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -35,6 +36,7 @@ var (
 	ErrArchived            = errors.New("server is archived")
 	ErrInitialConfigExists = errors.New("initial enrollment cannot replace an existing Agent config")
 	ErrInvalidSystemInfo   = errors.New("invalid system information")
+	ErrInvalidMetrics      = errors.New("invalid server metrics")
 )
 
 type Server struct {
@@ -45,6 +47,7 @@ type Server struct {
 	ExpiresAt  *time.Time
 	LastSeenAt *time.Time
 	SystemInfo *SystemInfo
+	Metrics    *Metrics
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -69,6 +72,25 @@ type SystemInfoReport struct {
 	Arch      string
 	IPv4      []string
 	IPv6      []string
+}
+
+type Metrics struct {
+	CPUPercent       float64
+	MemoryUsedBytes  int64
+	MemoryTotalBytes int64
+	DiskUsedBytes    int64
+	DiskTotalBytes   int64
+	UptimeSeconds    int64
+	UpdatedAt        time.Time
+}
+
+type MetricsReport struct {
+	CPUPercent       float64
+	MemoryUsedBytes  int64
+	MemoryTotalBytes int64
+	DiskUsedBytes    int64
+	DiskTotalBytes   int64
+	UptimeSeconds    int64
 }
 
 type CreatedServer struct {
@@ -164,9 +186,12 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
+		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE servers.id = ?`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -236,9 +261,12 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
+		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE `+archiveCondition+` ORDER BY servers.created_at DESC, servers.id DESC`,
 	)
 	if err != nil {
@@ -267,9 +295,12 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
+		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -612,6 +643,58 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 	return nil
 }
 
+func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, report MetricsReport) error {
+	if math.IsNaN(report.CPUPercent) || math.IsInf(report.CPUPercent, 0) ||
+		report.CPUPercent < 0 || report.CPUPercent > 100 ||
+		report.MemoryUsedBytes < 0 || report.MemoryTotalBytes < 0 ||
+		report.MemoryUsedBytes > report.MemoryTotalBytes ||
+		report.DiskUsedBytes < 0 || report.DiskTotalBytes < 0 ||
+		report.DiskUsedBytes > report.DiskTotalBytes ||
+		report.UptimeSeconds < 0 {
+		return ErrInvalidMetrics
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin metrics report: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentAgentID int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM agents WHERE id = ? AND server_id = ?`, agentID, serverID,
+	).Scan(&currentAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidAgentToken
+	}
+	if err != nil {
+		return fmt.Errorf("read reporting Agent for metrics: %w", err)
+	}
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO server_metrics
+		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(server_id) DO UPDATE SET
+		 cpu_percent = excluded.cpu_percent,
+		 memory_used_bytes = excluded.memory_used_bytes,
+		 memory_total_bytes = excluded.memory_total_bytes,
+		 disk_used_bytes = excluded.disk_used_bytes,
+		 disk_total_bytes = excluded.disk_total_bytes,
+		 uptime_seconds = excluded.uptime_seconds,
+		 updated_at = excluded.updated_at`,
+		serverID, report.CPUPercent, report.MemoryUsedBytes, report.MemoryTotalBytes,
+		report.DiskUsedBytes, report.DiskTotalBytes, report.UptimeSeconds, now,
+	); err != nil {
+		return fmt.Errorf("save server metrics: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit metrics report: %w", err)
+	}
+	return nil
+}
+
 func normalizeIPAddresses(values []string, ipv4 bool) ([]string, error) {
 	if len(values) > maxIPAddresses {
 		return nil, ErrInvalidSystemInfo
@@ -719,10 +802,13 @@ func scanServer(row rowScanner) (Server, error) {
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
+	var cpuPercent sql.NullFloat64
+	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt, &lastSeenAt,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
+		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return Server{}, err
@@ -756,6 +842,17 @@ func scanServer(row rowScanner) (Server, error) {
 			return Server{}, fmt.Errorf("decode server IPv6 addresses: %w", err)
 		}
 		value.SystemInfo = &info
+	}
+	if metricsUpdatedAt.Valid {
+		value.Metrics = &Metrics{
+			CPUPercent:       cpuPercent.Float64,
+			MemoryUsedBytes:  memoryUsed.Int64,
+			MemoryTotalBytes: memoryTotal.Int64,
+			DiskUsedBytes:    diskUsed.Int64,
+			DiskTotalBytes:   diskTotal.Int64,
+			UptimeSeconds:    uptime.Int64,
+			UpdatedAt:        time.Unix(metricsUpdatedAt.Int64, 0).UTC(),
+		}
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

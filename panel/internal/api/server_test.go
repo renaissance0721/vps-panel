@@ -297,6 +297,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.SystemInfo != nil {
 		t.Fatalf("new server system_info = %+v, want null", created.Server.SystemInfo)
 	}
+	if created.Server.Metrics != nil {
+		t.Fatalf("new server metrics = %+v, want null", created.Server.Metrics)
+	}
 	if created.Server.ExpiresAt != nil {
 		t.Fatalf("new server expires_at = %v, want null", created.Server.ExpiresAt)
 	}
@@ -329,6 +332,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 	if !strings.Contains(listResponse.Body.String(), `"system_info":null`) {
 		t.Fatalf("server list = %q, want nullable system_info", listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"metrics":null`) {
+		t.Fatalf("server list = %q, want nullable metrics", listResponse.Body.String())
 	}
 	if !strings.Contains(listResponse.Body.String(), `"expires_at":null`) {
 		t.Fatalf("server list = %q, want nullable expires_at", listResponse.Body.String())

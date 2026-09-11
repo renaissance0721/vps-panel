@@ -225,6 +225,18 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	if err != nil || serverWithInfo.SystemInfo == nil || serverWithInfo.SystemInfo.AgentVersion != "v0.5.0" {
 		t.Fatalf("stored system information = (%+v, %v)", serverWithInfo.SystemInfo, err)
 	}
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"metrics",
+		"cpu_percent":32.4,
+		"memory_used_bytes":134217728,
+		"memory_total_bytes":536870912,
+		"disk_used_bytes":5368709120,
+		"disk_total_bytes":10737418240,
+		"uptime_seconds":86400
+	}`)); err != nil {
+		t.Fatalf("write Agent metrics: %v", err)
+	}
+	waitForMetrics(t, service, created.ID, 32.4)
 	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, adminCookie)
 	if listResponse.Code != http.StatusOK {
 		t.Fatalf("list server status = %d, body = %q", listResponse.Code, listResponse.Body.String())
@@ -237,7 +249,14 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	}
 	if len(listed.Servers) != 1 || listed.Servers[0].SystemInfo == nil ||
 		strings.Join(listed.Servers[0].SystemInfo.IPv4, ",") != "203.0.113.10" ||
-		strings.Join(listed.Servers[0].SystemInfo.IPv6, ",") != "2001:db8::10" {
+		strings.Join(listed.Servers[0].SystemInfo.IPv6, ",") != "2001:db8::10" ||
+		listed.Servers[0].Metrics == nil || listed.Servers[0].Metrics.CPUPercent != 32.4 ||
+		listed.Servers[0].Metrics.MemoryUsedBytes != 134217728 ||
+		listed.Servers[0].Metrics.MemoryTotalBytes != 536870912 ||
+		listed.Servers[0].Metrics.DiskUsedBytes != 5368709120 ||
+		listed.Servers[0].Metrics.DiskTotalBytes != 10737418240 ||
+		listed.Servers[0].Metrics.UptimeSeconds != 86400 ||
+		listed.Servers[0].Metrics.UpdatedAt.IsZero() {
 		t.Fatalf("server API system information = %+v", listed.Servers)
 	}
 	if _, err := db.Exec(`UPDATE agents SET last_seen_at = NULL WHERE id = ?`, registered.ID); err != nil {
@@ -402,6 +421,89 @@ func TestOldConnectionCannotOverwriteSystemInfo(t *testing.T) {
 	value, err := service.Get(t.Context(), created.ID)
 	if err != nil || value.SystemInfo == nil || value.SystemInfo.Hostname != "current-host" {
 		t.Fatalf("stored system information = (%+v, %v)", value.SystemInfo, err)
+	}
+}
+
+func TestAgentWebSocketRejectsInvalidMetrics(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Invalid Metrics")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.8.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	defer panel.Close()
+	header := http.Header{"Authorization": []string{"Bearer " + registered.Token}}
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
+	}
+	disconnected := connection.CloseRead(context.Background())
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"metrics","cpu_percent":101,
+		"memory_used_bytes":0,"memory_total_bytes":0,
+		"disk_used_bytes":0,"disk_total_bytes":0,"uptime_seconds":0
+	}`)); err != nil {
+		t.Fatalf("write invalid metrics: %v", err)
+	}
+	select {
+	case <-disconnected.Done():
+	case <-time.After(time.Second):
+		t.Fatal("invalid metrics did not close WebSocket")
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+	value, err := service.Get(t.Context(), created.ID)
+	if err != nil || value.Metrics != nil {
+		t.Fatalf("invalid metrics stored = (%+v, %v)", value.Metrics, err)
+	}
+}
+
+func TestOldConnectionCannotOverwriteMetrics(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Metrics Connection Race")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.8.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	oldConnection := new(websocket.Conn)
+	currentConnection := new(websocket.Conn)
+	handler := &server{
+		servers: service,
+		connections: map[int64]*websocket.Conn{
+			created.ID: currentConnection,
+		},
+	}
+	current, err := handler.reportCurrentMetrics(created.ID, registered.ID, oldConnection, serverstore.MetricsReport{
+		CPUPercent: 99,
+	})
+	if err != nil || current {
+		t.Fatalf("old connection metrics = (current %v, error %v), want ignored", current, err)
+	}
+	current, err = handler.reportCurrentMetrics(created.ID, registered.ID, currentConnection, serverstore.MetricsReport{
+		CPUPercent: 25,
+	})
+	if err != nil || !current {
+		t.Fatalf("current connection metrics = (current %v, error %v)", current, err)
+	}
+	value, err := service.Get(t.Context(), created.ID)
+	if err != nil || value.Metrics == nil || value.Metrics.CPUPercent != 25 {
+		t.Fatalf("stored metrics = (%+v, %v)", value.Metrics, err)
 	}
 }
 
@@ -639,6 +741,26 @@ func waitForSystemInfo(t *testing.T, service *serverstore.Service, serverID int6
 		select {
 		case <-ctx.Done():
 			t.Fatalf("server system information hostname did not become %q", hostname)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func waitForMetrics(t *testing.T, service *serverstore.Service, serverID int64, cpuPercent float64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		value, err := service.Get(ctx, serverID)
+		if err != nil {
+			t.Fatalf("get server metrics: %v", err)
+		}
+		if value.Metrics != nil && value.Metrics.CPUPercent == cpuPercent {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("server CPU metrics did not become %v", cpuPercent)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

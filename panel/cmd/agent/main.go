@@ -27,9 +27,15 @@ var agentVersion = "dev"
 
 var (
 	agentHeartbeatInterval = 10 * time.Second
+	agentMetricsInterval   = 5 * time.Second
 	dialAgentWebSocket     = websocket.Dial
 	writeAgentHeartbeat    = sendHeartbeat
-	waitAgentReconnect     = waitForReconnect
+	writeAgentMetrics      = sendMetrics
+	newAgentMetrics        = newMetricsCollector
+	collectAgentMetrics    = func(collector *metricsCollector) (metricsMessage, bool) {
+		return collector.collect()
+	}
+	waitAgentReconnect = waitForReconnect
 )
 
 const (
@@ -309,9 +315,12 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 	if err != nil {
 		return true, false
 	}
+	metricsCollector := newAgentMetrics()
 	disconnected := connection.CloseRead(context.Background())
-	ticker := time.NewTicker(agentHeartbeatInterval)
-	defer ticker.Stop()
+	heartbeatTicker := time.NewTicker(agentHeartbeatInterval)
+	defer heartbeatTicker.Stop()
+	metricsTicker := time.NewTicker(agentMetricsInterval)
+	defer metricsTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -319,9 +328,20 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 			return true, false
 		case <-disconnected.Done():
 			return true, false
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
 			heartbeatContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 			err := writeAgentHeartbeat(heartbeatContext, connection)
+			cancel()
+			if err != nil {
+				return true, false
+			}
+		case <-metricsTicker.C:
+			metrics, ok := collectAgentMetrics(metricsCollector)
+			if !ok {
+				continue
+			}
+			metricsContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := writeAgentMetrics(metricsContext, connection, metrics)
 			cancel()
 			if err != nil {
 				return true, false

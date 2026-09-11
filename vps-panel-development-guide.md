@@ -2,7 +2,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B 和 Phase 6A 已完成；下一步进入 Phase 6B 动态系统指标。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B 和 Phase 6A–6B 已完成；下一步进入 Phase 7A 机器流量与月流量管理。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -1425,6 +1425,8 @@ Agent 版本
 ---
 
 # 8. Phase 6B：动态系统指标
+
+> 当前状态：已完成。Agent 约每 5 秒通过现有认证 WebSocket 上报 CPU、RAM、根分区磁盘和 Uptime，Panel 只保存并展示每台 Server 的最新值。
 
 ## 目标
 
@@ -3414,12 +3416,12 @@ Phase 16
 
 # 30. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B 和 Phase 6A 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A 和 Phase 6B 已完成。
 
 下一步固定为：
 
 ```text
-Phase 6B：CPU / RAM / Disk / Uptime
+Phase 7A：机器网卡流量、月流量额度与重置周期
 ```
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在核心业务数据模型基本稳定后的 Phase 15，避免当前每新增一张业务表就反复重写备份格式。

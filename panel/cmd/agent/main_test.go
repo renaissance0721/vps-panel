@@ -428,12 +428,19 @@ func TestConnectAgentRetriesUnauthorizedWithoutChangingConfigOrLoggingToken(t *t
 
 func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	originalInterval := agentHeartbeatInterval
+	originalMetricsFactory := newAgentMetrics
 	originalWait := waitAgentReconnect
 	t.Cleanup(func() {
 		agentHeartbeatInterval = originalInterval
+		newAgentMetrics = originalMetricsFactory
 		waitAgentReconnect = originalWait
 	})
 	agentHeartbeatInterval = 10 * time.Millisecond
+	var metricsCollectorCount atomic.Int32
+	newAgentMetrics = func() *metricsCollector {
+		metricsCollectorCount.Add(1)
+		return &metricsCollector{}
+	}
 	reconnectDelay := make(chan time.Duration, 1)
 	waitAgentReconnect = func(ctx context.Context, delay time.Duration) bool {
 		reconnectDelay <- delay
@@ -522,6 +529,9 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	if connectionCount.Load() != 2 {
 		t.Fatalf("system information connection count = %d, want 2", connectionCount.Load())
 	}
+	if metricsCollectorCount.Load() != 2 {
+		t.Fatalf("metrics collector count = %d, want one fresh baseline per connection", metricsCollectorCount.Load())
+	}
 	cancel()
 	select {
 	case err := <-result:
@@ -530,6 +540,238 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Agent did not stop after cancellation")
+	}
+}
+
+func TestConnectAgentSendsMetricsAndHeartbeat(t *testing.T) {
+	originalMetricsInterval := agentMetricsInterval
+	originalHeartbeatInterval := agentHeartbeatInterval
+	originalMetricsFactory := newAgentMetrics
+	originalCollect := collectAgentMetrics
+	t.Cleanup(func() {
+		agentMetricsInterval = originalMetricsInterval
+		agentHeartbeatInterval = originalHeartbeatInterval
+		newAgentMetrics = originalMetricsFactory
+		collectAgentMetrics = originalCollect
+	})
+	agentMetricsInterval = 5 * time.Millisecond
+	agentHeartbeatInterval = 7 * time.Millisecond
+	newAgentMetrics = func() *metricsCollector { return &metricsCollector{} }
+	collectAgentMetrics = func(*metricsCollector) (metricsMessage, bool) {
+		return metricsMessage{
+			Type:             "metrics",
+			CPUPercent:       32.4,
+			MemoryUsedBytes:  128 << 20,
+			MemoryTotalBytes: 512 << 20,
+			DiskUsedBytes:    5 << 30,
+			DiskTotalBytes:   10 << 30,
+			UptimeSeconds:    86400,
+		}, true
+	}
+
+	received := make(chan metricsMessage, 1)
+	handlerErrors := make(chan error, 1)
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			handlerErrors <- err
+			return
+		}
+		defer connection.CloseNow()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, first, err := connection.Read(ctx)
+		if err != nil || !strings.Contains(string(first), `"type":"system_info"`) {
+			handlerErrors <- fmt.Errorf("first message = %q, error %v", first, err)
+			return
+		}
+		var metrics metricsMessage
+		heartbeatReceived := false
+		for metrics.Type == "" || !heartbeatReceived {
+			messageType, message, err := connection.Read(ctx)
+			if err != nil || messageType != websocket.MessageText {
+				handlerErrors <- fmt.Errorf("read Agent message: %v", err)
+				return
+			}
+			var envelope struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(message, &envelope) != nil {
+				handlerErrors <- fmt.Errorf("decode Agent message: %q", message)
+				return
+			}
+			switch envelope.Type {
+			case "metrics":
+				if err := json.Unmarshal(message, &metrics); err != nil {
+					handlerErrors <- err
+					return
+				}
+			case "heartbeat":
+				heartbeatReceived = true
+			}
+		}
+		received <- metrics
+		<-connection.CloseRead(context.Background()).Done()
+	}))
+	defer panel.Close()
+
+	configPath := writeAgentConfig(t, config{
+		PanelURL: panel.URL, ServerID: 20, AgentID: 21, AgentToken: "metrics-secret",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- connectAgent(ctx, configPath) }()
+	select {
+	case metrics := <-received:
+		if metrics.CPUPercent != 32.4 || metrics.MemoryUsedBytes != 128<<20 ||
+			metrics.MemoryTotalBytes != 512<<20 || metrics.DiskUsedBytes != 5<<30 ||
+			metrics.DiskTotalBytes != 10<<30 || metrics.UptimeSeconds != 86400 {
+			t.Fatalf("metrics = %+v", metrics)
+		}
+	case err := <-handlerErrors:
+		t.Fatalf("WebSocket handler error = %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Agent did not send metrics and heartbeat")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("connectAgent() cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not stop after cancellation")
+	}
+}
+
+func TestMetricsCollectionFailureDoesNotStopHeartbeat(t *testing.T) {
+	originalMetricsInterval := agentMetricsInterval
+	originalHeartbeatInterval := agentHeartbeatInterval
+	originalMetricsFactory := newAgentMetrics
+	originalCollect := collectAgentMetrics
+	t.Cleanup(func() {
+		agentMetricsInterval = originalMetricsInterval
+		agentHeartbeatInterval = originalHeartbeatInterval
+		newAgentMetrics = originalMetricsFactory
+		collectAgentMetrics = originalCollect
+	})
+	agentMetricsInterval = time.Millisecond
+	agentHeartbeatInterval = 5 * time.Millisecond
+	newAgentMetrics = func() *metricsCollector { return &metricsCollector{} }
+	collectAgentMetrics = func(*metricsCollector) (metricsMessage, bool) {
+		return metricsMessage{}, false
+	}
+
+	heartbeat := make(chan struct{}, 1)
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if _, _, err := connection.Read(ctx); err != nil {
+			return
+		}
+		for {
+			_, message, err := connection.Read(ctx)
+			if err != nil {
+				return
+			}
+			if string(message) == `{"type":"heartbeat"}` {
+				heartbeat <- struct{}{}
+				<-connection.CloseRead(context.Background()).Done()
+				return
+			}
+		}
+	}))
+	defer panel.Close()
+
+	configPath := writeAgentConfig(t, config{
+		PanelURL: panel.URL, ServerID: 22, AgentID: 23, AgentToken: "best-effort-secret",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- connectAgent(ctx, configPath) }()
+	select {
+	case <-heartbeat:
+	case <-time.After(time.Second):
+		t.Fatal("metrics collection failure stopped heartbeat")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("connectAgent() cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not stop after cancellation")
+	}
+}
+
+func TestMetricsWriteFailureStartsReconnect(t *testing.T) {
+	originalMetricsInterval := agentMetricsInterval
+	originalHeartbeatInterval := agentHeartbeatInterval
+	originalMetricsFactory := newAgentMetrics
+	originalCollect := collectAgentMetrics
+	originalWrite := writeAgentMetrics
+	originalWait := waitAgentReconnect
+	t.Cleanup(func() {
+		agentMetricsInterval = originalMetricsInterval
+		agentHeartbeatInterval = originalHeartbeatInterval
+		newAgentMetrics = originalMetricsFactory
+		collectAgentMetrics = originalCollect
+		writeAgentMetrics = originalWrite
+		waitAgentReconnect = originalWait
+	})
+	agentMetricsInterval = time.Millisecond
+	agentHeartbeatInterval = time.Hour
+	newAgentMetrics = func() *metricsCollector { return &metricsCollector{} }
+	collectAgentMetrics = func(*metricsCollector) (metricsMessage, bool) {
+		return metricsMessage{Type: "metrics"}, true
+	}
+	metricsAttempted := make(chan struct{}, 1)
+	writeAgentMetrics = func(context.Context, *websocket.Conn, metricsMessage) error {
+		metricsAttempted <- struct{}{}
+		return errors.New("write failed")
+	}
+	reconnectDelay := make(chan time.Duration, 1)
+	waitAgentReconnect = func(_ context.Context, delay time.Duration) bool {
+		reconnectDelay <- delay
+		return false
+	}
+
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		if _, _, err := connection.Read(context.Background()); err != nil {
+			return
+		}
+		<-connection.CloseRead(context.Background()).Done()
+	}))
+	defer panel.Close()
+	configPath := writeAgentConfig(t, config{
+		PanelURL: panel.URL, ServerID: 24, AgentID: 25, AgentToken: "metrics-failure-secret",
+	})
+	if err := connectAgent(context.Background(), configPath); err != nil {
+		t.Fatalf("connectAgent() error = %v", err)
+	}
+	select {
+	case <-metricsAttempted:
+	default:
+		t.Fatal("Agent did not attempt a metrics write")
+	}
+	select {
+	case delay := <-reconnectDelay:
+		if delay != initialReconnectDelay {
+			t.Fatalf("metrics failure retry delay = %s, want %s", delay, initialReconnectDelay)
+		}
+	default:
+		t.Fatal("metrics write failure did not schedule reconnect")
 	}
 }
 

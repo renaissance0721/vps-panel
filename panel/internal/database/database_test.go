@@ -31,6 +31,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"agent_enrollments",
 		"agents",
 		"server_system_info",
+		"server_metrics",
 	} {
 		var name string
 		if err := db.QueryRow(
@@ -482,5 +483,17 @@ func TestOpenAddsServerExpirationWithoutLosingExistingData(t *testing.T) {
 		agentHash != "existing-agent" || lastSeenAt != 55 || hostname != "existing-host" {
 		t.Fatalf("preserved data = (%q, archived %v, expires %v, %q, %q, %d, %q)",
 			name, archivedAt, expiresAt.Valid, enrollmentHash, agentHash, lastSeenAt, hostname)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var metricsTableCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'server_metrics'`,
+	).Scan(&metricsTableCount); err != nil {
+		t.Fatalf("inspect server_metrics migration: %v", err)
+	}
+	if metricsTableCount != 1 {
+		t.Fatalf("server_metrics table count = %d, want 1", metricsTableCount)
 	}
 }

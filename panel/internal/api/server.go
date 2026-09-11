@@ -121,6 +121,7 @@ type serverResponse struct {
 	ExpiresAt  *time.Time          `json:"expires_at"`
 	LastSeenAt *time.Time          `json:"last_seen_at"`
 	SystemInfo *systemInfoResponse `json:"system_info"`
+	Metrics    *metricsResponse    `json:"metrics"`
 	CreatedAt  time.Time           `json:"created_at"`
 	UpdatedAt  time.Time           `json:"updated_at"`
 }
@@ -134,6 +135,16 @@ type systemInfoResponse struct {
 	IPv4         []string `json:"ipv4"`
 	IPv6         []string `json:"ipv6"`
 	AgentVersion string   `json:"agent_version"`
+}
+
+type metricsResponse struct {
+	CPUPercent       float64   `json:"cpu_percent"`
+	MemoryUsedBytes  int64     `json:"memory_used_bytes"`
+	MemoryTotalBytes int64     `json:"memory_total_bytes"`
+	DiskUsedBytes    int64     `json:"disk_used_bytes"`
+	DiskTotalBytes   int64     `json:"disk_total_bytes"`
+	UptimeSeconds    int64     `json:"uptime_seconds"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type createdServerResponse struct {
@@ -164,6 +175,16 @@ type agentSystemInfoMessage struct {
 	Arch      string   `json:"arch"`
 	IPv4      []string `json:"ipv4"`
 	IPv6      []string `json:"ipv6"`
+}
+
+type agentMetricsMessage struct {
+	Type             string  `json:"type"`
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryUsedBytes  int64   `json:"memory_used_bytes"`
+	MemoryTotalBytes int64   `json:"memory_total_bytes"`
+	DiskUsedBytes    int64   `json:"disk_used_bytes"`
+	DiskTotalBytes   int64   `json:"disk_total_bytes"`
+	UptimeSeconds    int64   `json:"uptime_seconds"`
 }
 
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +381,32 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 					log.Printf("update system information for agent %d server %d: %v", agent.ID, agent.ServerID, reportErr)
 				}
 				_ = connection.Close(websocket.StatusPolicyViolation, "invalid system information")
+				validMessage = false
+			}
+		case "metrics":
+			var metrics agentMetricsMessage
+			if json.Unmarshal(message, &metrics) != nil {
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid metrics")
+				validMessage = false
+				break
+			}
+			current, reportErr := s.reportCurrentMetrics(agent.ServerID, agent.ID, connection, serverstore.MetricsReport{
+				CPUPercent:       metrics.CPUPercent,
+				MemoryUsedBytes:  metrics.MemoryUsedBytes,
+				MemoryTotalBytes: metrics.MemoryTotalBytes,
+				DiskUsedBytes:    metrics.DiskUsedBytes,
+				DiskTotalBytes:   metrics.DiskTotalBytes,
+				UptimeSeconds:    metrics.UptimeSeconds,
+			})
+			if !current {
+				return
+			}
+			if reportErr != nil {
+				if !errors.Is(reportErr, serverstore.ErrInvalidAgentToken) &&
+					!errors.Is(reportErr, serverstore.ErrInvalidMetrics) {
+					log.Printf("update metrics for agent %d server %d: %v", agent.ID, agent.ServerID, reportErr)
+				}
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid metrics")
 				validMessage = false
 			}
 		default:
@@ -665,6 +712,17 @@ func toServerResponse(value serverstore.Server) serverResponse {
 			AgentVersion: value.SystemInfo.AgentVersion,
 		}
 	}
+	if value.Metrics != nil {
+		response.Metrics = &metricsResponse{
+			CPUPercent:       value.Metrics.CPUPercent,
+			MemoryUsedBytes:  value.Metrics.MemoryUsedBytes,
+			MemoryTotalBytes: value.Metrics.MemoryTotalBytes,
+			DiskUsedBytes:    value.Metrics.DiskUsedBytes,
+			DiskTotalBytes:   value.Metrics.DiskTotalBytes,
+			UptimeSeconds:    value.Metrics.UptimeSeconds,
+			UpdatedAt:        value.Metrics.UpdatedAt,
+		}
+	}
 	return response
 }
 
@@ -755,6 +813,21 @@ func (s *server) reportCurrentSystemInfo(
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return true, s.servers.ReportSystemInfo(ctx, agentID, serverID, report)
+}
+
+func (s *server) reportCurrentMetrics(
+	serverID, agentID int64,
+	connection *websocket.Conn,
+	report serverstore.MetricsReport,
+) (bool, error) {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	if s.connections[serverID] != connection {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return true, s.servers.ReportMetrics(ctx, agentID, serverID, report)
 }
 
 func (s *server) closeAgentConnections(serverID int64) {

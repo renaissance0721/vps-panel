@@ -47,6 +47,7 @@ type ServerRecord = {
   expires_at: string | null
   last_seen_at: string | null
   system_info: ServerSystemInfo | null
+  metrics: ServerMetrics | null
   created_at: string
   updated_at: string
 }
@@ -60,6 +61,16 @@ type ServerSystemInfo = {
   ipv4: string[]
   ipv6: string[]
   agent_version: string
+}
+
+type ServerMetrics = {
+  cpu_percent: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+  disk_used_bytes: number
+  disk_total_bytes: number
+  uptime_seconds: number
+  updated_at: string
 }
 
 type CreatedServer = {
@@ -174,7 +185,7 @@ function startServerPolling() {
   serverPollTimer = window.setInterval(() => {
     if (!state.value?.authenticated || submitting.value) return
     void loadServers().catch(() => undefined)
-  }, 10_000)
+  }, 5_000)
 }
 
 function stopServerPolling() {
@@ -467,6 +478,33 @@ function formatExpiration(value: string) {
     formatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]),
   )
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(1).replace(/\.0$/, '')}%`
+}
+
+function formatBytes(value: number) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let unitIndex = 0
+  let scaled = value
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024
+    unitIndex++
+  }
+  const digits = unitIndex > 0 && scaled < 10 ? 1 : 0
+  return `${scaled.toFixed(digits).replace(/\.0$/, '')} ${units[unitIndex]}`
+}
+
+function formatUptime(value: number) {
+  const days = Math.floor(value / 86_400)
+  const hours = Math.floor((value % 86_400) / 3_600)
+  const minutes = Math.floor((value % 3_600) / 60)
+  const seconds = Math.floor(value % 60)
+  if (days > 0) return `${days} 天${hours > 0 ? ` ${hours} 小时` : ''}`
+  if (hours > 0) return `${hours} 小时${minutes > 0 ? ` ${minutes} 分钟` : ''}`
+  if (minutes > 0) return `${minutes} 分钟`
+  return `${seconds} 秒`
 }
 
 onMounted(async () => {
@@ -905,6 +943,31 @@ onUnmounted(stopServerPolling)
                 </dd>
               </div>
               <div><dt>Agent 版本</dt><dd>{{ selectedServer.system_info.agent_version || '—' }}</dd></div>
+            </dl>
+
+            <h3 class="system-info-title">动态指标</h3>
+            <n-empty
+              v-if="!selectedServer.metrics"
+              size="small"
+              description="暂无动态指标"
+            />
+            <dl v-else class="server-details">
+              <div><dt>CPU</dt><dd>{{ formatPercent(selectedServer.metrics.cpu_percent) }}</dd></div>
+              <div>
+                <dt>内存</dt>
+                <dd>
+                  {{ formatBytes(selectedServer.metrics.memory_used_bytes) }} /
+                  {{ formatBytes(selectedServer.metrics.memory_total_bytes) }}
+                </dd>
+              </div>
+              <div>
+                <dt>根分区磁盘</dt>
+                <dd>
+                  {{ formatBytes(selectedServer.metrics.disk_used_bytes) }} /
+                  {{ formatBytes(selectedServer.metrics.disk_total_bytes) }}
+                </dd>
+              </div>
+              <div><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
             </dl>
 
             <div v-if="state.user?.role === 'admin'" class="server-modal-actions">

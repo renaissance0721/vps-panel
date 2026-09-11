@@ -1,5 +1,36 @@
 # VPS Panel 开发指导与阶段路线图
 
+> 本文是 VPS Panel 的**总开发指导**。
+>
+> 前端布局、列表信息密度、Modal 交互、Sidebar、Server / Proxy / Realm 页面骨架等 UI 细节，统一参考配套文档：
+>
+> ```text
+> vps-panel-frontend-guide.md
+> ```
+>
+> 两份文档职责固定为：
+>
+> ```text
+> 本 Guide
+> → 业务模型、Agent、API、数据库、Phase、协议与安全边界
+>
+> Frontend Guide
+> → 页面布局、列表列信息、容器稳定性、Modal、响应式与前端代码组织
+> ```
+>
+> 如果某个 Phase 涉及前端：
+>
+> 1. 先以本文确定功能与数据语义。
+> 2. 再以 `vps-panel-frontend-guide.md` 确定页面怎么摆、列表显示什么、详情如何打开。
+> 3. 前端不得为了方便而改变本文的业务模型。
+> 4. 本文也不要重复维护 Frontend Guide 已明确的视觉细节。
+>
+> 两份文档冲突时：
+>
+> - **业务 / 协议 / 数据 / Agent / API / 安全语义：以本文为准。**
+> - **前端布局 / 容器 / Modal / 列表视觉：以 Frontend Guide 为准。**
+
+
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
 > 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B 和 Phase 6A–6B 已完成；下一步进入 Phase 7A 机器流量与月流量管理。
@@ -17,21 +48,22 @@ VPS Panel 的目标不是单纯做一个“探针面板”，而是做一个统�
 - 多 VPS 统一管理
 - 每台 VPS 安装一个统一 Agent
 - 服务器状态与系统监控
-- 实时上下行速度与累计流量
+- 机器网卡累计 RX / TX 与月流量统计
 - 可设置服务器到期日期
 - 可设置月流量额度、单向/双向计费方式和每月流量重置时间
 - 服务器信息中显示本周期已用流量 / 总流量
-- Xray / sing-box / Mihomo 等代理内核管理
-- VLESS / Shadowsocks 等代理节点管理
-- Proxy 下的 Client 管理
-- Realm 端口转发管理
-- AccessEndpoint 接入点管理
-- 多跳 Chain 管理
+- 提供统一的 Panel ↔ Agent 节点后端 API，Panel 不直接依赖 Xray / Realm 配置文件格式
+- 第一版由统一 Agent 管理 Xray，并支持 VLESS + TCP + XTLS Vision；安全层允许 TLS / REALITY 二选一，两种模式都支持客户端 `xtls-rprx-vision-udp443`；同时支持 Shadowsocks
+- Proxy 下按真实需求增加 Client 管理
+- 同一个 Agent 管理 Realm 和端口转发规则
 - 节点分享、订阅、二维码
 - `admin / vip` 两级账号体系
 - Server / Proxy / Relay 等业务资源在账号之间全局共享
 - ZIP 一键导出、导入、跨 VPS 恢复
 - 后续配置、更新、备份、日志等维护能力
+
+当前不把 `CoreInstance`、`AccessEndpoint`、`Chain` 作为第一版固定业务模型。
+只有在未来出现明确且无法用现有 Server / Proxy / Relay 表达的真实需求时，再单独增加对应抽象。
 
 但开发顺序必须从基础设施向上逐层推进，不能一次把所有模型和抽象全部写出来。
 
@@ -52,9 +84,8 @@ Panel
   │     └── vps-panel-agent
   │           ├── 系统监控
   │           ├── 网络监控
+  │           ├── 配置同步
   │           ├── Xray
-  │           ├── sing-box
-  │           ├── Mihomo
   │           └── Realm
   │
   └── Server B
@@ -91,35 +122,205 @@ Agent 是这台 VPS 的统一执行层。
 
 - 采集 CPU / RAM / Disk
 - 采集网络流量
-- 安装 Xray
-- 修改 sing-box 配置
+- 同步 Panel 的目标配置（desired state）
+- 安装和管理 Xray
+- 创建和管理 VLESS / Shadowsocks
+- 安装和管理 Realm
 - 创建 Realm 转发
-- 启停服务
-- 查询版本
+- 启停受 Panel 管理的服务
+- 查询版本与同步结果
 
 都由这一个 Agent 完成。
 
+第一版只把 Xray 和 Realm 做实。
+sing-box / Mihomo 等其他后端不提前建立框架；等未来确实需要第二个真实后端时，再基于同一套 Agent API 增加实现。
+
 ---
 
-## 1.3 Agent 不是 SSH 替代器，也不是任意 Shell 网关
+## 1.3 原创实现与第三方代理面板参考边界（硬性要求）
 
-Panel 不应该依赖 SSH 自动登录所有 VPS。
+VPS Panel 的代理功能必须保持**原创实现**。
 
-正常控制链路：
+允许研究或参考 3x-ui、x-ui、Xboard、Marzban、V2Board 生态、其他机场面板 / 节点后端以及 Xray / sing-box 官方项目的：
+
+- 功能清单
+- 用户操作流程
+- 协议能力
+- 配置项含义
+- API 职责划分
+- 可验证的工程经验
+- 某些值得借鉴的高层代码组织思想，例如“renderer / validator / apply / rollback”这种职责拆分
+
+但严禁照抄或近似复刻第三方面板的：
+
+- 源代码或大段代码片段
+- 函数 / 类型 / 文件组织的逐项对应实现
+- API 路径、请求结构和响应结构的机械复制
+- 数据库 schema 的机械复制
+- Xray / Realm 配置模板的整段复制
+- 前端页面布局、组件结构、文案、按钮顺序和交互细节的像素级复刻
+- 注释、错误信息、日志文案
+- 安装脚本、systemd unit、目录结构、文件命名
+- 第三方面板特有的变量名、tag、remark、header、User-Agent 或其他可识别字符串
+- 任何明显能够看出“代码从某个代理面板搬过来”的实现痕迹
+
+如果参考第三方实现，只允许：
+
+```text
+理解需求 / 理解协议 / 理解一种可行的职责划分
+↓
+回到 VPS Panel 自己的数据模型和 Agent API
+↓
+重新独立设计
+↓
+独立编写代码
+```
+
+不能：
+
+```text
+找到 3x-ui / x-ui / 其他面板的实现
+↓
+改变量名
+↓
+改目录
+↓
+直接提交
+```
+
+### 外部可见特征
+
+VPS Panel 生成的代理服务、分享链接、订阅配置和协议流量中，不应主动加入任何面板品牌特征。
+
+尤其不得出现第三方面板特征，例如：
+
+```text
+3x-ui
+x-ui
+marzban
+xboard
+v2board
+```
+
+也不要为了标识“由 VPS Panel 管理”而在协议必要字段中主动加入：
+
+```text
+vps-panel
+panel-managed
+```
+
+等外部可识别字符串。
+
+外部输出应尽量只包含：
+
+- 协议真正需要的字段
+- 用户自己设置的节点名称 / remark
+- 必要的 Server 地址、端口和凭据
+
+本机内部文件路径、systemd unit、日志组件可以使用 VPS Panel 自己的项目命名，因为这些只用于本机运维；但不得复用其他代理面板的命名习惯或目录。
+
+### 官方协议文档优先
+
+实现 Xray / VLESS / Reality / XTLS / Shadowsocks 等协议能力时：
+
+1. 优先依据 Xray 官方文档、官方示例和上游源码行为。
+2. 第三方面板只能作为“功能是否有人这样做”的参考。
+3. 如果第三方面板实现与上游官方行为冲突，以官方协议 / 上游实现为准。
+4. 不为了兼容某个面板而引入其私有格式或历史包袱。
+
+这是一条长期硬性要求，不因开发阶段改变。
+
+---
+
+## 1.4 Panel 与 Agent 使用“目标状态同步”，不是任意 Shell / 通用任务系统
+
+Panel 不应该依赖 SSH 自动登录所有 VPS，也不应该把 Agent 做成远程 Shell。
+
+代理配置的正常控制链路固定为：
 
 ```text
 浏览器
   ↓
-Panel
+Panel 保存业务数据
   ↓
-WebSocket
+生成该 Server 的 desired state
   ↓
-Agent
+Agent 通过 REST API 拉取完整目标状态
   ↓
-结构化任务
+Agent 在本机生成受 Panel 管理的配置
+  ↓
+校验 → 原子替换 → 重启/重载 → 健康检查
+  ↓
+Agent 回报同步结果
 ```
 
-严禁实现类似：
+现有 WebSocket 继续用于：
+
+- online / offline
+- heartbeat
+- system_info
+- metrics
+- `config_changed` 轻量通知
+
+WebSocket 不承载整份 Xray / Realm 配置，也不建立复杂 RPC / Task 协议。
+
+当 Panel 中某台 Server 的 Proxy / Relay 配置发生变化时：
+
+```text
+Panel 保存数据库
+↓
+desired_state_version + 1
+↓
+如果 Agent 在线：
+  WebSocket 发送 config_changed(version)
+↓
+Agent 立即 GET /api/agent/config
+↓
+应用成功或失败
+↓
+POST /api/agent/config/result
+```
+
+如果 WebSocket 暂时断开，Agent 使用低频 REST 轮询兜底，例如每 30 秒检查一次版本。
+
+第一版建议的节点后端 API 保持很小：
+
+```text
+GET  /api/agent/config
+POST /api/agent/config/result
+POST /api/agent/traffic        # 仅在真正开始 Proxy / Client 流量统计时实现
+WS   /api/agent/ws             # 复用现有连接
+```
+
+`GET /api/agent/config` 返回该 Agent 所属 Server 的完整目标状态，例如：
+
+```json
+{
+  "version": 17,
+  "xray": {
+    "enabled": true,
+    "proxies": []
+  },
+  "realm": {
+    "enabled": false,
+    "relays": []
+  }
+}
+```
+
+这里的“通用”只表示：
+
+> Panel 与 Agent 的 API 不依赖 `/etc/xray/config.json` 或 Realm TOML 的具体文件结构。
+
+不要把它扩张成：
+
+- Plugin SDK
+- Generic Driver ABI
+- Universal Resource Graph
+- 任意 JSON / 任意 Shell 执行器
+- 通用任务编排系统
+
+严禁实现：
 
 ```text
 POST /api/agent/exec
@@ -128,26 +329,13 @@ POST /api/agent/exec
 }
 ```
 
-不能向 Panel 暴露通用任意命令执行能力。
+Agent 可以在内部执行必要且写死的系统命令，但 Panel 不向 Agent 发送任意命令字符串。
 
-后续应该实现结构化 Action，例如：
-
-```text
-install_core
-update_core
-restart_core
-create_proxy
-update_proxy
-delete_proxy
-create_relay
-delete_relay
-```
-
-Agent 可以在内部执行必要的系统命令，但 Panel 与 Agent 的协议应是受控、结构化的。
+极少数不能通过 desired state 表达的一次性安全操作（例如未来迁移 Panel URL）可以单独设计专用操作，不因此建立通用 Task Runner。
 
 ---
 
-## 1.4 账号固定为 admin / vip 两级
+## 1.5 账号固定为 admin / vip 两级
 
 账号模型保持简单，不做复杂 RBAC。
 
@@ -192,7 +380,7 @@ vip
 
 ---
 
-## 1.5 Server、节点和后续业务资源属于 Panel 全局资源池
+## 1.6 Server、节点和后续业务资源属于 Panel 全局资源池
 
 当前项目不是多租户 SaaS。
 
@@ -207,12 +395,10 @@ Panel
 ├── vip B
 └── Shared Resources
     ├── Server
-    ├── CoreInstance
     ├── Proxy
     ├── Client
     ├── Relay
-    ├── AccessEndpoint
-    └── Chain
+    └── Subscription
 ```
 
 也就是说：
@@ -241,7 +427,41 @@ Panel
 
 ---
 
-## 1.6 Panel 必须支持完整 ZIP 备份、导入和跨 VPS 恢复
+## 1.8 前端实现统一参考 Frontend Guide
+
+只要当前 Phase 涉及：
+
+- Server 页面
+- Proxy / 节点页面
+- Realm 页面
+- 分享 / 订阅页面
+- 搜索 / 筛选
+- 新增 / 编辑
+- 查看详情
+
+就必须同时阅读：
+
+```text
+vps-panel-frontend-guide.md
+```
+
+硬性边界：
+
+- Sidebar、主内容区、列表容器、Modal 交互不得由每个 Phase 自己重新设计。
+- Server / Proxy / Realm 页面必须保持同一套产品骨架。
+- “查看详情”统一使用 Modal。
+- 新增 / 编辑优先使用 Modal。
+- 主列表保持宽、长、稳定，不因详情或编辑而改变页面骨架。
+- Proxy / Realm 列表必须按 Frontend Guide 展示核心技术字段。
+- 不为了实现某个后端功能顺手重做前端导航、页面布局或视觉体系。
+
+本文只定义“哪些字段存在、字段的业务语义和何时出现”。
+
+Frontend Guide 定义“这些字段如何在 UI 中排列和展示”。
+
+---
+
+## 1.9 Panel 必须支持完整 ZIP 备份、导入和跨 VPS 恢复
 
 长期必须提供：
 
@@ -263,12 +483,9 @@ Panel
 - Session 之外的持久化认证数据
 - Server
 - Agent 注册关系和 Agent Token hash
-- CoreInstance
 - Proxy
 - Client
 - Relay
-- AccessEndpoint
-- Chain
 - Subscription 相关配置
 - Panel 持久化设置
 - 未来真正需要持久化的密钥材料
@@ -306,6 +523,18 @@ Server 代表一台 VPS / 服务器。
 ```
 
 Server 是机器，不是节点。
+
+Server 列表、详情 Modal、到期日期、流量信息、分组与标签的前端呈现统一参考：
+
+```text
+vps-panel-frontend-guide.md
+```
+
+特别注意：
+
+- Server 主列表使用宽表格 / 长列表。
+- 查看详情使用 Modal。
+- 不因为新增 Server 字段改成卡片瀑布流或单独详情路由。
 
 Server 还需要保存由用户配置的服务器运营信息，包括：
 
@@ -366,7 +595,6 @@ UTC+8
 - Server 到期日期
 - 月流量重置时间
 - 当前流量周期起止时间
-- 到期预警天数计算
 - 用户在前端输入的日期 / 时间
 
 数据库内部时间戳仍建议统一保存为 UTC / Unix Timestamp，在 Panel 计算周期和展示时转换为 `Asia/Shanghai`，避免系统时区变化影响业务逻辑。
@@ -411,37 +639,212 @@ Agent 是安装在 Server 上的统一守护进程。
 
 ---
 
-## 2.3 CoreInstance
-
-未来同一台 Server 上可能运行：
-
-```text
-Xray
-sing-box
-Mihomo
-```
-
-CoreInstance 表示某个代理核心的实际运行实例。
-
-不要把 Core 和 Proxy 混成同一个概念。
-
----
-
-## 2.4 Proxy
+## 2.3 Proxy
 
 Proxy 表示真正的代理入站 / 节点配置，例如：
 
 ```text
 VLESS Reality :443
 Shadowsocks :8388
-Hysteria2 :8443
 ```
 
-Proxy 属于某个 CoreInstance，也运行于某台 Server。
+第一版固定由 Xray 承载 VLESS / Shadowsocks。
+
+VLESS 第一版固定：
+
+```text
+protocol = VLESS
+transport = TCP
+flow = XTLS Vision
+```
+
+安全层由用户二选一：
+
+```text
+TLS
+REALITY
+```
+
+因此第一版明确支持两套 VLESS：
+
+```text
+VLESS + TCP + TLS + XTLS Vision
+VLESS + TCP + REALITY + XTLS Vision
+```
+
+不是让 TLS / REALITY 与 XTLS Vision 二选一。
+
+XTLS Vision 在第一版固定开启。
+
+服务端 Xray inbound 的 Client flow 始终使用：
+
+```text
+xtls-rprx-vision
+```
+
+客户端 / 分享配置允许：
+
+```text
+xtls-rprx-vision
+xtls-rprx-vision-udp443
+```
+
+其中 `xtls-rprx-vision-udp443` 只表示客户端允许 UDP/443 / QUIC 正常通过代理。
+
+它：
+
+- 不是新的服务端协议
+- 不要求服务端额外监听 UDP/443
+- 不改变服务端 flow
+- TLS / REALITY 两种安全模式都可以使用这个客户端选项
+
+服务端始终是：
+
+```text
+TCP listener
++
+VLESS
++
+security = tls | reality
++
+flow = xtls-rprx-vision
+```
+
+不要把 `xtls-rprx-vision-udp443` 写入服务端 inbound 的 client flow。
+
+Proxy 直接属于 Server：
+
+```text
+Server
+└── Proxy
+```
+
+当前不增加 `CoreInstance` 表。
+
+Xray 在第一版属于 Agent 的本地实现细节，而不是必须暴露给业务层的独立资源。
+
+Proxy 建议只保存少量通用字段：
+
+```text
+id
+server_id
+name
+protocol
+listen_port
+public_host
+enabled
+config_json
+created_at
+updated_at
+```
+
+其中：
+
+```text
+protocol = vless | shadowsocks
+```
+
+协议差异字段先放入受后端严格校验的 `config_json`。
+
+例如 VLESS + TCP + TLS + XTLS Vision：
+
+```json
+{
+  "transport": "tcp",
+  "security": "tls",
+  "server_flow": "xtls-rprx-vision",
+  "client_udp443": false,
+  "server_name": "example.com",
+  "certificate_ref": "..."
+}
+```
+
+例如 VLESS + TCP + REALITY + XTLS Vision：
+
+```json
+{
+  "transport": "tcp",
+  "security": "reality",
+  "server_flow": "xtls-rprx-vision",
+  "client_udp443": false,
+  "server_name": "www.microsoft.com",
+  "dest": "www.microsoft.com:443",
+  "private_key": "...",
+  "public_key": "...",
+  "short_id": "..."
+}
+```
+
+这里建议业务字段固定使用：
+
+```text
+transport = tcp
+security = tls | reality
+server_flow = xtls-rprx-vision
+client_udp443 = true | false
+```
+
+前端只让用户选择：
+
+```text
+安全：
+○ TLS
+○ REALITY
+
+允许 UDP/443 / QUIC：
+○ 关闭
+○ 开启
+```
+
+不要让前端随意填写 `flow` 字符串。
+
+在生成客户端配置时：
+
+```text
+client_udp443 = false
+→ flow = xtls-rprx-vision
+
+client_udp443 = true
+→ flow = xtls-rprx-vision-udp443
+```
+
+这样可以避免把客户端专用 `-udp443` 错写进服务端配置。
+
+TLS 与 REALITY 的协议字段必须分支校验：
+
+```text
+security = tls
+→ 只要求 TLS 分支需要的 SNI / certificate / private key 等字段
+
+security = reality
+→ 只要求 REALITY 分支需要的 SNI / dest / key pair / short_id 等字段
+```
+
+不要把两套安全层的配置字段混成一份必填表单。
+
+Shadowsocks：
+
+```json
+{
+  "method": "2022-blake3-aes-128-gcm",
+  "password": "..."
+}
+```
+
+`config_json` 不是让前端随意提交任意 Xray JSON。
+
+Panel 后端仍应按 `protocol`：
+
+- 校验允许字段
+- 校验端口
+- 校验 UUID / 密钥 / method 等必要值
+- 生成规范 desired state
+
+以后如果真的需要 sing-box / Mihomo，再根据真实需求决定是否增加 `backend` 字段或新的数据模型；当前不提前创建 `CoreInstance`。
 
 ---
 
-## 2.5 Client
+## 2.4 Client
 
 Client 是 Proxy 下的用户、设备或凭据。
 
@@ -454,15 +857,24 @@ VLESS Reality
 └── Android
 ```
 
-Client 应属于 Proxy。
+Client 属于 Proxy：
 
-Client 不属于 Relay，也不属于 AccessEndpoint。
+```text
+Proxy
+└── Client
+```
+
+第一版 Proxy 如果只有一份凭据，可以先不创建 Client 表。
+
+等真实需要“一条 Proxy 多个 UUID / 多个设备”时，再引入 Client。
+
+不要为了未来可能需要而提前拆表。
 
 ---
 
-## 2.6 Relay
+## 2.5 Relay
 
-Relay 表示 Realm 等中转规则。
+Relay 表示 Realm 等端口转发规则。
 
 例如：
 
@@ -472,89 +884,149 @@ JP Server :9502
 US Home Proxy :443
 ```
 
-Realm 在“源 Server”上执行。
+Relay 直接属于执行 Realm 的源 Server：
 
-因此 Relay 必须知道：
+```text
+Server
+└── Relay
+```
+
+Relay 最少需要：
 
 - source_server_id
 - listen_address
 - listen_port
-- target
+- target_type
+- target_proxy_id（可空）
+- target_host（可空）
+- target_port
+- enabled
 
-目标不能只记录 `target_server_id`。
+目标允许：
 
-因为一台 Server 上以后可能有多个 Proxy / 服务端口。
+### 目标为已有 Proxy
 
----
+Panel 解析目标 Proxy 的 Server / 地址 / 监听端口。
 
-## 2.7 AccessEndpoint
+### 手工 host:port
 
-这是后续非常关键的概念。
+用于转发到 Panel 未管理的服务。
 
-假设美国落地 Proxy：
-
-```text
-10.20.30.40:443
-```
-
-然后有：
-
-```text
-日本 Realm：
-211.x.x.x:9502 → 10.20.30.40:443
-
-香港 Realm：
-45.x.x.x:9503 → 10.20.30.40:443
-```
-
-这仍然只有 **一个 Proxy**。
-
-只是有多个接入方式：
-
-```text
-Proxy
-├── Direct Endpoint
-├── JP Relay Endpoint
-└── HK Relay Endpoint
-```
-
-Realm 转发不能复制一个新的 Proxy 数据记录。
-
-否则会出现：
-
-- UUID 重复维护
-- Reality 参数重复维护
-- Client 重复
-- 配置同步困难
-- 删除 Relay 时难以判断应该删除什么
-
-所以：
-
-> Realm 创建的是新的 AccessEndpoint，不是新的 Proxy。
+不要把 Relay 目标限制成 `target_server_id`。
 
 ---
 
-## 2.8 Chain
+## 2.6 接入地址与多跳暂不建立独立模型
 
-Chain 表示未来多跳路径。
+当前不建立 `AccessEndpoint` 表。
+
+当用户通过 Realm 访问某个 Proxy 时，客户端节点可以在生成分享 / 订阅时直接组合：
+
+```text
+Proxy 的协议与凭据
++
+Relay 的监听 host / port
+=
+一个可连接的客户端节点
+```
 
 例如：
 
 ```text
-中国用户
-  ↓
-日本入口
-  ↓
-西雅图
-  ↓
-洛杉矶家宽
+Proxy:
+US VLESS :443
+
+Relay:
+JP :9502 → US VLESS :443
+
+分享时可以生成：
+direct = us.example.com:443
+relay  = jp.example.com:9502
 ```
 
-Chain 属于后续高级功能。
+两者仍然引用同一个 Proxy / Client 数据，不复制 Proxy。
 
-当前阶段不要提前实现 Chain 表、Chain Builder 或复杂拓扑编辑器。
+当前也不建立 `Chain` 表。
+
+多跳只有在单级 Realm 已稳定、且确实出现“必须保存和复用多跳路径”的真实需求时再设计。
 
 ---
+
+## 2.7 Agent 管理配置文件的所有权
+
+为了避免 Agent 与用户手工配置互相覆盖，第一版明确：
+
+> Agent 只管理 VPS Panel 自己拥有的配置文件和 systemd 服务。
+
+建议：
+
+```text
+/etc/vps-panel/xray/config.json
+/etc/vps-panel/realm/config.toml
+```
+
+对应服务也使用 Panel 明确管理的 unit，例如：
+
+```text
+vps-panel-xray.service
+vps-panel-realm.service
+```
+
+不要默认去解析、合并或覆盖用户已有的：
+
+```text
+/etc/xray/config.json
+/usr/local/etc/xray/config.json
+其他面板生成的配置
+```
+
+如果机器上已经存在未受 VPS Panel 管理的 Xray / Realm，第一版优先：
+
+- 检测冲突
+- 明确报错
+- 不自动接管
+- 不尝试“智能合并”
+
+这样可以显著减少配置损坏和不可预测行为。
+
+---
+
+## 2.8 配置应用必须可验证、可回滚
+
+Agent 每次同步 Xray / Realm 配置都使用统一的安全流程：
+
+```text
+收到新的 desired state
+↓
+生成完整 candidate config
+↓
+本地语义校验
+↓
+调用对应程序的配置校验能力（如果有）
+↓
+保存 previous
+↓
+原子替换 current
+↓
+restart / reload
+↓
+健康检查
+├── 成功 → 回报 config sync success
+└── 失败 → 恢复 previous → 再启动旧配置 → 回报 failed
+```
+
+禁止：
+
+- 在正式配置文件上边读边改
+- 使用 `sed` / 字符串拼接修改未知 JSON
+- 配置未校验就覆盖
+- 重启失败后不回滚
+- Panel 在 Agent 真正应用前提前标记成功
+
+同一 Server 上针对同一受管服务的配置应用必须串行执行。
+
+
+# 3. 当前已完成基线
 
 # 3. 当前已完成基线
 
@@ -789,7 +1261,7 @@ admin / vip 查询 Server 时读取同一张 `servers` 表。
 - 资源同步任务
 - 每账号独立节点副本
 
-以后 Core / Proxy / Client / Relay / Endpoint / Chain 也沿用同一原则。
+以后 Proxy / Client / Relay / Subscription 也沿用同一原则。
 
 ---
 
@@ -1125,8 +1597,6 @@ WHERE status = 'online'
 - Realm
 - Proxy
 - Client
-- Endpoint
-- Chain
 
 ---
 
@@ -1300,8 +1770,6 @@ Server → offline
 - Realm
 - Proxy
 - Client
-- Endpoint
-- Chain
 
 ---
 
@@ -1509,27 +1977,45 @@ Root filesystem 即可。
 
 ---
 
-# 9. Phase 7A：机器网卡流量、月流量额度与重置周期
+# 9. Phase 7A：机器网卡累计流量与月流量统计
 
 ## 目标
 
-本阶段直接统计 **机器网卡本身的流量**。
+本阶段只解决一件事：
 
-不要依赖：
+> 让 Panel 能可靠看到一台 Server 的机器网卡累计 RX / TX，并按月流量规则计算“本周期已用 / 总量”。
+
+Agent **不测速**。
+
+明确不实现：
+
+```text
+Speedtest
+iperf
+带宽测试
+实时下载速度
+实时上传速度
+RX/s
+TX/s
+历史流量曲线
+流量时序数据库
+```
+
+本阶段也不依赖：
 
 - Xray 流量统计
 - sing-box 流量统计
 - Mihomo 流量统计
 - Realm 流量统计
-- Proxy / Client 应用层统计
+- Proxy / Client 应用层流量统计
 
-也就是说，服务器月流量的基础数据直接来自 Linux 网卡 RX / TX 计数器。
+服务器月流量的基础数据只来自 Linux 网卡累计字节计数。
 
 ---
 
-## 9.1 流量数据源
+## 9.1 数据源
 
-Linux 初版可以使用：
+Linux 初版读取机器网卡累计值：
 
 ```text
 /proc/net/dev
@@ -1542,13 +2028,11 @@ Linux 初版可以使用：
 /sys/class/net/<interface>/statistics/tx_bytes
 ```
 
-Agent 读取机器实际网卡累计字节数。
-
-最基本语义：
+语义：
 
 ```text
-RX = 下载 / 入站
-TX = 上传 / 出站
+RX = 机器累计入站字节
+TX = 机器累计出站字节
 ```
 
 必须排除：
@@ -1557,495 +2041,359 @@ TX = 上传 / 出站
 lo
 ```
 
-同时要避免把同一份流量在物理网卡、bridge、veth、tun 等虚拟接口中重复累计。
+同时不要把物理网卡、bridge、veth、tun 等多层接口重复累计。
 
-初版优先统计承载服务器默认路由的实际网络接口，或者使用一个明确且可预测的主网卡选择规则。
+第一版选择一个明确、可预测的主网卡即可，优先使用承载默认路由的实际网络接口。
 
-不要通过 Xray / Realm 等应用层数据反推服务器总流量。
+不要为了自动识别所有复杂网络拓扑引入额外框架。
 
 ---
 
-## 9.2 月流量额度
+## 9.2 复用现有 Metrics WebSocket
 
-每台 Server 可以单独设置：
-
-```text
-月流量总额
-```
-
-例如：
+当前 Agent 已经通过现有 WebSocket 上报：
 
 ```text
-500G
-1000G
-2T
+CPU
+RAM
+Disk
+Uptime
 ```
 
-数据库内部统一保存字节数，例如：
+Phase 7A 直接复用现有 `metrics` 消息。
+
+不要新增：
+
+```text
+独立 Traffic WebSocket
+/api/agent/traffic
+新的常驻 goroutine
+新的高频 ticker
+新的实时速度采样器
+```
+
+现有 metrics 消息只增加：
+
+```json
+{
+  "nic_rx_bytes": 123456789,
+  "nic_tx_bytes": 987654321
+}
+```
+
+Agent 只负责读取并上报**当前累计计数器值**。
+
+Agent 不负责：
+
+- 计算月流量周期
+- 计算已用百分比
+- 计算实时速率
+- 保存流量历史
+- 执行流量重置
+
+这些业务逻辑属于 Panel。
+
+---
+
+## 9.3 Server 月流量配置
+
+每台 Server 只增加当前真正需要的配置：
 
 ```text
 monthly_traffic_limit_bytes
+traffic_count_mode
+traffic_reset_day
+traffic_reset_time
 ```
 
-UI 输入时可以允许使用：
+其中：
 
 ```text
-G
-T
+traffic_count_mode = single
 ```
 
-等便于用户理解的单位。
+表示：
 
-未设置额度时，可以显示：
+```text
+本周期已用 = cycle_tx_bytes
+```
+
+```text
+traffic_count_mode = bidirectional
+```
+
+表示：
+
+```text
+本周期已用 = cycle_rx_bytes + cycle_tx_bytes
+```
+
+月流量上限允许为空或 0，表示：
 
 ```text
 不限
 ```
 
-但 Agent 仍然可以继续统计实际网卡流量。
+即使不限，Panel 仍继续记录累计 RX / TX。
+
+第一版 UI 可以接受用户输入：
+
+```text
+500G
+1T
+2T
+```
+
+内部统一换算为字节保存。
 
 ---
 
-## 9.3 单向 / 双向统计模式
+## 9.4 复用 `server_metrics` 保存最新计数与当前周期状态
 
-每台 Server 必须可以选择：
-
-```text
-单向
-双向
-```
-
-内部建议：
+当前项目已经有一张：
 
 ```text
-single
-bidirectional
+server_metrics
 ```
 
-### 单向
+第一版优先继续扩这张表，不为了流量统计新建独立历史表。
 
-初版定义为只计算服务器出口：
+建议只增加当前需要的字段：
 
 ```text
-已用流量 = TX
+nic_rx_bytes
+nic_tx_bytes
+
+cycle_rx_bytes
+cycle_tx_bytes
+cycle_started_at
 ```
 
-### 双向
+现有 CPU / RAM / Disk / Uptime 字段保持不变。
 
-定义为：
+不要创建：
 
 ```text
-已用流量 = RX + TX
+traffic_samples
+traffic_history
+network_history
+daily_traffic
+hourly_traffic
 ```
 
-注意：
+这类时序表。
 
-单向 / 双向只影响“月流量已用值”的计算方式。
-
-实时速度仍然应该分别显示：
-
-```text
-实时下载速度 = RX/s
-实时上传速度 = TX/s
-```
-
-不要因为服务器设置为单向计费，就隐藏 RX。
+如果实现时发现将周期状态单独放一个小表明显更简单，可以使用一个最小状态表；但默认优先复用现有 `server_metrics`，不要为了“架构更漂亮”拆层。
 
 ---
 
-## 9.4 流量重置时间
+## 9.5 Panel 增量累计
 
-每台 Server 可以设置独立的月流量重置时间。
+Agent 上报：
 
-所有重置时间固定按 Panel 默认时区计算：
+```text
+current_rx
+current_tx
+```
+
+Panel 读取上次持久化：
+
+```text
+last_rx
+last_tx
+```
+
+正常情况下：
+
+```text
+delta_rx = current_rx - last_rx
+delta_tx = current_tx - last_tx
+
+cycle_rx_bytes += delta_rx
+cycle_tx_bytes += delta_tx
+```
+
+然后保存新的：
+
+```text
+last_rx = current_rx
+last_tx = current_tx
+```
+
+其中数据库字段可以直接复用：
+
+```text
+nic_rx_bytes
+nic_tx_bytes
+```
+
+作为上次已处理的累计计数。
+
+不要让 Agent 维护一套独立的月累计状态。
+
+---
+
+## 9.6 VPS / Agent / 网卡重启
+
+Linux 网卡累计计数可能因为：
+
+- VPS 重启
+- 网卡重建
+- 接口变化
+- 内核计数器归零
+
+而下降。
+
+如果：
+
+```text
+current_rx < last_rx
+```
+
+或：
+
+```text
+current_tx < last_tx
+```
+
+对应方向不要产生负流量。
+
+直接：
+
+```text
+将 current 作为新的 baseline
+本次该方向 delta = 0
+```
+
+然后从之后的上报继续累计。
+
+因此：
+
+- Panel 重启后，累计状态不会丢失。
+- Agent 重启后，只要 Linux 网卡计数没有归零，下一次上报可以继续计算增量。
+- VPS 重启导致计数归零时，不产生负数。
+
+第一版不尝试根据历史日志恢复无法观测到的流量。
+
+---
+
+## 9.7 月流量重置
+
+每台 Server 可以设置：
+
+```text
+每月第 N 日 HH:mm
+```
+
+统一按：
 
 ```text
 Asia/Shanghai
 ```
 
-不使用 Agent VPS 的本地系统时区。
+理解。
 
 例如：
 
 ```text
-每月 1 日 00:00
 每月 15 日 08:00
-每月 25 日 12:00
 ```
 
-至少支持：
+如果设置：
 
 ```text
-traffic_reset_day
-traffic_reset_time
+29 / 30 / 31
 ```
 
-流量周期示例：
+而某个月不存在该日期，则使用：
 
 ```text
-2026-09-15 08:00
-↓
-2026-10-15 08:00
+当月最后一天的同一时间
 ```
 
-到达重置时间后：
+到达新周期后，Panel 在下一次收到有效 metrics 时：
 
 ```text
-本周期已用 RX = 0
-本周期已用 TX = 0
+cycle_rx_bytes = 0
+cycle_tx_bytes = 0
+cycle_started_at = 新周期开始时间
+nic_rx_bytes = 当前 Agent 上报值
+nic_tx_bytes = 当前 Agent 上报值
 ```
 
-然后从新的网卡基线继续累计。
+也就是：
 
-重置的是 Panel 记录的“本周期流量”，不是去修改 Linux 网卡内核计数器。
+> 重置 Panel 的周期累计，并把当前 Linux 网卡值作为新 baseline。
+
+不要修改 Linux 内核计数器。
+
+不要为了“准点 00:00 重置”增加 scheduler / cron / background worker。
+
+第一版由下一次 metrics 上报触发周期切换即可。
+
+如果 Panel / Agent 在周期切换点长期离线，跨边界期间无法精确拆分到两个周期的流量；第一版不为此增加复杂补偿系统。
 
 ---
 
-## 9.5 重启后的累计方式
+## 9.8 UI
 
-Linux 网卡累计计数可能因为：
+本节只规定**流量字段必须展示什么**。
 
-- VPS 重启
-- Agent 重启
-- 网卡重建
-- 接口计数器归零
-
-而发生下降。
-
-因此不能简单把：
+具体页面布局、Server 列表宽度、详情 Modal、操作列、容器稳定性等，统一参考：
 
 ```text
-当前 /proc/net/dev 数字
+vps-panel-frontend-guide.md
 ```
 
-直接当成“本月已用流量”。
+实现本 Phase 时不要自己重新设计 Server 页面骨架。
 
-应采用增量累计：
 
-```text
-delta_rx = current_rx - previous_rx
-delta_tx = current_tx - previous_tx
-```
-
-正常情况下把正增量加入当前月周期。
-
-如果发现：
-
-```text
-current < previous
-```
-
-说明计数器可能重置。
-
-此时：
-
-- 不产生负流量
-- 将当前值作为新的基线
-- 从之后的增量继续累计
-
-本周期累计值必须持久化，不能因为 Panel 或 Agent 重启就清零。
-
----
-
-## 9.6 建议持久化状态
-
-实现时可以使用最小字段或单独的小表保存：
-
-```text
-cycle_started_at
-cycle_rx_bytes
-cycle_tx_bytes
-last_nic_rx_bytes
-last_nic_tx_bytes
-last_sample_at
-```
-
-具体放在 `servers` 还是单独流量状态表，在实现 Phase 7A 时根据代码现状选择最简单方案。
-
-不要为了这个功能提前建立复杂时序数据库。
-
----
-
-## 9.7 本周期流量校准
-
-必须允许用户手动校准“当前周期已用流量”。
-
-典型场景：
-
-```text
-VPS 商家后台：
-已用 183G / 500G
-
-今天才把这台 VPS 接入 VPS Panel
-```
-
-如果 Panel 从 0 开始累计，本月数据会长期与商家后台不一致。
-
-因此 Server 详情页提供：
-
-```text
-校准本周期流量
-```
-
-用户输入：
-
-```text
-当前已用：183G
-```
-
-Panel 不需要伪造 RX / TX，也不需要修改 Linux 网卡计数器。
-
-推荐内部采用“校准偏移量”：
-
-```text
-measured_used
-= 根据单向 / 双向规则由 cycle_rx_bytes / cycle_tx_bytes 计算
-
-traffic_adjustment_bytes
-= 用户目标已用量 - measured_used
-
-displayed_used
-= max(0, measured_used + traffic_adjustment_bytes)
-```
-
-这样校准以后，Agent 继续采集新的网卡增量，显示值会自然继续增长。
-
-例如：
-
-```text
-校准时：
-机器已统计 20G
-商家后台显示 183G
-
-adjustment = 163G
-
-之后机器新增 10G
-Panel 显示 = 20G + 10G + 163G = 193G
-```
-
-校准值只属于当前流量周期。
-
-到达下一次流量重置时间时：
-
-```text
-traffic_adjustment_bytes → 0
-```
-
-新周期重新从 0 开始。
-
-如果用户在当前周期修改单向 / 双向模式：
-
-- 保留原始 `cycle_rx_bytes` / `cycle_tx_bytes`
-- 按新的模式重新计算 `measured_used`
-- 保留当前校准偏移量
-- UI 提示如需与商家后台完全一致，可再次执行“校准本周期流量”
-
-不要把人工校准值硬塞进 RX 或 TX 字段。
-
----
-
-## 9.8 已用流量计算
-
-根据 Server 配置：
-
-### 单向
-
-```text
-used_bytes = cycle_tx_bytes
-```
-
-### 双向
-
-```text
-used_bytes = cycle_rx_bytes + cycle_tx_bytes
-```
-
-总流量：
-
-```text
-total_bytes = monthly_traffic_limit_bytes
-```
-
----
-
-## 9.9 服务器信息显示与流量周期详情
-
-服务器列表中必须直观显示：
+服务器列表至少显示：
 
 ```text
 100G（已用）/500G（总）
 ```
 
-不要只显示百分比。
+未设置额度：
 
-Server 详情页应展示更完整的信息，例如：
+```text
+100G（已用）/不限（总）
+```
+
+Server 详情至少显示：
 
 ```text
 月流量：100G（已用）/500G（总）
-剩余流量：400G
-使用率：20%
-统计方式：双向
-
-本周期：
-2026-09-15 08:00
-→
-2026-10-15 08:00
-
+统计方式：单向（TX） / 双向（RX + TX）
 本周期 RX：62G
 本周期 TX：38G
-校准值：0G
 重置时间：每月 15 日 08:00
-时区：Asia/Shanghai
+本周期开始：2026-09-15 08:00
 ```
 
-单向服务器例如：
+可以显示：
 
 ```text
-月流量：37G（已用）/500G（总）
-统计方式：单向（TX）
-本周期 RX：80G
-本周期 TX：37G
+剩余流量
+使用率
 ```
 
-这里即使单向只按 TX 计费，也仍然展示 RX / TX 原始统计，便于排查。
+但不是 Phase 7A 的必要条件。
 
-如果存在人工流量校准：
+不要显示：
 
 ```text
-本周期 RX：12G
-本周期 TX：8G
-校准值：163G
-月流量：183G（已用）/500G（总）
+实时下载速度
+实时上传速度
+速度图
+历史流量图
 ```
-
-如果没有设置月流量上限：
-
-```text
-月流量：100G（已用）/不限（总）
-剩余流量：不限
-使用率：--
-```
-
-可以额外显示进度条，但明确的：
-
-```text
-已用 / 总量
-```
-
-文字必须存在。
-
-流量周期起止时间统一按照：
-
-```text
-Asia/Shanghai
-```
-
-展示。
 
 ---
 
-## 9.10 到期日期显示
+## 9.9 超额行为
 
-服务器信息同时展示：
-
-```text
-到期日期：2026-12-31
-```
-
-未设置：
-
-```text
-到期日期：不限
-```
-
-当前要求只是：
-
-- 可以设置
-- 可以修改
-- 可以显示
-
-暂时不要求：
-
-- 到期自动删除 Server
-- 到期自动关机
-- 到期自动停止 Agent
-- 到期自动停止 Proxy
-
-到期本身仍然不自动删除或停机，但需要提供 UI 预警。
-
----
-
-## 9.11 流量与到期预警
-
-为了日常管理方便，Panel 提供默认的视觉预警。
-
-### 流量预警
-
-只有设置了月流量总额的 Server 才进行百分比预警。
-
-默认：
-
-```text
-< 80%      正常
->= 80%     黄色提醒
->= 90%     橙色警告
->= 100%    红色 / 已用完
-```
-
-这里的百分比使用最终 `displayed_used` 计算，因此人工校准值也必须计入。
-
-当前先使用固定默认阈值，不增加复杂的每 Server 阈值配置系统。
-
-### 到期预警
-
-到期日期统一按 `Asia/Shanghai` 计算，并表示所选日期当天结束后到期。
-
-默认：
-
-```text
-> 30 天     正常
-<= 30 天    黄色提醒
-<= 7 天     红色警告
-已过期      红色 / 已过期
-```
-
-### 页面表现
-
-服务器列表可以通过：
-
-- Tag
-- 文案
-- 轻量颜色状态
-- 排序 / 筛选
-
-提示风险。
-
-概览页后续可以增加简单汇总，例如：
-
-```text
-即将到期：2 台
-流量超过 90%：1 台
-离线：3 台
-```
-
-当前预警只做 Panel 内 UI 提示。
-
-不要在这个阶段加入：
-
-- Telegram Bot
-- 邮件通知
-- 短信
-- Webhook
-- 自动停机
-- 自动断网
-
-这些以后如有明确需求再单独实现。
-
----
-
-## 9.12 超额行为
-
-当前只负责统计和显示。
+当前只统计和显示。
 
 即使：
 
@@ -2060,118 +2408,86 @@ Asia/Shanghai
 - 停止 Xray
 - 删除 Proxy
 - 修改防火墙
+- 限速
 
-自动限流 / 停机必须等以后有明确需求再设计。
-
-当前可以在 UI 中标记：
-
-```text
-已用完
-```
-
-或显示警告状态。
+第一版不做流量阈值通知或自动动作。
 
 ---
 
-## 9.13 本阶段验收
+## 9.10 本阶段明确不做
+
+以下全部后移，不阻塞 Phase 7A：
+
+```text
+本周期人工校准
+80% / 90% / 100% 流量预警
+到期 30 天 / 7 天预警
+概览页流量汇总
+实时上下行速度
+历史流量图
+每日 / 每小时流量
+Speedtest / iperf
+```
+
+以后确实需要时再单独增加。
+
+底层：
+
+```text
+nic_rx_bytes
+nic_tx_bytes
+cycle_rx_bytes
+cycle_tx_bytes
+```
+
+已经足够支撑这些未来功能，不需要现在实现。
+
+---
+
+## 9.11 验收
 
 至少验证：
 
-1. Server 可以设置到期日期。
-2. Server 可以设置月流量总额。
-3. Server 可以选择单向 / 双向。
-4. Server 可以设置每月流量重置日和时间。
-5. Agent 直接读取机器网卡 RX / TX。
-6. 不依赖 Xray / Realm / Proxy 统计。
-7. 单向模式按 TX 计算月流量。
-8. 双向模式按 RX + TX 计算月流量。
-9. VPS 重启后不会出现负流量。
-10. Agent / Panel 重启后本月累计流量不会丢失。
-11. 到达配置的重置时间后开启新月流量周期。
-12. 服务器信息显示类似：
-    `100G（已用）/500G（总）`
-13. 未设置额度时可以显示：
-    `100G（已用）/不限（总）`
-14. 不因为流量超额自动停服务。
-15. 所有到期日期、重置时间、周期起止时间按 `Asia/Shanghai` 计算。
-16. 用户可以校准当前周期已用流量。
-17. 校准后新增网卡流量继续在校准值基础上累计。
-18. 下一周期重置时自动清除当前周期校准偏移量。
-19. 详情页显示当前周期起止时间、RX、TX、剩余量和使用率。
-20. 流量达到 80% / 90% / 100% 时有对应 UI 预警。
-21. 到期 <= 30 天 / <= 7 天 / 已过期时有对应 UI 预警。
+1. Agent 能读取选定主网卡累计 RX / TX。
+2. Agent 不进行 Speedtest、iperf 或任何主动带宽测速。
+3. Agent 不计算 RX/s、TX/s 或实时下载 / 上传速度。
+4. Agent 复用现有 `metrics` WebSocket 消息上报累计 RX / TX。
+5. 不新增独立 traffic API、traffic WebSocket 或高频采样器。
+6. Panel 能持久化上次网卡累计计数。
+7. Panel 能通过 delta 正确累计本周期 RX / TX。
+8. 单向模式按 TX 计算月流量。
+9. 双向模式按 RX + TX 计算月流量。
+10. 网卡计数器下降时不会产生负流量。
+11. Agent / Panel 重启后当前周期累计不会被无条件清零。
+12. 到达新周期后，下一次 metrics 上报会开启新的周期并建立新 baseline。
+13. 月流量重置不修改 Linux 网卡计数器。
+14. Server 可以设置月流量总额。
+15. Server 可以选择单向 / 双向。
+16. Server 可以设置每月流量重置日和时间。
+17. 服务器列表能显示 `已用 / 总量`。
+18. Server 详情能显示本周期 RX / TX。
+19. 未设置额度时能显示 `已用 / 不限`。
+20. 不实现人工校准、阈值预警、实时速度、历史图。
+21. 不因为流量超额自动停服务。
+
+完成 Phase 7A 后停止。
+不要继续服务器分组 / 标签。
 
 ---
 
-# 10. Phase 7B：实时上下行速度
+# 10. Phase 7B：服务器分组、标签与筛选
 
-## 目标
+> 本 Phase 涉及 Server 列表工具栏、筛选器、分组 / 标签显示。
+>
+> UI 实现必须参考 `vps-panel-frontend-guide.md` 中：
+>
+> - 页面顶部固定结构
+> - Server 列表
+> - 搜索、筛选和排序
+> - 固定容器与“不能随便动”的实现要求
+>
+> 不允许为了新增筛选功能改变 Sidebar、主内容宽度、列表容器位置或“详情使用 Modal”的既有规则。
 
-继续直接使用 Phase 7A 的机器网卡 RX / TX 计数器，根据累计字节差值计算：
-
-```text
-RX bytes delta / 时间
-TX bytes delta / 时间
-```
-
-实时速度也来自机器网卡，不读取 Xray / Realm 的应用层统计。
-
-得到：
-
-```text
-实时下载速度
-实时上传速度
-```
-
-建议：
-
-Agent 本地采样：
-
-```text
-约 2 秒
-```
-
-向 Panel 上报：
-
-```text
-约 5 秒
-```
-
-具体数值可以根据实际效果调整。
-
----
-
-## 9.1 UI
-
-服务器列表可显示：
-
-```text
-↓ 12.4 MB/s
-↑ 2.3 MB/s
-```
-
-详情显示：
-
-```text
-实时下载
-实时上传
-本周期 RX
-本周期 TX
-月流量：100G（已用）/500G（总）
-统计方式：单向 / 双向
-重置时间：每月 N 日 HH:mm
-到期日期
-```
-
-其中：
-
-- `本周期 RX / TX` 用于诊断和透明展示。
-- `月流量已用` 根据单向 / 双向规则计算。
-- 月流量显示必须保留明确的“已用 / 总”文字格式。
-
----
-
-## Phase 7C：服务器分组、标签与筛选
 
 服务器数量增多以后，需要提供轻量组织能力。
 
@@ -2244,11 +2560,11 @@ Server：US Home
 日本 + 入口
 美国 + 落地
 离线
-即将到期
-流量 > 90%
 ```
 
-其中“即将到期”和“流量 > 90%”属于状态筛选，不需要做成永久标签。
+第一版只做分组、标签、在线状态和关键词搜索。
+
+不要为了这个 Phase 顺便加入到期预警、高流量阈值筛选或复杂组合查询。
 
 Server 详情允许编辑分组和标签。
 
@@ -2270,15 +2586,14 @@ admin / vip 看到的是同一份分组和标签，不按用户复制。
 4. 可以按标签筛选。
 5. 可以按在线状态筛选。
 6. 可以搜索 Server 名称。
-7. 可以筛选即将到期和高流量 Server。
-8. Agent 重装不会丢失分组 / 标签。
-9. ZIP 备份包含分组 / 标签。
+7. Agent 重装不会丢失分组 / 标签。
+8. ZIP 备份包含分组 / 标签。
 
 ---
 
 ## 到此完成第一阶段服务器管理 MVP
 
-完成 Phase 7C 后：
+完成 Phase 7B 后：
 
 ```text
 添加 Server
@@ -2291,17 +2606,15 @@ admin / vip 看到的是同一份分组和标签，不按用户复制。
 ↓
 系统信息
 ↓
-CPU / RAM / Disk
-↓
-实时上传 / 下载
+CPU / RAM / Disk / Uptime
 ↓
 机器网卡累计 RX / TX
 ↓
 月流量单向 / 双向统计
 ↓
-按配置时间自动重置
+按配置时间自动开启新周期
 ↓
-服务器到期日期与预警
+服务器到期日期
 ↓
 服务器分组 / 标签 / 筛选
 ```
@@ -2312,317 +2625,1067 @@ CPU / RAM / Disk
 
 ---
 
-# 11. Phase 8A：Core 基础模型
+# 11. Phase 8A：通用 Agent 配置同步 API
 
 ## 目标
 
-开始支持代理内核。
+在服务器管理 MVP 完成后，先建立一条最小、稳定的 Panel ↔ Agent 配置同步链路。
 
-第一步只定义 CoreInstance 和生命周期。
-
-计划支持：
-
-- Xray
-- sing-box
-- Mihomo
-
-但不要一次全部实现。
-
-推荐第一个真实实现：
+本阶段只解决：
 
 ```text
-Xray
+Panel 如何告诉 Agent：
+“这台 Server 现在应该是什么配置”
 ```
 
-等 Xray 跑通，再接 sing-box。
+固定采用：
+
+```text
+REST = 读取完整 desired state / 回报同步结果
+WebSocket = config_changed 轻量通知
+```
+
+不要建立通用任务系统。
 
 ---
 
-## 10.1 Core 与 Server
+## 11.1 desired state 版本
 
-关系：
-
-```text
-Server
-└── Agent
-    └── CoreInstance
-```
-
-一台 Server 未来可以：
+每台 Server 维护一个简单的配置版本号，例如：
 
 ```text
-Xray
-sing-box
-Mihomo
+desired_state_version
 ```
 
-但只有一个 Agent。
+当该 Server 的受管 Proxy / Relay 配置发生实际变化时：
+
+```text
+version + 1
+```
+
+系统监控、Server 名称、标签等不影响代理配置的修改，不应增加此版本。
 
 ---
 
-## 10.2 CoreInstance 最小字段
+## 11.2 配置 API
 
-实现时按需求决定，但大致可能需要：
+第一版只需要：
+
+```text
+GET  /api/agent/config
+POST /api/agent/config/result
+```
+
+继续使用现有 Agent 长期身份认证。
+
+`GET /api/agent/config` 返回：
+
+```json
+{
+  "version": 1,
+  "xray": {
+    "enabled": false,
+    "proxies": []
+  },
+  "realm": {
+    "enabled": false,
+    "relays": []
+  }
+}
+```
+
+本阶段允许内容还是空配置。
+
+重点是把：
+
+- 身份认证
+- version
+- 拉取
+- 结果回报
+- 状态持久化
+- 失败信息
+
+这一条链路跑通。
+
+---
+
+## 11.3 WebSocket 通知
+
+现有 `/api/agent/ws` 增加一个非常小的消息：
+
+```json
+{
+  "type": "config_changed",
+  "version": 2
+}
+```
+
+Agent 收到后立即重新 GET `/api/agent/config`。
+
+不要通过 WebSocket 直接发送整份配置。
+
+如果 WebSocket 不可用：
+
+```text
+Agent 每约 30 秒轮询一次 config version
+```
+
+作为兜底。
+
+---
+
+## 11.4 同步结果
+
+Agent 应在完成实际应用后回报：
+
+```json
+{
+  "version": 2,
+  "status": "success",
+  "message": ""
+}
+```
+
+失败：
+
+```json
+{
+  "version": 2,
+  "status": "failed",
+  "message": "..."
+}
+```
+
+Panel 至少保存：
+
+- Agent 最后成功同步版本
+- 最后同步状态
+- 最后错误信息
+- 最后同步时间
+
+不要建历史事件表。
+
+---
+
+## 11.5 本阶段不要实现
+
+不要实现：
+
+- Proxy 表
+- VLESS
+- Shadowsocks
+- Xray 安装
+- Realm 安装
+- Client
+- Subscription
+- Generic Task Runner
+- Plugin SDK
+- CoreInstance
+- AccessEndpoint
+- Chain
+
+完成 Phase 8A 后停止。
+
+---
+
+# 12. Phase 8B：Xray 托管基础与安全配置应用
+
+## 目标
+
+让统一 Agent 能安全托管一份由 VPS Panel 完全拥有的 Xray。
+
+第一版不接管用户已有 Xray 配置。
+
+推荐受管位置：
+
+```text
+/etc/vps-panel/xray/config.json
+vps-panel-xray.service
+```
+
+需要实现：
+
+- 检查受管 Xray 是否已安装
+- 必要时安装 Panel 管理的 Xray
+- 查询版本
+- 生成基础配置
+- 配置校验
+- 原子替换
+- 启动 / 重启
+- 健康检查
+- 失败回滚
+
+Panel 不发送 shell。
+
+Agent 根据 desired state 自己决定：
+
+```text
+是否需要安装
+是否需要更新 config
+是否需要 restart
+```
+
+---
+
+## 12.1 配置安全流程
+
+必须：
+
+```text
+render candidate
+↓
+xray config test / 等价校验
+↓
+保存 previous
+↓
+atomic replace
+↓
+restart
+↓
+确认 service active
+↓
+成功
+```
+
+任何一步失败：
+
+```text
+rollback previous
+↓
+重新启动旧配置
+↓
+POST config/result = failed
+```
+
+本阶段不需要做 Xray 自动升级。
+
+---
+
+## 12.2 冲突处理
+
+如果发现：
+
+- 443 已被其他服务占用
+- 已有非 Panel 管理 Xray
+- 配置路径冲突
+- systemd unit 冲突
+
+必须明确失败。
+
+第一版不要尝试自动合并第三方配置。
+
+---
+
+## 12.3 实现来源要求
+
+Xray 托管代码必须由 VPS Panel 独立实现。
+
+可以借鉴第三方项目“先生成 candidate、校验、应用、回滚”这类高层工程思想，
+但安装、配置渲染、校验、服务管理、错误处理等代码必须重新设计和编写。
+
+不得直接使用 3x-ui / x-ui 等面板的：
+
+- 安装脚本
+- Xray 配置模板
+- 目录结构
+- systemd unit
+- API 结构
+- helper 函数
+- 命名体系
+
+实现依据优先使用 Xray 官方文档 / 官方二进制 / 上游源码行为。
+
+---
+
+# 13. Phase 9A：VLESS + TCP + TLS / REALITY + XTLS Vision
+
+> 本 Phase 的数据语义、协议组合和 Agent 配置以本文为准。
+>
+> Proxy 列表、入口 IP / 出口 IP / 端口 / 协议 / 传输 / 安全层 / 流控的列展示，以及查看 / 新增 / 编辑 Modal，统一参考：
+>
+> ```text
+> vps-panel-frontend-guide.md
+> ```
+>
+> 重点参考 Frontend Guide 的：
+>
+> - Proxy / 节点列表
+> - Proxy 详情 Modal
+> - Proxy 新增 / 编辑 Modal
+> - 操作列
+> - Modal 固定规范
+>
+> 不要在本 Phase 另做一套 Proxy 页面布局。
+
+
+## 目标
+
+在 Phase 8B 的受管 Xray 上实现第一个真实 Proxy。
+
+第一版 VLESS 固定：
+
+```text
+协议：VLESS
+传输：TCP
+Flow：XTLS Vision
+```
+
+用户只在安全层二选一：
+
+```text
+TLS
+REALITY
+```
+
+因此第一版必须同时支持：
+
+```text
+VLESS + TCP + TLS + XTLS Vision
+VLESS + TCP + REALITY + XTLS Vision
+```
+
+并且两种安全模式都支持客户端：
+
+```text
+xtls-rprx-vision
+xtls-rprx-vision-udp443
+```
+
+不要把 XTLS Vision 推迟到以后。
+
+---
+
+## 13.1 第一版 UI 边界
+
+新增 VLESS Proxy 时，第一版建议呈现：
+
+```text
+协议
+VLESS                     固定
+
+传输
+TCP                       固定
+
+安全
+○ TLS
+○ REALITY                 用户二选一
+
+Flow
+XTLS Vision               固定
+
+允许 UDP/443 / QUIC
+○ 关闭
+○ 开启                    用户二选一
+```
+
+不要把第一版做成协议组合器。
+
+不要提供：
+
+- Transport 任意下拉组合
+- Flow = none
+- Flow 自定义字符串
+- security 自定义字符串
+- 任意 Xray JSON 编辑器
+
+第一版只有两个明确模板：
+
+```text
+TLS + XTLS Vision
+REALITY + XTLS Vision
+```
+
+---
+
+## 13.2 服务端固定语义
+
+两种模式都固定：
+
+```text
+protocol = vless
+network = tcp
+client.flow = xtls-rprx-vision
+```
+
+TLS 模式：
+
+```text
+security = tls
+```
+
+REALITY 模式：
+
+```text
+security = reality
+```
+
+第一版不做：
+
+- WebSocket transport
+- gRPC transport
+- HTTPUpgrade
+- XHTTP
+- VLESS + TCP + none
+- VLESS + TCP + TLS + no flow
+- VLESS + TCP + REALITY + no flow
+- VMess
+- Trojan
+- 多 transport 自动组合
+
+先把这两套固定组合做稳定。
+
+---
+
+## 13.3 TLS 模式
+
+TLS 分支至少能够管理：
+
+```text
+listen address
+listen port
+UUID / Client credential
+server_name / SNI
+certificate
+private key
+fingerprint（客户端输出需要时）
+```
+
+证书处理第一版保持最小。
+
+至少要能够让一条 TLS + XTLS Vision Proxy 真正可用，但不要为了本 Phase 顺手实现完整 ACME / DNS Provider / 自动续签平台。
+
+证书来源的具体 UX 在实现本 Phase 时根据现有代码选择最小方案，例如：
+
+```text
+用户提供已有证书 / 私钥
+```
+
+或者一个同等简单且安全的受管方式。
+
+无论采用哪种方式：
+
+- TLS private key 属于敏感数据
+- 不写普通日志
+- 不通过不必要的 API 反复返回
+- Agent 只写入 VPS Panel 自己管理的文件
+- 文件权限必须收紧
+
+不要照抄 3x-ui / x-ui 的证书管理代码。
+
+---
+
+## 13.4 REALITY 模式
+
+REALITY 分支至少能够管理：
+
+```text
+listen address
+listen port
+UUID / Client credential
+server_name / SNI
+dest / target
+private_key
+public_key
+short_id
+fingerprint（用于客户端输出）
+```
+
+创建 REALITY Proxy 时：
+
+- private key / public key 必须成对管理
+- 不要求用户必须手工提前生成
+- 可以由 Agent 或 Panel 中受控代码调用 Xray 官方能力生成
+- private key 属于敏感数据
+- private key 不写普通日志
+- API 不应在无必要时反复返回 private key
+- 分享 / 订阅只使用客户端真正需要的 public key 等字段
+
+不要复制 3x-ui / x-ui 的 REALITY 密钥生成代码。
+
+优先使用 Xray 官方能力或官方二进制完成。
+
+---
+
+## 13.5 XTLS Vision 与 UDP/443
+
+服务端 Client flow 在 TLS / REALITY 两种模式下都始终是：
+
+```text
+xtls-rprx-vision
+```
+
+客户端导出 / 分享时支持：
+
+```text
+普通 Vision：
+xtls-rprx-vision
+
+允许 UDP/443 / QUIC：
+xtls-rprx-vision-udp443
+```
+
+映射规则：
+
+```text
+允许 UDP/443 / QUIC = 关闭
+→ client flow = xtls-rprx-vision
+
+允许 UDP/443 / QUIC = 开启
+→ client flow = xtls-rprx-vision-udp443
+```
+
+`xtls-rprx-vision-udp443` 是客户端行为。
+
+不要：
+
+- 服务端额外监听 UDP/443
+- 把服务端 flow 改成 `xtls-rprx-vision-udp443`
+- 把它做成第二个 Proxy 协议
+- 因为这个选项额外启动一个 Xray inbound
+
+客户端本地入口 / TUN 是否支持 UDP 由具体客户端负责；VPS Panel 只负责生成正确节点参数。
+
+---
+
+## 13.6 数据库
+
+本阶段创建：
+
+```text
+proxies
+```
+
+最小字段：
 
 ```text
 id
 server_id
-type
-version
-status
-config_path
-service_name
+name
+protocol
+listen_port
+enabled
+config_json
 created_at
 updated_at
 ```
 
-不要提前创建全部字段。
-
----
-
-# 12. Phase 8B：Xray 生命周期
-
-实现：
-
-- Install
-- Version
-- Start
-- Stop
-- Restart
-- Status
-- Update
-- ValidateConfig
-
-Panel 通过 Agent 结构化 Task 调用。
-
-不要允许 Panel 发任意 shell。
-
----
-
-# 13. Phase 9A：Proxy 基础
-
-## 目标
-
-先支持一个协议。
-
-建议第一版：
+其中：
 
 ```text
-VLESS
+protocol = vless
 ```
 
-尤其可以优先支持你常用的：
+`public_host` 为可空的公开连接地址字段。
+
+语义：
 
 ```text
-VLESS Reality
+public_host = 空
+→ 分享 / 订阅时使用 Server IP
+
+public_host = jp.example.com
+→ 分享 / 订阅时使用 jp.example.com
 ```
+
+第一版 UI 可以把它显示为：
+
+```text
+节点域名（可选）
+```
+
+该字段只表示客户端连接地址，不改变：
+
+- Xray 服务端监听地址
+- Server 实际 IP
+- DNS 记录
+- TLS / REALITY 的 SNI / server_name
+- REALITY dest / target
+
+Panel 不负责自动创建、修改或验证 DNS 解析，只保存用户填写的已关联域名。
+
+第一版 `config_json` 只保存 VPS Panel 当前支持的：
+
+```text
+TCP
+TLS | REALITY
+XTLS Vision
+client_udp443
+```
+
+以及对应安全分支真正需要的字段。
+
+不要保存整份用户可编辑的原始 Xray JSON。
+
+Panel 后端必须自己：
+
+- 根据 `security` 分支校验
+- 校验 UUID
+- 校验端口
+- 校验 TLS 必需字段
+- 校验 REALITY 必需字段
+- 固定 `transport = tcp`
+- 固定服务端 `flow = xtls-rprx-vision`
+- 生成规范 desired state
+
+然后由 Agent renderer 生成 Xray 配置。
 
 ---
 
-## 12.1 Proxy 模型
+## 13.7 desired state
 
-关系：
+Panel 修改 Proxy 后：
+
+```text
+数据库保存
+↓
+desired_state_version + 1
+↓
+WS config_changed
+↓
+Agent GET /api/agent/config
+↓
+根据该 Server 的所有 Proxy 重新生成完整 Xray candidate config
+↓
+Xray 官方配置校验
+↓
+保存 previous
+↓
+原子替换
+↓
+restart / reload
+↓
+health check
+├── success → POST config/result success
+└── failed  → rollback → POST config/result failed
+```
+
+Agent 不对正式 Xray 配置做局部 `sed` 修改。
+
+---
+
+## 13.8 分享 / 客户端参数边界
+
+Phase 9A 可以先保存并验证生成客户端配置所需的数据，但完整订阅 / 二维码 UI 仍放到后续分享阶段。
+
+TLS 模式至少能够正确表达：
+
+```text
+address
+port
+uuid
+security = tls
+network = tcp
+sni
+fingerprint
+flow
+```
+
+REALITY 模式至少能够正确表达：
+
+```text
+address
+port
+uuid
+security = reality
+network = tcp
+sni
+public key
+short id
+fingerprint
+flow
+```
+
+客户端 `flow` 根据 `client_udp443` 派生。
+
+客户端连接地址统一按：
+
+```text
+如果 Proxy.public_host 非空
+→ address = public_host
+
+否则
+→ address = Server IP
+```
+
+例如：
+
+```text
+Server IP = 1.2.3.4
+public_host = jp.example.com
+```
+
+生成的节点连接地址使用：
+
+```text
+jp.example.com:端口
+```
+
+而不是：
+
+```text
+1.2.3.4:端口
+```
+
+这里只替换客户端节点链接中的连接 host，不自动修改 SNI、证书域名、REALITY server_name 或其他安全参数。
+
+不要在分享链接 / 配置中加入：
+
+```text
+3x-ui
+x-ui
+marzban
+xboard
+v2board
+vps-panel
+panel-managed
+```
+
+等非协议必要标识。
+
+节点 remark 默认只使用用户设置的节点名称。
+
+---
+
+## 13.9 原创实现硬性要求
+
+实现本 Phase 时可以研究：
+
+- Xray 官方文档
+- Xray 官方示例
+- Xray 上游源码
+- 其他代理面板提供了哪些功能
+- 第三方面板某些可优化的高层代码职责划分
+
+但不得从 3x-ui / x-ui / Marzban / Xboard / V2Board / 其他机场面板：
+
+- 复制 VLESS / TLS / REALITY / XTLS 配置生成函数
+- 复制数据结构
+- 复制 API
+- 复制数据库 schema
+- 复制前端表单
+- 复制字段命名体系
+- 复制安装脚本
+- 复制 systemd 配置
+- 复制错误处理和日志文案
+- 复制配置模板后只改变量名
+- 复刻能够明显识别出原面板的 UI / 交互
+
+允许借鉴的是：
+
+```text
+功能
+协议能力
+用户流程
+职责划分
+可验证的工程思路
+```
+
+最终实现必须回到 VPS Panel 自己的：
+
+```text
+数据模型
+Agent API
+目录结构
+命名
+renderer
+validator
+apply / rollback
+```
+
+重新独立设计和编写。
+
+Code Review 时如果发现实现和某个第三方面板高度同构，应当重写成 VPS Panel 自己的实现。
+
+本 Phase 的协议依据优先来自 Xray 官方行为，而不是某个面板的私有实现。
+
+---
+
+## 13.10 验收
+
+至少验证：
+
+1. 可以在指定 Server 创建 VLESS Proxy。
+2. Transport 第一版固定为 TCP。
+3. Flow 第一版固定为 XTLS Vision。
+4. 用户可以选择 TLS 或 REALITY。
+5. TLS 模式可以正常生成并应用 Xray 配置。
+6. REALITY 模式可以正常生成并应用 Xray 配置。
+7. TLS 与 REALITY 服务端 client flow 都是 `xtls-rprx-vision`。
+8. 两种安全模式都能生成普通 Vision 客户端参数。
+9. 两种安全模式都能生成 `xtls-rprx-vision-udp443` 客户端参数。
+10. 开启 UDP/443 选项不会让服务端新增 UDP/443 listener。
+11. UDP/443 选项不会改变服务端 inbound flow。
+12. TLS private key 不出现在普通日志。
+13. REALITY private key 不出现在普通日志。
+14. REALITY private/public key 与 short id 可以正确生成、保存和读取。
+15. TLS / REALITY 条件字段不会互相错误要求。
+16. 修改 Proxy 后只增加 desired state version，不生成通用 task。
+17. Agent 使用完整 candidate config 应用。
+18. 配置校验失败不会覆盖当前可用配置。
+19. restart / health check 失败会回滚 previous。
+20. 分享 / 客户端配置中不出现第三方面板品牌或非必要 Panel 标识。
+21. 实现代码无第三方面板复制痕迹。
+22. Proxy 可以保存可选 `public_host`。
+23. `public_host` 为空时，客户端连接地址回退到 Server IP。
+24. `public_host` 非空时，客户端连接地址优先使用该域名。
+25. 设置 `public_host` 不会修改 Xray listener、Server IP、SNI / server_name 或 DNS。
+26. gofmt / go test / go build / 前端 build 通过。
+
+完成 Phase 9A 后停止。
+不要继续 Shadowsocks。
+
+---
+
+# 14. Phase 9B：Shadowsocks Proxy
+
+> Shadowsocks 与 VLESS 共用同一套 Proxy 页面骨架。
+>
+> UI 继续参考 `vps-panel-frontend-guide.md` 的 Proxy 列表与 Modal 规范。
+>
+> 对 Shadowsocks 不适用的“传输 / 安全层 / 流控”列统一显示 `--`，不要为了填满表格制造虚假概念。
+
+
+在第一版 VLESS（TLS / REALITY + XTLS Vision）稳定后，同一套 `proxies` 表增加：
+
+```text
+protocol = shadowsocks
+```
+
+第一版只支持明确选定的 Shadowsocks 方法。
+
+仍然由同一个 Xray 承载：
 
 ```text
 Server
-└── CoreInstance
-    └── Proxy
+└── Agent
+    └── Xray
+        ├── VLESS
+        └── Shadowsocks
 ```
 
-Proxy 保存协议配置。
-
-不要把 Client 凭据全部直接堆在 Proxy 主表。
-
----
-
-# 14. Phase 9B：更多 Proxy 协议
-
-Xray VLESS 稳定后，再逐个增加：
-
-- Shadowsocks
-- Trojan
-- VMess（如果确实需要）
-
-Hysteria2 等根据 Core 能力再安排。
-
-不要为了“协议大全”一次铺开。
+不要因为增加第二种协议就引入 `CoreInstance` 或插件系统。
 
 ---
 
 # 15. Phase 10：Client
 
-## 目标
+> 如果本 Phase 需要新增 Client UI，默认作为 Proxy 详情 / 编辑流程的一部分。
+>
+> 优先继续使用 Frontend Guide 的 Proxy Modal 结构，不要为了 Client 单独创建新的页面骨架，除非后续真实需求证明 Modal 无法合理承载。
 
-支持一个 Proxy 多个 Client。
+
+只有在真实需要“一条 Proxy 多个凭据”时再实现 Client。
+
+关系：
+
+```text
+Proxy
+└── Client
+```
 
 例如：
 
 ```text
-VLESS Reality
+VLESS
 ├── PC
 ├── Android
 └── iPhone
 ```
 
-Client 以后可能有：
+第一版 Client 只保存当前必要字段，例如：
 
 - name
-- UUID / password
-- enable
-- expiry
-- traffic limit
-- usage
+- credential / UUID
+- enabled
 
-但第一版只做当前必要字段。
+expiry、流量额度、单用户统计等以后按真实需求增加。
+
+如果当前 Proxy 一份凭据已经够用，可以推迟本 Phase。
 
 ---
 
-# 16. Phase 11A：Realm 安装与生命周期
+# 16. Phase 11：Realm 与 Relay
+
+> Realm / Relay 的业务模型、desired state 和 Agent 应用流程以本文为准。
+>
+> Realm 列表、入口 IP、监听端口、目标 Host / IP、目标端口、Network、状态、操作列，以及详情 / 新增 / 编辑 Modal，统一参考：
+>
+> ```text
+> vps-panel-frontend-guide.md
+> ```
+>
+> Server / Proxy / Realm 必须保持同一套列表视觉语言和 Modal 交互，不允许 Realm 单独做成另一种页面风格。
+
 
 ## 目标
 
-统一 Agent 开始支持 Realm。
+不再拆成“Realm 生命周期”和“Relay”两个独立大阶段。
 
-仍然使用同一个：
+同一个 Agent 通过 desired state 同步 Realm：
 
 ```text
-vps-panel-agent
+Server
+└── Agent
+    └── Realm
+        ├── Relay A
+        └── Relay B
 ```
 
-禁止独立 Realm Agent。
+建议受管位置：
 
-Agent 内部新增 Realm 管理模块即可。
+```text
+/etc/vps-panel/realm/config.toml
+vps-panel-realm.service
+```
 
-实现：
+数据库增加最小：
 
-- Install Realm
-- Version
-- Start
-- Stop
-- Restart
-- Status
+```text
+relays
+```
 
----
-
-# 17. Phase 11B：Relay 规则
-
-创建 Relay：
+创建 Relay 时保存：
 
 ```text
 源 Server
 监听地址
 监听端口
-目标
-TCP / UDP
+目标类型
+目标 Proxy 或 host:port
+enabled
 ```
 
-目标支持两类：
-
-### 选择已有 Proxy
-
-Panel 自动解析：
+Agent 每次根据该 Server 的全部 Relay：
 
 ```text
-Proxy
+重新生成完整 Realm config
 ↓
-Server
+校验
 ↓
-目标地址
+原子替换
 ↓
-Proxy Port
+restart / reload
+↓
+健康检查
+↓
+失败回滚
 ```
 
-### 手工目标
+不创建独立 Realm Agent。
 
-```text
-host
-port
-```
-
-不要把目标限制成 Server ID。
+不创建 AccessEndpoint 表。
 
 ---
 
-# 18. Phase 12：AccessEndpoint
+# 17. Phase 12：分享与订阅
 
-创建 Relay 成功后，为目标 Proxy 增加接入 Endpoint。
+> 分享 / 订阅的数据生成规则以本文为准。
+>
+> `public_host` 在 Proxy 列表中的次级显示、详情 Modal 中的位置、复制按钮和节点信息密度统一参考：
+>
+> ```text
+> vps-panel-frontend-guide.md
+> ```
+>
+> Frontend Guide 只决定展示方式；`public_host` 优先级、Server IP 回退和 Realm 接入地址规则仍以本文为准。
 
-例如：
 
-```text
-Proxy: US VLESS
-├── Direct
-│   └── us.example.com:443
-│
-├── JP Relay
-│   └── jp.example.com:9502
-│
-└── HK Relay
-    └── hk.example.com:9503
-```
-
-三条都使用同一 Proxy 和 Client 凭据。
-
-删除 Relay：
-
-```text
-删除 Relay
-↓
-删除对应 Endpoint
-```
-
-不得删除 Proxy 或 Client。
-
----
-
-# 19. Phase 13：Chain
-
-等单级 Realm 稳定以后再做多跳。
-
-例如：
-
-```text
-JP → Seattle → LA Home
-```
-
-Chain 应描述路径。
-
-最终对用户可以表现为一个逻辑 AccessEndpoint。
-
-不要让订阅系统理解每一级 Realm 的实现细节。
-
----
-
-# 20. Phase 14：分享与订阅
-
-到这一阶段才生成：
+到这一阶段再生成：
 
 - VLESS URI
 - SS URI
 - 二维码
-- Clash/Mihomo 配置
-- sing-box 配置
+- Clash / Mihomo 配置
+- sing-box 客户端配置
 - 订阅链接
 
-核心生成逻辑：
+生成直连节点：
 
 ```text
-Client Credentials
+Proxy credentials
 +
-Proxy Protocol Config
+连接 host
 +
-AccessEndpoint host/port
-=
-最终客户端节点
+Proxy listen_port
 ```
 
-这正是为什么：
+其中连接 host 的选择规则固定为：
 
-- Client 必须属于 Proxy
-- Relay 不应该复制 Proxy
-- Endpoint 必须独立存在
+```text
+Proxy.public_host 非空
+→ 使用 public_host
+
+Proxy.public_host 为空
+→ 使用 Proxy 所在 Server 的 IP
+```
+
+例如：
+
+```text
+Server IP:
+1.2.3.4
+
+Proxy.public_host:
+jp.example.com
+```
+
+原本客户端地址：
+
+```text
+1.2.3.4:443
+```
+
+自动生成：
+
+```text
+jp.example.com:443
+```
+
+这个替换只发生在：
+
+- VLESS URI
+- Shadowsocks URI
+- 二维码
+- Clash / Mihomo 客户端配置
+- sing-box 客户端配置
+- 订阅输出
+
+不会修改服务端 Xray / Realm 实际监听配置。
+
+Panel 不负责自动修改 DNS。
+
+生成 Realm 接入节点：
+
+```text
+同一个 Proxy credentials
++
+Relay listen host / port
+```
+
+Realm 接入节点的地址优先使用 Relay 自己的公开接入地址 / 域名（如果未来 Relay 提供该字段），
+而不是目标 Proxy 的 `public_host`。
+
+也就是说：
+
+```text
+直连节点
+→ Proxy.public_host 或 Server IP
+
+Realm 接入节点
+→ Relay 的接入 host / port
+```
+
+所以：
+
+> Realm 接入方式是由 Proxy + Relay 派生出的客户端地址，不需要单独持久化 AccessEndpoint。
+
+删除 Relay 只会让对应的 Realm 接入方式消失，不删除 Proxy / Client。
+
+当前不做多跳 Chain。
 
 ---
+
+# 18. Phase 13：完整 ZIP 备份、恢复与跨 VPS 迁移
 
 # 21. Phase 15：完整 ZIP 备份、恢复与跨 VPS 迁移
 
@@ -2696,12 +3759,9 @@ vps-panel-backup.zip
 - agent_enrollments
 - agents
 - Agent Token hash
-- CoreInstance
 - Proxy
-- Client
+- Client（如果已经实现）
 - Relay
-- AccessEndpoint
-- Chain
 - Subscription
 - Panel 持久化设置
 - 未来数据库之外真正必需的加密密钥/secret
@@ -2771,12 +3831,10 @@ Panel 版本
 admin 数量
 vip 数量
 Server 数量
-CoreInstance 数量
 Proxy 数量
-Client 数量
+Client 数量（如果已实现）
 Relay 数量
-AccessEndpoint 数量
-Chain 数量
+Subscription 数量（如果已实现）
 ```
 
 对于尚未实现的资源类型可以不显示，不需要为了预览提前创建未来表。
@@ -2907,11 +3965,13 @@ https://new.example.com
 
 为了继续满足“无需逐台手工调整 Agent”，后续必须提供受控的 Panel 地址迁移能力。
 
-建议在真正实现迁移 Phase 时加入结构化 Agent Action：
+建议在真正实现迁移 Phase 时加入一个**专用的一次性安全操作**：
 
 ```text
 update_panel_url
 ```
+
+它是 desired-state 同步之外的少数例外，不因此建立通用 Task Runner。
 
 由旧 Panel 在迁移前向在线 Agent 下发新的 Panel URL，Agent 验证后持久化。
 
@@ -2974,7 +4034,7 @@ format_version
 5. 上传 ZIP。
 6. 原 admin / vip 可以直接登录。
 7. Server 关系完整。
-8. 已实现的 Proxy / Client / Relay 等关系完整。
+8. 已实现的 Proxy / Client / Relay / Subscription 等关系完整。
 9. ID / 外键无需人工处理。
 10. 同域名迁移后 Agent 可使用原长期 Token 重连。
 11. 损坏 ZIP 被拒绝且当前数据不受影响。
@@ -2988,16 +4048,16 @@ format_version
 
 ---
 
-# 22. Phase 16：完善
+# 19. Phase 14：完善
 
 后续再考虑：
 
 - Metrics 历史图
-- Core 日志
+- Xray / Realm 日志
 - Proxy 流量
 - Client 流量
 - Agent 自动更新
-- Core 自动更新
+- Xray 自动更新
 - Realm 自动更新
 - Panel 地址迁移体验完善
 - 操作日志
@@ -3008,11 +4068,21 @@ format_version
 
 ---
 
-# 23. 通信协议长期原则
+# 20. 通信协议长期原则
 
-Agent 与 Panel 的 WebSocket 后续消息可以逐步增加。
+通信分成两类，不混在一起：
 
-初期：
+```text
+WebSocket
+= 在线状态、heartbeat、system_info、metrics、config_changed 通知
+
+REST
+= desired state 拉取、同步结果、以后真正需要的流量上报
+```
+
+现有 WebSocket 消息继续逐步增加。
+
+Heartbeat：
 
 ```json
 {
@@ -3044,35 +4114,44 @@ Metrics：
 }
 ```
 
-任务：
+配置变化通知：
 
 ```json
 {
-  "type": "task",
-  "id": "...",
-  "action": "restart_core",
-  "payload": {}
+  "type": "config_changed",
+  "version": 18
 }
 ```
 
-结果：
+Agent 收到通知后：
 
-```json
-{
-  "type": "task_result",
-  "id": "...",
-  "success": true,
-  "payload": {}
-}
+```text
+GET /api/agent/config
 ```
 
-但：
+不要通过 WebSocket 传完整 Xray / Realm 配置。
 
-> 不要现在一次性定义完整协议。
+不要设计：
 
-只在每个 Phase 新增当前真正需要的消息类型。
+```text
+task
+task_result
+restart_core
+create_proxy
+delete_proxy
+create_relay
+```
 
----
+这类通用 RPC 协议。
+
+资源变更统一表现为：
+
+> Panel 中 desired state 发生变化，Agent 拉取完整目标状态并收敛。
+
+只有极少数无法通过目标状态表达的一次性安全操作，才单独增加专用消息，并逐个设计。
+
+
+# 21. 数据库长期原则
 
 # 24. 数据库长期原则
 
@@ -3103,22 +4182,20 @@ users.role = admin | vip
 - 字段
 - 索引
 
-禁止创建空的未来表：
+禁止创建空的未来表。
 
-```text
-chains
-endpoints
-proxies
-clients
-cores
-tasks
-```
+当前明确：
 
-除非当前 Phase 已经开始使用它们。
+- `proxies` 只在 VLESS Phase 真正开始时创建。
+- `clients` 只在真实需要一条 Proxy 多凭据时创建。
+- `relays` 只在 Realm Phase 真正开始时创建。
+- 当前不创建 `cores` / `tasks` / `endpoints` / `chains`。
+
+未来出现第二个真实代理后端或真正的多跳需求时，再重新评估数据模型。
 
 ---
 
-# 25. 安全原则
+# 22. 安全原则
 
 ## 密码
 
@@ -3163,17 +4240,27 @@ Agent 长期 Token：
 
 ---
 
-## 任务系统
+## 配置同步与远程控制
 
-未来远程控制：
+代理配置以 desired state 同步为主。
 
-> 必须采用白名单 Action。
+Agent：
+
+- 只管理 VPS Panel 自己拥有的配置文件 / systemd unit
+- 完整生成 candidate config
+- 配置校验通过后才替换
+- 原子替换
+- 重启 / 重载后做健康检查
+- 失败自动回滚
+- 真正应用完成后才回报 success
 
 禁止任意命令执行 API。
 
+不要为了资源增删改建立通用 Task Runner。
+
 ---
 
-# 26. 部署原则
+# 23. 部署原则
 
 Panel 默认：
 
@@ -3210,49 +4297,76 @@ systemd
 
 ---
 
-# 27. 前端原则
+# 24. 前端原则
 
-当前只使用简体中文。
-
-不要引入 i18n，除非未来明确提出多语言需求。
-
-技术名词可以保留：
-
-- VPS
-- Agent
-- SQLite
-- API
-- WebSocket
-- Xray
-- sing-box
-- Mihomo
-- Realm
-- VLESS
-- Shadowsocks
-
-普通 UI 文案使用中文。
-
-后端状态：
+前端第一目标仍然是：
 
 ```text
-pending
-online
-offline
+清晰
+稳定
+信息密度合理
+不阻塞功能开发
 ```
 
-保持英文内部值。
-
-前端映射：
+详细 UI 规范不在本文重复维护，统一参考：
 
 ```text
-pending → 待注册
-online  → 在线
-offline → 离线
+vps-panel-frontend-guide.md
+```
+
+本文只保留以下总原则：
+
+- 不提前引入 Vue Router / Pinia / 新 UI Framework。
+- 不为了单个 Phase 重做导航和页面骨架。
+- Server / Proxy / Realm 使用统一列表风格。
+- Sidebar、主内容、列表容器位置保持稳定。
+- 查看详情统一使用 Modal。
+- 新增 / 编辑优先使用 Modal。
+- 只有真实页面开始增长时才做最小组件拆分。
+- 不做复杂 Dashboard、地图、过度动画或大型设计系统。
+- Komari 只可参考空间利用和信息密度，不复制代码、品牌、配色或页面实现。
+
+如果 Codex 任务涉及任何前端改动：
+
+```text
+先读本文相关 Phase
+↓
+再读 vps-panel-frontend-guide.md
+↓
+只实现当前 Phase 对应 UI
 ```
 
 ---
 
-# 28. Codex 开发规则
+# 25. Codex 开发规则
+
+## 第三方代理面板代码参考禁令（硬性）
+
+Codex 在实现 Xray / VLESS / XTLS / Shadowsocks / Realm / Subscription 等功能时：
+
+- 可以阅读第三方开源面板了解功能。
+- 可以总结其设计优缺点。
+- 可以借鉴抽象层级、错误处理顺序、配置验证思路等高层结构。
+- 不得复制源代码。
+- 不得逐函数翻译。
+- 不得在复制代码后仅修改变量名 / 文件名 / 注释。
+- 不得复刻第三方面板 API / 数据库 / 前端表单。
+- 不得把第三方面板特征字符串带入 VPS Panel。
+
+如需要确认协议字段，优先查官方文档 / 官方示例 / 上游源码。
+
+如果第三方面板代码是唯一参考来源且无法独立确认行为：
+
+> 先停止该细节实现，记录待确认点；不要直接抄第三方实现。
+
+每次涉及第三方面板研究时，完成报告需要说明：
+
+```text
+参考了哪些“功能/行为”
+哪些实现是 VPS Panel 独立设计
+确认没有复制第三方代码/模板/品牌特征
+```
+
 
 每次给 Codex 一个 Phase 时，必须遵守以下原则。
 
@@ -3276,13 +4390,14 @@ offline → 离线
 
 ## 28.3 禁止未来脚手架
 
-不要创建：
+不要提前创建未来后端脚手架。
 
-```text
-agent/core/xray
-agent/core/singbox
-agent/relay/realm
-```
+例如：
+
+- Phase 8A 只做 config API 时，不创建 Xray / Realm renderer。
+- 真正进入 Xray Phase 时再创建最小 Xray 管理代码。
+- 真正进入 Realm Phase 时再创建最小 Realm 管理代码。
+- 不提前创建 sing-box / Mihomo adapter。
 
 除非当前 Phase 已经真正开始实现该功能。
 
@@ -3306,13 +4421,15 @@ agent/relay/realm
 
 ## 28.5 接口只在真实需要时创建
 
-不要因为“以后可能有多个 Core”就在 Phase 5 创建：
+不要因为“以后可能有多个代理后端”就先创建：
 
 ```go
-type Core interface {}
+type Backend interface {}
 ```
 
-真正开始出现多个真实实现时再抽象。
+第一版直接把 Xray 做好。
+
+真正出现第二个真实实现并且重复代码已经明确时，再抽象接口。
 
 ---
 
@@ -3341,7 +4458,12 @@ Codex 指令最后应明确：
 
 ---
 
-# 29. 推荐实际开发顺序
+# 26. 推荐实际开发顺序
+
+> 从 Phase 7A 开始，只要某个 Phase 涉及 Server / Proxy / Realm / Subscription UI，就同时执行对应的 Frontend Guide 规范。
+>
+> Frontend Guide 不单独占用一个 Phase，它是所有前端相关 Phase 的横向约束。
+
 
 从当前版本开始：
 
@@ -3368,53 +4490,51 @@ Phase 7A
 机器网卡累计流量 + 月流量额度 / 重置
         ↓
 Phase 7B
-实时上下行速度
-        ↓
-Phase 7C
 服务器分组 / 标签 / 筛选
         ↓
 第一阶段服务器管理 MVP
         ↓
 Phase 8A
-Core 基础模型
+通用 Agent desired-state API
         ↓
 Phase 8B
-Xray 生命周期
+Xray 托管基础 + 安全配置应用
         ↓
 Phase 9A
-VLESS Proxy
+VLESS + TCP + TLS / REALITY + XTLS Vision（含 client udp443）
         ↓
 Phase 9B
-更多协议
+Shadowsocks Proxy
         ↓
 Phase 10
-Client
+Client（真实需要时）
         ↓
-Phase 11A
-Realm 生命周期
-        ↓
-Phase 11B
-Relay
+Phase 11
+Realm + Relay
         ↓
 Phase 12
-AccessEndpoint
-        ↓
-Phase 13
-Chain
-        ↓
-Phase 14
 订阅 / 分享
         ↓
-Phase 15
+Phase 13
 完整 ZIP 备份 / 恢复 / 跨 VPS 迁移
         ↓
-Phase 16
+Phase 14
 完善功能
 ```
 
----
+当前路线明确不单独安排：
 
-# 30. 当前下一步
+```text
+CoreInstance Phase
+AccessEndpoint Phase
+Chain Phase
+通用 Task System Phase
+```
+
+如果以后真实需求出现，再增加，不提前占用当前路线。
+
+
+# 27. 当前下一步
 
 Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A 和 Phase 6B 已完成。
 
@@ -3424,11 +4544,11 @@ Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A 和 Phase 6B 已完成。
 Phase 7A：机器网卡流量、月流量额度与重置周期
 ```
 
-完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在核心业务数据模型基本稳定后的 Phase 15，避免当前每新增一张业务表就反复重写备份格式。
+完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
 ---
 
-# 31. Phase 模板
+# 28. Phase 模板
 
 以后每个新 Phase 的 Codex 指令最好按下面结构写：
 
@@ -3437,7 +4557,9 @@ Phase 7A：机器网卡流量、月流量额度与重置周期
 
 开始前：
 - 阅读 AGENTS.md。
+- 阅读当前 Phase。
 - 阅读与当前功能直接相关的已有代码。
+- 如果本 Phase 修改前端，阅读 `vps-panel-frontend-guide.md`。
 - 严格最小实现。
 
 当前已有：
@@ -3462,6 +4584,7 @@ Panel：
 
 前端：
 - ...
+- 如果修改 UI，遵守 `vps-panel-frontend-guide.md`，不要重做页面骨架。
 
 安全：
 - ...
@@ -3485,7 +4608,7 @@ Panel：
 
 ---
 
-# 32. 最终架构图
+# 29. 最终架构图
 
 ```text
 Browser
@@ -3500,40 +4623,66 @@ Panel
 ├── Server Management
 ├── Agent Connections
 ├── Metrics
-├── Core Management
 ├── Proxy Management
-├── Client Management
+├── Client Management（需要时）
 ├── Relay Management
-├── Endpoint Management
-├── Chain Management
 └── Subscription
    │
-   │ WebSocket
-   ▼
-Server Agent
-├── System
-├── Network Metrics
-├── Task Runner
-├── Xray Module
-├── sing-box Module
-├── Mihomo Module
-└── Realm Module
-   │
-   ▼
-Linux Server
+   ├── REST: desired state / sync result
+   └── WebSocket: heartbeat / metrics / config_changed
+              │
+              ▼
+         Server Agent
+         ├── System
+         ├── Network Metrics
+         ├── Config Sync
+         ├── Xray Manager
+         └── Realm Manager
+              │
+              ▼
+         Linux Server
+```
+
+业务关系：
+
+```text
+Server
+├── Agent
+├── Proxy
+│   └── Client（需要时）
+└── Relay
+    └── target = Proxy 或 host:port
 ```
 
 固定原则再次强调：
 
 > 一台 Server 一个统一 Agent。
 
-> Proxy、Client、Relay、Endpoint 都不是 Agent。
+> 第一版代理后端固定 Xray；VLESS / Shadowsocks 都由同一个 Xray 管理。
 
-> Realm 转发产生 Endpoint，不复制 Proxy。
+> VLESS 第一版固定 `TCP + XTLS Vision`；安全层由用户在 `TLS / REALITY` 中二选一。两种模式的服务端 flow 都使用 `xtls-rprx-vision`，客户端都可以选择 `xtls-rprx-vision-udp443`。
 
-> Client 属于 Proxy。
+> 所有代理能力必须原创实现；第三方面板只能用于功能研究和高层工程思路参考，不得复制代码、模板、API、Schema、UI 或品牌特征。
 
-> Relay 的目标最终必须落到具体 Proxy 或 host:port，而不是只指向 Server。
+> Panel 不直接操作 `/etc/xray/config.json`，只保存业务目标状态。
+
+> Agent 通过 REST 拉取完整 desired state；WebSocket 只负责实时状态和 `config_changed` 通知。
+
+> Agent 只管理 VPS Panel 自己拥有的 Xray / Realm 配置和 systemd unit，不自动接管第三方配置。
+
+> 配置更新必须经过“生成 → 校验 → 原子替换 → 重启/重载 → 健康检查 → 失败回滚”。
+
+> Proxy 直接属于 Server；当前不需要 CoreInstance。
+
+> Realm Relay 不复制 Proxy。
+
+> Realm 接入地址由 Proxy + Relay 在分享/订阅时派生；当前不需要 AccessEndpoint 表。
+
+> Proxy 可以配置可选 `public_host`；直连节点分享时优先使用该域名，未设置时回退到 Server IP。该字段只影响客户端连接地址，不修改服务端监听、SNI、REALITY 参数或 DNS。
+
+> 当前不做 Chain；多跳等出现真实需求以后再设计。
+
+> Client 属于 Proxy，但只有真正需要多凭据时才建立 Client 表。
 
 > 第一个初始化账号是唯一 admin；邀请注册账号统一为 vip。
 
@@ -3545,7 +4694,9 @@ Linux Server
 
 > Panel 默认业务时区固定为 `Asia/Shanghai`；Server 到期、流量重置和周期显示都按上海时区。
 
-> 月流量允许人工校准当前周期已用值，并在下一周期自动清除校准偏移。
+> Agent 的机器流量功能只读取并上报网卡累计 RX / TX；不执行 Speedtest / iperf，不计算实时 RX/s / TX/s。
+
+> 机器累计流量复用现有 `metrics` WebSocket；第一版不增加独立 traffic API、实时速度采样器或流量历史表。
 
 > Server 支持轻量分组、标签和筛选。
 
@@ -3553,9 +4704,10 @@ Linux Server
 
 > 每个 Phase 只写当前需要的功能。
 
----
+> 所有前端相关 Phase 统一参考 `vps-panel-frontend-guide.md`；Sidebar、宽列表、固定容器、详情 Modal 是跨 Phase 的稳定前端约束。
 
-# 33. 修改记录区
+
+# 30. 修改记录区
 
 后续如果架构发生明确变化，在这里记录。
 
@@ -3577,12 +4729,26 @@ Linux Server
 - [x] Agent 主动连接 Panel。
 - [x] 不以 SSH 作为日常控制通道。
 - [x] 不开放任意 Shell API。
-- [x] Proxy 与 Server 分离。
+- [x] Proxy 直接属于 Server。
 - [x] Client 属于 Proxy。
 - [x] Realm Relay 不复制 Proxy。
-- [x] Relay 创建 AccessEndpoint。
-- [x] 后续支持 Xray / sing-box / Mihomo。
-- [x] 后续支持 Realm 和多跳 Chain。
+- [x] 第一版代理后端固定为 Xray。
+- [x] VLESS / Shadowsocks 第一版都由同一个 Xray 承载。
+- [x] VLESS 第一版固定 TCP + XTLS Vision。
+- [x] VLESS 第一版安全层允许 TLS / REALITY 二选一。
+- [x] 第一版同时支持 `VLESS + TCP + TLS + XTLS Vision` 和 `VLESS + TCP + REALITY + XTLS Vision`。
+- [x] TLS / REALITY 两种模式的服务端 flow 都固定为 `xtls-rprx-vision`。
+- [x] TLS / REALITY 两种模式的客户端第一版都支持 `xtls-rprx-vision-udp443`，该选项不改变服务端 listener / flow。
+- [x] 第三方代理面板只能用于功能和高层代码结构参考，禁止复制代码、模板、API、数据库、UI 或品牌特征。
+- [x] 外部分享 / 订阅 / 协议配置不主动加入任何面板品牌标识。
+- [x] Panel ↔ Agent 的代理配置采用 desired-state REST 同步。
+- [x] WebSocket 只负责 heartbeat / metrics / config_changed 等实时通知，不传整份配置。
+- [x] Agent 只管理 VPS Panel 自己拥有的 Xray / Realm 配置。
+- [x] 配置应用必须校验、原子替换、健康检查并支持失败回滚。
+- [x] 当前不建立 CoreInstance / AccessEndpoint / Chain 作为固定业务模型。
+- [x] Realm 接入地址由 Proxy + Relay 在分享/订阅时派生。
+- [x] Proxy 支持可选 `public_host`；分享 / 订阅时优先使用该域名，否则回退到 Server IP。
+- [x] 前端相关 Phase 统一受 `vps-panel-frontend-guide.md` 约束；Server / Proxy / Realm 使用固定 Sidebar、宽列表和详情 Modal，不允许各 Phase 自行重做页面骨架。
 - [x] 必须支持完整 ZIP 导出与导入恢复。
 - [x] 新 VPS 导入备份后，Panel 内部数据与关联关系不需要人工调整。
 - [x] 同域名跨 VPS 迁移时，Agent 应使用原长期凭据自动重连。
@@ -3593,37 +4759,78 @@ Linux Server
 - [x] 双向流量按 RX + TX 计费。
 - [x] 每台 Server 可独立设置每月流量重置日和时间。
 - [x] 服务器总流量直接从机器网卡计数，不依赖代理内核或 Realm 流量统计。
+- [x] Agent 流量功能只读取累计 RX / TX，不进行 Speedtest / iperf 等主动测速。
+- [x] 第一版不计算或展示实时 RX/s / TX/s。
+- [x] 网卡累计 RX / TX 复用现有 `metrics` WebSocket 上报，不增加独立 Traffic API。
+- [x] 第一版不保存流量历史时序，只保存最新网卡 baseline 与当前周期累计值。
+- [x] 第一版不做人工流量校准、流量阈值预警或概览流量汇总。
 - [x] Server 信息必须以类似 `100G（已用）/500G（总）` 的形式显示月流量。
 - [x] Panel 默认业务时区固定为 `Asia/Shanghai`。
-- [x] Server 到期、流量重置、流量周期和到期预警统一按上海时区。
 - [x] 每月重置日不存在时按当月最后一天执行。
-- [x] 支持人工校准当前周期已用流量。
-- [x] 流量校准使用当前周期偏移量，不修改 Linux 网卡计数器，不伪造 RX / TX。
-- [x] 当前周期重置后流量校准偏移自动归零。
-- [x] 流量默认在 80% / 90% / 100% 提供 UI 预警。
-- [x] 到期默认在 30 天 / 7 天 / 已过期提供 UI 预警。
-- [x] Server 详情显示流量周期起止、RX、TX、剩余量、使用率和校准值。
 - [x] 已注册 Server 支持重新安装 Agent 和长期凭据轮换。
 - [x] Server 支持轻量分组和多个标签。
-- [x] 服务器列表支持分组、标签、状态、到期和高流量筛选。
 - [x] ZIP 导入必须先显示预览，用户确认后才执行覆盖恢复。
 
 ## 待后续决定
 
 - [ ] Phase 6 系统信息最终表结构。
 - [ ] Metrics 是否保留历史以及保留周期。
-- [ ] 第一个 Proxy 具体支持哪些 VLESS 传输方式。
-- [ ] Xray CoreInstance 是否允许同 Server 多实例。
-- [ ] Realm 配置采用单进程多规则还是多实例管理。
-- [ ] AccessEndpoint 地址选择逻辑。
-- [ ] Chain 的最终数据模型。
+- [ ] VLESS TLS / REALITY 第一版除已固定的 TCP / XTLS Vision 和安全层二选一外，哪些高级 TLS / REALITY 参数需要开放给 UI。
+- [ ] Shadowsocks 第一版支持哪些 method。
+- [ ] Realm 配置采用单进程多规则还是其他最小实现。
 - [ ] Subscription 输出格式与权限机制。
+- [ ] 是否以及何时需要第二个代理后端（sing-box / Mihomo）；有真实需求再决定。
+- [ ] 是否以及何时需要多跳模型；有真实需求再决定。
 - [ ] vip 对业务资源的最终增删改边界（当前至少共享查看/使用，不做资源隔离）。
-- [ ] Phase 15 Backup ZIP 的最终 manifest 字段。
+- [ ] Phase 13 Backup ZIP 的最终 manifest 字段。
 - [ ] 跨域名迁移时 `update_panel_url` 的确认与安全机制。
 
 这些内容应在真正进入对应 Phase 时再决定，不提前实现。
 
+
+---
+
+## 2026-09-11 VLESS TLS / REALITY + XTLS 第一版与原创实现硬性约束
+
+在简化代理架构基础上追加固定要求：
+
+1. VLESS 第一版固定 `TCP + XTLS Vision`。
+2. 安全层由用户在 `TLS / REALITY` 中二选一。
+3. 第一版必须同时支持：
+   ```text
+   VLESS + TCP + TLS + XTLS Vision
+   VLESS + TCP + REALITY + XTLS Vision
+   ```
+4. TLS / REALITY 两种模式的服务端 Client flow 都固定为 `xtls-rprx-vision`。
+5. 两种模式的客户端第一版都支持 `xtls-rprx-vision` 与 `xtls-rprx-vision-udp443`。
+6. `xtls-rprx-vision-udp443` 仅作为客户端 UDP/443 / QUIC 行为选项，不增加服务端 UDP/443 listener，不改变服务端 flow。
+7. 第一版不支持 `Flow = none`，也不做任意 Transport / Security / Flow 组合器。
+8. TLS 与 REALITY 使用条件字段分支校验，不把两套参数混成一套必填表单。
+9. 代理协议实现优先依据 Xray 官方文档、官方示例和上游源码。
+10. 允许研究 3x-ui、x-ui、Xboard、Marzban、V2Board 等代理面板的功能和高层工程思路。
+11. 严禁复制或近似复刻第三方面板源代码、配置模板、API、数据库 schema、安装脚本、systemd unit、前端 UI、注释、错误文案和命名体系。
+12. 不允许出现“改变量名后提交”的第三方代码搬运。
+13. 分享链接、订阅配置和协议必要字段中不主动加入 3x-ui / x-ui / VPS Panel 等面板品牌特征。
+14. 第三方实现与官方协议行为冲突时，以官方协议 / 上游实现为准。
+
+---
+
+## 2026-09-11 简化代理管理架构
+
+本次覆盖此前较重的 Core / Endpoint / Chain 设计：
+
+1. 第一版不创建 `CoreInstance`，Proxy 直接属于 Server。
+2. 第一版代理后端固定为 Xray，优先支持 VLESS（TCP + TLS / REALITY + XTLS Vision）和 Shadowsocks。
+3. Panel 与 Agent 使用通用的 desired-state API：REST 拉配置 / 回报结果，WebSocket 只发 `config_changed` 通知。
+4. 不为 Proxy / Relay 增删改建立通用 Task Runner。
+5. Agent 每次根据完整 desired state 重新生成 VPS Panel 自己拥有的 Xray / Realm 配置。
+6. Xray / Realm 配置必须先校验，再原子替换；重启或健康检查失败必须自动回滚。
+7. 第一版不自动接管或合并用户已有的第三方 Xray / Realm 配置。
+8. Realm 与 Relay 合并为一个开发阶段；Relay 可指向已有 Proxy 或手工 host:port。
+9. 第一版不创建 `AccessEndpoint` 表；Realm 接入节点由 Proxy + Relay 在分享 / 订阅阶段动态组合。
+10. 当前不实现 `Chain`；多跳出现真实需求后再设计。
+11. sing-box / Mihomo 不作为当前固定路线，只有出现第二个真实后端需求时才增加，并优先复用现有 Agent API，而不是提前建立插件框架。
+12. 完整 ZIP 备份调整到 Phase 13；完善功能调整到 Phase 14。
 
 ---
 
@@ -3640,7 +4847,7 @@ Linux Server
 7. ZIP 需要能够用于另一台 VPS 上的新 Panel 恢复，内部 ID、外键、节点关系等由程序自动处理，不要求人工修改。
 8. 完整导入/导出属于 admin 专属能力。
 9. 同一 Panel 域名迁移到新 VPS 时，恢复 Agent Token hash 后，Agent 应能够继续使用原长期 Token 自动重连。
-10. 如果 Panel 域名也变化，则后续通过受控的 `update_panel_url` Agent Action 解决，禁止用任意 shell。
+10. 如果 Panel 域名也变化，则后续通过专用的 `update_panel_url` 安全操作解决；这是少数一次性操作，不建立通用 Task Runner，且禁止任意 shell。
 
 
 ## 2026-09-10 新增 Server 到期与月流量要求
@@ -3661,24 +4868,59 @@ Linux Server
    `100G（已用）/500G（总）`
 10. 未设置总额时可显示：
     `100G（已用）/不限（总）`
-11. 当前流量超额只做状态展示 / 警告，不自动停机、断网或停止代理服务。
+11. 当前流量超额只展示统计结果，不自动停机、断网、限速或停止代理服务。
 12. 当前服务器到期只负责配置与展示，不自动删除、关机或停节点。
+13. Agent 不进行主动测速，也不计算实时下载 / 上传速度。
+14. 机器累计流量复用现有 `metrics` WebSocket 上报，不新增独立 traffic API。
+15. 第一版不保存流量历史时序，不实现人工校准或阈值预警。
 
 
-## 2026-09-10 补充日常使用便利性要求
+## 2026-09-11 总 Guide 与 Frontend Guide 联动
 
-本次确认新增：
+新增固定文档职责：
 
-1. Panel 默认业务时区固定为 `Asia/Shanghai`，当前不做每 Server 独立时区。
-2. Server 到期日期、流量重置时间、流量周期起止和到期预警统一使用上海时区。
-3. 如果设置每月 29 / 30 / 31 日重置，而当月不存在该日期，则按当月最后一天执行。
-4. 支持“校准本周期流量”，用于新接入 VPS 时对齐商家后台已用流量。
-5. 流量校准通过当前周期 adjustment 实现，不修改 Linux 网卡计数器，也不把校准值伪造为 RX / TX。
-6. 新流量继续在校准后的已用值基础上增长；下一周期重置时校准偏移归零。
-7. 月流量默认在 80% / 90% / 100% 给出 Panel 内视觉预警。
-8. Server 到期默认在 30 天 / 7 天 / 已过期给出 Panel 内视觉预警。
-9. Server 详情展示完整流量周期：周期起止、RX、TX、校准值、已用 / 总量、剩余和使用率。
-10. 已注册 Server 支持重新安装 Agent / 重置长期 Agent 凭据，不需要删除并重新创建 Server。
-11. Server 支持一个可选分组和多个标签，并提供分组、标签、状态、关键词、即将到期和高流量筛选。
-12. ZIP 导入在真正覆盖之前必须显示导入预览和资源数量摘要，用户确认后才恢复。
-13. 本次不修改 vip 对 Server / Proxy 等共享业务资源的最终增删改权限边界。
+1. `vps-panel-development-guide` 继续作为总开发 Guide，负责业务模型、Agent、API、数据库、Phase、协议与安全边界。
+2. `vps-panel-frontend-guide.md` 负责 Sidebar、主内容宽度、Server / Proxy / Realm 列表、Modal、搜索筛选、容器稳定性与响应式。
+3. 所有涉及前端的 Phase 都必须同时阅读 Frontend Guide。
+4. Server / Proxy / Realm 的页面骨架不再在每个 Phase 中重复设计。
+5. “查看详情统一 Modal”“主列表宽且稳定”“Sidebar 贴左固定”成为跨 Phase 的前端硬性约束。
+6. Proxy Phase 必须参考 Frontend Guide 中入口 IP、出口 IP、端口、协议、传输、安全层、流控等列表字段规范。
+7. Realm Phase 必须参考 Frontend Guide 中入口 IP、监听端口、目标 Host / IP、目标端口、Network 等列表字段规范。
+8. `public_host` 的业务规则由总 Guide 决定；其列表 / Modal 展示由 Frontend Guide 决定。
+9. 两份 Guide 冲突时：业务 / 数据 / 协议 / Agent / API / 安全以总 Guide 为准；视觉布局 / Modal / 表格结构以前端 Guide 为准。
+
+---
+
+## 2026-09-11 Proxy 可选节点域名
+
+新增固定要求：
+
+1. Proxy 增加可选 `public_host` 字段。
+2. UI 显示为“节点域名（可选）”或等价简洁文案。
+3. 用户填写已关联域名后，分享链接 / 订阅 / 二维码 / 客户端配置中的连接地址自动由 Server IP 替换为该域名。
+4. `public_host` 为空时，自动回退到 Server IP。
+5. `public_host` 只影响客户端连接 host，不修改 Xray listener、Server IP、TLS / REALITY SNI、REALITY dest / target 或 DNS。
+6. Panel 不负责自动创建、修改或验证 DNS 解析。
+7. VLESS TLS、VLESS REALITY、Shadowsocks 等直连 Proxy 统一复用同一地址选择逻辑。
+8. Realm 接入节点使用 Relay 自己的接入 host / port，不使用目标 Proxy 的 `public_host`。
+
+---
+
+## 2026-09-11 简化机器流量统计要求
+
+本次覆盖此前较重的实时速度、人工校准和预警设计：
+
+1. Agent 只读取 Linux 主网卡累计 `RX / TX` 字节数。
+2. Agent 不执行 Speedtest、iperf 或任何主动带宽测速。
+3. 第一版不计算或展示实时下载 / 上传速度，也不计算 `RX/s`、`TX/s`。
+4. 累计 RX / TX 直接复用现有 `metrics` WebSocket 消息上报，不新增独立 traffic API / WebSocket。
+5. Panel 根据连续累计计数的 delta 维护当前月周期 `cycle_rx_bytes / cycle_tx_bytes`。
+6. 网卡计数器下降时视为重启 / 重建，对应方向本次 delta 记 0，并重新建立 baseline。
+7. 当前周期状态持久化，Panel / Agent 普通重启不能无条件清零。
+8. 月流量单向模式按 TX；双向模式按 RX + TX。
+9. 月流量重置按 `Asia/Shanghai` 计算；新周期在下一次 metrics 上报时开启，不增加专用 scheduler。
+10. 第一版不建立流量历史时序表、小时 / 日流量表或历史图。
+11. 第一版不实现人工流量校准、80% / 90% / 100% 流量预警、概览流量汇总。
+12. Server 列表保留明确的 `已用 / 总量`；详情展示本周期 RX / TX、统计方式、重置时间和周期开始时间。
+13. 流量超额只展示数据，不自动断网、停 Agent、停 Xray、限速或修改防火墙。
+14. 原 Phase 7B“实时上下行速度”删除；原 Phase 7B“服务器分组、标签与筛选”顺延为 Phase 7B。

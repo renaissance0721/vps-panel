@@ -85,6 +85,27 @@ func TestReadUptime(t *testing.T) {
 	}
 }
 
+func TestParseDefaultRouteInterfaceExcludesLoopbackAndUsesLowestMetric(t *testing.T) {
+	data := []byte("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
+		"lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\n" +
+		"eth1\t00000000\t01010101\t0003\t0\t0\t200\t00000000\n" +
+		"eth0\t00000000\t01010101\t0003\t0\t0\t100\t00000000\n")
+	name, err := parseDefaultRouteInterface(data)
+	if err != nil || name != "eth0" {
+		t.Fatalf("parseDefaultRouteInterface() = (%q, %v), want eth0", name, err)
+	}
+}
+
+func TestParseNetworkUsageReadsSelectedInterface(t *testing.T) {
+	data := []byte("Inter-| Receive | Transmit\n" +
+		" lo: 999 0 0 0 0 0 0 0 999 0 0 0 0 0 0 0\n" +
+		"eth0: 123456 1 2 3 4 5 6 7 987654 8 9 10 11 12 13 14\n")
+	rx, tx, err := parseNetworkUsage(data, "eth0")
+	if err != nil || rx != 123456 || tx != 987654 {
+		t.Fatalf("parseNetworkUsage() = (%d, %d, %v), want (123456, 987654, nil)", rx, tx, err)
+	}
+}
+
 func TestMetricsCollectorBuildsCompleteMessage(t *testing.T) {
 	collector := &metricsCollector{
 		previousCPU: &cpuSample{Total: 100, Idle: 50},
@@ -96,6 +117,10 @@ func TestMetricsCollectorBuildsCompleteMessage(t *testing.T) {
 				return []byte("MemTotal: 4096 kB\nMemAvailable: 1024 kB\n"), nil
 			case "/proc/uptime":
 				return []byte("3661.9 10.0\n"), nil
+			case "/proc/net/route":
+				return []byte("Iface Destination Gateway Flags RefCnt Use Metric Mask\neth0 00000000 01010101 0003 0 0 100 00000000\n"), nil
+			case "/proc/net/dev":
+				return []byte("eth0: 123456 0 0 0 0 0 0 0 987654 0 0 0 0 0 0 0\n"), nil
 			default:
 				return nil, errors.New("unexpected path")
 			}
@@ -114,7 +139,7 @@ func TestMetricsCollectorBuildsCompleteMessage(t *testing.T) {
 	if message.Type != "metrics" || message.CPUPercent != 50 ||
 		message.MemoryUsedBytes != 3<<20 || message.MemoryTotalBytes != 4<<20 ||
 		message.DiskUsedBytes != 5<<30 || message.DiskTotalBytes != 10<<30 ||
-		message.UptimeSeconds != 3661 {
+		message.UptimeSeconds != 3661 || message.NICRXBytes != 123456 || message.NICTXBytes != 987654 {
 		t.Fatalf("metrics message = %+v", message)
 	}
 }

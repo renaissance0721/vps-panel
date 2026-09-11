@@ -50,6 +50,96 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	if expirationColumnCount != 1 {
 		t.Fatalf("servers expires_at column count = %d, want 1", expirationColumnCount)
 	}
+	for table, columns := range map[string][]string{
+		"servers": {
+			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
+		},
+		"server_metrics": {
+			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "cycle_started_at",
+		},
+	} {
+		for _, column := range columns {
+			var count int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
+			).Scan(&count); err != nil {
+				t.Fatalf("inspect %s.%s: %v", table, column, err)
+			}
+			if count != 1 {
+				t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
+			}
+		}
+	}
+}
+
+func TestOpenMigratesTrafficColumnsWithoutLosingMetrics(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL,
+			archived_at INTEGER,
+			expires_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+		 VALUES (1, 'Legacy Traffic', 'offline', 1, 1)`,
+		`CREATE TABLE server_metrics (
+			server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+			cpu_percent REAL NOT NULL,
+			memory_used_bytes INTEGER NOT NULL,
+			memory_total_bytes INTEGER NOT NULL,
+			disk_used_bytes INTEGER NOT NULL,
+			disk_total_bytes INTEGER NOT NULL,
+			uptime_seconds INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO server_metrics
+		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, updated_at)
+		 VALUES (1, 12.5, 10, 20, 30, 40, 50, 60)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare legacy traffic database: %v", err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated traffic database error = %v", err)
+	}
+	defer db.Close()
+	var mode, resetTime string
+	var resetDay int
+	var limit sql.NullInt64
+	var cpu float64
+	var nicRX, nicTX, cycleRX, cycleTX int64
+	var cycleStarted sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
+		 servers.traffic_reset_day, servers.traffic_reset_time, metrics.cpu_percent,
+		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes,
+		 metrics.cycle_tx_bytes, metrics.cycle_started_at
+		 FROM servers JOIN server_metrics AS metrics ON metrics.server_id = servers.id
+		 WHERE servers.id = 1`,
+	).Scan(&limit, &mode, &resetDay, &resetTime, &cpu, &nicRX, &nicTX, &cycleRX, &cycleTX, &cycleStarted); err != nil {
+		t.Fatalf("read migrated traffic data: %v", err)
+	}
+	if limit.Valid || mode != "single" || resetDay != 1 || resetTime != "00:00" ||
+		cpu != 12.5 || nicRX != 0 || nicTX != 0 || cycleRX != 0 || cycleTX != 0 || cycleStarted.Valid {
+		t.Fatalf("migrated traffic defaults = (%v, %q, %d, %q, %.1f, %d, %d, %d, %d, %v)",
+			limit, mode, resetDay, resetTime, cpu, nicRX, nicTX, cycleRX, cycleTX, cycleStarted)
+	}
 }
 
 func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {

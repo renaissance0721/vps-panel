@@ -232,11 +232,27 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 		"memory_total_bytes":536870912,
 		"disk_used_bytes":5368709120,
 		"disk_total_bytes":10737418240,
-		"uptime_seconds":86400
+		"uptime_seconds":86400,
+		"nic_rx_bytes":1000,
+		"nic_tx_bytes":2000
 	}`)); err != nil {
 		t.Fatalf("write Agent metrics: %v", err)
 	}
 	waitForMetrics(t, service, created.ID, 32.4)
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"metrics",
+		"cpu_percent":33.4,
+		"memory_used_bytes":134217728,
+		"memory_total_bytes":536870912,
+		"disk_used_bytes":5368709120,
+		"disk_total_bytes":10737418240,
+		"uptime_seconds":86405,
+		"nic_rx_bytes":1300,
+		"nic_tx_bytes":2600
+	}`)); err != nil {
+		t.Fatalf("write second Agent metrics: %v", err)
+	}
+	waitForMetrics(t, service, created.ID, 33.4)
 	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, adminCookie)
 	if listResponse.Code != http.StatusOK {
 		t.Fatalf("list server status = %d, body = %q", listResponse.Code, listResponse.Body.String())
@@ -250,12 +266,15 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	if len(listed.Servers) != 1 || listed.Servers[0].SystemInfo == nil ||
 		strings.Join(listed.Servers[0].SystemInfo.IPv4, ",") != "203.0.113.10" ||
 		strings.Join(listed.Servers[0].SystemInfo.IPv6, ",") != "2001:db8::10" ||
-		listed.Servers[0].Metrics == nil || listed.Servers[0].Metrics.CPUPercent != 32.4 ||
+		listed.Servers[0].Metrics == nil || listed.Servers[0].Metrics.CPUPercent != 33.4 ||
 		listed.Servers[0].Metrics.MemoryUsedBytes != 134217728 ||
 		listed.Servers[0].Metrics.MemoryTotalBytes != 536870912 ||
 		listed.Servers[0].Metrics.DiskUsedBytes != 5368709120 ||
 		listed.Servers[0].Metrics.DiskTotalBytes != 10737418240 ||
-		listed.Servers[0].Metrics.UptimeSeconds != 86400 ||
+		listed.Servers[0].Metrics.UptimeSeconds != 86405 ||
+		listed.Servers[0].Metrics.NICRXBytes != 1300 || listed.Servers[0].Metrics.NICTXBytes != 2600 ||
+		listed.Servers[0].Metrics.CycleRXBytes != 300 || listed.Servers[0].Metrics.CycleTXBytes != 600 ||
+		listed.Servers[0].Metrics.CycleStartedAt == nil || listed.Servers[0].TrafficUsedBytes != 600 ||
 		listed.Servers[0].Metrics.UpdatedAt.IsZero() {
 		t.Fatalf("server API system information = %+v", listed.Servers)
 	}

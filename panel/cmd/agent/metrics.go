@@ -22,6 +22,8 @@ type metricsMessage struct {
 	DiskUsedBytes    int64   `json:"disk_used_bytes"`
 	DiskTotalBytes   int64   `json:"disk_total_bytes"`
 	UptimeSeconds    int64   `json:"uptime_seconds"`
+	NICRXBytes       int64   `json:"nic_rx_bytes"`
+	NICTXBytes       int64   `json:"nic_tx_bytes"`
 }
 
 type cpuSample struct {
@@ -73,6 +75,10 @@ func (collector *metricsCollector) collect() (metricsMessage, bool) {
 	if err != nil {
 		return metricsMessage{}, false
 	}
+	nicRXBytes, nicTXBytes, err := readPrimaryNetworkUsage(collector.readFile)
+	if err != nil {
+		return metricsMessage{}, false
+	}
 
 	return metricsMessage{
 		Type:             "metrics",
@@ -82,7 +88,72 @@ func (collector *metricsCollector) collect() (metricsMessage, bool) {
 		DiskUsedBytes:    diskUsed,
 		DiskTotalBytes:   diskTotal,
 		UptimeSeconds:    uptime,
+		NICRXBytes:       nicRXBytes,
+		NICTXBytes:       nicTXBytes,
 	}, true
+}
+
+func readPrimaryNetworkUsage(readFile func(string) ([]byte, error)) (int64, int64, error) {
+	routeData, err := readFile("/proc/net/route")
+	if err != nil {
+		return 0, 0, err
+	}
+	interfaceName, err := parseDefaultRouteInterface(routeData)
+	if err != nil {
+		return 0, 0, err
+	}
+	deviceData, err := readFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0, err
+	}
+	return parseNetworkUsage(deviceData, interfaceName)
+}
+
+func parseDefaultRouteInterface(data []byte) (string, error) {
+	var selected string
+	var selectedMetric uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 || fields[0] == "Iface" || fields[0] == "lo" || fields[1] != "00000000" {
+			continue
+		}
+		flags, err := strconv.ParseUint(fields[3], 16, 64)
+		if err != nil || flags&1 == 0 {
+			continue
+		}
+		metric, err := strconv.ParseUint(fields[6], 10, 64)
+		if err != nil {
+			continue
+		}
+		if selected == "" || metric < selectedMetric {
+			selected = fields[0]
+			selectedMetric = metric
+		}
+	}
+	if selected == "" {
+		return "", errors.New("missing default route network interface")
+	}
+	return selected, nil
+}
+
+func parseNetworkUsage(data []byte, interfaceName string) (int64, int64, error) {
+	for _, line := range strings.Split(string(data), "\n") {
+		name, values, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(name) != interfaceName {
+			continue
+		}
+		fields := strings.Fields(values)
+		if len(fields) < 16 {
+			return 0, 0, errors.New("invalid /proc/net/dev interface line")
+		}
+		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr != nil || txErr != nil || rx > maxMetricInteger || tx > maxMetricInteger {
+			return 0, 0, errors.New("invalid /proc/net/dev byte counter")
+		}
+		return int64(rx), int64(tx), nil
+	}
+	return 0, 0, errors.New("missing primary network interface statistics")
 }
 
 func readCPUSample(readFile func(string) ([]byte, error)) (cpuSample, error) {

@@ -303,6 +303,11 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.ExpiresAt != nil {
 		t.Fatalf("new server expires_at = %v, want null", created.Server.ExpiresAt)
 	}
+	if created.Server.MonthlyTrafficLimitBytes != nil || created.Server.TrafficCountMode != "single" ||
+		created.Server.TrafficResetDay != 1 || created.Server.TrafficResetTime != "00:00" ||
+		created.Server.TrafficUsedBytes != 0 {
+		t.Fatalf("new server traffic defaults = %+v", created.Server)
+	}
 	if created.EnrollmentToken == "" {
 		t.Fatal("created enrollment token is empty")
 	}
@@ -339,6 +344,11 @@ func TestServerAPILifecycle(t *testing.T) {
 	if !strings.Contains(listResponse.Body.String(), `"expires_at":null`) {
 		t.Fatalf("server list = %q, want nullable expires_at", listResponse.Body.String())
 	}
+	if !strings.Contains(listResponse.Body.String(), `"monthly_traffic_limit_bytes":null`) ||
+		!strings.Contains(listResponse.Body.String(), `"traffic_count_mode":"single"`) ||
+		!strings.Contains(listResponse.Body.String(), `"traffic_used_bytes":0`) {
+		t.Fatalf("server list = %q, want default traffic fields", listResponse.Body.String())
+	}
 	if strings.Contains(listResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatal("server list returned the plaintext enrollment token")
 	}
@@ -347,6 +357,50 @@ func TestServerAPILifecycle(t *testing.T) {
 	getResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
+	}
+	trafficLimit := int64(500 << 30)
+	updateTrafficResponse := performRequest(
+		t, handler, http.MethodPatch, serverPath, map[string]any{
+			"monthly_traffic_limit_bytes": trafficLimit,
+			"traffic_count_mode":          "bidirectional",
+			"traffic_reset_day":           31,
+			"traffic_reset_time":          "08:30",
+		}, sessionCookie,
+	)
+	if updateTrafficResponse.Code != http.StatusOK {
+		t.Fatalf("update traffic status = %d, body = %q", updateTrafficResponse.Code, updateTrafficResponse.Body.String())
+	}
+	var trafficUpdated struct {
+		Server serverResponse `json:"server"`
+	}
+	if err := json.Unmarshal(updateTrafficResponse.Body.Bytes(), &trafficUpdated); err != nil {
+		t.Fatalf("decode updated traffic settings: %v", err)
+	}
+	if trafficUpdated.Server.MonthlyTrafficLimitBytes == nil ||
+		*trafficUpdated.Server.MonthlyTrafficLimitBytes != trafficLimit ||
+		trafficUpdated.Server.TrafficCountMode != "bidirectional" ||
+		trafficUpdated.Server.TrafficResetDay != 31 || trafficUpdated.Server.TrafficResetTime != "08:30" {
+		t.Fatalf("updated traffic settings = %+v", trafficUpdated.Server)
+	}
+	for _, invalidTraffic := range []map[string]any{
+		{
+			"monthly_traffic_limit_bytes": -1,
+			"traffic_count_mode":          "single",
+			"traffic_reset_day":           1,
+			"traffic_reset_time":          "00:00",
+		},
+		{
+			"monthly_traffic_limit_bytes": nil,
+			"traffic_count_mode":          "invalid",
+			"traffic_reset_day":           32,
+			"traffic_reset_time":          "24:00",
+		},
+		{"traffic_count_mode": "single"},
+	} {
+		response := performRequest(t, handler, http.MethodPatch, serverPath, invalidTraffic, sessionCookie)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid traffic settings %v status = %d, body = %q", invalidTraffic, response.Code, response.Body.String())
+		}
 	}
 	updateExpirationResponse := performRequest(
 		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,

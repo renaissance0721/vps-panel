@@ -45,6 +45,11 @@ type ServerRecord = {
   status: 'pending' | 'online' | 'offline'
   archived_at?: string
   expires_at: string | null
+  monthly_traffic_limit_bytes: number | null
+  traffic_count_mode: 'single' | 'bidirectional'
+  traffic_reset_day: number
+  traffic_reset_time: string
+  traffic_used_bytes: number
   last_seen_at: string | null
   system_info: ServerSystemInfo | null
   metrics: ServerMetrics | null
@@ -70,6 +75,11 @@ type ServerMetrics = {
   disk_used_bytes: number
   disk_total_bytes: number
   uptime_seconds: number
+  nic_rx_bytes: number
+  nic_tx_bytes: number
+  cycle_rx_bytes: number
+  cycle_tx_bytes: number
+  cycle_started_at: string | null
   updated_at: string
 }
 
@@ -89,6 +99,7 @@ const selectedServer = ref<ServerRecord | null>(null)
 const createdServer = ref<CreatedServer | null>(null)
 const serverModalOpen = ref(false)
 const expirationModalOpen = ref(false)
+const trafficModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
 const currentPage = ref<'overview' | 'servers'>('overview')
@@ -100,6 +111,10 @@ const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
 const expirationInput = ref('')
+const trafficLimitInput = ref('')
+const trafficCountMode = ref<ServerRecord['traffic_count_mode']>('single')
+const trafficResetDay = ref(1)
+const trafficResetTime = ref('00:00')
 
 const username = ref('')
 const password = ref('')
@@ -311,6 +326,7 @@ async function createServerRecord() {
     serverName.value = ''
     copiedCommand.value = false
     expirationModalOpen.value = false
+    trafficModalOpen.value = false
     await loadServers()
   })
 }
@@ -320,6 +336,7 @@ function viewServer(value: ServerRecord) {
   createdServer.value = null
   copiedCommand.value = false
   expirationModalOpen.value = false
+  trafficModalOpen.value = false
   expirationInput.value = ''
   serverModalOpen.value = true
 }
@@ -353,6 +370,7 @@ async function regenerateEnrollment(value: ServerRecord) {
     selectedServer.value = createdServer.value.server
     copiedCommand.value = false
     expirationModalOpen.value = false
+    trafficModalOpen.value = false
     await loadServers()
   })
 }
@@ -363,6 +381,8 @@ function closeServerDetails() {
   copiedCommand.value = false
   expirationModalOpen.value = false
   expirationInput.value = ''
+  trafficModalOpen.value = false
+  resetTrafficForm()
 }
 
 function openExpirationModal() {
@@ -402,6 +422,60 @@ async function updateExpiration(expiresAt: string | null) {
     selectedServer.value = response.server
     expirationModalOpen.value = false
     expirationInput.value = ''
+    await loadServers()
+  })
+}
+
+function openTrafficModal() {
+  if (!selectedServer.value || selectedServer.value.archived_at) return
+  trafficLimitInput.value = formatTrafficLimitInput(selectedServer.value.monthly_traffic_limit_bytes)
+  trafficCountMode.value = selectedServer.value.traffic_count_mode
+  trafficResetDay.value = selectedServer.value.traffic_reset_day
+  trafficResetTime.value = selectedServer.value.traffic_reset_time
+  trafficModalOpen.value = true
+}
+
+function closeTrafficModal() {
+  trafficModalOpen.value = false
+  resetTrafficForm()
+}
+
+function resetTrafficForm() {
+  trafficLimitInput.value = ''
+  trafficCountMode.value = 'single'
+  trafficResetDay.value = 1
+  trafficResetTime.value = '00:00'
+}
+
+async function saveTrafficConfig() {
+  if (!selectedServer.value) return
+  const monthlyLimit = parseTrafficLimit(trafficLimitInput.value)
+  if (monthlyLimit === undefined) {
+    error.value = '月流量额度格式无效，请输入例如 500G 或 1T，留空表示不限'
+    return
+  }
+  if (!Number.isInteger(trafficResetDay.value) || trafficResetDay.value < 1 || trafficResetDay.value > 31) {
+    error.value = '流量重置日必须在 1–31 之间'
+    return
+  }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(trafficResetTime.value)) {
+    error.value = '流量重置时间格式无效'
+    return
+  }
+  const serverID = selectedServer.value.id
+  await submit(async () => {
+    const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        monthly_traffic_limit_bytes: monthlyLimit,
+        traffic_count_mode: trafficCountMode.value,
+        traffic_reset_day: trafficResetDay.value,
+        traffic_reset_time: trafficResetTime.value,
+      }),
+    })
+    selectedServer.value = response.server
+    trafficModalOpen.value = false
+    resetTrafficForm()
     await loadServers()
   })
 }
@@ -466,6 +540,7 @@ function selectPage(page: 'overview' | 'servers') {
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
@@ -498,6 +573,47 @@ function formatBytes(value: number) {
   }
   const digits = unitIndex > 0 && scaled < 10 ? 1 : 0
   return `${scaled.toFixed(digits).replace(/\.0$/, '')} ${units[unitIndex]}`
+}
+
+function formatTrafficBytes(value: number) {
+  const units = ['B', 'K', 'M', 'G', 'T']
+  let unitIndex = 0
+  let scaled = value
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024
+    unitIndex++
+  }
+  const digits = unitIndex > 0 && scaled < 100 ? 1 : 0
+  return `${scaled.toFixed(digits).replace(/\.0$/, '')}${units[unitIndex]}`
+}
+
+function trafficUsageLabel(value: ServerRecord) {
+  const total = value.monthly_traffic_limit_bytes
+  return `${formatTrafficBytes(value.traffic_used_bytes)} / ${total ? formatTrafficBytes(total) : '不限'}`
+}
+
+function trafficCountModeLabel(mode: ServerRecord['traffic_count_mode']) {
+  return mode === 'bidirectional' ? '双向（RX + TX）' : '单向（TX）'
+}
+
+function formatTrafficLimitInput(value: number | null) {
+  if (!value) return ''
+  const tebibyte = 1024 ** 4
+  const gibibyte = 1024 ** 3
+  if (value >= tebibyte) return `${Number((value / tebibyte).toFixed(2))}T`
+  return `${Number((value / gibibyte).toFixed(2))}G`
+}
+
+function parseTrafficLimit(value: string): number | null | undefined {
+  const normalized = value.trim().toUpperCase()
+  if (normalized === '' || normalized === '0') return null
+  const match = /^(\d+(?:\.\d+)?)\s*([GT])$/.exec(normalized)
+  if (!match) return undefined
+  const amount = Number(match[1])
+  const multiplier = match[2] === 'T' ? 1024 ** 4 : 1024 ** 3
+  const bytes = Math.round(amount * multiplier)
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) return undefined
+  return bytes
 }
 
 function formatUptime(value: number) {
@@ -791,6 +907,7 @@ onUnmounted(stopServerPolling)
                   <tr>
                     <th>名称</th>
                     <th>状态</th>
+                    <th>本周期流量</th>
                     <th>创建时间</th>
                     <th>操作</th>
                   </tr>
@@ -803,6 +920,7 @@ onUnmounted(stopServerPolling)
                         {{ statusLabel(value.status) }}
                       </n-tag>
                     </td>
+                    <td>{{ trafficUsageLabel(value) }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
                     <td class="server-actions">
                       <n-button
@@ -962,6 +1080,46 @@ onUnmounted(stopServerPolling)
               <div><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
             </dl>
 
+            <div class="section-heading">
+              <h3 class="system-info-title">月流量</h3>
+              <n-button
+                v-if="!selectedServer.archived_at"
+                size="tiny"
+                secondary
+                :disabled="submitting"
+                @click="openTrafficModal"
+              >
+                修改设置
+              </n-button>
+            </div>
+            <dl class="server-details">
+              <div>
+                <dt>本周期 RX</dt>
+                <dd>{{ formatTrafficBytes(selectedServer.metrics?.cycle_rx_bytes ?? 0) }}</dd>
+              </div>
+              <div>
+                <dt>本周期 TX</dt>
+                <dd>{{ formatTrafficBytes(selectedServer.metrics?.cycle_tx_bytes ?? 0) }}</dd>
+              </div>
+              <div><dt>已用 / 总量</dt><dd>{{ trafficUsageLabel(selectedServer) }}</dd></div>
+              <div>
+                <dt>统计方式</dt>
+                <dd>{{ trafficCountModeLabel(selectedServer.traffic_count_mode) }}</dd>
+              </div>
+              <div>
+                <dt>重置时间</dt>
+                <dd>每月 {{ selectedServer.traffic_reset_day }} 日 {{ selectedServer.traffic_reset_time }}</dd>
+              </div>
+              <div>
+                <dt>本周期开始</dt>
+                <dd>
+                  {{ selectedServer.metrics?.cycle_started_at
+                    ? formatTime(selectedServer.metrics.cycle_started_at)
+                    : '—' }}
+                </dd>
+              </div>
+            </dl>
+
             <div v-if="state.user?.role === 'admin'" class="server-modal-actions">
               <n-button
                 type="primary"
@@ -1047,6 +1205,65 @@ onUnmounted(stopServerPolling)
                 <n-button type="primary" attr-type="submit" :loading="submitting">
                   保存
                 </n-button>
+              </div>
+            </form>
+          </n-card>
+        </n-modal>
+
+        <n-modal
+          v-model:show="trafficModalOpen"
+          :mask-closable="!submitting"
+          @after-leave="resetTrafficForm"
+        >
+          <n-card
+            class="traffic-modal-card"
+            title="修改月流量设置"
+            :bordered="false"
+            closable
+            @close="closeTrafficModal"
+          >
+            <form class="traffic-form" @submit.prevent="saveTrafficConfig">
+              <label>
+                <span>月流量额度</span>
+                <input
+                  v-model="trafficLimitInput"
+                  class="settings-input"
+                  type="text"
+                  placeholder="例如 500G 或 1T，留空表示不限"
+                  :disabled="submitting"
+                />
+              </label>
+              <label>
+                <span>统计方式</span>
+                <select v-model="trafficCountMode" class="settings-input" :disabled="submitting">
+                  <option value="single">单向（TX）</option>
+                  <option value="bidirectional">双向（RX + TX）</option>
+                </select>
+              </label>
+              <label>
+                <span>每月重置日</span>
+                <input
+                  v-model.number="trafficResetDay"
+                  class="settings-input"
+                  type="number"
+                  min="1"
+                  max="31"
+                  :disabled="submitting"
+                />
+              </label>
+              <label>
+                <span>重置时间</span>
+                <input
+                  v-model="trafficResetTime"
+                  class="settings-input"
+                  type="time"
+                  :disabled="submitting"
+                />
+              </label>
+              <p>重置时间按 Asia/Shanghai 计算；当月没有该日期时使用当月最后一天。</p>
+              <div class="expiration-modal-actions">
+                <n-button :disabled="submitting" @click="closeTrafficModal">取消</n-button>
+                <n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button>
               </div>
             </form>
           </n-card>

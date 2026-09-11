@@ -109,21 +109,30 @@ type createServerRequest struct {
 	Name string `json:"name"`
 }
 
-type updateServerExpirationRequest struct {
-	ExpiresAt json.RawMessage `json:"expires_at"`
+type updateServerRequest struct {
+	ExpiresAt                json.RawMessage `json:"expires_at"`
+	MonthlyTrafficLimitBytes json.RawMessage `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode         *string         `json:"traffic_count_mode"`
+	TrafficResetDay          *int            `json:"traffic_reset_day"`
+	TrafficResetTime         *string         `json:"traffic_reset_time"`
 }
 
 type serverResponse struct {
-	ID         int64               `json:"id"`
-	Name       string              `json:"name"`
-	Status     string              `json:"status"`
-	ArchivedAt *time.Time          `json:"archived_at,omitempty"`
-	ExpiresAt  *time.Time          `json:"expires_at"`
-	LastSeenAt *time.Time          `json:"last_seen_at"`
-	SystemInfo *systemInfoResponse `json:"system_info"`
-	Metrics    *metricsResponse    `json:"metrics"`
-	CreatedAt  time.Time           `json:"created_at"`
-	UpdatedAt  time.Time           `json:"updated_at"`
+	ID                       int64               `json:"id"`
+	Name                     string              `json:"name"`
+	Status                   string              `json:"status"`
+	ArchivedAt               *time.Time          `json:"archived_at,omitempty"`
+	ExpiresAt                *time.Time          `json:"expires_at"`
+	MonthlyTrafficLimitBytes *int64              `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode         string              `json:"traffic_count_mode"`
+	TrafficResetDay          int                 `json:"traffic_reset_day"`
+	TrafficResetTime         string              `json:"traffic_reset_time"`
+	TrafficUsedBytes         int64               `json:"traffic_used_bytes"`
+	LastSeenAt               *time.Time          `json:"last_seen_at"`
+	SystemInfo               *systemInfoResponse `json:"system_info"`
+	Metrics                  *metricsResponse    `json:"metrics"`
+	CreatedAt                time.Time           `json:"created_at"`
+	UpdatedAt                time.Time           `json:"updated_at"`
 }
 
 type systemInfoResponse struct {
@@ -138,13 +147,18 @@ type systemInfoResponse struct {
 }
 
 type metricsResponse struct {
-	CPUPercent       float64   `json:"cpu_percent"`
-	MemoryUsedBytes  int64     `json:"memory_used_bytes"`
-	MemoryTotalBytes int64     `json:"memory_total_bytes"`
-	DiskUsedBytes    int64     `json:"disk_used_bytes"`
-	DiskTotalBytes   int64     `json:"disk_total_bytes"`
-	UptimeSeconds    int64     `json:"uptime_seconds"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	CPUPercent       float64    `json:"cpu_percent"`
+	MemoryUsedBytes  int64      `json:"memory_used_bytes"`
+	MemoryTotalBytes int64      `json:"memory_total_bytes"`
+	DiskUsedBytes    int64      `json:"disk_used_bytes"`
+	DiskTotalBytes   int64      `json:"disk_total_bytes"`
+	UptimeSeconds    int64      `json:"uptime_seconds"`
+	NICRXBytes       int64      `json:"nic_rx_bytes"`
+	NICTXBytes       int64      `json:"nic_tx_bytes"`
+	CycleRXBytes     int64      `json:"cycle_rx_bytes"`
+	CycleTXBytes     int64      `json:"cycle_tx_bytes"`
+	CycleStartedAt   *time.Time `json:"cycle_started_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type createdServerResponse struct {
@@ -185,6 +199,8 @@ type agentMetricsMessage struct {
 	DiskUsedBytes    int64   `json:"disk_used_bytes"`
 	DiskTotalBytes   int64   `json:"disk_total_bytes"`
 	UptimeSeconds    int64   `json:"uptime_seconds"`
+	NICRXBytes       *int64  `json:"nic_rx_bytes"`
+	NICTXBytes       *int64  `json:"nic_tx_bytes"`
 }
 
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
@@ -390,6 +406,16 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				validMessage = false
 				break
 			}
+			if (metrics.NICRXBytes == nil) != (metrics.NICTXBytes == nil) {
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid metrics")
+				validMessage = false
+				break
+			}
+			var nicRXBytes, nicTXBytes int64
+			if metrics.NICRXBytes != nil {
+				nicRXBytes = *metrics.NICRXBytes
+				nicTXBytes = *metrics.NICTXBytes
+			}
 			current, reportErr := s.reportCurrentMetrics(agent.ServerID, agent.ID, connection, serverstore.MetricsReport{
 				CPUPercent:       metrics.CPUPercent,
 				MemoryUsedBytes:  metrics.MemoryUsedBytes,
@@ -397,6 +423,9 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				DiskUsedBytes:    metrics.DiskUsedBytes,
 				DiskTotalBytes:   metrics.DiskTotalBytes,
 				UptimeSeconds:    metrics.UptimeSeconds,
+				HasNetworkUsage:  metrics.NICRXBytes != nil,
+				NICRXBytes:       nicRXBytes,
+				NICTXBytes:       nicTXBytes,
 			})
 			if !current {
 				return
@@ -520,12 +549,43 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	var request updateServerExpirationRequest
+	var request updateServerRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	if len(request.ExpiresAt) == 0 {
-		writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
+	hasExpiration := len(request.ExpiresAt) != 0
+	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
+		request.TrafficResetDay != nil || request.TrafficResetTime != nil
+	if hasExpiration == hasAnyTraffic {
+		writeError(w, http.StatusBadRequest, "服务器设置格式无效")
+		return
+	}
+	if hasAnyTraffic {
+		if len(request.MonthlyTrafficLimitBytes) == 0 || request.TrafficCountMode == nil ||
+			request.TrafficResetDay == nil || request.TrafficResetTime == nil {
+			writeError(w, http.StatusBadRequest, "月流量设置不完整")
+			return
+		}
+		var monthlyLimit *int64
+		if string(request.MonthlyTrafficLimitBytes) != "null" {
+			var value int64
+			if json.Unmarshal(request.MonthlyTrafficLimitBytes, &value) != nil {
+				writeError(w, http.StatusBadRequest, "月流量额度格式无效")
+				return
+			}
+			monthlyLimit = &value
+		}
+		updated, err := s.servers.UpdateTrafficConfig(r.Context(), id, serverstore.TrafficConfig{
+			MonthlyLimitBytes: monthlyLimit,
+			CountMode:         *request.TrafficCountMode,
+			ResetDay:          *request.TrafficResetDay,
+			ResetTime:         *request.TrafficResetTime,
+		})
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
 		return
 	}
 	var expiresAt *time.Time
@@ -691,14 +751,19 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 
 func toServerResponse(value serverstore.Server) serverResponse {
 	response := serverResponse{
-		ID:         value.ID,
-		Name:       value.Name,
-		Status:     value.Status,
-		ArchivedAt: value.ArchivedAt,
-		ExpiresAt:  value.ExpiresAt,
-		LastSeenAt: value.LastSeenAt,
-		CreatedAt:  value.CreatedAt,
-		UpdatedAt:  value.UpdatedAt,
+		ID:                       value.ID,
+		Name:                     value.Name,
+		Status:                   value.Status,
+		ArchivedAt:               value.ArchivedAt,
+		ExpiresAt:                value.ExpiresAt,
+		MonthlyTrafficLimitBytes: value.MonthlyTrafficLimitBytes,
+		TrafficCountMode:         value.TrafficCountMode,
+		TrafficResetDay:          value.TrafficResetDay,
+		TrafficResetTime:         value.TrafficResetTime,
+		TrafficUsedBytes:         value.TrafficUsedBytes(),
+		LastSeenAt:               value.LastSeenAt,
+		CreatedAt:                value.CreatedAt,
+		UpdatedAt:                value.UpdatedAt,
 	}
 	if value.SystemInfo != nil {
 		response.SystemInfo = &systemInfoResponse{
@@ -720,6 +785,11 @@ func toServerResponse(value serverstore.Server) serverResponse {
 			DiskUsedBytes:    value.Metrics.DiskUsedBytes,
 			DiskTotalBytes:   value.Metrics.DiskTotalBytes,
 			UptimeSeconds:    value.Metrics.UptimeSeconds,
+			NICRXBytes:       value.Metrics.NICRXBytes,
+			NICTXBytes:       value.Metrics.NICTXBytes,
+			CycleRXBytes:     value.Metrics.CycleRXBytes,
+			CycleTXBytes:     value.Metrics.CycleTXBytes,
+			CycleStartedAt:   value.Metrics.CycleStartedAt,
 			UpdatedAt:        value.Metrics.UpdatedAt,
 		}
 	}
@@ -933,6 +1003,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置")
 	case errors.Is(err, serverstore.ErrInvalidAgentVersion):
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
+	case errors.Is(err, serverstore.ErrInvalidTrafficConfig):
+		writeError(w, http.StatusBadRequest, "月流量设置无效")
 	default:
 		writeInternalError(w)
 	}

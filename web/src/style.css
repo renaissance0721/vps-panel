@@ -93,16 +93,18 @@ h1 {
 }
 
 .app-layout {
-  display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  width: 100%;
   min-height: 100vh;
 }
 
 .sidebar {
-  position: sticky;
+  position: fixed;
+  z-index: 10;
   top: 0;
+  left: 0;
   display: flex;
   flex-direction: column;
+  width: 192px;
   height: 100vh;
   padding: 24px 16px;
   color: #ffffff;
@@ -154,13 +156,14 @@ h1 {
 }
 
 .admin-main {
+  width: calc(100% - 192px);
   min-width: 0;
+  margin-left: 192px;
 }
 
 .admin-page {
-  width: min(100%, 1120px);
+  width: 100%;
   padding: 32px;
-  margin: 0 auto;
 }
 
 .page-heading {
@@ -237,29 +240,35 @@ h1 {
   color: #168a55;
 }
 
-.expiration-modal-card {
+.expiration-modal-card,
+.traffic-modal-card {
   width: min(420px, calc(100vw - 32px));
 }
 
 .expiration-form,
-.expiration-form label {
+.expiration-form label,
+.traffic-form,
+.traffic-form label {
   display: grid;
   gap: 8px;
 }
 
-.expiration-form label > span {
+.expiration-form label > span,
+.traffic-form label > span {
   color: #47525d;
   font-size: 14px;
   font-weight: 600;
 }
 
-.expiration-form p {
+.expiration-form p,
+.traffic-form p {
   margin: 4px 0 10px;
   color: #65717e;
   font-size: 13px;
 }
 
-.date-input {
+.date-input,
+.settings-input {
   width: 100%;
   height: 34px;
   padding: 0 10px;
@@ -270,7 +279,8 @@ h1 {
   background: #ffffff;
 }
 
-.date-input:focus {
+.date-input:focus,
+.settings-input:focus {
   border-color: #18a058;
   box-shadow: 0 0 0 2px rgba(24, 160, 88, 0.12);
 }
@@ -290,6 +300,18 @@ h1 {
 .system-info-title {
   margin: 20px 0 12px;
   font-size: 16px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.section-heading .system-info-title {
+  margin: 0 0 12px;
 }
 
 .address-list span {
@@ -439,7 +461,7 @@ h1 {
     position: fixed;
     z-index: 1001;
     left: 0;
-    width: 216px;
+    width: 192px;
     transform: translateX(-100%);
     transition: transform 160ms ease;
   }
@@ -470,6 +492,7 @@ h1 {
   .admin-main {
     width: 100%;
     max-width: 100%;
+    margin-left: 0;
   }
 
   .mobile-header button {

@@ -17,39 +17,61 @@ import (
 )
 
 const (
-	StatusPending      = "pending"
-	StatusOnline       = "online"
-	StatusOffline      = "offline"
-	PurposeInitial     = "initial"
-	PurposeRebind      = "rebind"
-	EnrollmentLifetime = 24 * time.Hour
-	maxNameLength      = 100
-	maxIPAddresses     = 16
+	StatusPending           = "pending"
+	StatusOnline            = "online"
+	StatusOffline           = "offline"
+	PurposeInitial          = "initial"
+	PurposeRebind           = "rebind"
+	TrafficSingle           = "single"
+	TrafficBidirectional    = "bidirectional"
+	EnrollmentLifetime      = 24 * time.Hour
+	maxNameLength           = 100
+	maxIPAddresses          = 16
+	defaultTrafficResetDay  = 1
+	defaultTrafficResetTime = "00:00"
 )
 
 var (
-	ErrInvalidName         = errors.New("server name must be 1-100 characters")
-	ErrNotFound            = errors.New("server not found")
-	ErrInvalidEnrollment   = errors.New("invalid, used, or expired enrollment token")
-	ErrInvalidAgentVersion = errors.New("agent version must be 1-64 characters")
-	ErrInvalidAgentToken   = errors.New("invalid agent token")
-	ErrArchived            = errors.New("server is archived")
-	ErrInitialConfigExists = errors.New("initial enrollment cannot replace an existing Agent config")
-	ErrInvalidSystemInfo   = errors.New("invalid system information")
-	ErrInvalidMetrics      = errors.New("invalid server metrics")
+	ErrInvalidName          = errors.New("server name must be 1-100 characters")
+	ErrNotFound             = errors.New("server not found")
+	ErrInvalidEnrollment    = errors.New("invalid, used, or expired enrollment token")
+	ErrInvalidAgentVersion  = errors.New("agent version must be 1-64 characters")
+	ErrInvalidAgentToken    = errors.New("invalid agent token")
+	ErrArchived             = errors.New("server is archived")
+	ErrInitialConfigExists  = errors.New("initial enrollment cannot replace an existing Agent config")
+	ErrInvalidSystemInfo    = errors.New("invalid system information")
+	ErrInvalidMetrics       = errors.New("invalid server metrics")
+	ErrInvalidTrafficConfig = errors.New("invalid server traffic configuration")
 )
 
 type Server struct {
-	ID         int64
-	Name       string
-	Status     string
-	ArchivedAt *time.Time
-	ExpiresAt  *time.Time
-	LastSeenAt *time.Time
-	SystemInfo *SystemInfo
-	Metrics    *Metrics
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID                       int64
+	Name                     string
+	Status                   string
+	ArchivedAt               *time.Time
+	ExpiresAt                *time.Time
+	MonthlyTrafficLimitBytes *int64
+	TrafficCountMode         string
+	TrafficResetDay          int
+	TrafficResetTime         string
+	LastSeenAt               *time.Time
+	SystemInfo               *SystemInfo
+	Metrics                  *Metrics
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
+func (server Server) TrafficUsedBytes() int64 {
+	if server.Metrics == nil {
+		return 0
+	}
+	if server.TrafficCountMode == TrafficBidirectional {
+		if server.Metrics.CycleRXBytes > math.MaxInt64-server.Metrics.CycleTXBytes {
+			return math.MaxInt64
+		}
+		return server.Metrics.CycleRXBytes + server.Metrics.CycleTXBytes
+	}
+	return server.Metrics.CycleTXBytes
 }
 
 type SystemInfo struct {
@@ -81,6 +103,11 @@ type Metrics struct {
 	DiskUsedBytes    int64
 	DiskTotalBytes   int64
 	UptimeSeconds    int64
+	NICRXBytes       int64
+	NICTXBytes       int64
+	CycleRXBytes     int64
+	CycleTXBytes     int64
+	CycleStartedAt   *time.Time
 	UpdatedAt        time.Time
 }
 
@@ -91,6 +118,16 @@ type MetricsReport struct {
 	DiskUsedBytes    int64
 	DiskTotalBytes   int64
 	UptimeSeconds    int64
+	HasNetworkUsage  bool
+	NICRXBytes       int64
+	NICTXBytes       int64
+}
+
+type TrafficConfig struct {
+	MonthlyLimitBytes *int64
+	CountMode         string
+	ResetDay          int
+	ResetTime         string
 }
 
 type CreatedServer struct {
@@ -162,11 +199,14 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 
 	return CreatedServer{
 		Server: Server{
-			ID:        serverID,
-			Name:      name,
-			Status:    StatusPending,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:               serverID,
+			Name:             name,
+			Status:           StatusPending,
+			TrafficCountMode: TrafficSingle,
+			TrafficResetDay:  defaultTrafficResetDay,
+			TrafficResetTime: defaultTrafficResetTime,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		},
 		EnrollmentToken:     tokenValue,
 		EnrollmentExpiresAt: expiresAt,
@@ -182,12 +222,16 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
+		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
-		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
+		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
+		 metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -257,12 +301,16 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
+		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
-		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
+		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
+		 metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -291,12 +339,16 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
+		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
-		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds, metrics.updated_at,
+		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
+		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
+		 metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -328,6 +380,39 @@ func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *tim
 	count, err := result.RowsAffected()
 	if err != nil {
 		return Server{}, fmt.Errorf("read updated server expiration count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *Service) UpdateTrafficConfig(ctx context.Context, id int64, config TrafficConfig) (Server, error) {
+	if config.MonthlyLimitBytes != nil && *config.MonthlyLimitBytes < 0 ||
+		(config.CountMode != TrafficSingle && config.CountMode != TrafficBidirectional) ||
+		config.ResetDay < 1 || config.ResetDay > 31 ||
+		!validTrafficResetTime(config.ResetTime) {
+		return Server{}, ErrInvalidTrafficConfig
+	}
+
+	var monthlyLimit any
+	if config.MonthlyLimitBytes != nil && *config.MonthlyLimitBytes > 0 {
+		monthlyLimit = *config.MonthlyLimitBytes
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers
+		 SET monthly_traffic_limit_bytes = ?, traffic_count_mode = ?,
+		     traffic_reset_day = ?, traffic_reset_time = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`,
+		monthlyLimit, config.CountMode, config.ResetDay, config.ResetTime,
+		s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server traffic configuration: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server traffic configuration count: %w", err)
 	}
 	if count != 1 {
 		return Server{}, ErrNotFound
@@ -650,7 +735,7 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		report.MemoryUsedBytes > report.MemoryTotalBytes ||
 		report.DiskUsedBytes < 0 || report.DiskTotalBytes < 0 ||
 		report.DiskUsedBytes > report.DiskTotalBytes ||
-		report.UptimeSeconds < 0 {
+		report.UptimeSeconds < 0 || report.NICRXBytes < 0 || report.NICTXBytes < 0 {
 		return ErrInvalidMetrics
 	}
 
@@ -661,21 +746,69 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 	defer tx.Rollback()
 
 	var currentAgentID int64
+	var resetDay int
+	var resetTime string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM agents WHERE id = ? AND server_id = ?`, agentID, serverID,
-	).Scan(&currentAgentID)
+		`SELECT agents.id, servers.traffic_reset_day, servers.traffic_reset_time
+		 FROM agents JOIN servers ON servers.id = agents.server_id
+		 WHERE agents.id = ? AND agents.server_id = ?`, agentID, serverID,
+	).Scan(&currentAgentID, &resetDay, &resetTime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInvalidAgentToken
 	}
 	if err != nil {
 		return fmt.Errorf("read reporting Agent for metrics: %w", err)
 	}
-	now := s.now().UTC().Truncate(time.Second).Unix()
+	nowTime := s.now().UTC().Truncate(time.Second)
+	var nicRX, nicTX, cycleRX, cycleTX int64
+	var storedCycleStart sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT nic_rx_bytes, nic_tx_bytes, cycle_rx_bytes, cycle_tx_bytes, cycle_started_at
+		 FROM server_metrics WHERE server_id = ?`, serverID,
+	).Scan(&nicRX, &nicTX, &cycleRX, &cycleTX, &storedCycleStart)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("read traffic baseline: %w", err)
+	}
+	var cycleStartValue any
+	if storedCycleStart.Valid {
+		cycleStartValue = storedCycleStart.Int64
+	}
+	if report.HasNetworkUsage {
+		cycleStart, err := trafficCycleStart(nowTime, resetDay, resetTime)
+		if err != nil {
+			return fmt.Errorf("calculate traffic cycle: %w", err)
+		}
+		switch {
+		case !storedCycleStart.Valid:
+			cycleRX = 0
+			cycleTX = 0
+		case time.Unix(storedCycleStart.Int64, 0).UTC().Before(cycleStart):
+			cycleRX = 0
+			cycleTX = 0
+		default:
+			deltaRX := trafficDelta(report.NICRXBytes, nicRX)
+			deltaTX := trafficDelta(report.NICTXBytes, nicTX)
+			if cycleRX > math.MaxInt64-deltaRX || cycleTX > math.MaxInt64-deltaTX {
+				return ErrInvalidMetrics
+			}
+			cycleRX += deltaRX
+			cycleTX += deltaTX
+			cycleStart = time.Unix(storedCycleStart.Int64, 0).UTC()
+		}
+		nicRX = report.NICRXBytes
+		nicTX = report.NICTXBytes
+		cycleStartValue = cycleStart.Unix()
+	}
+
+	now := nowTime.Unix()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_metrics
 		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
-		  disk_used_bytes, disk_total_bytes, uptime_seconds, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, nic_rx_bytes, nic_tx_bytes,
+		  cycle_rx_bytes, cycle_tx_bytes, cycle_started_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(server_id) DO UPDATE SET
 		 cpu_percent = excluded.cpu_percent,
 		 memory_used_bytes = excluded.memory_used_bytes,
@@ -683,9 +816,15 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		 disk_used_bytes = excluded.disk_used_bytes,
 		 disk_total_bytes = excluded.disk_total_bytes,
 		 uptime_seconds = excluded.uptime_seconds,
+		 nic_rx_bytes = excluded.nic_rx_bytes,
+		 nic_tx_bytes = excluded.nic_tx_bytes,
+		 cycle_rx_bytes = excluded.cycle_rx_bytes,
+		 cycle_tx_bytes = excluded.cycle_tx_bytes,
+		 cycle_started_at = excluded.cycle_started_at,
 		 updated_at = excluded.updated_at`,
 		serverID, report.CPUPercent, report.MemoryUsedBytes, report.MemoryTotalBytes,
-		report.DiskUsedBytes, report.DiskTotalBytes, report.UptimeSeconds, now,
+		report.DiskUsedBytes, report.DiskTotalBytes, report.UptimeSeconds,
+		nicRX, nicTX, cycleRX, cycleTX, cycleStartValue, now,
 	); err != nil {
 		return fmt.Errorf("save server metrics: %w", err)
 	}
@@ -693,6 +832,46 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		return fmt.Errorf("commit metrics report: %w", err)
 	}
 	return nil
+}
+
+func trafficDelta(current, previous int64) int64 {
+	if current < previous {
+		return 0
+	}
+	return current - previous
+}
+
+func trafficCycleStart(now time.Time, resetDay int, resetTime string) (time.Time, error) {
+	parsedTime, err := time.Parse("15:04", resetTime)
+	if err != nil || parsedTime.Format("15:04") != resetTime || resetDay < 1 || resetDay > 31 {
+		return time.Time{}, ErrInvalidTrafficConfig
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localNow := now.In(location)
+	boundary := monthlyTrafficBoundary(
+		localNow.Year(), localNow.Month(), resetDay, parsedTime.Hour(), parsedTime.Minute(), location,
+	)
+	if localNow.Before(boundary) {
+		previousMonth := time.Date(localNow.Year(), localNow.Month()-1, 1, 0, 0, 0, 0, location)
+		boundary = monthlyTrafficBoundary(
+			previousMonth.Year(), previousMonth.Month(), resetDay,
+			parsedTime.Hour(), parsedTime.Minute(), location,
+		)
+	}
+	return boundary.UTC(), nil
+}
+
+func monthlyTrafficBoundary(year int, month time.Month, resetDay, hour, minute int, location *time.Location) time.Time {
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, location).Day()
+	if resetDay > lastDay {
+		resetDay = lastDay
+	}
+	return time.Date(year, month, resetDay, hour, minute, 0, 0, location)
+}
+
+func validTrafficResetTime(value string) bool {
+	parsed, err := time.Parse("15:04", value)
+	return err == nil && parsed.Format("15:04") == value
 }
 
 func normalizeIPAddresses(values []string, ipv4 bool) ([]string, error) {
@@ -798,17 +977,21 @@ type rowScanner interface {
 
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
-	var archivedAt, expiresAt, lastSeenAt sql.NullInt64
+	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
 	var cpuPercent sql.NullFloat64
-	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime, metricsUpdatedAt sql.NullInt64
+	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime sql.NullInt64
+	var nicRX, nicTX, cycleRX, cycleTX, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt, &lastSeenAt,
+		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt,
+		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
+		&lastSeenAt,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
-		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime, &metricsUpdatedAt,
+		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
+		&nicRX, &nicTX, &cycleRX, &cycleTX, &cycleStartedAt, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return Server{}, err
@@ -820,6 +1003,10 @@ func scanServer(row rowScanner) (Server, error) {
 	if expiresAt.Valid {
 		expiresTime := time.Unix(expiresAt.Int64, 0).UTC()
 		value.ExpiresAt = &expiresTime
+	}
+	if monthlyTrafficLimit.Valid && monthlyTrafficLimit.Int64 > 0 {
+		limit := monthlyTrafficLimit.Int64
+		value.MonthlyTrafficLimitBytes = &limit
 	}
 	if lastSeenAt.Valid {
 		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()
@@ -844,15 +1031,24 @@ func scanServer(row rowScanner) (Server, error) {
 		value.SystemInfo = &info
 	}
 	if metricsUpdatedAt.Valid {
-		value.Metrics = &Metrics{
+		metrics := &Metrics{
 			CPUPercent:       cpuPercent.Float64,
 			MemoryUsedBytes:  memoryUsed.Int64,
 			MemoryTotalBytes: memoryTotal.Int64,
 			DiskUsedBytes:    diskUsed.Int64,
 			DiskTotalBytes:   diskTotal.Int64,
 			UptimeSeconds:    uptime.Int64,
+			NICRXBytes:       nicRX.Int64,
+			NICTXBytes:       nicTX.Int64,
+			CycleRXBytes:     cycleRX.Int64,
+			CycleTXBytes:     cycleTX.Int64,
 			UpdatedAt:        time.Unix(metricsUpdatedAt.Int64, 0).UTC(),
 		}
+		if cycleStartedAt.Valid {
+			startedAt := time.Unix(cycleStartedAt.Int64, 0).UTC()
+			metrics.CycleStartedAt = &startedAt
+		}
+		value.Metrics = metrics
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

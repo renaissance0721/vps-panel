@@ -566,6 +566,8 @@ func TestConnectAgentSendsMetricsAndHeartbeat(t *testing.T) {
 			DiskUsedBytes:    5 << 30,
 			DiskTotalBytes:   10 << 30,
 			UptimeSeconds:    86400,
+			NICRXBytes:       12 << 30,
+			NICTXBytes:       34 << 30,
 		}, true
 	}
 
@@ -625,7 +627,8 @@ func TestConnectAgentSendsMetricsAndHeartbeat(t *testing.T) {
 	case metrics := <-received:
 		if metrics.CPUPercent != 32.4 || metrics.MemoryUsedBytes != 128<<20 ||
 			metrics.MemoryTotalBytes != 512<<20 || metrics.DiskUsedBytes != 5<<30 ||
-			metrics.DiskTotalBytes != 10<<30 || metrics.UptimeSeconds != 86400 {
+			metrics.DiskTotalBytes != 10<<30 || metrics.UptimeSeconds != 86400 ||
+			metrics.NICRXBytes != 12<<30 || metrics.NICTXBytes != 34<<30 {
 			t.Fatalf("metrics = %+v", metrics)
 		}
 	case err := <-handlerErrors:

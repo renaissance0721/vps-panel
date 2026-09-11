@@ -71,6 +71,12 @@ func migrate(db *sql.DB) error {
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
 			archived_at INTEGER,
 			expires_at INTEGER,
+			monthly_traffic_limit_bytes INTEGER CHECK (monthly_traffic_limit_bytes >= 0),
+			traffic_count_mode TEXT NOT NULL DEFAULT 'single'
+				CHECK (traffic_count_mode IN ('single', 'bidirectional')),
+			traffic_reset_day INTEGER NOT NULL DEFAULT 1
+				CHECK (traffic_reset_day BETWEEN 1 AND 31),
+			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -115,6 +121,11 @@ func migrate(db *sql.DB) error {
 			disk_used_bytes INTEGER NOT NULL,
 			disk_total_bytes INTEGER NOT NULL,
 			uptime_seconds INTEGER NOT NULL,
+			nic_rx_bytes INTEGER NOT NULL DEFAULT 0,
+			nic_tx_bytes INTEGER NOT NULL DEFAULT 0,
+			cycle_rx_bytes INTEGER NOT NULL DEFAULT 0,
+			cycle_tx_bytes INTEGER NOT NULL DEFAULT 0,
+			cycle_started_at INTEGER,
 			updated_at INTEGER NOT NULL
 		)`,
 	}
@@ -139,7 +150,43 @@ func migrate(db *sql.DB) error {
 	if err := migrateAgentLastSeen(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerTraffic(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateServerTraffic(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"servers", "monthly_traffic_limit_bytes", "monthly_traffic_limit_bytes INTEGER CHECK (monthly_traffic_limit_bytes >= 0)"},
+		{"servers", "traffic_count_mode", "traffic_count_mode TEXT NOT NULL DEFAULT 'single' CHECK (traffic_count_mode IN ('single', 'bidirectional'))"},
+		{"servers", "traffic_reset_day", "traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31)"},
+		{"servers", "traffic_reset_time", "traffic_reset_time TEXT NOT NULL DEFAULT '00:00'"},
+		{"server_metrics", "nic_rx_bytes", "nic_rx_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"server_metrics", "nic_tx_bytes", "nic_tx_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"server_metrics", "cycle_rx_bytes", "cycle_rx_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"server_metrics", "cycle_tx_bytes", "cycle_tx_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"server_metrics", "cycle_started_at", "cycle_started_at INTEGER"},
+	}
+	for _, column := range columns {
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", column.table)
+		if err := db.QueryRowContext(ctx, query, column.name).Scan(&count); err != nil {
+			return fmt.Errorf("inspect %s.%s column: %w", column.table, column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", column.table, column.definition)
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add %s.%s column: %w", column.table, column.name, err)
+		}
+	}
 	return nil
 }
 

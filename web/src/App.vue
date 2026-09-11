@@ -664,7 +664,6 @@ onMounted(async () => {
               <table class="server-table">
                 <thead>
                   <tr>
-                    <th>服务器 ID</th>
                     <th>名称</th>
                     <th>移除时间</th>
                     <th>创建时间</th>
@@ -673,7 +672,6 @@ onMounted(async () => {
                 </thead>
                 <tbody>
                   <tr v-for="value in archivedServers" :key="value.id">
-                    <td>#{{ value.id }}</td>
                     <td>{{ value.name }}</td>
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
@@ -708,9 +706,6 @@ onMounted(async () => {
             @close="serverModalOpen = false"
           >
             <dl class="server-details">
-              <div v-if="selectedServer.archived_at">
-                <dt>服务器 ID</dt><dd>#{{ selectedServer.id }}</dd>
-              </div>
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
@@ -771,8 +766,6 @@ onMounted(async () => {
             </div>
           </n-card>
         </n-modal>
-
-        <p class="phase-note">v0.4 · 阶段 4</p>
       </section>
     </main>
   </n-config-provider>

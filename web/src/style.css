@@ -306,13 +306,6 @@ h1 {
   gap: 5px;
 }
 
-.phase-note {
-  margin: 24px 0 0;
-  color: #8a949e;
-  font-size: 12px;
-  text-align: center;
-}
-
 @media (max-width: 720px) {
   .admin-header,
   .invitation-row {

@@ -57,8 +57,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
-	mux.HandleFunc("POST /api/servers/{id}/enrollment/regenerate", s.requireAuthentication(s.regenerateInitialEnrollment))
-	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createRebindEnrollment))
+	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -380,29 +379,17 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 	writeNoContent(w)
 }
 
-func (s *server) createRebindEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
 		return
 	}
-	created, err := s.servers.CreateRebindEnrollment(r.Context(), id)
+	created, err := s.servers.CreateEnrollment(r.Context(), id)
 	if err != nil {
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
-}
-
-func (s *server) regenerateInitialEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
-	if !ok {
-		return
-	}
-	created, err := s.servers.RegenerateInitialEnrollment(r.Context(), id)
-	if err != nil {
-		writeServerError(w, err)
-		return
-	}
+	s.closeAgentConnections(id)
 	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
@@ -558,7 +545,13 @@ func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn
 func (s *server) untrackAgentConnection(serverID int64, connection *websocket.Conn) bool {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
-	connections := s.connections[serverID]
+	connections, tracked := s.connections[serverID]
+	if !tracked {
+		return false
+	}
+	if _, tracked = connections[connection]; !tracked {
+		return false
+	}
 	delete(connections, connection)
 	if len(connections) != 0 {
 		return false
@@ -668,8 +661,6 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "Enrollment Token 无效、已使用或已过期")
 	case errors.Is(err, serverstore.ErrInitialConfigExists):
 		writeError(w, http.StatusConflict, "此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置")
-	case errors.Is(err, serverstore.ErrRegenerateNotAllowed):
-		writeError(w, http.StatusConflict, "只有尚未注册 Agent 的待注册服务器可以重新生成注册令牌")
 	case errors.Is(err, serverstore.ErrInvalidAgentVersion):
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
 	default:

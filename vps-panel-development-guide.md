@@ -878,7 +878,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 1. 移除 Server 时写入 `archived_at`，保留 Server ID 和档案。
 2. 原 Agent 长期 Token 立即失效，未使用 Enrollment Token 被清理。
 3. 如果原 Agent 仍有有效 WebSocket，Panel 主动关闭该连接。
-4. admin 可以为已移除 Server 生成新的、一次性的 Enrollment Token。
+4. admin 可以在正常或已移除 Server 的详情弹窗中生成新的、一次性的 Agent 安装令牌。
 5. Enrollment Token 继续绑定原 `server_id`，Server 状态进入：
    ```text
    pending
@@ -909,7 +909,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 
 由于 `agents.server_id` 是唯一关系，重新绑定时删除旧 Agent 认证记录并创建新记录，不制造同一 Server 的多个有效 Agent。
 
-`agent_enrollments.purpose` 只使用两种值：新建 Server 和待注册 Server 重新生成的令牌为 `initial`，已移除 Server 的重新绑定令牌为 `rebind`。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。旧数据库迁移时普通 Enrollment 默认为 `initial`，已归档 Server 尚未使用的 Enrollment 标记为 `rebind`。
+`agent_enrollments.purpose` 只使用 `initial` 和 `rebind` 两种内部值。统一的 `POST /api/servers/{id}/enrollment` 会自动判断用途：当前存在 Agent，或历史上存在已使用的 Enrollment 时生成 `rebind`；两者都不存在时生成 `initial`，不依赖 Server 当前状态。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。
 
 必须保证：
 
@@ -924,24 +924,23 @@ Agent = 可更换、可轮换凭据的执行端身份
 
 ## 4.6.3 UI
 
-服务器页面增加“正常服务器 / 已移除”入口。已移除列表提供：
+服务器页面保留“正常服务器 / 已移除”入口。两类 Server 都使用同一套详情模态弹窗，并只提供一个 Agent 身份操作：
 
 ```text
-重新绑定 Agent
-彻底删除
+重新生成 Agent 安装令牌
 ```
 
-正常列表中的待注册 Server 可以重新生成 `initial` 注册令牌；旧的未使用令牌立即失效，Server ID 和状态保持不变。已移除 Server 的“重新绑定 Agent”生成 `rebind` 令牌。两种操作返回的安装命令格式相同，原始令牌都只显示一次。
+Panel 根据当前 Agent 和已使用 Enrollment 历史自动选择 `initial` 或 `rebind`。正常 Server 和已移除 Server 调用相同 API；已移除 Server 仍保留“彻底删除”操作。生成结果在详情弹窗内显示，原始令牌关闭弹窗后不可再次获取。
 
 点击后必须二次确认，并明确提示：
 
 ```text
-重新绑定会生成新的 Agent 身份；彻底删除会永久删除 Server 及全部关联数据。
+重新生成后，当前 Agent 凭据将立即失效；彻底删除会永久删除 Server 及全部关联数据。
 ```
 
 成功后只显示一次：
 
-- Enrollment Token
+- Agent 安装令牌
 - Agent 安装命令
 - Token 过期时间
 

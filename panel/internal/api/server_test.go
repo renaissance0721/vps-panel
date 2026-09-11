@@ -250,7 +250,6 @@ func TestServerAPILifecycle(t *testing.T) {
 		{http.MethodPost, "/api/servers"},
 		{http.MethodGet, "/api/servers/1"},
 		{http.MethodDelete, "/api/servers/1"},
-		{http.MethodPost, "/api/servers/1/enrollment/regenerate"},
 		{http.MethodPost, "/api/servers/1/enrollment"},
 		{http.MethodDelete, "/api/servers/1/permanent"},
 	} {
@@ -323,7 +322,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
 	}
 	regenerateResponse := performRequest(
-		t, handler, http.MethodPost, serverPath+"/enrollment/regenerate", nil, sessionCookie,
+		t, handler, http.MethodPost, serverPath+"/enrollment", nil, sessionCookie,
 	)
 	if regenerateResponse.Code != http.StatusCreated {
 		t.Fatalf("regenerate enrollment status = %d, body = %q", regenerateResponse.Code, regenerateResponse.Body.String())
@@ -433,12 +432,18 @@ func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode created server: %v", err)
 	}
+	registrationResponse := performRequest(t, handler, http.MethodPost, "/api/agent/register", map[string]any{
+		"enrollment_token": created.EnrollmentToken,
+		"agent_version":    "v0.5.3",
+		"existing_config":  false,
+	}, nil)
+	if registrationResponse.Code != http.StatusCreated {
+		t.Fatalf("register Agent status = %d, body = %q", registrationResponse.Code, registrationResponse.Body.String())
+	}
 	serverPath := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
-	vipRegenerateResponse := performRequest(
-		t, handler, http.MethodPost, serverPath+"/enrollment/regenerate", nil, vipCookie,
-	)
-	if vipRegenerateResponse.Code != http.StatusCreated {
-		t.Fatalf("VIP regenerate status = %d, body = %q", vipRegenerateResponse.Code, vipRegenerateResponse.Body.String())
+	vipEnrollmentResponse := performRequest(t, handler, http.MethodPost, serverPath+"/enrollment", nil, vipCookie)
+	if vipEnrollmentResponse.Code != http.StatusForbidden {
+		t.Fatalf("VIP enrollment status = %d, want %d", vipEnrollmentResponse.Code, http.StatusForbidden)
 	}
 	archiveResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, vipCookie)
 	if archiveResponse.Code != http.StatusNoContent {

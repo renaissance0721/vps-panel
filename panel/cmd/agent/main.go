@@ -136,6 +136,16 @@ func registerAgent(
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
+		var responseError struct {
+			Error string `json:"error"`
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		if readErr == nil && json.Unmarshal(body, &responseError) == nil {
+			message := strings.TrimSpace(responseError.Error)
+			if message != "" && !strings.Contains(message, enrollmentToken) {
+				return config{}, fmt.Errorf("Panel rejected registration: %s (%s)", message, response.Status)
+			}
+		}
 		return config{}, fmt.Errorf("Panel rejected registration: %s", response.Status)
 	}
 

@@ -7,6 +7,7 @@ import {
   NConfigProvider,
   NEmpty,
   NInput,
+  NModal,
   NSpin,
   NTag,
 } from 'naive-ui'
@@ -61,6 +62,7 @@ const servers = ref<ServerRecord[]>([])
 const archivedServers = ref<ServerRecord[]>([])
 const selectedServer = ref<ServerRecord | null>(null)
 const createdServer = ref<CreatedServer | null>(null)
+const serverModalOpen = ref(false)
 const serverName = ref('')
 const currentPage = ref<'overview' | 'servers'>('overview')
 const serverListMode = ref<'active' | 'archived'>('active')
@@ -70,7 +72,6 @@ const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
 const copiedEnrollment = ref<'token' | 'command' | ''>('')
-const enrollmentMode = ref<'install' | 'rebind'>('install')
 
 const username = ref('')
 const password = ref('')
@@ -199,6 +200,7 @@ async function logout() {
     archivedServers.value = []
     selectedServer.value = null
     createdServer.value = null
+    serverModalOpen.value = false
     generatedLink.value = ''
     currentPage.value = 'overview'
   })
@@ -240,24 +242,24 @@ async function createServerRecord() {
       body: JSON.stringify({ name: serverName.value }),
     })
     selectedServer.value = createdServer.value.server
+    serverModalOpen.value = true
     serverName.value = ''
     copiedEnrollment.value = ''
-    enrollmentMode.value = 'install'
     await loadServers()
   })
 }
 
-async function viewServer(id: number) {
-  await submit(async () => {
-    const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`)
-    selectedServer.value = response.server
-  })
+function viewServer(value: ServerRecord) {
+  selectedServer.value = value
+  createdServer.value = null
+  copiedEnrollment.value = ''
+  serverModalOpen.value = true
 }
 
 async function archiveServer(value: ServerRecord) {
   if (
     !window.confirm(
-      `确定移除服务器“${value.name}”吗？\n\n移除后将从服务器列表隐藏，并立即撤销当前 Agent 凭据，但服务器资料和历史数据会保留。之后可以重新绑定 Agent。`,
+      `确定移除服务器“${value.name}”吗？\n\n移除后将从服务器列表隐藏，并立即撤销当前 Agent 凭据，但服务器资料和历史数据会保留。之后可以重新生成 Agent 安装令牌恢复。`,
     )
   )
     return
@@ -269,30 +271,27 @@ async function archiveServer(value: ServerRecord) {
   })
 }
 
-async function rebindAgent(value: ServerRecord) {
-  if (!window.confirm(`确定为服务器“${value.name}”生成新的 Agent 注册令牌吗？`)) return
+async function regenerateEnrollment(value: ServerRecord) {
+  if (
+    !window.confirm(
+      '重新生成后，当前 Agent 凭据将立即失效；如果服务器在线，现有 Agent 连接也会断开。服务器资料和历史数据不会删除。是否继续？',
+    )
+  )
+    return
   await submit(async () => {
     createdServer.value = await api<CreatedServer>(`/api/servers/${value.id}/enrollment`, {
       method: 'POST',
     })
-    enrollmentMode.value = 'rebind'
+    selectedServer.value = createdServer.value.server
     copiedEnrollment.value = ''
     await loadServers()
   })
 }
 
-async function regenerateEnrollment(value: ServerRecord) {
-  if (!window.confirm('旧的未使用注册令牌将立即失效，并生成新的注册令牌。')) return
-  await submit(async () => {
-    createdServer.value = await api<CreatedServer>(
-      `/api/servers/${value.id}/enrollment/regenerate`,
-      { method: 'POST' },
-    )
-    selectedServer.value = createdServer.value.server
-    enrollmentMode.value = 'install'
-    copiedEnrollment.value = ''
-    await loadServers()
-  })
+function closeServerDetails() {
+  selectedServer.value = null
+  createdServer.value = null
+  copiedEnrollment.value = ''
 }
 
 async function permanentlyDeleteServer(value: ServerRecord) {
@@ -304,7 +303,7 @@ async function permanentlyDeleteServer(value: ServerRecord) {
     return
   await submit(async () => {
     await api(`/api/servers/${value.id}/permanent`, { method: 'DELETE' })
-    if (createdServer.value?.server.id === value.id) createdServer.value = null
+    serverModalOpen.value = false
     await loadServers()
   })
 }
@@ -597,9 +596,9 @@ onMounted(async () => {
             </n-button>
           </div>
 
-          <div v-if="serverListMode === 'active'" class="server-grid">
+          <div v-if="serverListMode === 'active'" class="server-create">
             <n-card title="新增服务器" :bordered="true">
-              <p class="card-copy">创建后将生成一个 24 小时有效的注册令牌。</p>
+              <p class="card-copy">创建后将生成一个 24 小时有效的 Agent 安装令牌。</p>
               <form class="server-form" @submit.prevent="createServerRecord">
                 <n-input
                   v-model:value="serverName"
@@ -611,81 +610,7 @@ onMounted(async () => {
                 </n-button>
               </form>
             </n-card>
-
-            <n-card v-if="selectedServer" title="服务器详情" :bordered="true">
-              <dl class="server-details">
-                <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
-                <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
-                <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
-                <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
-              </dl>
-              <n-button
-                v-if="selectedServer.status === 'pending' && !selectedServer.archived_at"
-                type="primary"
-                secondary
-                :disabled="submitting"
-                @click="regenerateEnrollment(selectedServer)"
-              >
-                重新生成注册令牌
-              </n-button>
-            </n-card>
           </div>
-
-          <n-card
-            v-if="createdServer"
-            class="enrollment-card"
-            :title="enrollmentMode === 'rebind' ? '保存重新绑定凭据' : '保存注册令牌'"
-            :bordered="true"
-          >
-            <n-alert
-              type="warning"
-              :title="
-                enrollmentMode === 'rebind'
-                  ? '新的注册令牌仅显示一次，请立即保存'
-                  : '此注册令牌仅显示一次，请立即保存'
-              "
-            >
-              <template v-if="enrollmentMode === 'rebind'">
-                请在目标 VPS 上执行下方命令。注册成功后将安全替换旧 Agent 身份。
-              </template>
-              <template v-else>
-                请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
-              </template>
-            </n-alert>
-            <dl class="server-details enrollment-summary">
-              <div><dt>服务器名称</dt><dd>{{ createdServer.server.name }}</dd></div>
-              <div><dt>状态</dt><dd>{{ statusLabel(createdServer.server.status) }}</dd></div>
-              <div>
-                <dt>过期时间</dt>
-                <dd>{{ formatTime(createdServer.enrollment_token_expires_at) }}</dd>
-              </div>
-            </dl>
-            <div class="secret-field">
-              <strong>注册令牌</strong>
-              <n-input :value="createdServer.enrollment_token" readonly />
-              <n-button
-                secondary
-                @click="copyEnrollment(createdServer.enrollment_token, 'token')"
-              >
-                {{ copiedEnrollment === 'token' ? '已复制' : '复制令牌' }}
-              </n-button>
-            </div>
-            <div class="secret-field">
-              <strong>Agent 安装命令</strong>
-              <n-input
-                :value="createdServer.agent_installation_command"
-                type="textarea"
-                readonly
-                :autosize="{ minRows: 3 }"
-              />
-              <n-button
-                secondary
-                @click="copyEnrollment(createdServer.agent_installation_command, 'command')"
-              >
-                {{ copiedEnrollment === 'command' ? '已复制' : '复制命令' }}
-              </n-button>
-            </div>
-          </n-card>
 
           <n-card v-if="serverListMode === 'active'" title="正常服务器" :bordered="true">
             <n-empty v-if="servers.length === 0" description="当前没有服务器" />
@@ -713,7 +638,7 @@ onMounted(async () => {
                         size="small"
                         secondary
                         :disabled="submitting"
-                        @click="viewServer(value.id)"
+                        @click="viewServer(value)"
                       >
                         查看
                       </n-button>
@@ -753,27 +678,14 @@ onMounted(async () => {
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
                     <td class="server-actions">
-                      <template v-if="state.user?.role === 'admin'">
-                        <n-button
-                          size="small"
-                          type="primary"
-                          secondary
-                          :disabled="submitting"
-                          @click="rebindAgent(value)"
-                        >
-                          重新绑定 Agent
-                        </n-button>
-                        <n-button
-                          size="small"
-                          type="error"
-                          secondary
-                          :disabled="submitting"
-                          @click="permanentlyDeleteServer(value)"
-                        >
-                          彻底删除
-                        </n-button>
-                      </template>
-                      <span v-else>—</span>
+                      <n-button
+                        size="small"
+                        secondary
+                        :disabled="submitting"
+                        @click="viewServer(value)"
+                      >
+                        查看
+                      </n-button>
                     </td>
                   </tr>
                 </tbody>
@@ -781,6 +693,94 @@ onMounted(async () => {
             </div>
           </n-card>
         </template>
+
+        <n-modal
+          v-model:show="serverModalOpen"
+          :mask-closable="true"
+          @after-leave="closeServerDetails"
+        >
+          <n-card
+            v-if="selectedServer"
+            class="server-modal-card"
+            title="服务器详情"
+            :bordered="false"
+            closable
+            @close="serverModalOpen = false"
+          >
+            <dl class="server-details">
+              <div v-if="selectedServer.archived_at">
+                <dt>服务器 ID</dt><dd>#{{ selectedServer.id }}</dd>
+              </div>
+              <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
+              <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+              <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
+              <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
+              <div v-if="selectedServer.archived_at">
+                <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
+              </div>
+            </dl>
+
+            <div v-if="state.user?.role === 'admin'" class="server-modal-actions">
+              <n-button
+                type="primary"
+                secondary
+                :loading="submitting"
+                @click="regenerateEnrollment(selectedServer)"
+              >
+                重新生成 Agent 安装令牌
+              </n-button>
+              <n-button
+                v-if="selectedServer.archived_at"
+                type="error"
+                secondary
+                :disabled="submitting"
+                @click="permanentlyDeleteServer(selectedServer)"
+              >
+                彻底删除
+              </n-button>
+            </div>
+
+            <div v-if="createdServer" class="modal-enrollment">
+              <n-alert
+                type="warning"
+                title="Agent 安装令牌仅显示一次，请立即保存。"
+              >
+                请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
+              </n-alert>
+              <dl class="server-details enrollment-summary">
+                <div>
+                  <dt>过期时间</dt>
+                  <dd>{{ formatTime(createdServer.enrollment_token_expires_at) }}</dd>
+                </div>
+              </dl>
+              <div class="secret-field">
+                <strong>Agent 安装令牌</strong>
+                <n-input :value="createdServer.enrollment_token" readonly />
+                <n-button
+                  secondary
+                  @click="copyEnrollment(createdServer.enrollment_token, 'token')"
+                >
+                  {{ copiedEnrollment === 'token' ? '已复制' : '复制令牌' }}
+                </n-button>
+              </div>
+              <div class="secret-field">
+                <strong>Agent 安装命令</strong>
+                <n-input
+                  :value="createdServer.agent_installation_command"
+                  type="textarea"
+                  readonly
+                  :autosize="{ minRows: 3 }"
+                />
+                <n-button
+                  secondary
+                  @click="copyEnrollment(createdServer.agent_installation_command, 'command')"
+                >
+                  {{ copiedEnrollment === 'command' ? '已复制' : '复制命令' }}
+                </n-button>
+              </div>
+            </div>
+          </n-card>
+        </n-modal>
 
         <p class="phase-note">v0.4 · 阶段 4</p>
       </section>

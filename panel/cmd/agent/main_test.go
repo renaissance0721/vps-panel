@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,13 +166,52 @@ func TestRegistrationFailurePreservesExistingConfig(t *testing.T) {
 	}
 
 	rejectingPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "invalid enrollment", http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置"}`))
 	}))
 	defer rejectingPanel.Close()
-	if _, err := registerAgent(
-		context.Background(), rejectingPanel.Client(), rejectingPanel.URL, "invalid", configPath,
-	); err == nil {
+	secretEnrollment := "secret-enrollment-token"
+	_, err = registerAgent(
+		context.Background(), rejectingPanel.Client(), rejectingPanel.URL, secretEnrollment, configPath,
+	)
+	if err == nil {
 		t.Fatal("registration unexpectedly succeeded with invalid enrollment")
+	}
+	if !strings.Contains(err.Error(), "此注册令牌仅用于首次安装") || !strings.Contains(err.Error(), "409 Conflict") {
+		t.Fatalf("registration error = %q, want concrete Panel error and status", err)
+	}
+	if strings.Contains(err.Error(), secretEnrollment) {
+		t.Fatal("registration error exposed the Enrollment Token")
+	}
+	assertFileContents(t, configPath, original)
+
+	echoingPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"invalid token: secret-enrollment-token"}`))
+	}))
+	defer echoingPanel.Close()
+	_, err = registerAgent(
+		context.Background(), echoingPanel.Client(), echoingPanel.URL, secretEnrollment, configPath,
+	)
+	if err == nil || err.Error() != "Panel rejected registration: 409 Conflict" {
+		t.Fatalf("token-echoing registration error = %v, want HTTP status fallback", err)
+	}
+	if strings.Contains(err.Error(), secretEnrollment) {
+		t.Fatal("token-echoing registration error exposed the Enrollment Token")
+	}
+	assertFileContents(t, configPath, original)
+
+	nonJSONPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream failed", http.StatusBadGateway)
+	}))
+	defer nonJSONPanel.Close()
+	_, err = registerAgent(
+		context.Background(), nonJSONPanel.Client(), nonJSONPanel.URL, secretEnrollment, configPath,
+	)
+	if err == nil || err.Error() != "Panel rejected registration: 502 Bad Gateway" {
+		t.Fatalf("non-JSON registration error = %v, want HTTP status fallback", err)
 	}
 	assertFileContents(t, configPath, original)
 

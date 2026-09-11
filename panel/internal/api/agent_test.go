@@ -192,6 +192,82 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
 }
 
+func TestCreatingEnrollmentClosesWebSocketAndKeepsServerPending(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Rotate Online Agent")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.3", false)
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	initializeResponse := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initializeResponse.Code != http.StatusCreated {
+		t.Fatalf("initialize status = %d, body = %q", initializeResponse.Code, initializeResponse.Body.String())
+	}
+	adminCookie := initializeResponse.Result().Cookies()[0]
+	panel := httptest.NewServer(handler)
+	defer panel.Close()
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+registered.Token)
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{
+		HTTPHeader: header,
+	})
+	if err != nil {
+		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
+	}
+	defer connection.CloseNow()
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	disconnected := connection.CloseRead(context.Background())
+
+	request, err := http.NewRequestWithContext(
+		t.Context(), http.MethodPost, panel.URL+"/api/servers/"+strconv.FormatInt(created.ID, 10)+"/enrollment", nil,
+	)
+	if err != nil {
+		t.Fatalf("create enrollment request: %v", err)
+	}
+	request.AddCookie(adminCookie)
+	enrollmentResponse, err := panel.Client().Do(request)
+	if err != nil {
+		t.Fatalf("create enrollment: %v", err)
+	}
+	enrollmentResponse.Body.Close()
+	if enrollmentResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create enrollment status = %d, want %d", enrollmentResponse.StatusCode, http.StatusCreated)
+	}
+	select {
+	case <-disconnected.Done():
+	case <-time.After(time.Second):
+		t.Fatal("creating enrollment did not close Agent WebSocket")
+	}
+	if _, err := service.AuthenticateAgent(t.Context(), registered.Token); !errors.Is(err, serverstore.ErrInvalidAgentToken) {
+		t.Fatalf("old Agent Token authentication error = %v, want ErrInvalidAgentToken", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	var status, purpose string
+	if err := db.QueryRow(
+		`SELECT servers.status, enrollments.purpose
+		 FROM servers JOIN agent_enrollments AS enrollments ON enrollments.server_id = servers.id
+		 WHERE servers.id = ? AND enrollments.used_at IS NULL`, created.ID,
+	).Scan(&status, &purpose); err != nil {
+		t.Fatalf("read enrollment server state: %v", err)
+	}
+	if status != serverstore.StatusPending || purpose != serverstore.PurposeRebind {
+		t.Fatalf("enrollment server state = (%q, %q), want pending rebind", status, purpose)
+	}
+}
+
 func TestArchiveClosesAgentWebSocketAndRevokesToken(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

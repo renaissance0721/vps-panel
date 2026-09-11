@@ -29,17 +29,23 @@ type server struct {
 	authService   *auth.Service
 	servers       *serverstore.Service
 	webRoot       string
+	panelVersion  string
 	connectionsMu sync.Mutex
-	connections   map[int64]map[*websocket.Conn]struct{}
+	connections   map[int64]*websocket.Conn
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
+	return NewHandlerWithVersion(db, webRoot, "dev")
+}
+
+func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handler {
 	s := &server{
-		db:          db,
-		authService: auth.NewService(db),
-		servers:     serverstore.NewService(db),
-		webRoot:     webRoot,
-		connections: make(map[int64]map[*websocket.Conn]struct{}),
+		db:           db,
+		authService:  auth.NewService(db),
+		servers:      serverstore.NewService(db),
+		webRoot:      webRoot,
+		panelVersion: panelVersion,
+		connections:  make(map[int64]*websocket.Conn),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
@@ -103,6 +109,7 @@ type serverResponse struct {
 	Name       string     `json:"name"`
 	Status     string     `json:"status"`
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
@@ -248,10 +255,14 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
-	s.trackAgentConnection(agent.ServerID, connection)
+	connection.SetReadLimit(1024)
+	previous := s.trackAgentConnection(agent.ServerID, connection)
+	if previous != nil {
+		previous.CloseNow()
+	}
 
 	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = s.servers.SetAgentOnline(statusContext, agent.ServerID)
+	err = s.servers.SetAgentConnected(statusContext, agent.ID, agent.ServerID)
 	cancel()
 	if err != nil {
 		s.untrackAgentConnection(agent.ServerID, connection)
@@ -264,15 +275,36 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("agent %d connected to server %d", agent.ID, agent.ServerID)
 
-	disconnected := connection.CloseRead(context.Background())
-	<-disconnected.Done()
-	if !s.untrackAgentConnection(agent.ServerID, connection) {
-		return
+	for {
+		messageType, message, readErr := connection.Read(r.Context())
+		if readErr != nil {
+			break
+		}
+		if !s.isCurrentAgentConnection(agent.ServerID, connection) {
+			return
+		}
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if messageType != websocket.MessageText || json.Unmarshal(message, &payload) != nil || payload.Type != "heartbeat" {
+			_ = connection.Close(websocket.StatusPolicyViolation, "invalid heartbeat")
+			break
+		}
+		heartbeatContext, cancelHeartbeat := context.WithTimeout(context.Background(), 5*time.Second)
+		err = s.servers.TouchAgent(heartbeatContext, agent.ID, agent.ServerID)
+		cancelHeartbeat()
+		if err != nil {
+			if !errors.Is(err, serverstore.ErrInvalidAgentToken) {
+				log.Printf("update agent %d heartbeat for server %d: %v", agent.ID, agent.ServerID, err)
+			}
+			break
+		}
 	}
 
-	statusContext, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	err = s.servers.SetAgentOffline(statusContext, agent.ServerID)
-	cancel()
+	current, err := s.disconnectCurrentAgent(agent.ServerID, connection)
+	if !current {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, serverstore.ErrNotFound) {
 			return
@@ -350,7 +382,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
+	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -390,7 +422,7 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, _ auth
 		return
 	}
 	s.closeAgentConnections(id)
-	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
+	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
 func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -510,12 +542,13 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		Name:       value.Name,
 		Status:     value.Status,
 		ArchivedAt: value.ArchivedAt,
+		LastSeenAt: value.LastSeenAt,
 		CreatedAt:  value.CreatedAt,
 		UpdatedAt:  value.UpdatedAt,
 	}
 }
 
-func toCreatedServerResponse(
+func (s *server) toCreatedServerResponse(
 	created serverstore.CreatedServer,
 	baseURL string,
 ) createdServerResponse {
@@ -525,6 +558,9 @@ func toCreatedServerResponse(
 		baseURL,
 		created.EnrollmentToken,
 	)
+	if version := releaseVersion(s.panelVersion); version != "" {
+		command += " \\\n  --version " + version
+	}
 	return createdServerResponse{
 		Server:                   toServerResponse(created.Server),
 		EnrollmentToken:          created.EnrollmentToken,
@@ -533,39 +569,65 @@ func toCreatedServerResponse(
 	}
 }
 
-func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn) {
+func releaseVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != 'v' || value[1] < '0' || value[1] > '9' {
+		return ""
+	}
+	for _, character := range value[2:] {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '-' || character == '_' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn) *websocket.Conn {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
-	if s.connections[serverID] == nil {
-		s.connections[serverID] = make(map[*websocket.Conn]struct{})
-	}
-	s.connections[serverID][connection] = struct{}{}
+	previous := s.connections[serverID]
+	s.connections[serverID] = connection
+	return previous
 }
 
 func (s *server) untrackAgentConnection(serverID int64, connection *websocket.Conn) bool {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
-	connections, tracked := s.connections[serverID]
-	if !tracked {
-		return false
-	}
-	if _, tracked = connections[connection]; !tracked {
-		return false
-	}
-	delete(connections, connection)
-	if len(connections) != 0 {
+	if s.connections[serverID] != connection {
 		return false
 	}
 	delete(s.connections, serverID)
 	return true
 }
 
+func (s *server) isCurrentAgentConnection(serverID int64, connection *websocket.Conn) bool {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	return s.connections[serverID] == connection
+}
+
+func (s *server) disconnectCurrentAgent(serverID int64, connection *websocket.Conn) (bool, error) {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	if s.connections[serverID] != connection {
+		return false, nil
+	}
+	delete(s.connections, serverID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return true, s.servers.SetAgentOffline(ctx, serverID)
+}
+
 func (s *server) closeAgentConnections(serverID int64) {
 	s.connectionsMu.Lock()
-	connections := s.connections[serverID]
+	connection := s.connections[serverID]
 	delete(s.connections, serverID)
 	s.connectionsMu.Unlock()
-	for connection := range connections {
+	if connection != nil {
 		connection.CloseNow()
 	}
 }

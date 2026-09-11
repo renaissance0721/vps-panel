@@ -117,9 +117,16 @@ func TestInstallAgentScript(t *testing.T) {
 	for _, required := range []string{
 		"--server",
 		"--token",
+		"--version",
 		"vps-panel-agent-linux-${architecture}",
+		"${RELEASES_BASE}/download/${agent_version}",
+		"${RELEASES_BASE}/latest/download",
 		"/usr/local/bin/vps-panel-agent",
 		"/etc/systemd/system/vps-panel-agent.service",
+		"Restart=on-failure",
+		"RestartSec=3",
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
 		"systemctl enable",
 		"systemctl restart",
 	} {
@@ -132,8 +139,8 @@ func TestInstallAgentScript(t *testing.T) {
 			t.Fatalf("installer still contains removed behavior %q", removed)
 		}
 	}
-	if strings.Contains(response.Body.String(), "Restart=on-failure") {
-		t.Fatal("installer enables automatic Agent reconnection")
+	if strings.Contains(response.Body.String(), "Restart=always") {
+		t.Fatal("installer restarts a deliberately stopped Agent")
 	}
 	registrationIndex := strings.Index(response.Body.String(), `"$download_path" register --server "$server_url" --token "$enrollment_token"`)
 	installIndex := strings.Index(response.Body.String(), `install -m 0755 "$download_path" "$BINARY_PATH"`)
@@ -185,11 +192,106 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
 	}
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	connectedServer, err := service.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("get connected server: %v", err)
+	}
+	if connectedServer.LastSeenAt == nil {
+		t.Fatal("WebSocket connection did not set last_seen_at")
+	}
+	if _, err := db.Exec(`UPDATE agents SET last_seen_at = NULL WHERE id = ?`, registered.ID); err != nil {
+		t.Fatalf("clear last_seen_at before heartbeat: %v", err)
+	}
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{"type":"heartbeat"}`)); err != nil {
+		t.Fatalf("write Agent heartbeat: %v", err)
+	}
+	waitForLastSeen(t, service, created.ID)
+	var heartbeatTableCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master
+		 WHERE type = 'table' AND name IN ('agent_heartbeats', 'heartbeat_history', 'agent_events')`,
+	).Scan(&heartbeatTableCount); err != nil {
+		t.Fatalf("inspect heartbeat history tables: %v", err)
+	}
+	if heartbeatTableCount != 0 {
+		t.Fatalf("heartbeat history table count = %d, want 0", heartbeatTableCount)
+	}
 
 	if err := connection.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
 		t.Fatalf("close Agent WebSocket: %v", err)
 	}
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+}
+
+func TestNewAgentConnectionReplacesOldConnectionWithoutFalseOffline(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Replacement Agent")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.6.0", false)
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	defer panel.Close()
+	header := http.Header{"Authorization": []string{"Bearer " + registered.Token}}
+
+	first, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect first Agent WebSocket: %v, response = %+v", err, response)
+	}
+	defer first.CloseNow()
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	firstDisconnected := first.CloseRead(context.Background())
+
+	second, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect replacement Agent WebSocket: %v, response = %+v", err, response)
+	}
+	defer second.CloseNow()
+	select {
+	case <-firstDisconnected.Done():
+	case <-time.After(time.Second):
+		t.Fatal("replacement connection did not close the old WebSocket")
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	time.Sleep(30 * time.Millisecond)
+	value, err := service.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("get server after old connection closed: %v", err)
+	}
+	if value.Status != serverstore.StatusOnline {
+		t.Fatalf("old connection marked replacement offline: status = %q", value.Status)
+	}
+
+	if err := second.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+		t.Fatalf("close replacement WebSocket: %v", err)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+}
+
+func TestAgentInstallationCommandPinsReleaseVersion(t *testing.T) {
+	created := serverstore.CreatedServer{
+		Server:          serverstore.Server{ID: 1, Name: "Versioned", Status: serverstore.StatusPending},
+		EnrollmentToken: "one-time-token",
+	}
+	versioned := (&server{panelVersion: "v0.6.0"}).toCreatedServerResponse(created, "https://panel.example")
+	if !strings.Contains(versioned.AgentInstallationCommand, "--version v0.6.0") {
+		t.Fatalf("versioned command = %q", versioned.AgentInstallationCommand)
+	}
+	for _, version := range []string{"", "dev", "unknown", "v0.6.0;bad"} {
+		response := (&server{panelVersion: version}).toCreatedServerResponse(created, "https://panel.example")
+		if strings.Contains(response.AgentInstallationCommand, "--version") {
+			t.Fatalf("development version %q leaked into command %q", version, response.AgentInstallationCommand)
+		}
+	}
 }
 
 func TestCreatingEnrollmentClosesWebSocketAndKeepsServerPending(t *testing.T) {
@@ -369,6 +471,26 @@ func waitForServerStatus(t *testing.T, service *serverstore.Service, serverID in
 		select {
 		case <-ctx.Done():
 			t.Fatalf("server status = %q, want %q", value.Status, expected)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func waitForLastSeen(t *testing.T, service *serverstore.Service, serverID int64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		value, err := service.Get(ctx, serverID)
+		if err != nil {
+			t.Fatalf("get server last seen: %v", err)
+		}
+		if value.LastSeenAt != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("server last_seen_at was not updated")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

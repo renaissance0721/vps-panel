@@ -2,7 +2,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6 和 Phase 5A 已完成；下一步进入 Phase 5B。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A 和 Phase 5B 已完成；下一步进入 Phase 6A。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -1149,6 +1149,8 @@ WHERE status = 'online'
 ---
 
 # 6. Phase 5B：Heartbeat 与自动重连
+
+> 当前状态：已实现。Agent 每约 10 秒发送最小 Heartbeat，Panel 记录 `last_seen_at`，断线后按最高 30 秒退避重连；同一 Server 仅保留当前 WebSocket，安装时默认固定到当前 Panel Release，开发版本回退到最新 Release。
 
 ## 目标
 

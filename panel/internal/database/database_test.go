@@ -231,3 +231,70 @@ func TestOpenMigratesAgentEnrollmentPurposes(t *testing.T) {
 		t.Fatal("agent_enrollments accepted an invalid purpose")
 	}
 }
+
+func TestOpenMigratesAgentLastSeenWithoutLosingData(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			archived_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+		 VALUES (7, 'Legacy Agent Server', 'offline', 1, 1)`,
+		`CREATE TABLE agents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			version TEXT NOT NULL,
+			registered_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO agents
+		 (id, server_id, token_hash, version, registered_at, created_at, updated_at)
+		 VALUES (9, 7, 'legacy-token-hash', 'v0.5.0', 2, 2, 2)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare legacy Agent database: %v", err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	defer db.Close()
+
+	var columnCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'last_seen_at'`,
+	).Scan(&columnCount); err != nil {
+		t.Fatalf("inspect migrated Agent column: %v", err)
+	}
+	if columnCount != 1 {
+		t.Fatalf("last_seen_at column count = %d, want 1", columnCount)
+	}
+	var serverID int64
+	var tokenHash string
+	var lastSeenAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT server_id, token_hash, last_seen_at FROM agents WHERE id = 9`,
+	).Scan(&serverID, &tokenHash, &lastSeenAt); err != nil {
+		t.Fatalf("read migrated Agent: %v", err)
+	}
+	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid {
+		t.Fatalf("migrated Agent = (%d, %q, %v), want preserved row with NULL last_seen_at", serverID, tokenHash, lastSeenAt.Valid)
+	}
+}

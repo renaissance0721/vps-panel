@@ -50,7 +50,8 @@ jobs:
           mkdir -p package/web release-assets
           cd panel
           CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build \
-            -trimpath -ldflags="-s -w" -o ../package/vps-panel ./cmd/panel
+            -trimpath -ldflags="-s -w -X main.panelVersion=$GITHUB_REF_NAME" \
+            -o ../package/vps-panel ./cmd/panel
           cd ..
           cp -a web/dist/. package/web/
           tar -C package -czf "release-assets/$ARCHIVE" vps-panel web

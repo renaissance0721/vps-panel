@@ -18,6 +18,8 @@ import (
 
 const defaultHealthcheckURL = "http://127.0.0.1:8080/api/health"
 
+var panelVersion = "dev"
+
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
 		if err := healthcheck(); err != nil {
@@ -51,7 +53,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              listenAddr,
-		Handler:           api.NewHandler(db, webDir),
+		Handler:           api.NewHandlerWithVersion(db, webDir, panelVersion),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

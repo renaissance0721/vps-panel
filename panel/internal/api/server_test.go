@@ -289,12 +289,16 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.Name != "JP Native 01" || created.Server.Status != "pending" {
 		t.Fatalf("created server = %+v, want named pending server", created.Server)
 	}
+	if created.Server.LastSeenAt != nil {
+		t.Fatalf("new server last_seen_at = %v, want null", created.Server.LastSeenAt)
+	}
 	if created.EnrollmentToken == "" {
 		t.Fatal("created enrollment token is empty")
 	}
 	if !strings.Contains(created.AgentInstallationCommand, "https://panel.example.com") ||
 		!strings.Contains(created.AgentInstallationCommand, created.EnrollmentToken) ||
-		strings.Contains(created.AgentInstallationCommand, "--force") {
+		strings.Contains(created.AgentInstallationCommand, "--force") ||
+		strings.Contains(created.AgentInstallationCommand, "--version") {
 		t.Fatalf("agent command = %q, want panel URL and enrollment token", created.AgentInstallationCommand)
 	}
 
@@ -311,6 +315,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, sessionCookie)
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), "JP Native 01") {
 		t.Fatalf("server list = (%d, %q), want created server", listResponse.Code, listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"last_seen_at":null`) {
+		t.Fatalf("server list = %q, want nullable last_seen_at", listResponse.Body.String())
 	}
 	if strings.Contains(listResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatal("server list returned the plaintext enrollment token")

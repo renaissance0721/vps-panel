@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 4.6** 和 **Phase 5A**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 4.6、Phase 5A 和 Phase 5B**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
-当前 Agent 只支持注册、保存长期凭据和建立一次认证 WebSocket 连接，尚未实现 Heartbeat、自动重连、监控、代理内核或端口转发。
+当前 Agent 支持注册、保存长期凭据、Heartbeat 和断线自动重连；尚未实现系统监控、代理内核或端口转发。
 
 ## VPS 部署
 
@@ -71,7 +71,7 @@ systemctl status vps-panel
 
 ## Agent 安装
 
-在 Panel 的 `Servers` 页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 Debian/Ubuntu VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载对应 Agent 二进制、完成一次性注册并启用 `vps-panel-agent.service`。
+在 Panel 的“服务器”页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 Debian/Ubuntu VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载对应 Agent 二进制、完成一次性注册并启用 `vps-panel-agent.service`。正式 Release 生成的命令会固定下载与当前 Panel 相同版本的 Agent；开发版本未指定版本时才回退到最新 Release。
 
 Agent 安装位置：
 
@@ -81,7 +81,7 @@ Agent 安装位置：
 /etc/systemd/system/vps-panel-agent.service
 ```
 
-注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。
+注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 会在 3 秒后兜底重启。服务器详情会显示最后通信时间，并约每 10 秒刷新状态。
 
 普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在正常或已移除 Server 的详情弹窗中统一使用“重新生成 Agent 安装令牌”；新建 Server 自动生成的首个令牌用于首次安装，管理员主动重新生成的令牌始终用于重新绑定。重新绑定成功后，Agent 才会原子替换旧配置；只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
 

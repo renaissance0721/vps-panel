@@ -90,6 +90,7 @@ func migrate(db *sql.DB) error {
 			token_hash TEXT NOT NULL UNIQUE,
 			version TEXT NOT NULL,
 			registered_at INTEGER NOT NULL,
+			last_seen_at INTEGER,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -109,7 +110,25 @@ func migrate(db *sql.DB) error {
 	if err := migrateAgentEnrollmentPurpose(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateAgentLastSeen(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateAgentLastSeen(ctx context.Context, db *sql.DB) error {
+	var columnCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'last_seen_at'`,
+	).Scan(&columnCount); err != nil {
+		return fmt.Errorf("inspect Agent last_seen_at column: %w", err)
+	}
+	if columnCount == 0 {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE agents ADD COLUMN last_seen_at INTEGER`); err != nil {
+			return fmt.Errorf("add Agent last_seen_at column: %w", err)
+		}
+	}
 	return nil
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   NAlert,
   NButton,
@@ -44,6 +44,7 @@ type ServerRecord = {
   name: string
   status: 'pending' | 'online' | 'offline'
   archived_at?: string
+  last_seen_at: string | null
   created_at: string
   updated_at: string
 }
@@ -76,6 +77,9 @@ const copiedCommand = ref(false)
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+
+let serverLoadPromise: Promise<void> | null = null
+let serverPollTimer: number | undefined
 
 const invitationToken = new URLSearchParams(window.location.search).get('token') ?? ''
 const isInvitationPage = computed(
@@ -114,6 +118,7 @@ async function loadState() {
       requests.push(loadInvitations())
     }
     await Promise.all(requests)
+    startServerPolling()
   }
 }
 
@@ -127,12 +132,41 @@ async function loadInvitations() {
 }
 
 async function loadServers() {
-  const [activeResponse, archivedResponse] = await Promise.all([
-    api<{ servers: ServerRecord[] }>('/api/servers'),
-    api<{ servers: ServerRecord[] }>('/api/servers?archived=true'),
-  ])
-  servers.value = activeResponse.servers
-  archivedServers.value = archivedResponse.servers
+  if (serverLoadPromise) return serverLoadPromise
+  serverLoadPromise = (async () => {
+    const [activeResponse, archivedResponse] = await Promise.all([
+      api<{ servers: ServerRecord[] }>('/api/servers'),
+      api<{ servers: ServerRecord[] }>('/api/servers?archived=true'),
+    ])
+    if (!state.value?.authenticated) return
+    servers.value = activeResponse.servers
+    archivedServers.value = archivedResponse.servers
+    if (selectedServer.value) {
+      selectedServer.value = [...servers.value, ...archivedServers.value].find(
+        (value) => value.id === selectedServer.value?.id,
+      ) ?? null
+    }
+  })()
+  try {
+    await serverLoadPromise
+  } finally {
+    serverLoadPromise = null
+  }
+}
+
+function startServerPolling() {
+  stopServerPolling()
+  serverPollTimer = window.setInterval(() => {
+    if (!state.value?.authenticated || submitting.value) return
+    void loadServers().catch(() => undefined)
+  }, 10_000)
+}
+
+function stopServerPolling() {
+  if (serverPollTimer !== undefined) {
+    window.clearInterval(serverPollTimer)
+    serverPollTimer = undefined
+  }
 }
 
 function validatePasswords(): boolean {
@@ -190,6 +224,7 @@ async function register() {
 async function logout() {
   await submit(async () => {
     await api('/api/auth/logout', { method: 'POST' })
+    stopServerPolling()
     state.value = {
       requires_initialization: false,
       authenticated: false,
@@ -363,6 +398,8 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+onUnmounted(stopServerPolling)
 </script>
 
 <template>
@@ -708,6 +745,10 @@ onMounted(async () => {
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+              <div>
+                <dt>最后通信</dt>
+                <dd>{{ selectedServer.last_seen_at ? formatTime(selectedServer.last_seen_at) : '—' }}</dd>
+              </div>
               <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
               <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
               <div v-if="selectedServer.archived_at">

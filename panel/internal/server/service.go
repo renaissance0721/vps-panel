@@ -37,6 +37,7 @@ type Server struct {
 	Name       string
 	Status     string
 	ArchivedAt *time.Time
+	LastSeenAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -129,7 +130,9 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	defer tx.Rollback()
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
-		`SELECT id, name, status, archived_at, created_at, updated_at FROM servers WHERE id = ?`, id,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 servers.created_at, servers.updated_at FROM servers WHERE servers.id = ?`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CreatedServer{}, ErrNotFound
@@ -170,6 +173,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		return CreatedServer{}, fmt.Errorf("commit Agent enrollment creation: %w", err)
 	}
 	value.Status = StatusPending
+	value.LastSeenAt = nil
 	value.UpdatedAt = now
 	return CreatedServer{
 		Server:              value,
@@ -192,8 +196,10 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		archiveCondition = "archived_at IS NOT NULL"
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, status, archived_at, created_at, updated_at
-		 FROM servers WHERE `+archiveCondition+` ORDER BY created_at DESC, id DESC`,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 servers.created_at, servers.updated_at
+		 FROM servers WHERE `+archiveCondition+` ORDER BY servers.created_at DESC, servers.id DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)
@@ -216,8 +222,10 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT id, name, status, archived_at, created_at, updated_at
-		 FROM servers WHERE id = ? AND archived_at IS NULL`, id,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 servers.created_at, servers.updated_at
+		 FROM servers WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
@@ -406,12 +414,96 @@ func (s *Service) SetAgentOnline(ctx context.Context, serverID int64) error {
 	return s.setStatus(ctx, serverID, StatusOnline)
 }
 
+func (s *Service) SetAgentConnected(ctx context.Context, agentID, serverID int64) error {
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Agent connection update: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE agents SET last_seen_at = ?, updated_at = ? WHERE id = ? AND server_id = ?`,
+		now, now, agentID, serverID,
+	)
+	if err != nil {
+		return fmt.Errorf("update connected Agent: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read connected Agent count: %w", err)
+	}
+	if count != 1 {
+		return ErrInvalidAgentToken
+	}
+
+	result, err = tx.ExecContext(ctx,
+		`UPDATE servers SET status = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+		StatusOnline, now, serverID,
+	)
+	if err != nil {
+		return fmt.Errorf("update connected server: %w", err)
+	}
+	count, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read connected server count: %w", err)
+	}
+	if count != 1 {
+		return ErrArchived
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Agent connection update: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) TouchAgent(ctx context.Context, agentID, serverID int64) error {
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE agents SET last_seen_at = ?, updated_at = ? WHERE id = ? AND server_id = ?`,
+		now, now, agentID, serverID,
+	)
+	if err != nil {
+		return fmt.Errorf("update Agent last seen: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated Agent count: %w", err)
+	}
+	if count != 1 {
+		return ErrInvalidAgentToken
+	}
+	return nil
+}
+
 func (s *Service) SetAgentOffline(ctx context.Context, serverID int64) error {
-	err := s.setStatus(ctx, serverID, StatusOffline)
-	if errors.Is(err, ErrArchived) {
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET status = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL AND status = ?`,
+		StatusOffline, now, serverID, StatusOnline,
+	)
+	if err != nil {
+		return fmt.Errorf("set server offline: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read offline server count: %w", err)
+	}
+	if count == 1 {
 		return nil
 	}
-	return err
+	var existingID int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT id FROM servers WHERE id = ?`, serverID,
+	).Scan(&existingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read disconnected server state: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ResetOnline(ctx context.Context) error {
@@ -464,14 +556,18 @@ type rowScanner interface {
 
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
-	var archivedAt sql.NullInt64
+	var archivedAt, lastSeenAt sql.NullInt64
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.Name, &value.Status, &archivedAt, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&value.ID, &value.Name, &value.Status, &archivedAt, &lastSeenAt, &createdAt, &updatedAt); err != nil {
 		return Server{}, err
 	}
 	if archivedAt.Valid {
 		archivedTime := time.Unix(archivedAt.Int64, 0).UTC()
 		value.ArchivedAt = &archivedTime
+	}
+	if lastSeenAt.Valid {
+		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()
+		value.LastSeenAt = &lastSeenTime
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

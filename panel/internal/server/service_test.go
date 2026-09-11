@@ -512,6 +512,43 @@ func TestAuthenticateAgentAndUpdateConnectionStatus(t *testing.T) {
 	}
 }
 
+func TestAgentConnectionAndHeartbeatUpdateLastSeen(t *testing.T) {
+	service, _ := newTestService(t)
+	connectedAt := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return connectedAt }
+	created, err := service.Create(context.Background(), "Heartbeat Agent")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	registered, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.6.0", false)
+	if err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
+	if err := service.SetAgentConnected(context.Background(), registered.ID, registered.ServerID); err != nil {
+		t.Fatalf("SetAgentConnected() error = %v", err)
+	}
+	connected, err := service.Get(context.Background(), registered.ServerID)
+	if err != nil || connected.Status != StatusOnline || connected.LastSeenAt == nil || !connected.LastSeenAt.Equal(connectedAt) {
+		t.Fatalf("connected server = (%+v, %v), want online at %v", connected, err, connectedAt)
+	}
+
+	heartbeatAt := connectedAt.Add(10 * time.Second)
+	service.now = func() time.Time { return heartbeatAt }
+	if err := service.TouchAgent(context.Background(), registered.ID, registered.ServerID); err != nil {
+		t.Fatalf("TouchAgent() error = %v", err)
+	}
+	if err := service.SetAgentOffline(context.Background(), registered.ServerID); err != nil {
+		t.Fatalf("SetAgentOffline() error = %v", err)
+	}
+	disconnected, err := service.Get(context.Background(), registered.ServerID)
+	if err != nil || disconnected.Status != StatusOffline || disconnected.LastSeenAt == nil || !disconnected.LastSeenAt.Equal(heartbeatAt) {
+		t.Fatalf("disconnected server = (%+v, %v), want offline with preserved last seen %v", disconnected, err, heartbeatAt)
+	}
+	if err := service.TouchAgent(context.Background(), registered.ID+1, registered.ServerID); !errors.Is(err, ErrInvalidAgentToken) {
+		t.Fatalf("TouchAgent() invalid identity error = %v, want ErrInvalidAgentToken", err)
+	}
+}
+
 func TestResetOnlineServers(t *testing.T) {
 	service, _ := newTestService(t)
 	online, err := service.Create(context.Background(), "Online Agent")
@@ -536,6 +573,21 @@ func TestResetOnlineServers(t *testing.T) {
 	unchanged, err := service.Get(context.Background(), pending.ID)
 	if err != nil || unchanged.Status != StatusPending {
 		t.Fatalf("pending server = (%+v, %v), want pending", unchanged, err)
+	}
+}
+
+func TestDisconnectDoesNotOverwritePendingServer(t *testing.T) {
+	service, _ := newTestService(t)
+	created, err := service.Create(context.Background(), "Pending Disconnect")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := service.SetAgentOffline(context.Background(), created.ID); err != nil {
+		t.Fatalf("SetAgentOffline() pending error = %v", err)
+	}
+	value, err := service.Get(context.Background(), created.ID)
+	if err != nil || value.Status != StatusPending {
+		t.Fatalf("pending server after disconnect = (%+v, %v), want pending", value, err)
 	}
 }
 

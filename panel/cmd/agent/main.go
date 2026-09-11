@@ -25,6 +25,18 @@ const defaultConfigPath = "/etc/vps-panel-agent/config.json"
 
 var agentVersion = "dev"
 
+var (
+	agentHeartbeatInterval = 10 * time.Second
+	dialAgentWebSocket     = websocket.Dial
+	writeAgentHeartbeat    = sendHeartbeat
+	waitAgentReconnect     = waitForReconnect
+)
+
+const (
+	initialReconnectDelay = time.Second
+	maximumReconnectDelay = 30 * time.Second
+)
+
 type registrationRequest struct {
 	EnrollmentToken string `json:"enrollment_token"`
 	AgentVersion    string `json:"agent_version"`
@@ -248,31 +260,92 @@ func connectAgent(ctx context.Context, configPath string) error {
 		return errors.New("Agent config is incomplete")
 	}
 
+	reconnectDelay := initialReconnectDelay
+	for {
+		connected, authenticationRejected := connectAgentOnce(ctx, value)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if authenticationRejected {
+			log.Print("Agent authentication rejected by Panel; will retry")
+			reconnectDelay = maximumReconnectDelay
+		} else if connected {
+			log.Print("Panel connection lost; will reconnect")
+			reconnectDelay = initialReconnectDelay
+		} else {
+			log.Print("Panel connection unavailable; will retry")
+		}
+		log.Printf("reconnecting in %s", reconnectDelay)
+		if !waitAgentReconnect(ctx, reconnectDelay) {
+			return nil
+		}
+		if !connected && !authenticationRejected {
+			reconnectDelay = nextReconnectDelay(reconnectDelay)
+		}
+	}
+}
+
+func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
-	connection, response, err := websocket.Dial(
+	connection, response, err := dialAgentWebSocket(
 		ctx,
 		value.PanelURL+"/api/agent/ws",
 		&websocket.DialOptions{HTTPHeader: header},
 	)
 	if err != nil {
 		if response != nil {
-			return fmt.Errorf("connect to Panel WebSocket: %s", response.Status)
+			response.Body.Close()
+			return false, response.StatusCode == http.StatusUnauthorized
 		}
-		return fmt.Errorf("connect to Panel WebSocket: %w", err)
+		return false, false
 	}
 	defer connection.CloseNow()
 
 	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
 	disconnected := connection.CloseRead(context.Background())
+	ticker := time.NewTicker(agentHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close(websocket.StatusNormalClosure, "Agent stopped")
+			return true, false
+		case <-disconnected.Done():
+			return true, false
+		case <-ticker.C:
+			heartbeatContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+			err := writeAgentHeartbeat(heartbeatContext, connection)
+			cancel()
+			if err != nil {
+				return true, false
+			}
+		}
+	}
+}
+
+func sendHeartbeat(ctx context.Context, connection *websocket.Conn) error {
+	return connection.Write(ctx, websocket.MessageText, []byte(`{"type":"heartbeat"}`))
+}
+
+func nextReconnectDelay(current time.Duration) time.Duration {
+	if current >= maximumReconnectDelay {
+		return maximumReconnectDelay
+	}
+	next := current * 2
+	if next > maximumReconnectDelay {
+		return maximumReconnectDelay
+	}
+	return next
+}
+
+func waitForReconnect(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		_ = connection.Close(websocket.StatusNormalClosure, "Agent stopped")
-		return nil
-	case <-disconnected.Done():
-		if ctx.Err() != nil {
-			return nil
-		}
-		return errors.New("Panel WebSocket connection closed")
+		return false
+	case <-timer.C:
+		return true
 	}
 }

@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 4.6、Phase 5A 和 Phase 5B**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 4.6、Phase 5A、Phase 5B，以及 Phase 6A 的静态系统信息部分**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息上报、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
-当前 Agent 支持注册、保存长期凭据、Heartbeat 和断线自动重连；尚未实现系统监控、代理内核或端口转发。
+当前 Agent 支持注册、保存长期凭据、Heartbeat、断线自动重连，以及在每次连接成功后上报主机名、系统、内核、架构和本机 IP；尚未实现动态系统指标、服务器到期时间、代理内核或端口转发。
 
 ## VPS 部署
 
@@ -81,7 +81,7 @@ Agent 安装位置：
 /etc/systemd/system/vps-panel-agent.service
 ```
 
-注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 会在 3 秒后兜底重启。服务器详情会显示最后通信时间，并约每 10 秒刷新状态。
+注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每次连接成功后上报一次静态系统信息，每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 会在 3 秒后兜底重启。服务器详情会显示最后通信时间和最近一次静态系统信息，并约每 10 秒刷新状态。
 
 普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在正常或已移除 Server 的详情弹窗中统一使用“重新生成 Agent 安装令牌”；新建 Server 自动生成的首个令牌用于首次安装，管理员主动重新生成的令牌始终用于重新绑定。重新绑定成功后，Agent 才会原子替换旧配置；只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
 

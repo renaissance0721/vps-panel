@@ -292,6 +292,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.LastSeenAt != nil {
 		t.Fatalf("new server last_seen_at = %v, want null", created.Server.LastSeenAt)
 	}
+	if created.Server.SystemInfo != nil {
+		t.Fatalf("new server system_info = %+v, want null", created.Server.SystemInfo)
+	}
 	if created.EnrollmentToken == "" {
 		t.Fatal("created enrollment token is empty")
 	}
@@ -318,6 +321,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 	if !strings.Contains(listResponse.Body.String(), `"last_seen_at":null`) {
 		t.Fatalf("server list = %q, want nullable last_seen_at", listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"system_info":null`) {
+		t.Fatalf("server list = %q, want nullable system_info", listResponse.Body.String())
 	}
 	if strings.Contains(listResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatal("server list returned the plaintext enrollment token")

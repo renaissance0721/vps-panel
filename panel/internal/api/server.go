@@ -105,13 +105,25 @@ type createServerRequest struct {
 }
 
 type serverResponse struct {
-	ID         int64      `json:"id"`
-	Name       string     `json:"name"`
-	Status     string     `json:"status"`
-	ArchivedAt *time.Time `json:"archived_at,omitempty"`
-	LastSeenAt *time.Time `json:"last_seen_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID         int64               `json:"id"`
+	Name       string              `json:"name"`
+	Status     string              `json:"status"`
+	ArchivedAt *time.Time          `json:"archived_at,omitempty"`
+	LastSeenAt *time.Time          `json:"last_seen_at"`
+	SystemInfo *systemInfoResponse `json:"system_info"`
+	CreatedAt  time.Time           `json:"created_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
+}
+
+type systemInfoResponse struct {
+	Hostname     string   `json:"hostname"`
+	OSName       string   `json:"os_name"`
+	OSVersion    string   `json:"os_version"`
+	Kernel       string   `json:"kernel"`
+	Arch         string   `json:"arch"`
+	IPv4         []string `json:"ipv4"`
+	IPv6         []string `json:"ipv6"`
+	AgentVersion string   `json:"agent_version"`
 }
 
 type createdServerResponse struct {
@@ -131,6 +143,17 @@ type agentRegistrationResponse struct {
 	AgentID    int64  `json:"agent_id"`
 	ServerID   int64  `json:"server_id"`
 	AgentToken string `json:"agent_token"`
+}
+
+type agentSystemInfoMessage struct {
+	Type      string   `json:"type"`
+	Hostname  string   `json:"hostname"`
+	OSName    string   `json:"os_name"`
+	OSVersion string   `json:"os_version"`
+	Kernel    string   `json:"kernel"`
+	Arch      string   `json:"arch"`
+	IPv4      []string `json:"ipv4"`
+	IPv6      []string `json:"ipv6"`
 }
 
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +278,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
-	connection.SetReadLimit(1024)
+	connection.SetReadLimit(8 << 10)
 	previous := s.trackAgentConnection(agent.ServerID, connection)
 	if previous != nil {
 		previous.CloseNow()
@@ -286,17 +309,54 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Type string `json:"type"`
 		}
-		if messageType != websocket.MessageText || json.Unmarshal(message, &payload) != nil || payload.Type != "heartbeat" {
-			_ = connection.Close(websocket.StatusPolicyViolation, "invalid heartbeat")
+		if messageType != websocket.MessageText || json.Unmarshal(message, &payload) != nil {
+			_ = connection.Close(websocket.StatusPolicyViolation, "invalid Agent message")
 			break
 		}
-		heartbeatContext, cancelHeartbeat := context.WithTimeout(context.Background(), 5*time.Second)
-		err = s.servers.TouchAgent(heartbeatContext, agent.ID, agent.ServerID)
-		cancelHeartbeat()
-		if err != nil {
-			if !errors.Is(err, serverstore.ErrInvalidAgentToken) {
-				log.Printf("update agent %d heartbeat for server %d: %v", agent.ID, agent.ServerID, err)
+		validMessage := true
+		switch payload.Type {
+		case "heartbeat":
+			heartbeatContext, cancelHeartbeat := context.WithTimeout(context.Background(), 5*time.Second)
+			err = s.servers.TouchAgent(heartbeatContext, agent.ID, agent.ServerID)
+			cancelHeartbeat()
+			if err != nil {
+				if !errors.Is(err, serverstore.ErrInvalidAgentToken) {
+					log.Printf("update agent %d heartbeat for server %d: %v", agent.ID, agent.ServerID, err)
+				}
+				validMessage = false
 			}
+		case "system_info":
+			var systemInfo agentSystemInfoMessage
+			if json.Unmarshal(message, &systemInfo) != nil {
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid system information")
+				validMessage = false
+				break
+			}
+			current, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, connection, serverstore.SystemInfoReport{
+				Hostname:  systemInfo.Hostname,
+				OSName:    systemInfo.OSName,
+				OSVersion: systemInfo.OSVersion,
+				Kernel:    systemInfo.Kernel,
+				Arch:      systemInfo.Arch,
+				IPv4:      systemInfo.IPv4,
+				IPv6:      systemInfo.IPv6,
+			})
+			if !current {
+				return
+			}
+			if reportErr != nil {
+				if !errors.Is(reportErr, serverstore.ErrInvalidAgentToken) &&
+					!errors.Is(reportErr, serverstore.ErrInvalidSystemInfo) {
+					log.Printf("update system information for agent %d server %d: %v", agent.ID, agent.ServerID, reportErr)
+				}
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid system information")
+				validMessage = false
+			}
+		default:
+			_ = connection.Close(websocket.StatusPolicyViolation, "unknown Agent message")
+			validMessage = false
+		}
+		if !validMessage {
 			break
 		}
 	}
@@ -537,7 +597,7 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 }
 
 func toServerResponse(value serverstore.Server) serverResponse {
-	return serverResponse{
+	response := serverResponse{
 		ID:         value.ID,
 		Name:       value.Name,
 		Status:     value.Status,
@@ -546,6 +606,19 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		CreatedAt:  value.CreatedAt,
 		UpdatedAt:  value.UpdatedAt,
 	}
+	if value.SystemInfo != nil {
+		response.SystemInfo = &systemInfoResponse{
+			Hostname:     value.SystemInfo.Hostname,
+			OSName:       value.SystemInfo.OSName,
+			OSVersion:    value.SystemInfo.OSVersion,
+			Kernel:       value.SystemInfo.Kernel,
+			Arch:         value.SystemInfo.Arch,
+			IPv4:         value.SystemInfo.IPv4,
+			IPv6:         value.SystemInfo.IPv6,
+			AgentVersion: value.SystemInfo.AgentVersion,
+		}
+	}
+	return response
 }
 
 func (s *server) toCreatedServerResponse(
@@ -620,6 +693,21 @@ func (s *server) disconnectCurrentAgent(serverID int64, connection *websocket.Co
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return true, s.servers.SetAgentOffline(ctx, serverID)
+}
+
+func (s *server) reportCurrentSystemInfo(
+	serverID, agentID int64,
+	connection *websocket.Conn,
+	report serverstore.SystemInfoReport,
+) (bool, error) {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	if s.connections[serverID] != connection {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return true, s.servers.ReportSystemInfo(ctx, agentID, serverID, report)
 }
 
 func (s *server) closeAgentConnections(serverID int64) {

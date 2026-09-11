@@ -166,7 +166,15 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 		t.Fatalf("register agent: %v", err)
 	}
 
-	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	handler := NewHandler(db, t.TempDir())
+	initializeResponse := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initializeResponse.Code != http.StatusCreated {
+		t.Fatalf("initialize status = %d, body = %q", initializeResponse.Code, initializeResponse.Body.String())
+	}
+	adminCookie := initializeResponse.Result().Cookies()[0]
+	panel := httptest.NewServer(handler)
 	defer panel.Close()
 
 	invalidHeader := http.Header{}
@@ -198,6 +206,39 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	}
 	if connectedServer.LastSeenAt == nil {
 		t.Fatal("WebSocket connection did not set last_seen_at")
+	}
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"system_info",
+		"hostname":"jp-01",
+		"os_name":"Debian GNU/Linux",
+		"os_version":"12",
+		"kernel":"6.1.0-amd64",
+		"arch":"amd64",
+		"ipv4":["203.0.113.10"],
+		"ipv6":["2001:db8::10"],
+		"agent_version":"forged-version"
+	}`)); err != nil {
+		t.Fatalf("write Agent system information: %v", err)
+	}
+	waitForSystemInfo(t, service, created.ID, "jp-01")
+	serverWithInfo, err := service.Get(t.Context(), created.ID)
+	if err != nil || serverWithInfo.SystemInfo == nil || serverWithInfo.SystemInfo.AgentVersion != "v0.5.0" {
+		t.Fatalf("stored system information = (%+v, %v)", serverWithInfo.SystemInfo, err)
+	}
+	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, adminCookie)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list server status = %d, body = %q", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Servers []serverResponse `json:"servers"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode server list: %v", err)
+	}
+	if len(listed.Servers) != 1 || listed.Servers[0].SystemInfo == nil ||
+		strings.Join(listed.Servers[0].SystemInfo.IPv4, ",") != "203.0.113.10" ||
+		strings.Join(listed.Servers[0].SystemInfo.IPv6, ",") != "2001:db8::10" {
+		t.Fatalf("server API system information = %+v", listed.Servers)
 	}
 	if _, err := db.Exec(`UPDATE agents SET last_seen_at = NULL WHERE id = ?`, registered.ID); err != nil {
 		t.Fatalf("clear last_seen_at before heartbeat: %v", err)
@@ -249,6 +290,12 @@ func TestNewAgentConnectionReplacesOldConnectionWithoutFalseOffline(t *testing.T
 	}
 	defer first.CloseNow()
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	if err := first.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"system_info","hostname":"old-connection","arch":"amd64","ipv4":[],"ipv6":[]
+	}`)); err != nil {
+		t.Fatalf("write first system information: %v", err)
+	}
+	waitForSystemInfo(t, service, created.ID, "old-connection")
 	firstDisconnected := first.CloseRead(context.Background())
 
 	second, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
@@ -262,6 +309,12 @@ func TestNewAgentConnectionReplacesOldConnectionWithoutFalseOffline(t *testing.T
 		t.Fatal("replacement connection did not close the old WebSocket")
 	}
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	if err := second.Write(t.Context(), websocket.MessageText, []byte(`{
+		"type":"system_info","hostname":"current-connection","arch":"amd64","ipv4":[],"ipv6":[]
+	}`)); err != nil {
+		t.Fatalf("write replacement system information: %v", err)
+	}
+	waitForSystemInfo(t, service, created.ID, "current-connection")
 	time.Sleep(30 * time.Millisecond)
 	value, err := service.Get(t.Context(), created.ID)
 	if err != nil {
@@ -275,6 +328,81 @@ func TestNewAgentConnectionReplacesOldConnectionWithoutFalseOffline(t *testing.T
 		t.Fatalf("close replacement WebSocket: %v", err)
 	}
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+}
+
+func TestAgentWebSocketRejectsUnknownMessageType(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Unknown Message")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.7.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	defer panel.Close()
+	header := http.Header{"Authorization": []string{"Bearer " + registered.Token}}
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
+	}
+	disconnected := connection.CloseRead(context.Background())
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{"type":"future_message"}`)); err != nil {
+		t.Fatalf("write unknown Agent message: %v", err)
+	}
+	select {
+	case <-disconnected.Done():
+	case <-time.After(time.Second):
+		t.Fatal("unknown Agent message did not close WebSocket")
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+}
+
+func TestOldConnectionCannotOverwriteSystemInfo(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Connection Race")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.7.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	oldConnection := new(websocket.Conn)
+	currentConnection := new(websocket.Conn)
+	handler := &server{
+		servers: service,
+		connections: map[int64]*websocket.Conn{
+			created.ID: currentConnection,
+		},
+	}
+	current, err := handler.reportCurrentSystemInfo(created.ID, registered.ID, oldConnection, serverstore.SystemInfoReport{
+		Hostname: "stale-host", IPv4: []string{}, IPv6: []string{},
+	})
+	if err != nil || current {
+		t.Fatalf("old connection report = (current %v, error %v), want ignored", current, err)
+	}
+	current, err = handler.reportCurrentSystemInfo(created.ID, registered.ID, currentConnection, serverstore.SystemInfoReport{
+		Hostname: "current-host", IPv4: []string{}, IPv6: []string{},
+	})
+	if err != nil || !current {
+		t.Fatalf("current connection report = (current %v, error %v)", current, err)
+	}
+	value, err := service.Get(t.Context(), created.ID)
+	if err != nil || value.SystemInfo == nil || value.SystemInfo.Hostname != "current-host" {
+		t.Fatalf("stored system information = (%+v, %v)", value.SystemInfo, err)
+	}
 }
 
 func TestAgentInstallationCommandPinsReleaseVersion(t *testing.T) {
@@ -491,6 +619,26 @@ func waitForLastSeen(t *testing.T, service *serverstore.Service, serverID int64)
 		select {
 		case <-ctx.Done():
 			t.Fatal("server last_seen_at was not updated")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func waitForSystemInfo(t *testing.T, service *serverstore.Service, serverID int64, hostname string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	for {
+		value, err := service.Get(ctx, serverID)
+		if err != nil {
+			t.Fatalf("get server system information: %v", err)
+		}
+		if value.SystemInfo != nil && value.SystemInfo.Hostname == hostname {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("server system information hostname did not become %q", hostname)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

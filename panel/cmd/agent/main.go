@@ -303,6 +303,12 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 	defer connection.CloseNow()
 
 	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
+	systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
+	err = sendSystemInfo(systemInfoContext, connection, collectSystemInfo())
+	cancelSystemInfo()
+	if err != nil {
+		return true, false
+	}
 	disconnected := connection.CloseRead(context.Background())
 	ticker := time.NewTicker(agentHeartbeatInterval)
 	defer ticker.Stop()

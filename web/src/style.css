@@ -175,6 +175,15 @@ h1 {
   overflow-y: auto;
 }
 
+.system-info-title {
+  margin: 20px 0 12px;
+  font-size: 16px;
+}
+
+.address-list span {
+  display: block;
+}
+
 .server-modal-actions {
   display: flex;
   flex-wrap: wrap;

@@ -45,8 +45,20 @@ type ServerRecord = {
   status: 'pending' | 'online' | 'offline'
   archived_at?: string
   last_seen_at: string | null
+  system_info: ServerSystemInfo | null
   created_at: string
   updated_at: string
+}
+
+type ServerSystemInfo = {
+  hostname: string
+  os_name: string
+  os_version: string
+  kernel: string
+  arch: string
+  ipv4: string[]
+  ipv6: string[]
+  agent_version: string
 }
 
 type CreatedServer = {
@@ -754,6 +766,35 @@ onUnmounted(stopServerPolling)
               <div v-if="selectedServer.archived_at">
                 <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
               </div>
+            </dl>
+
+            <h3 class="system-info-title">系统信息</h3>
+            <n-empty
+              v-if="!selectedServer.system_info"
+              size="small"
+              description="暂无系统信息"
+            />
+            <dl v-else class="server-details">
+              <div><dt>主机名</dt><dd>{{ selectedServer.system_info.hostname || '—' }}</dd></div>
+              <div><dt>系统</dt><dd>{{ selectedServer.system_info.os_name || '—' }}</dd></div>
+              <div><dt>系统版本</dt><dd>{{ selectedServer.system_info.os_version || '—' }}</dd></div>
+              <div><dt>内核</dt><dd>{{ selectedServer.system_info.kernel || '—' }}</dd></div>
+              <div><dt>架构</dt><dd>{{ selectedServer.system_info.arch || '—' }}</dd></div>
+              <div>
+                <dt>IPv4</dt>
+                <dd class="address-list">
+                  <span v-if="selectedServer.system_info.ipv4.length === 0">—</span>
+                  <span v-for="address in selectedServer.system_info.ipv4" :key="address">{{ address }}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>IPv6</dt>
+                <dd class="address-list">
+                  <span v-if="selectedServer.system_info.ipv6.length === 0">—</span>
+                  <span v-for="address in selectedServer.system_info.ipv6" :key="address">{{ address }}</span>
+                </dd>
+              </div>
+              <div><dt>Agent 版本</dt><dd>{{ selectedServer.system_info.agent_version || '—' }}</dd></div>
             </dl>
 
             <div v-if="state.user?.role === 'admin'" class="server-modal-actions">

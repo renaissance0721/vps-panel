@@ -30,6 +30,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"servers",
 		"agent_enrollments",
 		"agents",
+		"server_system_info",
 	} {
 		var name string
 		if err := db.QueryRow(
@@ -296,5 +297,88 @@ func TestOpenMigratesAgentLastSeenWithoutLosingData(t *testing.T) {
 	}
 	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid {
 		t.Fatalf("migrated Agent = (%d, %q, %v), want preserved row with NULL last_seen_at", serverID, tokenHash, lastSeenAt.Valid)
+	}
+	var systemInfoTableCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'server_system_info'`,
+	).Scan(&systemInfoTableCount); err != nil {
+		t.Fatalf("inspect migrated system information table: %v", err)
+	}
+	if systemInfoTableCount != 1 {
+		t.Fatalf("server_system_info table count = %d, want 1", systemInfoTableCount)
+	}
+	var serverCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers WHERE id = 7`).Scan(&serverCount); err != nil {
+		t.Fatalf("count preserved server: %v", err)
+	}
+	if serverCount != 1 {
+		t.Fatalf("preserved server count = %d, want 1", serverCount)
+	}
+}
+
+func TestOpenAddsSystemInfoWithoutLosingExistingAgentData(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			archived_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+		 VALUES (15, 'Existing Server', 'offline', 1, 1)`,
+		`CREATE TABLE agents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			version TEXT NOT NULL,
+			registered_at INTEGER NOT NULL,
+			last_seen_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO agents
+		 (id, server_id, token_hash, version, registered_at, last_seen_at, created_at, updated_at)
+		 VALUES (16, 15, 'existing-agent-hash', 'v0.6.0', 2, 55, 2, 2)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare existing Agent database: %v", err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close existing Agent database: %v", err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	defer db.Close()
+	var serverName, tokenHash string
+	var lastSeenAt int64
+	if err := db.QueryRow(
+		`SELECT servers.name, agents.token_hash, agents.last_seen_at
+		 FROM servers JOIN agents ON agents.server_id = servers.id WHERE servers.id = 15`,
+	).Scan(&serverName, &tokenHash, &lastSeenAt); err != nil {
+		t.Fatalf("read preserved Server and Agent: %v", err)
+	}
+	if serverName != "Existing Server" || tokenHash != "existing-agent-hash" || lastSeenAt != 55 {
+		t.Fatalf("preserved data = (%q, %q, %d)", serverName, tokenHash, lastSeenAt)
+	}
+	var tableCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'server_system_info'`,
+	).Scan(&tableCount); err != nil {
+		t.Fatalf("inspect server_system_info migration: %v", err)
+	}
+	if tableCount != 1 {
+		t.Fatalf("server_system_info table count = %d, want 1", tableCount)
 	}
 }

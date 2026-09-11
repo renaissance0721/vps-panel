@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +23,7 @@ const (
 	PurposeRebind      = "rebind"
 	EnrollmentLifetime = 24 * time.Hour
 	maxNameLength      = 100
+	maxIPAddresses     = 16
 )
 
 var (
@@ -30,6 +34,7 @@ var (
 	ErrInvalidAgentToken   = errors.New("invalid agent token")
 	ErrArchived            = errors.New("server is archived")
 	ErrInitialConfigExists = errors.New("initial enrollment cannot replace an existing Agent config")
+	ErrInvalidSystemInfo   = errors.New("invalid system information")
 )
 
 type Server struct {
@@ -38,8 +43,31 @@ type Server struct {
 	Status     string
 	ArchivedAt *time.Time
 	LastSeenAt *time.Time
+	SystemInfo *SystemInfo
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type SystemInfo struct {
+	Hostname     string
+	OSName       string
+	OSVersion    string
+	Kernel       string
+	Arch         string
+	IPv4         []string
+	IPv6         []string
+	AgentVersion string
+	ReportedAt   time.Time
+}
+
+type SystemInfoReport struct {
+	Hostname  string
+	OSName    string
+	OSVersion string
+	Kernel    string
+	Arch      string
+	IPv4      []string
+	IPv6      []string
 }
 
 type CreatedServer struct {
@@ -132,7 +160,13 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	value, err := scanServer(tx.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
-		 servers.created_at, servers.updated_at FROM servers WHERE servers.id = ?`, id,
+		 system_info.hostname, system_info.os_name, system_info.os_version,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.agent_version, system_info.reported_at,
+		 servers.created_at, servers.updated_at
+		 FROM servers
+		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE servers.id = ?`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CreatedServer{}, ErrNotFound
@@ -191,15 +225,20 @@ func (s *Service) ListArchived(ctx context.Context) ([]Server, error) {
 }
 
 func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
-	archiveCondition := "archived_at IS NULL"
+	archiveCondition := "servers.archived_at IS NULL"
 	if archived {
-		archiveCondition = "archived_at IS NOT NULL"
+		archiveCondition = "servers.archived_at IS NOT NULL"
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 system_info.hostname, system_info.os_name, system_info.os_version,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.agent_version, system_info.reported_at,
 		 servers.created_at, servers.updated_at
-		 FROM servers WHERE `+archiveCondition+` ORDER BY servers.created_at DESC, servers.id DESC`,
+		 FROM servers
+		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE `+archiveCondition+` ORDER BY servers.created_at DESC, servers.id DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)
@@ -224,8 +263,13 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 system_info.hostname, system_info.os_name, system_info.os_version,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.agent_version, system_info.reported_at,
 		 servers.created_at, servers.updated_at
-		 FROM servers WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
+		 FROM servers
+		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Server{}, ErrNotFound
@@ -476,6 +520,97 @@ func (s *Service) TouchAgent(ctx context.Context, agentID, serverID int64) error
 	return nil
 }
 
+func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64, report SystemInfoReport) error {
+	report.Hostname = strings.TrimSpace(report.Hostname)
+	report.OSName = strings.TrimSpace(report.OSName)
+	report.OSVersion = strings.TrimSpace(report.OSVersion)
+	report.Kernel = strings.TrimSpace(report.Kernel)
+	report.Arch = strings.TrimSpace(report.Arch)
+	if utf8.RuneCountInString(report.Hostname) > 255 ||
+		utf8.RuneCountInString(report.OSName) > 128 ||
+		utf8.RuneCountInString(report.OSVersion) > 128 ||
+		utf8.RuneCountInString(report.Kernel) > 128 ||
+		utf8.RuneCountInString(report.Arch) > 32 {
+		return ErrInvalidSystemInfo
+	}
+
+	var err error
+	report.IPv4, err = normalizeIPAddresses(report.IPv4, true)
+	if err != nil {
+		return err
+	}
+	report.IPv6, err = normalizeIPAddresses(report.IPv6, false)
+	if err != nil {
+		return err
+	}
+	ipv4JSON, _ := json.Marshal(report.IPv4)
+	ipv6JSON, _ := json.Marshal(report.IPv6)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin system information report: %w", err)
+	}
+	defer tx.Rollback()
+
+	var agentVersion string
+	err = tx.QueryRowContext(ctx,
+		`SELECT version FROM agents WHERE id = ? AND server_id = ?`, agentID, serverID,
+	).Scan(&agentVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidAgentToken
+	}
+	if err != nil {
+		return fmt.Errorf("read reporting Agent: %w", err)
+	}
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO server_system_info
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(server_id) DO UPDATE SET
+		 hostname = excluded.hostname,
+		 os_name = excluded.os_name,
+		 os_version = excluded.os_version,
+		 kernel = excluded.kernel,
+		 arch = excluded.arch,
+		 ipv4 = excluded.ipv4,
+		 ipv6 = excluded.ipv6,
+		 agent_version = excluded.agent_version,
+		 reported_at = excluded.reported_at`,
+		serverID, report.Hostname, report.OSName, report.OSVersion, report.Kernel, report.Arch,
+		string(ipv4JSON), string(ipv6JSON), agentVersion, now,
+	); err != nil {
+		return fmt.Errorf("save system information: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit system information report: %w", err)
+	}
+	return nil
+}
+
+func normalizeIPAddresses(values []string, ipv4 bool) ([]string, error) {
+	if len(values) > maxIPAddresses {
+		return nil, ErrInvalidSystemInfo
+	}
+	unique := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		parsed := net.ParseIP(strings.TrimSpace(value))
+		if parsed == nil || (parsed.To4() != nil) != ipv4 {
+			return nil, ErrInvalidSystemInfo
+		}
+		if ipv4 {
+			parsed = parsed.To4()
+		}
+		unique[parsed.String()] = struct{}{}
+	}
+	normalized := make([]string, 0, len(unique))
+	for value := range unique {
+		normalized = append(normalized, value)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
+}
+
 func (s *Service) SetAgentOffline(ctx context.Context, serverID int64) error {
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	result, err := s.db.ExecContext(ctx,
@@ -557,8 +692,15 @@ type rowScanner interface {
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var archivedAt, lastSeenAt sql.NullInt64
+	var hostname, osName, osVersion, kernel, arch sql.NullString
+	var ipv4JSON, ipv6JSON, agentVersion sql.NullString
+	var reportedAt sql.NullInt64
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.Name, &value.Status, &archivedAt, &lastSeenAt, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(
+		&value.ID, &value.Name, &value.Status, &archivedAt, &lastSeenAt,
+		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
+		&createdAt, &updatedAt,
+	); err != nil {
 		return Server{}, err
 	}
 	if archivedAt.Valid {
@@ -568,6 +710,24 @@ func scanServer(row rowScanner) (Server, error) {
 	if lastSeenAt.Valid {
 		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()
 		value.LastSeenAt = &lastSeenTime
+	}
+	if reportedAt.Valid {
+		info := SystemInfo{
+			Hostname:     hostname.String,
+			OSName:       osName.String,
+			OSVersion:    osVersion.String,
+			Kernel:       kernel.String,
+			Arch:         arch.String,
+			AgentVersion: agentVersion.String,
+			ReportedAt:   time.Unix(reportedAt.Int64, 0).UTC(),
+		}
+		if err := json.Unmarshal([]byte(ipv4JSON.String), &info.IPv4); err != nil {
+			return Server{}, fmt.Errorf("decode server IPv4 addresses: %w", err)
+		}
+		if err := json.Unmarshal([]byte(ipv6JSON.String), &info.IPv6); err != nil {
+			return Server{}, fmt.Errorf("decode server IPv6 addresses: %w", err)
+		}
+		value.SystemInfo = &info
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -252,6 +253,11 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 			return
 		}
 		defer connection.CloseNow()
+		messageType, message, err := connection.Read(context.Background())
+		if err != nil || messageType != websocket.MessageText || !strings.Contains(string(message), `"type":"system_info"`) {
+			handlerResult <- fmt.Errorf("read system information: type %d, message %q, error %v", messageType, message, err)
+			return
+		}
 		connected <- r.Header.Get("Authorization")
 		<-connection.CloseRead(context.Background()).Done()
 		handlerResult <- nil
@@ -450,10 +456,21 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 			return
 		}
 		defer connection.CloseNow()
-		if connectionCount.Add(1) == 1 {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			messageType, message, err := connection.Read(ctx)
+		connectionNumber := connectionCount.Add(1)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		messageType, message, err := connection.Read(ctx)
+		if err != nil {
+			handlerErrors <- err
+			return
+		}
+		var systemInfo systemInfoMessage
+		if messageType != websocket.MessageText || json.Unmarshal(message, &systemInfo) != nil || systemInfo.Type != "system_info" {
+			handlerErrors <- fmt.Errorf("invalid system information message: %q", message)
+			return
+		}
+		if connectionNumber == 1 {
+			messageType, message, err = connection.Read(ctx)
 			if err != nil {
 				handlerErrors <- err
 				return
@@ -502,6 +519,9 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Agent did not reconnect")
 	}
+	if connectionCount.Load() != 2 {
+		t.Fatalf("system information connection count = %d, want 2", connectionCount.Load())
+	}
 	cancel()
 	select {
 	case err := <-result:
@@ -540,6 +560,9 @@ func TestHeartbeatWriteFailureStartsReconnect(t *testing.T) {
 			return
 		}
 		defer connection.CloseNow()
+		if _, _, err := connection.Read(context.Background()); err != nil {
+			return
+		}
 		<-connection.CloseRead(context.Background()).Done()
 	}))
 	defer panel.Close()

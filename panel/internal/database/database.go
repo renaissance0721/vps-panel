@@ -94,6 +94,18 @@ func migrate(db *sql.DB) error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS server_system_info (
+			server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+			hostname TEXT NOT NULL,
+			os_name TEXT NOT NULL,
+			os_version TEXT NOT NULL,
+			kernel TEXT NOT NULL,
+			arch TEXT NOT NULL,
+			ipv4 TEXT NOT NULL,
+			ipv6 TEXT NOT NULL,
+			agent_version TEXT NOT NULL,
+			reported_at INTEGER NOT NULL
+		)`,
 	}
 
 	for _, statement := range statements {

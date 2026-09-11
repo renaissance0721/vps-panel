@@ -349,7 +349,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
 	}
 	updateExpirationResponse := performRequest(
-		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,
 	)
 	if updateExpirationResponse.Code != http.StatusOK {
 		t.Fatalf("update expiration status = %d, body = %q", updateExpirationResponse.Code, updateExpirationResponse.Body.String())
@@ -360,17 +360,17 @@ func TestServerAPILifecycle(t *testing.T) {
 	if err := json.Unmarshal(updateExpirationResponse.Body.Bytes(), &expirationUpdated); err != nil {
 		t.Fatalf("decode updated expiration: %v", err)
 	}
-	expectedExpiration := time.Date(2026, 12, 31, 15, 59, 0, 0, time.UTC)
+	expectedExpiration := time.Date(2026, 12, 31, 15, 59, 59, 0, time.UTC)
 	if expirationUpdated.Server.ExpiresAt == nil || !expirationUpdated.Server.ExpiresAt.Equal(expectedExpiration) {
 		t.Fatalf("Asia/Shanghai expiration = %v, want %v", expirationUpdated.Server.ExpiresAt, expectedExpiration)
 	}
 	getWithExpiration := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getWithExpiration.Code != http.StatusOK ||
-		!strings.Contains(getWithExpiration.Body.String(), `"expires_at":"2026-12-31T15:59:00Z"`) {
+		!strings.Contains(getWithExpiration.Body.String(), `"expires_at":"2026-12-31T15:59:59Z"`) {
 		t.Fatalf("get server expiration = (%d, %q)", getWithExpiration.Code, getWithExpiration.Body.String())
 	}
 	for _, invalidExpiration := range []any{
-		"2026/12/31", "tomorrow", "12-31-2026", "2026-02-30 12:00", 123,
+		"2026/12/31", "tomorrow", "12-31-2026", "2026-02-30", "2026-12-31 23:59", 123,
 	} {
 		response := performRequest(
 			t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": invalidExpiration}, sessionCookie,
@@ -386,7 +386,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("missing expiration status = %d, want %d", missingExpiration.Code, http.StatusBadRequest)
 	}
 	notFoundExpiration := performRequest(
-		t, handler, http.MethodPatch, "/api/servers/999999", map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+		t, handler, http.MethodPatch, "/api/servers/999999", map[string]any{"expires_at": "2026-12-31"}, sessionCookie,
 	)
 	if notFoundExpiration.Code != http.StatusNotFound {
 		t.Fatalf("missing server expiration status = %d, want %d", notFoundExpiration.Code, http.StatusNotFound)
@@ -398,7 +398,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("clear expiration = (%d, %q)", clearExpirationResponse.Code, clearExpirationResponse.Body.String())
 	}
 	setExpirationAgain := performRequest(
-		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,
 	)
 	if setExpirationAgain.Code != http.StatusOK {
 		t.Fatalf("restore expiration status = %d, body = %q", setExpirationAgain.Code, setExpirationAgain.Body.String())
@@ -451,7 +451,7 @@ func TestServerAPILifecycle(t *testing.T) {
 	if archivedResponse.Code != http.StatusOK ||
 		!strings.Contains(archivedResponse.Body.String(), "JP Native 01") ||
 		!strings.Contains(archivedResponse.Body.String(), `"archived_at"`) ||
-		!strings.Contains(archivedResponse.Body.String(), `"expires_at":"2026-12-31T15:59:00Z"`) {
+		!strings.Contains(archivedResponse.Body.String(), `"expires_at":"2026-12-31T15:59:59Z"`) {
 		t.Fatalf("archived server list = (%d, %q), want archived server", archivedResponse.Code, archivedResponse.Body.String())
 	}
 	var enrollmentCount, serverCount int

@@ -88,6 +88,8 @@ const archivedServers = ref<ServerRecord[]>([])
 const selectedServer = ref<ServerRecord | null>(null)
 const createdServer = ref<CreatedServer | null>(null)
 const serverModalOpen = ref(false)
+const expirationModalOpen = ref(false)
+const sidebarOpen = ref(false)
 const serverName = ref('')
 const currentPage = ref<'overview' | 'servers'>('overview')
 const serverListMode = ref<'active' | 'archived'>('active')
@@ -97,7 +99,6 @@ const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
-const expirationEditing = ref(false)
 const expirationInput = ref('')
 
 const username = ref('')
@@ -262,7 +263,8 @@ async function logout() {
     selectedServer.value = null
     createdServer.value = null
     serverModalOpen.value = false
-    expirationEditing.value = false
+    expirationModalOpen.value = false
+    sidebarOpen.value = false
     expirationInput.value = ''
     generatedLink.value = ''
     currentPage.value = 'overview'
@@ -308,7 +310,7 @@ async function createServerRecord() {
     serverModalOpen.value = true
     serverName.value = ''
     copiedCommand.value = false
-    expirationEditing.value = false
+    expirationModalOpen.value = false
     await loadServers()
   })
 }
@@ -317,7 +319,7 @@ function viewServer(value: ServerRecord) {
   selectedServer.value = value
   createdServer.value = null
   copiedCommand.value = false
-  expirationEditing.value = false
+  expirationModalOpen.value = false
   expirationInput.value = ''
   serverModalOpen.value = true
 }
@@ -350,7 +352,7 @@ async function regenerateEnrollment(value: ServerRecord) {
     })
     selectedServer.value = createdServer.value.server
     copiedCommand.value = false
-    expirationEditing.value = false
+    expirationModalOpen.value = false
     await loadServers()
   })
 }
@@ -359,27 +361,27 @@ function closeServerDetails() {
   selectedServer.value = null
   createdServer.value = null
   copiedCommand.value = false
-  expirationEditing.value = false
+  expirationModalOpen.value = false
   expirationInput.value = ''
 }
 
-function startExpirationEdit() {
+function openExpirationModal() {
   if (!selectedServer.value || selectedServer.value.archived_at) return
   expirationInput.value = selectedServer.value.expires_at
-    ? formatExpiration(selectedServer.value.expires_at)
+    ? formatExpirationDate(selectedServer.value.expires_at)
     : ''
-  expirationEditing.value = true
+  expirationModalOpen.value = true
 }
 
-function cancelExpirationEdit() {
-  expirationEditing.value = false
+function closeExpirationModal() {
+  expirationModalOpen.value = false
   expirationInput.value = ''
 }
 
 async function saveExpiration() {
   const value = expirationInput.value.trim()
-  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) {
-    error.value = '请输入格式为 YYYY-MM-DD HH:mm 的到期时间'
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    error.value = '请选择有效的到期日期'
     return
   }
   await updateExpiration(value)
@@ -398,7 +400,7 @@ async function updateExpiration(expiresAt: string | null) {
       body: JSON.stringify({ expires_at: expiresAt }),
     })
     selectedServer.value = response.server
-    expirationEditing.value = false
+    expirationModalOpen.value = false
     expirationInput.value = ''
     await loadServers()
   })
@@ -457,6 +459,11 @@ function clearCredentials() {
   confirmPassword.value = ''
 }
 
+function selectPage(page: 'overview' | 'servers') {
+  currentPage.value = page
+  sidebarOpen.value = false
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
@@ -464,20 +471,17 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
-function formatExpiration(value: string) {
+function formatExpirationDate(value: string) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
   })
   const parts = Object.fromEntries(
     formatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]),
   )
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function formatPercent(value: number) {
@@ -522,7 +526,7 @@ onUnmounted(stopServerPolling)
 
 <template>
   <n-config-provider>
-    <main class="page-shell" :class="{ 'admin-shell': state?.authenticated }">
+    <div class="page-shell" :class="{ 'admin-shell': state?.authenticated }">
       <n-card v-if="loading" class="auth-card" :bordered="true">
         <div class="loading-row">
           <n-spin size="small" />
@@ -641,37 +645,49 @@ onUnmounted(stopServerPolling)
         </form>
       </n-card>
 
-      <section v-else class="admin-page">
-        <header class="admin-header">
-          <div class="brand-block">
-            <p class="eyebrow">VPS 管理</p>
-            <h1>VPS 管理面板</h1>
-            <nav class="admin-nav" aria-label="管理导航">
-              <n-button
-                size="small"
-                :type="currentPage === 'overview' ? 'primary' : 'default'"
-                :secondary="currentPage === 'overview'"
-                @click="currentPage = 'overview'"
-              >
-                概览
-              </n-button>
-              <n-button
-                size="small"
-                :type="currentPage === 'servers' ? 'primary' : 'default'"
-                :secondary="currentPage === 'servers'"
-                @click="currentPage = 'servers'"
-              >
-                服务器
-              </n-button>
-            </nav>
-          </div>
-          <div class="account-actions">
+      <div v-else class="app-layout">
+        <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
+          <strong class="sidebar-brand">VPS Panel</strong>
+          <nav class="sidebar-nav" aria-label="管理导航">
+            <button
+              type="button"
+              :class="{ active: currentPage === 'overview' }"
+              @click="selectPage('overview')"
+            >
+              概览
+            </button>
+            <button
+              type="button"
+              :class="{ active: currentPage === 'servers' }"
+              @click="selectPage('servers')"
+            >
+              服务器
+            </button>
+          </nav>
+          <div class="sidebar-account">
             <span>{{ state.user?.username }}</span>
-            <n-button secondary :loading="submitting" @click="logout">退出登录</n-button>
+            <n-button secondary block :loading="submitting" @click="logout">退出登录</n-button>
           </div>
-        </header>
+        </aside>
+        <button
+          v-if="sidebarOpen"
+          class="sidebar-backdrop"
+          type="button"
+          aria-label="关闭菜单"
+          @click="sidebarOpen = false"
+        />
 
-        <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
+        <main class="admin-main">
+          <header class="mobile-header">
+            <button type="button" aria-label="打开菜单" @click="sidebarOpen = true">☰</button>
+            <strong>VPS Panel</strong>
+          </header>
+          <div class="admin-page">
+            <header class="page-heading">
+              <h1>{{ currentPage === 'overview' ? '概览' : '服务器' }}</h1>
+            </header>
+
+            <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
         <template v-if="currentPage === 'overview'">
           <div class="dashboard-grid">
@@ -848,12 +864,12 @@ onUnmounted(stopServerPolling)
         </template>
 
         <n-modal
+          v-if="selectedServer"
           v-model:show="serverModalOpen"
           :mask-closable="true"
           @after-leave="closeServerDetails"
         >
           <n-card
-            v-if="selectedServer"
             class="server-modal-card"
             title="服务器详情"
             :bordered="false"
@@ -864,45 +880,21 @@ onUnmounted(stopServerPolling)
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div>
-                <dt>到期时间</dt>
-                <dd class="expiration-field">
-                  <template v-if="!expirationEditing">
-                    <span>{{ selectedServer.expires_at ? formatExpiration(selectedServer.expires_at) : '不限' }}</span>
-                    <n-button
-                      v-if="!selectedServer.archived_at"
-                      size="tiny"
-                      text
-                      :disabled="submitting"
-                      @click="startExpirationEdit"
-                    >
-                      修改
-                    </n-button>
-                  </template>
-                  <template v-else>
-                    <n-input
-                      v-model:value="expirationInput"
-                      placeholder="2026-12-31 23:59"
-                      :disabled="submitting"
-                    />
-                    <small>格式：YYYY-MM-DD HH:mm（Asia/Shanghai）</small>
-                    <div class="expiration-actions">
-                      <n-button size="small" type="primary" :loading="submitting" @click="saveExpiration">
-                        保存
-                      </n-button>
-                      <n-button
-                        v-if="selectedServer.expires_at"
-                        size="small"
-                        secondary
-                        :disabled="submitting"
-                        @click="clearExpiration"
-                      >
-                        设为不限
-                      </n-button>
-                      <n-button size="small" text :disabled="submitting" @click="cancelExpirationEdit">
-                        取消
-                      </n-button>
-                    </div>
-                  </template>
+                <dt>到期日期</dt>
+                <dd class="expiration-display">
+                  <span>{{ selectedServer.expires_at ? formatExpirationDate(selectedServer.expires_at) : '不限' }}</span>
+                  <n-button
+                    v-if="!selectedServer.archived_at"
+                    class="expiration-edit-button"
+                    size="tiny"
+                    text
+                    title="修改到期日期"
+                    aria-label="修改到期日期"
+                    :disabled="submitting"
+                    @click="openExpirationModal"
+                  >
+                    ✎
+                  </n-button>
                 </dd>
               </div>
               <div>
@@ -1021,7 +1013,47 @@ onUnmounted(stopServerPolling)
             </div>
           </n-card>
         </n-modal>
-      </section>
-    </main>
+
+        <n-modal
+          v-model:show="expirationModalOpen"
+          :mask-closable="!submitting"
+          @after-leave="expirationInput = ''"
+        >
+          <n-card
+            class="expiration-modal-card"
+            title="修改到期日期"
+            :bordered="false"
+            closable
+            @close="closeExpirationModal"
+          >
+            <form class="expiration-form" @submit.prevent="saveExpiration">
+              <label>
+                <span>到期日期</span>
+                <input
+                  v-model="expirationInput"
+                  class="date-input"
+                  type="date"
+                  :disabled="submitting"
+                />
+              </label>
+              <p>按 Asia/Shanghai 当日 23:59:59 到期。</p>
+              <div class="expiration-modal-actions">
+                <n-button secondary :disabled="submitting" @click="clearExpiration">
+                  设为不限
+                </n-button>
+                <n-button :disabled="submitting" @click="closeExpirationModal">
+                  取消
+                </n-button>
+                <n-button type="primary" attr-type="submit" :loading="submitting">
+                  保存
+                </n-button>
+              </div>
+            </form>
+          </n-card>
+        </n-modal>
+          </div>
+        </main>
+      </div>
+    </div>
   </n-config-provider>
 </template>

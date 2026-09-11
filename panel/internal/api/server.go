@@ -24,7 +24,7 @@ import (
 
 const sessionCookieName = "vps_panel_session"
 
-const expirationTimeLayout = "2006-01-02 15:04"
+const expirationDateLayout = "2006-01-02"
 
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
@@ -525,22 +525,22 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if len(request.ExpiresAt) == 0 {
-		writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+		writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
 		return
 	}
 	var expiresAt *time.Time
 	if string(request.ExpiresAt) != "null" {
 		var value string
 		if json.Unmarshal(request.ExpiresAt, &value) != nil {
-			writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+			writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
 			return
 		}
-		parsed, err := time.ParseInLocation(expirationTimeLayout, value, shanghaiLocation)
+		parsed, err := time.ParseInLocation(expirationDateLayout, value, shanghaiLocation)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+			writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
 			return
 		}
-		parsed = parsed.UTC()
+		parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, shanghaiLocation).UTC()
 		expiresAt = &parsed
 	}
 	updated, err := s.servers.UpdateExpiration(r.Context(), id, expiresAt)

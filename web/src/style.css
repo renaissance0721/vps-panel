@@ -34,6 +34,7 @@ select {
 
 .page-shell.admin-shell {
   display: block;
+  padding: 0;
 }
 
 .auth-card {
@@ -91,22 +92,88 @@ h1 {
   font-weight: 600;
 }
 
+.app-layout {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 24px 16px;
+  color: #ffffff;
+  background: #168a55;
+}
+
+.sidebar-brand {
+  padding: 0 10px 24px;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.sidebar-nav {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar-nav button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.82);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+}
+
+.sidebar-nav button:hover,
+.sidebar-nav button.active {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sidebar-account {
+  display: grid;
+  gap: 12px;
+  padding: 18px 8px 0;
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.sidebar-account span {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-main {
+  min-width: 0;
+}
+
 .admin-page {
-  width: min(100%, 1080px);
+  width: min(100%, 1120px);
+  padding: 32px;
   margin: 0 auto;
 }
 
-.admin-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+.page-heading {
   margin-bottom: 24px;
 }
 
-.brand-block {
-  display: grid;
-  gap: 10px;
+.page-heading h1 {
+  font-size: 30px;
+}
+
+.mobile-header,
+.sidebar-backdrop {
+  display: none;
 }
 
 .admin-nav,
@@ -118,15 +185,6 @@ h1 {
 
 .server-list-nav {
   margin-bottom: 20px;
-}
-
-.account-actions {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  color: #47525d;
-  font-size: 14px;
-  font-weight: 600;
 }
 
 .dashboard-grid {
@@ -169,19 +227,57 @@ h1 {
   font-weight: 600;
 }
 
-.expiration-field {
+.expiration-display {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.expiration-edit-button {
+  color: #168a55;
+}
+
+.expiration-modal-card {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.expiration-form,
+.expiration-form label {
   display: grid;
   gap: 8px;
 }
 
-.expiration-field small {
-  color: #65717e;
-  font-weight: 400;
+.expiration-form label > span {
+  color: #47525d;
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.expiration-actions {
+.expiration-form p {
+  margin: 4px 0 10px;
+  color: #65717e;
+  font-size: 13px;
+}
+
+.date-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e0e0e6;
+  border-radius: 3px;
+  color: #17212b;
+  outline: none;
+  background: #ffffff;
+}
+
+.date-input:focus {
+  border-color: #18a058;
+  box-shadow: 0 0 0 2px rgba(24, 160, 88, 0.12);
+}
+
+.expiration-modal-actions {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -332,7 +428,65 @@ h1 {
 }
 
 @media (max-width: 720px) {
-  .admin-header,
+  .app-layout {
+    display: block;
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 1001;
+    left: 0;
+    width: 216px;
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+  }
+
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    display: block;
+    border: 0;
+    background: rgba(23, 33, 43, 0.42);
+  }
+
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 56px;
+    padding: 0 20px;
+    color: #ffffff;
+    background: #168a55;
+  }
+
+  .admin-main {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .mobile-header button {
+    padding: 4px 8px;
+    border: 0;
+    color: inherit;
+    font-size: 21px;
+    cursor: pointer;
+    background: transparent;
+  }
+
+  .admin-page {
+    width: 100%;
+    max-width: 100%;
+    padding: 24px 20px;
+  }
+
   .invitation-row {
     align-items: flex-start;
   }
@@ -348,7 +502,14 @@ h1 {
     padding: 16px;
   }
 
-  .admin-header,
+  .page-shell.admin-shell {
+    padding: 0;
+  }
+
+  .admin-page {
+    padding: 20px 16px;
+  }
+
   .invitation-row {
     flex-direction: column;
   }

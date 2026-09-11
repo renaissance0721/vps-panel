@@ -909,7 +909,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 
 由于 `agents.server_id` 是唯一关系，重新绑定时删除旧 Agent 认证记录并创建新记录，不制造同一 Server 的多个有效 Agent。
 
-`agent_enrollments.purpose` 只使用 `initial` 和 `rebind` 两种内部值。统一的 `POST /api/servers/{id}/enrollment` 会自动判断用途：当前存在 Agent，或历史上存在已使用的 Enrollment 时生成 `rebind`；两者都不存在时生成 `initial`，不依赖 Server 当前状态。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。
+`agent_enrollments.purpose` 只使用 `initial` 和 `rebind` 两种内部值。新建 Server 时自动生成的首个 Enrollment 固定为 `initial`；管理员主动调用 `POST /api/servers/{id}/enrollment` 时固定生成 `rebind`，不根据 Agent 历史或 Server 状态推断。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。
 
 必须保证：
 
@@ -930,7 +930,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 重新生成 Agent 安装令牌
 ```
 
-Panel 根据当前 Agent 和已使用 Enrollment 历史自动选择 `initial` 或 `rebind`。正常 Server 和已移除 Server 调用相同 API；已移除 Server 仍保留“彻底删除”操作。生成结果在详情弹窗内显示，原始令牌关闭弹窗后不可再次获取。
+新建 Server 自动生成的首个令牌为 `initial`；管理员在正常或已移除 Server 上主动重新生成的令牌固定为 `rebind`。两类 Server 调用相同 API；已移除 Server 仍保留“彻底删除”操作。生成结果在详情弹窗内显示，原始令牌关闭弹窗后不可再次获取。
 
 点击后必须二次确认，并明确提示：
 

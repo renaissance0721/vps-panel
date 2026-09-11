@@ -348,7 +348,7 @@ func TestServerAPILifecycle(t *testing.T) {
 	).Scan(&unusedEnrollmentCount, &regeneratedPurpose); err != nil {
 		t.Fatalf("read regenerated enrollment: %v", err)
 	}
-	if oldEnrollmentCount != 0 || unusedEnrollmentCount != 1 || regeneratedPurpose != "initial" {
+	if oldEnrollmentCount != 0 || unusedEnrollmentCount != 1 || regeneratedPurpose != "rebind" {
 		t.Fatalf("regenerated enrollment state = (old %d, unused %d, purpose %q)", oldEnrollmentCount, unusedEnrollmentCount, regeneratedPurpose)
 	}
 	getAfterRegenerate := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)

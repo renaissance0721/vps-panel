@@ -42,7 +42,7 @@ func TestCreateStoresPendingServerAndHashedEnrollment(t *testing.T) {
 	}
 }
 
-func TestNeverRegisteredServerCreatesInitialEnrollment(t *testing.T) {
+func TestNeverRegisteredServerCreatesRebindEnrollmentWhenRequested(t *testing.T) {
 	service, db := newTestService(t)
 	created, err := service.Create(context.Background(), "Pending Server")
 	if err != nil {
@@ -71,17 +71,45 @@ func TestNeverRegisteredServerCreatesInitialEnrollment(t *testing.T) {
 	).Scan(&unusedCount, &purpose); err != nil {
 		t.Fatalf("read regenerated enrollment: %v", err)
 	}
-	if serverCount != 1 || unusedCount != 1 || purpose != PurposeInitial {
+	if serverCount != 1 || unusedCount != 1 || purpose != PurposeRebind {
 		t.Fatalf("regenerated state = (servers %d, unused %d, purpose %q)", serverCount, unusedCount, purpose)
 	}
 	if _, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.5.2", false); !errors.Is(err, ErrInvalidEnrollment) {
 		t.Fatalf("old enrollment error = %v, want ErrInvalidEnrollment", err)
 	}
-	if _, err := service.RegisterAgent(context.Background(), regenerated.EnrollmentToken, "v0.5.2", false); err != nil {
-		t.Fatalf("register with regenerated enrollment: %v", err)
+	if _, err := service.RegisterAgent(context.Background(), regenerated.EnrollmentToken, "v0.5.2", true); err != nil {
+		t.Fatalf("register existing Agent config with regenerated enrollment: %v", err)
 	}
 	if _, err := service.RegisterAgent(context.Background(), regenerated.EnrollmentToken, "v0.5.2", false); !errors.Is(err, ErrInvalidEnrollment) {
 		t.Fatalf("reused regenerated enrollment error = %v, want ErrInvalidEnrollment", err)
+	}
+}
+
+func TestOfflineServerCreatesRebindEnrollment(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(context.Background(), "Offline Server")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.5.4", false); err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
+
+	rebind, err := service.CreateEnrollment(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("CreateEnrollment() error = %v", err)
+	}
+	if rebind.ID != created.ID || rebind.Status != StatusPending {
+		t.Fatalf("CreateEnrollment() server = %+v, want same pending server", rebind.Server)
+	}
+	var purpose string
+	if err := db.QueryRow(
+		`SELECT purpose FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, created.ID,
+	).Scan(&purpose); err != nil {
+		t.Fatalf("read offline server enrollment purpose: %v", err)
+	}
+	if purpose != PurposeRebind {
+		t.Fatalf("offline server enrollment purpose = %q, want %q", purpose, PurposeRebind)
 	}
 }
 

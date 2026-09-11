@@ -138,29 +138,13 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		return CreatedServer{}, fmt.Errorf("read server for Agent enrollment: %w", err)
 	}
 
-	var agentExists, usedEnrollmentExists int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT
-		 EXISTS(SELECT 1 FROM agents WHERE server_id = ?),
-		 EXISTS(SELECT 1 FROM agent_enrollments WHERE server_id = ? AND used_at IS NOT NULL)`,
-		id, id,
-	).Scan(&agentExists, &usedEnrollmentExists); err != nil {
-		return CreatedServer{}, fmt.Errorf("check server Agent history: %w", err)
-	}
-	purpose := PurposeInitial
-	if agentExists != 0 || usedEnrollmentExists != 0 {
-		purpose = PurposeRebind
-	}
-
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
 	); err != nil {
 		return CreatedServer{}, fmt.Errorf("remove previous Agent enrollment: %w", err)
 	}
-	if purpose == PurposeRebind {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
-			return CreatedServer{}, fmt.Errorf("revoke previous Agent: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
+		return CreatedServer{}, fmt.Errorf("revoke previous Agent: %w", err)
 	}
 
 	tokenValue, tokenHash, err := token.New()
@@ -178,7 +162,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
-		id, tokenHash, purpose, expiresAt.Unix(), now.Unix(),
+		id, tokenHash, PurposeRebind, expiresAt.Unix(), now.Unix(),
 	); err != nil {
 		return CreatedServer{}, fmt.Errorf("create Agent enrollment: %w", err)
 	}

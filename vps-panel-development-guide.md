@@ -2,7 +2,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6 和 Phase 5A–5B 已完成；Phase 6A 的静态系统信息部分已实现，下一步实现 Server 到期时间。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B 和 Phase 6A 已完成；下一步进入 Phase 6B 动态系统指标。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -1317,9 +1317,9 @@ Server → offline
 
 ---
 
-# 7. Phase 6A：静态系统信息
+# 7. Phase 6A：静态系统信息与 Server 到期时间
 
-> 当前状态：静态系统信息部分已实现。Agent 在 WebSocket 连接和重连成功后上报一次主机名、系统、内核、架构及本机 IP，Panel 按 Server 保存并在详情中展示。Server 到期时间尚未实现，将作为下一项独立任务完成。
+> 当前状态：已完成。Agent 在 WebSocket 连接和重连成功后上报一次主机名、系统、内核、架构及本机 IP，Panel 按 Server 保存并在详情中展示；Server 详情支持按 `Asia/Shanghai` 设置、修改、清除和显示到期时间。
 
 这一阶段开始做系统监控，但继续拆小。
 
@@ -3414,15 +3414,9 @@ Phase 16
 
 # 30. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B，以及 Phase 6A 的静态系统信息部分已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B 和 Phase 6A 已完成。
 
 下一步固定为：
-
-```text
-Phase 6A-2：Server 到期时间
-```
-
-完成并验证 Phase 6A 的剩余部分以后，再进入：
 
 ```text
 Phase 6B：CPU / RAM / Disk / Uptime

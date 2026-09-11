@@ -70,6 +70,7 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
 			archived_at INTEGER,
+			expires_at INTEGER,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -119,6 +120,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerArchive(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerExpiration(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateAgentEnrollmentPurpose(ctx, db); err != nil {
 		return err
 	}
@@ -126,6 +130,21 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateServerExpiration(ctx context.Context, db *sql.DB) error {
+	var columnCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'expires_at'`,
+	).Scan(&columnCount); err != nil {
+		return fmt.Errorf("inspect server expires_at column: %w", err)
+	}
+	if columnCount == 0 {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN expires_at INTEGER`); err != nil {
+			return fmt.Errorf("add server expires_at column: %w", err)
+		}
+	}
 	return nil
 }
 

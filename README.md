@@ -1,8 +1,8 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 4.6、Phase 5A、Phase 5B，以及 Phase 6A 的静态系统信息部分**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息上报、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 4.6、Phase 5A、Phase 5B 和 Phase 6A**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息上报、Server 到期时间、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
-当前 Agent 支持注册、保存长期凭据、Heartbeat、断线自动重连，以及在每次连接成功后上报主机名、系统、内核、架构和本机 IP；尚未实现动态系统指标、服务器到期时间、代理内核或端口转发。
+当前 Agent 支持注册、保存长期凭据、Heartbeat、断线自动重连，以及在每次连接成功后上报主机名、系统、内核、架构和本机 IP。Server 详情支持按 `Asia/Shanghai` 设置、修改、清除和显示到期时间；尚未实现动态系统指标、到期副作用、代理内核或端口转发。
 
 ## VPS 部署
 

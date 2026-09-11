@@ -24,6 +24,10 @@ import (
 
 const sessionCookieName = "vps_panel_session"
 
+const expirationTimeLayout = "2006-01-02 15:04"
+
+var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 type server struct {
 	db            *sql.DB
 	authService   *auth.Service
@@ -62,6 +66,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
+	mux.HandleFunc("PATCH /api/servers/{id}", s.requireAuthentication(s.updateServerExpiration))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
@@ -104,11 +109,16 @@ type createServerRequest struct {
 	Name string `json:"name"`
 }
 
+type updateServerExpirationRequest struct {
+	ExpiresAt json.RawMessage `json:"expires_at"`
+}
+
 type serverResponse struct {
 	ID         int64               `json:"id"`
 	Name       string              `json:"name"`
 	Status     string              `json:"status"`
 	ArchivedAt *time.Time          `json:"archived_at,omitempty"`
+	ExpiresAt  *time.Time          `json:"expires_at"`
 	LastSeenAt *time.Time          `json:"last_seen_at"`
 	SystemInfo *systemInfoResponse `json:"system_info"`
 	CreatedAt  time.Time           `json:"created_at"`
@@ -458,6 +468,42 @@ func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) 
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(value)})
 }
 
+func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	var request updateServerExpirationRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if len(request.ExpiresAt) == 0 {
+		writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+		return
+	}
+	var expiresAt *time.Time
+	if string(request.ExpiresAt) != "null" {
+		var value string
+		if json.Unmarshal(request.ExpiresAt, &value) != nil {
+			writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+			return
+		}
+		parsed, err := time.ParseInLocation(expirationTimeLayout, value, shanghaiLocation)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "到期时间格式无效，请使用 YYYY-MM-DD HH:mm")
+			return
+		}
+		parsed = parsed.UTC()
+		expiresAt = &parsed
+	}
+	updated, err := s.servers.UpdateExpiration(r.Context(), id, expiresAt)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+}
+
 func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
@@ -602,6 +648,7 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		Name:       value.Name,
 		Status:     value.Status,
 		ArchivedAt: value.ArchivedAt,
+		ExpiresAt:  value.ExpiresAt,
 		LastSeenAt: value.LastSeenAt,
 		CreatedAt:  value.CreatedAt,
 		UpdatedAt:  value.UpdatedAt,

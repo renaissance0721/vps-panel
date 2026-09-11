@@ -169,6 +169,22 @@ h1 {
   font-weight: 600;
 }
 
+.expiration-field {
+  display: grid;
+  gap: 8px;
+}
+
+.expiration-field small {
+  color: #65717e;
+  font-weight: 400;
+}
+
+.expiration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .server-modal-card {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);

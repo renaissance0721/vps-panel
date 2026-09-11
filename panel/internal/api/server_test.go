@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -249,6 +250,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		{http.MethodGet, "/api/servers"},
 		{http.MethodPost, "/api/servers"},
 		{http.MethodGet, "/api/servers/1"},
+		{http.MethodPatch, "/api/servers/1"},
 		{http.MethodDelete, "/api/servers/1"},
 		{http.MethodPost, "/api/servers/1/enrollment"},
 		{http.MethodDelete, "/api/servers/1/permanent"},
@@ -295,6 +297,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.SystemInfo != nil {
 		t.Fatalf("new server system_info = %+v, want null", created.Server.SystemInfo)
 	}
+	if created.Server.ExpiresAt != nil {
+		t.Fatalf("new server expires_at = %v, want null", created.Server.ExpiresAt)
+	}
 	if created.EnrollmentToken == "" {
 		t.Fatal("created enrollment token is empty")
 	}
@@ -325,6 +330,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if !strings.Contains(listResponse.Body.String(), `"system_info":null`) {
 		t.Fatalf("server list = %q, want nullable system_info", listResponse.Body.String())
 	}
+	if !strings.Contains(listResponse.Body.String(), `"expires_at":null`) {
+		t.Fatalf("server list = %q, want nullable expires_at", listResponse.Body.String())
+	}
 	if strings.Contains(listResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatal("server list returned the plaintext enrollment token")
 	}
@@ -333,6 +341,61 @@ func TestServerAPILifecycle(t *testing.T) {
 	getResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
+	}
+	updateExpirationResponse := performRequest(
+		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+	)
+	if updateExpirationResponse.Code != http.StatusOK {
+		t.Fatalf("update expiration status = %d, body = %q", updateExpirationResponse.Code, updateExpirationResponse.Body.String())
+	}
+	var expirationUpdated struct {
+		Server serverResponse `json:"server"`
+	}
+	if err := json.Unmarshal(updateExpirationResponse.Body.Bytes(), &expirationUpdated); err != nil {
+		t.Fatalf("decode updated expiration: %v", err)
+	}
+	expectedExpiration := time.Date(2026, 12, 31, 15, 59, 0, 0, time.UTC)
+	if expirationUpdated.Server.ExpiresAt == nil || !expirationUpdated.Server.ExpiresAt.Equal(expectedExpiration) {
+		t.Fatalf("Asia/Shanghai expiration = %v, want %v", expirationUpdated.Server.ExpiresAt, expectedExpiration)
+	}
+	getWithExpiration := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
+	if getWithExpiration.Code != http.StatusOK ||
+		!strings.Contains(getWithExpiration.Body.String(), `"expires_at":"2026-12-31T15:59:00Z"`) {
+		t.Fatalf("get server expiration = (%d, %q)", getWithExpiration.Code, getWithExpiration.Body.String())
+	}
+	for _, invalidExpiration := range []any{
+		"2026/12/31", "tomorrow", "12-31-2026", "2026-02-30 12:00", 123,
+	} {
+		response := performRequest(
+			t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": invalidExpiration}, sessionCookie,
+		)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid expiration %v status = %d, body = %q", invalidExpiration, response.Code, response.Body.String())
+		}
+	}
+	missingExpiration := performRequest(
+		t, handler, http.MethodPatch, serverPath, map[string]any{}, sessionCookie,
+	)
+	if missingExpiration.Code != http.StatusBadRequest {
+		t.Fatalf("missing expiration status = %d, want %d", missingExpiration.Code, http.StatusBadRequest)
+	}
+	notFoundExpiration := performRequest(
+		t, handler, http.MethodPatch, "/api/servers/999999", map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+	)
+	if notFoundExpiration.Code != http.StatusNotFound {
+		t.Fatalf("missing server expiration status = %d, want %d", notFoundExpiration.Code, http.StatusNotFound)
+	}
+	clearExpirationResponse := performRequest(
+		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": nil}, sessionCookie,
+	)
+	if clearExpirationResponse.Code != http.StatusOK || !strings.Contains(clearExpirationResponse.Body.String(), `"expires_at":null`) {
+		t.Fatalf("clear expiration = (%d, %q)", clearExpirationResponse.Code, clearExpirationResponse.Body.String())
+	}
+	setExpirationAgain := performRequest(
+		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31 23:59"}, sessionCookie,
+	)
+	if setExpirationAgain.Code != http.StatusOK {
+		t.Fatalf("restore expiration status = %d, body = %q", setExpirationAgain.Code, setExpirationAgain.Body.String())
 	}
 	regenerateResponse := performRequest(
 		t, handler, http.MethodPost, serverPath+"/enrollment", nil, sessionCookie,
@@ -345,6 +408,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("decode regenerated enrollment: %v", err)
 	}
 	if regenerated.Server.ID != created.Server.ID || regenerated.Server.Status != "pending" ||
+		regenerated.Server.ExpiresAt == nil || !regenerated.Server.ExpiresAt.Equal(expectedExpiration) ||
 		regenerated.EnrollmentToken == "" || regenerated.EnrollmentToken == created.EnrollmentToken ||
 		strings.Contains(regenerated.AgentInstallationCommand, "--force") {
 		t.Fatalf("regenerated enrollment = %+v", regenerated)
@@ -380,7 +444,8 @@ func TestServerAPILifecycle(t *testing.T) {
 	archivedResponse := performRequest(t, handler, http.MethodGet, "/api/servers?archived=true", nil, sessionCookie)
 	if archivedResponse.Code != http.StatusOK ||
 		!strings.Contains(archivedResponse.Body.String(), "JP Native 01") ||
-		!strings.Contains(archivedResponse.Body.String(), `"archived_at"`) {
+		!strings.Contains(archivedResponse.Body.String(), `"archived_at"`) ||
+		!strings.Contains(archivedResponse.Body.String(), `"expires_at":"2026-12-31T15:59:00Z"`) {
 		t.Fatalf("archived server list = (%d, %q), want archived server", archivedResponse.Code, archivedResponse.Body.String())
 	}
 	var enrollmentCount, serverCount int

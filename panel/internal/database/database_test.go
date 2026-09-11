@@ -40,6 +40,15 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			t.Fatalf("table %q was not created: %v", table, err)
 		}
 	}
+	var expirationColumnCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'expires_at'`,
+	).Scan(&expirationColumnCount); err != nil {
+		t.Fatalf("inspect servers expires_at column: %v", err)
+	}
+	if expirationColumnCount != 1 {
+		t.Fatalf("servers expires_at column count = %d, want 1", expirationColumnCount)
+	}
 }
 
 func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {
@@ -380,5 +389,98 @@ func TestOpenAddsSystemInfoWithoutLosingExistingAgentData(t *testing.T) {
 	}
 	if tableCount != 1 {
 		t.Fatalf("server_system_info table count = %d, want 1", tableCount)
+	}
+}
+
+func TestOpenAddsServerExpirationWithoutLosingExistingData(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			archived_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, archived_at, created_at, updated_at)
+		 VALUES (21, 'Existing Server', 'offline', 77, 1, 2)`,
+		`CREATE TABLE agent_enrollments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			purpose TEXT NOT NULL DEFAULT 'initial' CHECK (purpose IN ('initial', 'rebind')),
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO agent_enrollments
+		 (id, server_id, token_hash, purpose, expires_at, used_at, created_at)
+		 VALUES (22, 21, 'existing-enrollment', 'initial', 100, 3, 2)`,
+		`CREATE TABLE agents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			version TEXT NOT NULL,
+			registered_at INTEGER NOT NULL,
+			last_seen_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO agents
+		 (id, server_id, token_hash, version, registered_at, last_seen_at, created_at, updated_at)
+		 VALUES (23, 21, 'existing-agent', 'v0.6.1', 3, 55, 3, 3)`,
+		`CREATE TABLE server_system_info (
+			server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+			hostname TEXT NOT NULL,
+			os_name TEXT NOT NULL,
+			os_version TEXT NOT NULL,
+			kernel TEXT NOT NULL,
+			arch TEXT NOT NULL,
+			ipv4 TEXT NOT NULL,
+			ipv6 TEXT NOT NULL,
+			agent_version TEXT NOT NULL,
+			reported_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO server_system_info
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, reported_at)
+		 VALUES (21, 'existing-host', 'Debian GNU/Linux', '12', '6.1', 'amd64', '[]', '[]', 'v0.6.1', 55)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare existing database: %v", err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close existing database: %v", err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	defer db.Close()
+	var name, enrollmentHash, agentHash, hostname string
+	var archivedAt, expiresAt sql.NullInt64
+	var lastSeenAt int64
+	if err := db.QueryRow(
+		`SELECT servers.name, servers.archived_at, servers.expires_at, enrollments.token_hash,
+		 agents.token_hash, agents.last_seen_at, system_info.hostname
+		 FROM servers
+		 JOIN agent_enrollments AS enrollments ON enrollments.server_id = servers.id
+		 JOIN agents ON agents.server_id = servers.id
+		 JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE servers.id = 21`,
+	).Scan(&name, &archivedAt, &expiresAt, &enrollmentHash, &agentHash, &lastSeenAt, &hostname); err != nil {
+		t.Fatalf("read preserved data: %v", err)
+	}
+	if name != "Existing Server" || !archivedAt.Valid || archivedAt.Int64 != 77 || expiresAt.Valid || enrollmentHash != "existing-enrollment" ||
+		agentHash != "existing-agent" || lastSeenAt != 55 || hostname != "existing-host" {
+		t.Fatalf("preserved data = (%q, archived %v, expires %v, %q, %q, %d, %q)",
+			name, archivedAt, expiresAt.Valid, enrollmentHash, agentHash, lastSeenAt, hostname)
 	}
 }

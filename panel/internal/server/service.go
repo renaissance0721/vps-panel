@@ -42,6 +42,7 @@ type Server struct {
 	Name       string
 	Status     string
 	ArchivedAt *time.Time
+	ExpiresAt  *time.Time
 	LastSeenAt *time.Time
 	SystemInfo *SystemInfo
 	CreatedAt  time.Time
@@ -158,7 +159,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	defer tx.Rollback()
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
@@ -230,7 +231,7 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		archiveCondition = "servers.archived_at IS NOT NULL"
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
@@ -261,7 +262,7 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at,
+		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
@@ -278,6 +279,29 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		return Server{}, fmt.Errorf("get server: %w", err)
 	}
 	return value, nil
+}
+
+func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *time.Time) (Server, error) {
+	var expiresAtValue any
+	if expiresAt != nil {
+		expiresAtValue = expiresAt.UTC().Truncate(time.Second).Unix()
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET expires_at = ?, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`,
+		expiresAtValue, s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server expiration: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server expiration count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *Service) Archive(ctx context.Context, id int64) error {
@@ -691,13 +715,13 @@ type rowScanner interface {
 
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
-	var archivedAt, lastSeenAt sql.NullInt64
+	var archivedAt, expiresAt, lastSeenAt sql.NullInt64
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &archivedAt, &lastSeenAt,
+		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt, &lastSeenAt,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
 		&createdAt, &updatedAt,
 	); err != nil {
@@ -706,6 +730,10 @@ func scanServer(row rowScanner) (Server, error) {
 	if archivedAt.Valid {
 		archivedTime := time.Unix(archivedAt.Int64, 0).UTC()
 		value.ArchivedAt = &archivedTime
+	}
+	if expiresAt.Valid {
+		expiresTime := time.Unix(expiresAt.Int64, 0).UTC()
+		value.ExpiresAt = &expiresTime
 	}
 	if lastSeenAt.Valid {
 		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()

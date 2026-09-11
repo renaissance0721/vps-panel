@@ -44,6 +44,7 @@ type ServerRecord = {
   name: string
   status: 'pending' | 'online' | 'offline'
   archived_at?: string
+  expires_at: string | null
   last_seen_at: string | null
   system_info: ServerSystemInfo | null
   created_at: string
@@ -85,6 +86,8 @@ const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
+const expirationEditing = ref(false)
+const expirationInput = ref('')
 
 const username = ref('')
 const password = ref('')
@@ -248,6 +251,8 @@ async function logout() {
     selectedServer.value = null
     createdServer.value = null
     serverModalOpen.value = false
+    expirationEditing.value = false
+    expirationInput.value = ''
     generatedLink.value = ''
     currentPage.value = 'overview'
   })
@@ -292,6 +297,7 @@ async function createServerRecord() {
     serverModalOpen.value = true
     serverName.value = ''
     copiedCommand.value = false
+    expirationEditing.value = false
     await loadServers()
   })
 }
@@ -300,6 +306,8 @@ function viewServer(value: ServerRecord) {
   selectedServer.value = value
   createdServer.value = null
   copiedCommand.value = false
+  expirationEditing.value = false
+  expirationInput.value = ''
   serverModalOpen.value = true
 }
 
@@ -331,6 +339,7 @@ async function regenerateEnrollment(value: ServerRecord) {
     })
     selectedServer.value = createdServer.value.server
     copiedCommand.value = false
+    expirationEditing.value = false
     await loadServers()
   })
 }
@@ -339,6 +348,49 @@ function closeServerDetails() {
   selectedServer.value = null
   createdServer.value = null
   copiedCommand.value = false
+  expirationEditing.value = false
+  expirationInput.value = ''
+}
+
+function startExpirationEdit() {
+  if (!selectedServer.value || selectedServer.value.archived_at) return
+  expirationInput.value = selectedServer.value.expires_at
+    ? formatExpiration(selectedServer.value.expires_at)
+    : ''
+  expirationEditing.value = true
+}
+
+function cancelExpirationEdit() {
+  expirationEditing.value = false
+  expirationInput.value = ''
+}
+
+async function saveExpiration() {
+  const value = expirationInput.value.trim()
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value)) {
+    error.value = '请输入格式为 YYYY-MM-DD HH:mm 的到期时间'
+    return
+  }
+  await updateExpiration(value)
+}
+
+async function clearExpiration() {
+  await updateExpiration(null)
+}
+
+async function updateExpiration(expiresAt: string | null) {
+  if (!selectedServer.value) return
+  const serverID = selectedServer.value.id
+  await submit(async () => {
+    const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ expires_at: expiresAt }),
+    })
+    selectedServer.value = response.server
+    expirationEditing.value = false
+    expirationInput.value = ''
+    await loadServers()
+  })
 }
 
 async function permanentlyDeleteServer(value: ServerRecord) {
@@ -399,6 +451,22 @@ function formatTime(value: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
+}
+
+function formatExpiration(value: string) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  })
+  const parts = Object.fromEntries(
+    formatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]),
+  )
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`
 }
 
 onMounted(async () => {
@@ -757,6 +825,48 @@ onUnmounted(stopServerPolling)
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+              <div>
+                <dt>到期时间</dt>
+                <dd class="expiration-field">
+                  <template v-if="!expirationEditing">
+                    <span>{{ selectedServer.expires_at ? formatExpiration(selectedServer.expires_at) : '不限' }}</span>
+                    <n-button
+                      v-if="!selectedServer.archived_at"
+                      size="tiny"
+                      text
+                      :disabled="submitting"
+                      @click="startExpirationEdit"
+                    >
+                      修改
+                    </n-button>
+                  </template>
+                  <template v-else>
+                    <n-input
+                      v-model:value="expirationInput"
+                      placeholder="2026-12-31 23:59"
+                      :disabled="submitting"
+                    />
+                    <small>格式：YYYY-MM-DD HH:mm（Asia/Shanghai）</small>
+                    <div class="expiration-actions">
+                      <n-button size="small" type="primary" :loading="submitting" @click="saveExpiration">
+                        保存
+                      </n-button>
+                      <n-button
+                        v-if="selectedServer.expires_at"
+                        size="small"
+                        secondary
+                        :disabled="submitting"
+                        @click="clearExpiration"
+                      >
+                        设为不限
+                      </n-button>
+                      <n-button size="small" text :disabled="submitting" @click="cancelExpirationEdit">
+                        取消
+                      </n-button>
+                    </div>
+                  </template>
+                </dd>
+              </div>
               <div>
                 <dt>最后通信</dt>
                 <dd>{{ selectedServer.last_seen_at ? formatTime(selectedServer.last_seen_at) : '—' }}</dd>

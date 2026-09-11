@@ -77,6 +77,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			token_hash TEXT NOT NULL UNIQUE,
+			purpose TEXT NOT NULL DEFAULT 'initial' CHECK (purpose IN ('initial', 'rebind')),
 			expires_at INTEGER NOT NULL,
 			used_at INTEGER,
 			created_at INTEGER NOT NULL
@@ -105,7 +106,45 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerArchive(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateAgentEnrollmentPurpose(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateAgentEnrollmentPurpose(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Agent enrollment purpose migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	var purposeColumnCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('agent_enrollments') WHERE name = 'purpose'`,
+	).Scan(&purposeColumnCount); err != nil {
+		return fmt.Errorf("inspect Agent enrollment purpose column: %w", err)
+	}
+	if purposeColumnCount != 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`ALTER TABLE agent_enrollments ADD COLUMN purpose TEXT NOT NULL DEFAULT 'initial'
+		 CHECK (purpose IN ('initial', 'rebind'))`,
+	); err != nil {
+		return fmt.Errorf("add Agent enrollment purpose column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agent_enrollments SET purpose = 'rebind'
+		 WHERE used_at IS NULL
+		 AND server_id IN (SELECT id FROM servers WHERE archived_at IS NOT NULL)`,
+	); err != nil {
+		return fmt.Errorf("migrate Agent enrollment purposes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Agent enrollment purpose migration: %w", err)
+	}
 	return nil
 }
 

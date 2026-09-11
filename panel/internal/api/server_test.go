@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
 func TestHealth(t *testing.T) {
@@ -249,6 +250,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		{http.MethodPost, "/api/servers"},
 		{http.MethodGet, "/api/servers/1"},
 		{http.MethodDelete, "/api/servers/1"},
+		{http.MethodPost, "/api/servers/1/enrollment/regenerate"},
 		{http.MethodPost, "/api/servers/1/enrollment"},
 		{http.MethodDelete, "/api/servers/1/permanent"},
 	} {
@@ -292,7 +294,8 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatal("created enrollment token is empty")
 	}
 	if !strings.Contains(created.AgentInstallationCommand, "https://panel.example.com") ||
-		!strings.Contains(created.AgentInstallationCommand, created.EnrollmentToken) {
+		!strings.Contains(created.AgentInstallationCommand, created.EnrollmentToken) ||
+		strings.Contains(created.AgentInstallationCommand, "--force") {
 		t.Fatalf("agent command = %q, want panel URL and enrollment token", created.AgentInstallationCommand)
 	}
 
@@ -318,6 +321,40 @@ func TestServerAPILifecycle(t *testing.T) {
 	getResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
+	}
+	regenerateResponse := performRequest(
+		t, handler, http.MethodPost, serverPath+"/enrollment/regenerate", nil, sessionCookie,
+	)
+	if regenerateResponse.Code != http.StatusCreated {
+		t.Fatalf("regenerate enrollment status = %d, body = %q", regenerateResponse.Code, regenerateResponse.Body.String())
+	}
+	var regenerated createdServerResponse
+	if err := json.Unmarshal(regenerateResponse.Body.Bytes(), &regenerated); err != nil {
+		t.Fatalf("decode regenerated enrollment: %v", err)
+	}
+	if regenerated.Server.ID != created.Server.ID || regenerated.Server.Status != "pending" ||
+		regenerated.EnrollmentToken == "" || regenerated.EnrollmentToken == created.EnrollmentToken ||
+		strings.Contains(regenerated.AgentInstallationCommand, "--force") {
+		t.Fatalf("regenerated enrollment = %+v", regenerated)
+	}
+	var oldEnrollmentCount, unusedEnrollmentCount int
+	var regeneratedPurpose string
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM agent_enrollments WHERE token_hash = ?`, token.Hash(created.EnrollmentToken),
+	).Scan(&oldEnrollmentCount); err != nil {
+		t.Fatalf("count old enrollment: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*), purpose FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, created.Server.ID,
+	).Scan(&unusedEnrollmentCount, &regeneratedPurpose); err != nil {
+		t.Fatalf("read regenerated enrollment: %v", err)
+	}
+	if oldEnrollmentCount != 0 || unusedEnrollmentCount != 1 || regeneratedPurpose != "initial" {
+		t.Fatalf("regenerated enrollment state = (old %d, unused %d, purpose %q)", oldEnrollmentCount, unusedEnrollmentCount, regeneratedPurpose)
+	}
+	getAfterRegenerate := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
+	if getAfterRegenerate.Code != http.StatusOK || strings.Contains(getAfterRegenerate.Body.String(), regenerated.EnrollmentToken) {
+		t.Fatalf("get server after regenerate = (%d, %q), token must not be returned", getAfterRegenerate.Code, getAfterRegenerate.Body.String())
 	}
 
 	deleteResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, sessionCookie)
@@ -397,6 +434,12 @@ func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 		t.Fatalf("decode created server: %v", err)
 	}
 	serverPath := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
+	vipRegenerateResponse := performRequest(
+		t, handler, http.MethodPost, serverPath+"/enrollment/regenerate", nil, vipCookie,
+	)
+	if vipRegenerateResponse.Code != http.StatusCreated {
+		t.Fatalf("VIP regenerate status = %d, body = %q", vipRegenerateResponse.Code, vipRegenerateResponse.Body.String())
+	}
 	archiveResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, vipCookie)
 	if archiveResponse.Code != http.StatusNoContent {
 		t.Fatalf("VIP archive status = %d, body = %q", archiveResponse.Code, archiveResponse.Body.String())
@@ -424,8 +467,17 @@ func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 		t.Fatalf("decode rebind response: %v", err)
 	}
 	if rebind.Server.ID != created.Server.ID || rebind.EnrollmentToken == "" ||
-		!strings.Contains(rebind.AgentInstallationCommand, "--force") {
-		t.Fatalf("rebind response = %+v, want same server, token and --force command", rebind)
+		strings.Contains(rebind.AgentInstallationCommand, "--force") {
+		t.Fatalf("rebind response = %+v, want same server and command without --force", rebind)
+	}
+	var rebindPurpose string
+	if err := db.QueryRow(
+		`SELECT purpose FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, created.Server.ID,
+	).Scan(&rebindPurpose); err != nil {
+		t.Fatalf("read rebind purpose: %v", err)
+	}
+	if rebindPurpose != "rebind" {
+		t.Fatalf("rebind purpose = %q, want rebind", rebindPurpose)
 	}
 
 	permanentResponse := performRequest(t, handler, http.MethodDelete, serverPath+"/permanent", nil, adminCookie)

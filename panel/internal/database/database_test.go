@@ -151,3 +151,83 @@ func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {
 		t.Fatalf("migrated server = (%d, %q, archived %v), want preserved active server", serverID, serverName, archivedAt.Valid)
 	}
 }
+
+func TestOpenMigratesAgentEnrollmentPurposes(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			archived_at INTEGER,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, archived_at, created_at, updated_at) VALUES
+			(1, 'Active', 'pending', NULL, 1, 1),
+			(2, 'Archived', 'pending', 2, 2, 2)`,
+		`CREATE TABLE agent_enrollments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO agent_enrollments
+			(id, server_id, token_hash, expires_at, used_at, created_at) VALUES
+			(1, 1, 'active-unused', 100, NULL, 1),
+			(2, 2, 'archived-unused', 100, NULL, 2),
+			(3, 2, 'archived-used', 100, 3, 2)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare legacy enrollment database: %v", err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated database error = %v", err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT id, purpose FROM agent_enrollments ORDER BY id`)
+	if err != nil {
+		t.Fatalf("read migrated enrollment purposes: %v", err)
+	}
+	defer rows.Close()
+	want := []struct {
+		id      int64
+		purpose string
+	}{{1, "initial"}, {2, "rebind"}, {3, "initial"}}
+	for _, expected := range want {
+		if !rows.Next() {
+			t.Fatalf("missing migrated enrollment %d", expected.id)
+		}
+		var id int64
+		var purpose string
+		if err := rows.Scan(&id, &purpose); err != nil {
+			t.Fatalf("scan migrated enrollment: %v", err)
+		}
+		if id != expected.id || purpose != expected.purpose {
+			t.Fatalf("migrated enrollment = (%d, %q), want (%d, %q)", id, purpose, expected.id, expected.purpose)
+		}
+	}
+	if rows.Next() {
+		t.Fatal("migration returned unexpected extra enrollment")
+	}
+	if _, err := db.Exec(
+		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
+		 VALUES (1, 'invalid-purpose', 'other', 100, 1)`,
+	); err == nil {
+		t.Fatal("agent_enrollments accepted an invalid purpose")
+	}
+}

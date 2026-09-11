@@ -83,7 +83,9 @@ Agent 安装位置：
 
 注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。
 
-普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在“已移除”列表为原 Server ID 生成新的重新绑定命令；目标 VPS 已存在 Agent 配置时，命令会使用 `--force`，并且只有注册成功后才会原子替换旧配置。只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
+普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在“已移除”列表为原 Server ID 生成新的重新绑定命令；Agent 会自动检测已有配置，并且只有重新绑定注册成功后才会原子替换旧配置。只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
+
+待注册且尚未绑定 Agent 的 Server 可以重新生成首次注册令牌，旧的未使用令牌会立即失效。首次安装和重新绑定使用相同的安装命令，无需额外覆盖参数；Panel 会根据 Enrollment 用途决定是否允许替换已有 Agent 配置。
 
 ### `vp` 管理命令
 

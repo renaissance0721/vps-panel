@@ -16,17 +16,21 @@ const (
 	StatusPending      = "pending"
 	StatusOnline       = "online"
 	StatusOffline      = "offline"
+	PurposeInitial     = "initial"
+	PurposeRebind      = "rebind"
 	EnrollmentLifetime = 24 * time.Hour
 	maxNameLength      = 100
 )
 
 var (
-	ErrInvalidName         = errors.New("server name must be 1-100 characters")
-	ErrNotFound            = errors.New("server not found")
-	ErrInvalidEnrollment   = errors.New("invalid, used, or expired enrollment token")
-	ErrInvalidAgentVersion = errors.New("agent version must be 1-64 characters")
-	ErrInvalidAgentToken   = errors.New("invalid agent token")
-	ErrArchived            = errors.New("server is archived")
+	ErrInvalidName          = errors.New("server name must be 1-100 characters")
+	ErrNotFound             = errors.New("server not found")
+	ErrInvalidEnrollment    = errors.New("invalid, used, or expired enrollment token")
+	ErrInvalidAgentVersion  = errors.New("agent version must be 1-64 characters")
+	ErrInvalidAgentToken    = errors.New("invalid agent token")
+	ErrArchived             = errors.New("server is archived")
+	ErrRegenerateNotAllowed = errors.New("server cannot regenerate an initial enrollment")
+	ErrInitialConfigExists  = errors.New("initial enrollment cannot replace an existing Agent config")
 )
 
 type Server struct {
@@ -95,9 +99,9 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 		return CreatedServer{}, fmt.Errorf("read server id: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO agent_enrollments (server_id, token_hash, expires_at, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		serverID, tokenHash, expiresAt.Unix(), now.Unix(),
+		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		serverID, tokenHash, PurposeInitial, expiresAt.Unix(), now.Unix(),
 	); err != nil {
 		return CreatedServer{}, fmt.Errorf("create agent enrollment: %w", err)
 	}
@@ -113,6 +117,63 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
+		EnrollmentToken:     tokenValue,
+		EnrollmentExpiresAt: expiresAt,
+	}, nil
+}
+
+func (s *Service) RegenerateInitialEnrollment(ctx context.Context, id int64) (CreatedServer, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("begin Agent enrollment regeneration: %w", err)
+	}
+	defer tx.Rollback()
+
+	value, err := scanServer(tx.QueryRowContext(ctx,
+		`SELECT id, name, status, archived_at, created_at, updated_at FROM servers WHERE id = ?`, id,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CreatedServer{}, ErrNotFound
+	}
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("read server for enrollment regeneration: %w", err)
+	}
+	if value.ArchivedAt != nil || value.Status != StatusPending {
+		return CreatedServer{}, ErrRegenerateNotAllowed
+	}
+	var agentCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM agents WHERE server_id = ?`, id,
+	).Scan(&agentCount); err != nil {
+		return CreatedServer{}, fmt.Errorf("check server Agent: %w", err)
+	}
+	if agentCount != 0 {
+		return CreatedServer{}, ErrRegenerateNotAllowed
+	}
+
+	tokenValue, tokenHash, err := token.New()
+	if err != nil {
+		return CreatedServer{}, err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := now.Add(EnrollmentLifetime)
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
+	); err != nil {
+		return CreatedServer{}, fmt.Errorf("remove previous Agent enrollment: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		id, tokenHash, PurposeInitial, expiresAt.Unix(), now.Unix(),
+	); err != nil {
+		return CreatedServer{}, fmt.Errorf("regenerate Agent enrollment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return CreatedServer{}, fmt.Errorf("commit Agent enrollment regeneration: %w", err)
+	}
+	return CreatedServer{
+		Server:              value,
 		EnrollmentToken:     tokenValue,
 		EnrollmentExpiresAt: expiresAt,
 	}, nil
@@ -260,9 +321,9 @@ func (s *Service) CreateRebindEnrollment(ctx context.Context, id int64) (Created
 		return CreatedServer{}, fmt.Errorf("remove previous Agent enrollment: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO agent_enrollments (server_id, token_hash, expires_at, created_at)
-		 VALUES (?, ?, ?, ?)`,
-		id, tokenHash, expiresAt.Unix(), now.Unix(),
+		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		id, tokenHash, PurposeRebind, expiresAt.Unix(), now.Unix(),
 	); err != nil {
 		return CreatedServer{}, fmt.Errorf("create Agent rebind enrollment: %w", err)
 	}
@@ -286,6 +347,7 @@ func (s *Service) RegisterAgent(
 	ctx context.Context,
 	enrollmentToken string,
 	agentVersion string,
+	existingConfig bool,
 ) (RegisteredAgent, error) {
 	if enrollmentToken == "" {
 		return RegisteredAgent{}, ErrInvalidEnrollment
@@ -303,16 +365,20 @@ func (s *Service) RegisterAgent(
 
 	now := s.now().UTC().Truncate(time.Second)
 	var enrollmentID, serverID int64
+	var purpose string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, server_id FROM agent_enrollments
+		`SELECT id, server_id, purpose FROM agent_enrollments
 		 WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
 		token.Hash(enrollmentToken), now.Unix(),
-	).Scan(&enrollmentID, &serverID)
+	).Scan(&enrollmentID, &serverID, &purpose)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RegisteredAgent{}, ErrInvalidEnrollment
 	}
 	if err != nil {
 		return RegisteredAgent{}, fmt.Errorf("find agent enrollment: %w", err)
+	}
+	if purpose == PurposeInitial && existingConfig {
+		return RegisteredAgent{}, ErrInitialConfigExists
 	}
 
 	agentToken, agentTokenHash, err := token.New()

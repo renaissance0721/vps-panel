@@ -57,6 +57,7 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
+	mux.HandleFunc("POST /api/servers/{id}/enrollment/regenerate", s.requireAuthentication(s.regenerateInitialEnrollment))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createRebindEnrollment))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
@@ -117,6 +118,7 @@ type createdServerResponse struct {
 type agentRegistrationRequest struct {
 	EnrollmentToken string `json:"enrollment_token"`
 	AgentVersion    string `json:"agent_version"`
+	ExistingConfig  bool   `json:"existing_config"`
 }
 
 type agentRegistrationResponse struct {
@@ -212,7 +214,7 @@ func (s *server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registered, err := s.servers.RegisterAgent(
-		r.Context(), request.EnrollmentToken, request.AgentVersion,
+		r.Context(), request.EnrollmentToken, request.AgentVersion, request.ExistingConfig,
 	)
 	if err != nil {
 		writeServerError(w, err)
@@ -349,7 +351,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r), false))
+	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -388,7 +390,20 @@ func (s *server) createRebindEnrollment(w http.ResponseWriter, r *http.Request, 
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r), true))
+	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
+}
+
+func (s *server) regenerateInitialEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	created, err := s.servers.RegenerateInitialEnrollment(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
 func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -516,7 +531,6 @@ func toServerResponse(value serverstore.Server) serverResponse {
 func toCreatedServerResponse(
 	created serverstore.CreatedServer,
 	baseURL string,
-	force bool,
 ) createdServerResponse {
 	command := fmt.Sprintf(
 		"curl -fsSL %s/install-agent.sh | bash -s -- \\\n  --server %s \\\n  --token %s",
@@ -524,9 +538,6 @@ func toCreatedServerResponse(
 		baseURL,
 		created.EnrollmentToken,
 	)
-	if force {
-		command += " \\\n  --force"
-	}
 	return createdServerResponse{
 		Server:                   toServerResponse(created.Server),
 		EnrollmentToken:          created.EnrollmentToken,
@@ -655,6 +666,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, serverstore.ErrInvalidEnrollment):
 		writeError(w, http.StatusUnauthorized, "Enrollment Token 无效、已使用或已过期")
+	case errors.Is(err, serverstore.ErrInitialConfigExists):
+		writeError(w, http.StatusConflict, "此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置")
+	case errors.Is(err, serverstore.ErrRegenerateNotAllowed):
+		writeError(w, http.StatusConflict, "只有尚未注册 Agent 的待注册服务器可以重新生成注册令牌")
 	case errors.Is(err, serverstore.ErrInvalidAgentVersion):
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
 	default:

@@ -28,6 +28,7 @@ var agentVersion = "dev"
 type registrationRequest struct {
 	EnrollmentToken string `json:"enrollment_token"`
 	AgentVersion    string `json:"agent_version"`
+	ExistingConfig  bool   `json:"existing_config"`
 }
 
 type registrationResponse struct {
@@ -60,7 +61,7 @@ func run(arguments []string) error {
 		return runRegistration(arguments[1:])
 	}
 	if len(arguments) != 0 {
-		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN [--force]]")
+		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,7 +73,6 @@ func runRegistration(arguments []string) error {
 	flags.SetOutput(io.Discard)
 	serverURL := flags.String("server", "", "Panel URL")
 	enrollmentToken := flags.String("token", "", "one-time enrollment token")
-	force := flags.Bool("force", false, "replace an existing Agent config after registration succeeds")
 	if err := flags.Parse(arguments); err != nil {
 		return fmt.Errorf("parse registration arguments: %w", err)
 	}
@@ -88,7 +88,6 @@ func runRegistration(arguments []string) error {
 		*serverURL,
 		*enrollmentToken,
 		defaultConfigPath,
-		*force,
 	)
 	if err != nil {
 		return err
@@ -103,7 +102,6 @@ func registerAgent(
 	panelURL string,
 	enrollmentToken string,
 	configPath string,
-	force bool,
 ) (config, error) {
 	panelURL, err := normalizePanelURL(panelURL)
 	if err != nil {
@@ -112,13 +110,15 @@ func registerAgent(
 	if strings.TrimSpace(enrollmentToken) == "" {
 		return config{}, errors.New("enrollment token is required")
 	}
-	if err := prepareConfigTarget(configPath, force); err != nil {
+	existingConfig, err := prepareConfigTarget(configPath)
+	if err != nil {
 		return config{}, err
 	}
 
 	body, err := json.Marshal(registrationRequest{
 		EnrollmentToken: enrollmentToken,
 		AgentVersion:    agentVersion,
+		ExistingConfig:  existingConfig,
 	})
 	if err != nil {
 		return config{}, fmt.Errorf("encode registration request: %w", err)
@@ -171,23 +171,20 @@ func normalizePanelURL(value string) (string, error) {
 	return value, nil
 }
 
-func prepareConfigTarget(path string, force bool) error {
+func prepareConfigTarget(path string) (bool, error) {
 	directory := filepath.Dir(path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+		return false, fmt.Errorf("create config directory: %w", err)
 	}
 	if err := os.Chmod(directory, 0o700); err != nil {
-		return fmt.Errorf("secure config directory: %w", err)
+		return false, fmt.Errorf("secure config directory: %w", err)
 	}
 	if _, err := os.Stat(path); err == nil {
-		if !force {
-			return errors.New("Agent is already registered on this machine")
-		}
-		return nil
+		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("check Agent config: %w", err)
+		return false, fmt.Errorf("check Agent config: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 func saveConfig(path string, value config) error {

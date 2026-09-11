@@ -883,8 +883,8 @@ Agent = 可更换、可轮换凭据的执行端身份
    ```text
    pending
    ```
-6. Panel 返回带 `--force` 的 Agent 安装命令。
-7. `--force` 先完成注册，再使用已 fsync 的临时文件原子替换旧配置。
+6. Panel 返回与首次安装格式相同的 Agent 安装命令，不要求用户提供覆盖参数。
+7. Agent 自动检测本机是否已有配置；Panel 仅允许 `rebind` Enrollment 替换旧身份，并在注册成功后使用已 fsync 的临时文件原子替换旧配置。
 8. 注册失败或 Panel 不可达时，旧配置保持不变。
 9. 新 Agent 使用 Enrollment Token 注册，并得到新的长期 Agent Token。
 10. 注册成功后清除 `archived_at`，Server 回到：
@@ -909,6 +909,8 @@ Agent = 可更换、可轮换凭据的执行端身份
 
 由于 `agents.server_id` 是唯一关系，重新绑定时删除旧 Agent 认证记录并创建新记录，不制造同一 Server 的多个有效 Agent。
 
+`agent_enrollments.purpose` 只使用两种值：新建 Server 和待注册 Server 重新生成的令牌为 `initial`，已移除 Server 的重新绑定令牌为 `rebind`。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。旧数据库迁移时普通 Enrollment 默认为 `initial`，已归档 Server 尚未使用的 Enrollment 标记为 `rebind`。
+
 必须保证：
 
 - 旧 Agent Token 不再可用。
@@ -928,6 +930,8 @@ Agent = 可更换、可轮换凭据的执行端身份
 重新绑定 Agent
 彻底删除
 ```
+
+正常列表中的待注册 Server 可以重新生成 `initial` 注册令牌；旧的未使用令牌立即失效，Server ID 和状态保持不变。已移除 Server 的“重新绑定 Agent”生成 `rebind` 令牌。两种操作返回的安装命令格式相同，原始令牌都只显示一次。
 
 点击后必须二次确认，并明确提示：
 
@@ -961,7 +965,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 6. 新 Agent 注册后仍绑定原 Server。
 7. 注册成功后清除 `archived_at`，状态为 `offline`。
 8. 不产生第二个有效 Agent 身份。
-9. `--force` 失败时保留旧配置，成功时以 0600 权限原子替换。
+9. 重新绑定失败时保留旧配置，成功时以 0600 权限原子替换。
 10. 重新绑定和彻底删除仅允许 admin。
 11. 只有彻底删除才物理删除 Server。
 12. 原有 Server / Agent 注册和 WebSocket 测试继续通过。

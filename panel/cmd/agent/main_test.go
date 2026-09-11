@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +26,7 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion {
+		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion || request.ExistingConfig {
 			t.Fatalf("registration request = %+v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -38,7 +37,7 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
 	registered, err := registerAgent(
-		context.Background(), server.Client(), server.URL+"/", "one-time-token", configPath, false,
+		context.Background(), server.Client(), server.URL+"/", "one-time-token", configPath,
 	)
 	if err != nil {
 		t.Fatalf("registerAgent() error = %v", err)
@@ -69,11 +68,6 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 		}
 	}
 
-	if _, err := registerAgent(
-		context.Background(), server.Client(), server.URL, "another-token", configPath, false,
-	); err == nil || !strings.Contains(err.Error(), "already registered") {
-		t.Fatalf("second registerAgent() error = %v, want already registered", err)
-	}
 	if requestCount != 1 {
 		t.Fatalf("registration request count = %d, want 1", requestCount)
 	}
@@ -81,16 +75,22 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 
 func TestRegisterAgentRejectsInvalidServerURL(t *testing.T) {
 	_, err := registerAgent(
-		context.Background(), http.DefaultClient, "file:///tmp/panel", "token", filepath.Join(t.TempDir(), "config.json"), false,
+		context.Background(), http.DefaultClient, "file:///tmp/panel", "token", filepath.Join(t.TempDir(), "config.json"),
 	)
 	if err == nil {
 		t.Fatal("registerAgent() accepted a non-HTTP server URL")
 	}
 }
 
-func TestForceRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
+func TestRegistrationRejectsForceArgument(t *testing.T) {
+	if err := runRegistration([]string{"--force"}); err == nil {
+		t.Fatal("register command accepted removed --force argument")
+	}
+}
+
+func TestRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
-	if err := prepareConfigTarget(configPath, false); err != nil {
+	if _, err := prepareConfigTarget(configPath); err != nil {
 		t.Fatalf("prepare config: %v", err)
 	}
 	oldConfig := config{PanelURL: "https://old.example.com", ServerID: 3, AgentID: 4, AgentToken: "old-token"}
@@ -98,7 +98,14 @@ func TestForceRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
 		t.Fatalf("save old config: %v", err)
 	}
 
-	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request registrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode registration request: %v", err)
+		}
+		if !request.ExistingConfig {
+			t.Fatal("registration did not report the existing Agent config")
+		}
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			t.Fatalf("read old config during registration: %v", err)
@@ -113,13 +120,13 @@ func TestForceRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
 	defer panel.Close()
 
 	replaced, err := registerAgent(
-		context.Background(), panel.Client(), panel.URL, "new-enrollment", configPath, true,
+		context.Background(), panel.Client(), panel.URL, "new-enrollment", configPath,
 	)
 	if err != nil {
-		t.Fatalf("force registerAgent() error = %v", err)
+		t.Fatalf("registerAgent() error = %v", err)
 	}
 	if replaced.AgentID != 8 || replaced.ServerID != oldConfig.ServerID || replaced.AgentToken != "new-token" {
-		t.Fatalf("force registerAgent() = %+v", replaced)
+		t.Fatalf("registerAgent() = %+v", replaced)
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -143,9 +150,9 @@ func TestForceRegistrationAtomicallyReplacesExistingConfig(t *testing.T) {
 	}
 }
 
-func TestForceRegistrationFailurePreservesExistingConfig(t *testing.T) {
+func TestRegistrationFailurePreservesExistingConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
-	if err := prepareConfigTarget(configPath, false); err != nil {
+	if _, err := prepareConfigTarget(configPath); err != nil {
 		t.Fatalf("prepare config: %v", err)
 	}
 	oldConfig := config{PanelURL: "https://old.example.com", ServerID: 3, AgentID: 4, AgentToken: "old-token"}
@@ -162,9 +169,21 @@ func TestForceRegistrationFailurePreservesExistingConfig(t *testing.T) {
 	}))
 	defer rejectingPanel.Close()
 	if _, err := registerAgent(
-		context.Background(), rejectingPanel.Client(), rejectingPanel.URL, "invalid", configPath, true,
+		context.Background(), rejectingPanel.Client(), rejectingPanel.URL, "invalid", configPath,
 	); err == nil {
-		t.Fatal("force registration unexpectedly succeeded with invalid enrollment")
+		t.Fatal("registration unexpectedly succeeded with invalid enrollment")
+	}
+	assertFileContents(t, configPath, original)
+
+	invalidResponsePanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_id":`))
+	}))
+	defer invalidResponsePanel.Close()
+	if _, err := registerAgent(
+		context.Background(), invalidResponsePanel.Client(), invalidResponsePanel.URL, "token", configPath,
+	); err == nil {
+		t.Fatal("registration unexpectedly succeeded with an invalid Panel response")
 	}
 	assertFileContents(t, configPath, original)
 
@@ -172,9 +191,9 @@ func TestForceRegistrationFailurePreservesExistingConfig(t *testing.T) {
 		return nil, errors.New("Panel unavailable")
 	})}
 	if _, err := registerAgent(
-		context.Background(), unavailableClient, "https://panel.example.com", "token", configPath, true,
+		context.Background(), unavailableClient, "https://panel.example.com", "token", configPath,
 	); err == nil {
-		t.Fatal("force registration unexpectedly succeeded while Panel was unavailable")
+		t.Fatal("registration unexpectedly succeeded while Panel was unavailable")
 	}
 	assertFileContents(t, configPath, original)
 }
@@ -196,7 +215,7 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 	defer panel.Close()
 
 	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
-	if err := prepareConfigTarget(configPath, false); err != nil {
+	if _, err := prepareConfigTarget(configPath); err != nil {
 		t.Fatalf("prepare config: %v", err)
 	}
 	if err := saveConfig(configPath, config{

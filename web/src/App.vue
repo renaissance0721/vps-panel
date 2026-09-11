@@ -281,6 +281,20 @@ async function rebindAgent(value: ServerRecord) {
   })
 }
 
+async function regenerateEnrollment(value: ServerRecord) {
+  if (!window.confirm('旧的未使用注册令牌将立即失效，并生成新的注册令牌。')) return
+  await submit(async () => {
+    createdServer.value = await api<CreatedServer>(
+      `/api/servers/${value.id}/enrollment/regenerate`,
+      { method: 'POST' },
+    )
+    selectedServer.value = createdServer.value.server
+    enrollmentMode.value = 'install'
+    copiedEnrollment.value = ''
+    await loadServers()
+  })
+}
+
 async function permanentlyDeleteServer(value: ServerRecord) {
   if (
     !window.confirm(
@@ -605,6 +619,15 @@ onMounted(async () => {
                 <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
                 <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
               </dl>
+              <n-button
+                v-if="selectedServer.status === 'pending' && !selectedServer.archived_at"
+                type="primary"
+                secondary
+                :disabled="submitting"
+                @click="regenerateEnrollment(selectedServer)"
+              >
+                重新生成注册令牌
+              </n-button>
             </n-card>
           </div>
 
@@ -623,7 +646,7 @@ onMounted(async () => {
               "
             >
               <template v-if="enrollmentMode === 'rebind'">
-                请执行下方带 --force 的命令安全替换旧 Agent 身份，无需手工删除配置文件。
+                请在目标 VPS 上执行下方命令。注册成功后将安全替换旧 Agent 身份。
               </template>
               <template v-else>
                 请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。

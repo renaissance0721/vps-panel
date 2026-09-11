@@ -38,6 +38,23 @@ func TestAgentRegistrationAPI(t *testing.T) {
 	if bypass.Code != http.StatusBadRequest {
 		t.Fatalf("server ID bypass status = %d, want %d", bypass.Code, http.StatusBadRequest)
 	}
+	existingConfig := performRequest(t, handler, http.MethodPost, "/api/agent/register", map[string]any{
+		"enrollment_token": created.EnrollmentToken,
+		"agent_version":    "v0.4.0",
+		"existing_config":  true,
+	}, nil)
+	if existingConfig.Code != http.StatusConflict {
+		t.Fatalf("initial enrollment with existing config status = %d, body = %q", existingConfig.Code, existingConfig.Body.String())
+	}
+	var rejectedUsedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
+	).Scan(&rejectedUsedAt); err != nil {
+		t.Fatalf("read rejected enrollment: %v", err)
+	}
+	if rejectedUsedAt.Valid {
+		t.Fatal("rejected initial enrollment was consumed")
+	}
 	response := performRequest(t, handler, http.MethodPost, "/api/agent/register", map[string]string{
 		"enrollment_token": created.EnrollmentToken,
 		"agent_version":    "v0.4.0",
@@ -100,7 +117,6 @@ func TestInstallAgentScript(t *testing.T) {
 	for _, required := range []string{
 		"--server",
 		"--token",
-		"--force",
 		"vps-panel-agent-linux-${architecture}",
 		"/usr/local/bin/vps-panel-agent",
 		"/etc/systemd/system/vps-panel-agent.service",
@@ -111,10 +127,15 @@ func TestInstallAgentScript(t *testing.T) {
 			t.Fatalf("installer does not contain %q", required)
 		}
 	}
+	for _, removed := range []string{"--force", "already registered", "CONFIG_FILE"} {
+		if strings.Contains(response.Body.String(), removed) {
+			t.Fatalf("installer still contains removed behavior %q", removed)
+		}
+	}
 	if strings.Contains(response.Body.String(), "Restart=on-failure") {
 		t.Fatal("installer enables automatic Agent reconnection")
 	}
-	registrationIndex := strings.Index(response.Body.String(), `"$download_path" "${registration_arguments[@]}"`)
+	registrationIndex := strings.Index(response.Body.String(), `"$download_path" register --server "$server_url" --token "$enrollment_token"`)
 	installIndex := strings.Index(response.Body.String(), `install -m 0755 "$download_path" "$BINARY_PATH"`)
 	if registrationIndex < 0 || installIndex < 0 || registrationIndex >= installIndex {
 		t.Fatal("installer must complete registration before replacing the installed Agent binary")
@@ -133,7 +154,7 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
-	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.0")
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.0", false)
 	if err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
@@ -183,7 +204,7 @@ func TestArchiveClosesAgentWebSocketAndRevokesToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
-	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.1")
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.5.1", false)
 	if err != nil {
 		t.Fatalf("register agent: %v", err)
 	}

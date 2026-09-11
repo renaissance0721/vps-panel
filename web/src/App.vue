@@ -71,7 +71,7 @@ const submitting = ref(false)
 const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
-const copiedEnrollment = ref<'token' | 'command' | ''>('')
+const copiedCommand = ref(false)
 
 const username = ref('')
 const password = ref('')
@@ -244,7 +244,7 @@ async function createServerRecord() {
     selectedServer.value = createdServer.value.server
     serverModalOpen.value = true
     serverName.value = ''
-    copiedEnrollment.value = ''
+    copiedCommand.value = false
     await loadServers()
   })
 }
@@ -252,7 +252,7 @@ async function createServerRecord() {
 function viewServer(value: ServerRecord) {
   selectedServer.value = value
   createdServer.value = null
-  copiedEnrollment.value = ''
+  copiedCommand.value = false
   serverModalOpen.value = true
 }
 
@@ -283,7 +283,7 @@ async function regenerateEnrollment(value: ServerRecord) {
       method: 'POST',
     })
     selectedServer.value = createdServer.value.server
-    copiedEnrollment.value = ''
+    copiedCommand.value = false
     await loadServers()
   })
 }
@@ -291,7 +291,7 @@ async function regenerateEnrollment(value: ServerRecord) {
 function closeServerDetails() {
   selectedServer.value = null
   createdServer.value = null
-  copiedEnrollment.value = ''
+  copiedCommand.value = false
 }
 
 async function permanentlyDeleteServer(value: ServerRecord) {
@@ -308,10 +308,10 @@ async function permanentlyDeleteServer(value: ServerRecord) {
   })
 }
 
-async function copyEnrollment(value: string, kind: 'token' | 'command') {
+async function copyAgentCommand(value: string) {
   try {
     await navigator.clipboard.writeText(value)
-    copiedEnrollment.value = kind
+    copiedCommand.value = true
   } catch {
     error.value = '无法自动复制，请手动复制内容'
   }
@@ -743,7 +743,7 @@ onMounted(async () => {
             <div v-if="createdServer" class="modal-enrollment">
               <n-alert
                 type="warning"
-                title="Agent 安装令牌仅显示一次，请立即保存。"
+                title="Agent 安装命令仅显示一次，请立即保存。"
               >
                 请在目标 Debian/Ubuntu VPS 上以 root 用户执行下方安装命令。
               </n-alert>
@@ -754,16 +754,6 @@ onMounted(async () => {
                 </div>
               </dl>
               <div class="secret-field">
-                <strong>Agent 安装令牌</strong>
-                <n-input :value="createdServer.enrollment_token" readonly />
-                <n-button
-                  secondary
-                  @click="copyEnrollment(createdServer.enrollment_token, 'token')"
-                >
-                  {{ copiedEnrollment === 'token' ? '已复制' : '复制令牌' }}
-                </n-button>
-              </div>
-              <div class="secret-field">
                 <strong>Agent 安装命令</strong>
                 <n-input
                   :value="createdServer.agent_installation_command"
@@ -773,9 +763,9 @@ onMounted(async () => {
                 />
                 <n-button
                   secondary
-                  @click="copyEnrollment(createdServer.agent_installation_command, 'command')"
+                  @click="copyAgentCommand(createdServer.agent_installation_command)"
                 >
-                  {{ copiedEnrollment === 'command' ? '已复制' : '复制命令' }}
+                  {{ copiedCommand ? '已复制' : '复制命令' }}
                 </n-button>
               </div>
             </div>

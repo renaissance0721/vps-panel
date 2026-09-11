@@ -186,6 +186,12 @@ h1 {
   gap: 8px;
 }
 
+.server-status-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .server-list-nav {
   margin-bottom: 20px;
 }
@@ -265,6 +271,12 @@ h1 {
   margin: 4px 0 10px;
   color: #65717e;
   font-size: 13px;
+}
+
+.traffic-limit-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 8px;
 }
 
 .date-input,

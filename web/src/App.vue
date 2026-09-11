@@ -11,6 +11,12 @@ import {
   NSpin,
   NTag,
 } from 'naive-ui'
+import {
+  formatTrafficLimitInput,
+  parseTrafficLimit,
+  trafficWarningLevel,
+  type TrafficLimitUnit,
+} from './traffic'
 
 type User = {
   id: number
@@ -112,6 +118,7 @@ const copied = ref(false)
 const copiedCommand = ref(false)
 const expirationInput = ref('')
 const trafficLimitInput = ref('')
+const trafficLimitUnit = ref<TrafficLimitUnit>('G')
 const trafficCountMode = ref<ServerRecord['traffic_count_mode']>('single')
 const trafficResetDay = ref(1)
 const trafficResetTime = ref('00:00')
@@ -428,7 +435,9 @@ async function updateExpiration(expiresAt: string | null) {
 
 function openTrafficModal() {
   if (!selectedServer.value || selectedServer.value.archived_at) return
-  trafficLimitInput.value = formatTrafficLimitInput(selectedServer.value.monthly_traffic_limit_bytes)
+  const limit = formatTrafficLimitInput(selectedServer.value.monthly_traffic_limit_bytes)
+  trafficLimitInput.value = limit.value
+  trafficLimitUnit.value = limit.unit
   trafficCountMode.value = selectedServer.value.traffic_count_mode
   trafficResetDay.value = selectedServer.value.traffic_reset_day
   trafficResetTime.value = selectedServer.value.traffic_reset_time
@@ -442,6 +451,7 @@ function closeTrafficModal() {
 
 function resetTrafficForm() {
   trafficLimitInput.value = ''
+  trafficLimitUnit.value = 'G'
   trafficCountMode.value = 'single'
   trafficResetDay.value = 1
   trafficResetTime.value = '00:00'
@@ -449,9 +459,9 @@ function resetTrafficForm() {
 
 async function saveTrafficConfig() {
   if (!selectedServer.value) return
-  const monthlyLimit = parseTrafficLimit(trafficLimitInput.value)
+  const monthlyLimit = parseTrafficLimit(trafficLimitInput.value, trafficLimitUnit.value)
   if (monthlyLimit === undefined) {
-    error.value = '月流量额度格式无效，请输入例如 500G 或 1T，留空表示不限'
+    error.value = '月流量额度格式无效，请输入大于 0 的数值，或留空表示不限'
     return
   }
   if (!Number.isInteger(trafficResetDay.value) || trafficResetDay.value < 1 || trafficResetDay.value > 31) {
@@ -594,26 +604,6 @@ function trafficUsageLabel(value: ServerRecord) {
 
 function trafficCountModeLabel(mode: ServerRecord['traffic_count_mode']) {
   return mode === 'bidirectional' ? '双向（RX + TX）' : '单向（TX）'
-}
-
-function formatTrafficLimitInput(value: number | null) {
-  if (!value) return ''
-  const tebibyte = 1024 ** 4
-  const gibibyte = 1024 ** 3
-  if (value >= tebibyte) return `${Number((value / tebibyte).toFixed(2))}T`
-  return `${Number((value / gibibyte).toFixed(2))}G`
-}
-
-function parseTrafficLimit(value: string): number | null | undefined {
-  const normalized = value.trim().toUpperCase()
-  if (normalized === '' || normalized === '0') return null
-  const match = /^(\d+(?:\.\d+)?)\s*([GT])$/.exec(normalized)
-  if (!match) return undefined
-  const amount = Number(match[1])
-  const multiplier = match[2] === 'T' ? 1024 ** 4 : 1024 ** 3
-  const bytes = Math.round(amount * multiplier)
-  if (!Number.isSafeInteger(bytes) || bytes <= 0) return undefined
-  return bytes
 }
 
 function formatUptime(value: number) {
@@ -916,9 +906,25 @@ onUnmounted(stopServerPolling)
                   <tr v-for="value in servers" :key="value.id">
                     <td>{{ value.name }}</td>
                     <td>
-                      <n-tag :type="statusType(value.status)" size="small">
-                        {{ statusLabel(value.status) }}
-                      </n-tag>
+                      <div class="server-status-tags">
+                        <n-tag :type="statusType(value.status)" size="small">
+                          {{ statusLabel(value.status) }}
+                        </n-tag>
+                        <n-tag
+                          v-if="trafficWarningLevel(value.traffic_used_bytes, value.monthly_traffic_limit_bytes) === 'warning'"
+                          type="warning"
+                          size="small"
+                        >
+                          流量预警
+                        </n-tag>
+                        <n-tag
+                          v-else-if="trafficWarningLevel(value.traffic_used_bytes, value.monthly_traffic_limit_bytes) === 'exhausted'"
+                          type="error"
+                          size="small"
+                        >
+                          流量已用完
+                        </n-tag>
+                      </div>
                     </td>
                     <td>{{ trafficUsageLabel(value) }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
@@ -1225,13 +1231,26 @@ onUnmounted(stopServerPolling)
             <form class="traffic-form" @submit.prevent="saveTrafficConfig">
               <label>
                 <span>月流量额度</span>
-                <input
-                  v-model="trafficLimitInput"
-                  class="settings-input"
-                  type="text"
-                  placeholder="例如 500G 或 1T，留空表示不限"
-                  :disabled="submitting"
-                />
+                <div class="traffic-limit-input">
+                  <input
+                    v-model="trafficLimitInput"
+                    class="settings-input"
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="例如 500，留空表示不限"
+                    :disabled="submitting"
+                  />
+                  <select
+                    v-model="trafficLimitUnit"
+                    class="settings-input"
+                    aria-label="月流量额度单位"
+                    :disabled="submitting"
+                  >
+                    <option value="G">G</option>
+                    <option value="T">T</option>
+                  </select>
+                </div>
               </label>
               <label>
                 <span>统计方式</span>

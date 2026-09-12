@@ -113,18 +113,20 @@ type SystemInfo struct {
 	Arch         string
 	IPv4         []string
 	IPv6         []string
+	PublicIPv4   string
 	AgentVersion string
 	ReportedAt   time.Time
 }
 
 type SystemInfoReport struct {
-	Hostname  string
-	OSName    string
-	OSVersion string
-	Kernel    string
-	Arch      string
-	IPv4      []string
-	IPv6      []string
+	Hostname   string
+	OSName     string
+	OSVersion  string
+	Kernel     string
+	Arch       string
+	IPv4       []string
+	IPv6       []string
+	PublicIPv4 string
 }
 
 type Metrics struct {
@@ -269,7 +271,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -348,7 +350,7 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -386,7 +388,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -861,6 +863,7 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 	report.OSVersion = strings.TrimSpace(report.OSVersion)
 	report.Kernel = strings.TrimSpace(report.Kernel)
 	report.Arch = strings.TrimSpace(report.Arch)
+	report.PublicIPv4 = strings.TrimSpace(report.PublicIPv4)
 	if utf8.RuneCountInString(report.Hostname) > 255 ||
 		utf8.RuneCountInString(report.OSName) > 128 ||
 		utf8.RuneCountInString(report.OSVersion) > 128 ||
@@ -877,6 +880,13 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 	report.IPv6, err = normalizeIPAddresses(report.IPv6, false)
 	if err != nil {
 		return err
+	}
+	if report.PublicIPv4 != "" {
+		ip := net.ParseIP(report.PublicIPv4)
+		if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return ErrInvalidSystemInfo
+		}
+		report.PublicIPv4 = ip.To4().String()
 	}
 	ipv4JSON, _ := json.Marshal(report.IPv4)
 	ipv6JSON, _ := json.Marshal(report.IPv6)
@@ -900,8 +910,8 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_system_info
-		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, agent_version, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(server_id) DO UPDATE SET
 		 hostname = excluded.hostname,
 		 os_name = excluded.os_name,
@@ -910,10 +920,11 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		 arch = excluded.arch,
 		 ipv4 = excluded.ipv4,
 		 ipv6 = excluded.ipv6,
+		 public_ipv4 = excluded.public_ipv4,
 		 agent_version = excluded.agent_version,
 		 reported_at = excluded.reported_at`,
 		serverID, report.Hostname, report.OSName, report.OSVersion, report.Kernel, report.Arch,
-		string(ipv4JSON), string(ipv6JSON), agentVersion, now,
+		string(ipv4JSON), string(ipv6JSON), report.PublicIPv4, agentVersion, now,
 	); err != nil {
 		return fmt.Errorf("save system information: %w", err)
 	}
@@ -1177,7 +1188,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var hostname, osName, osVersion, kernel, arch sql.NullString
-	var ipv4JSON, ipv6JSON, agentVersion sql.NullString
+	var ipv4JSON, ipv6JSON, publicIPv4, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
 	var cpuPercent sql.NullFloat64
 	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime sql.NullInt64
@@ -1187,7 +1198,7 @@ func scanServer(row rowScanner) (Server, error) {
 		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt,
-		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
+		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
@@ -1217,6 +1228,7 @@ func scanServer(row rowScanner) (Server, error) {
 			OSVersion:    osVersion.String,
 			Kernel:       kernel.String,
 			Arch:         arch.String,
+			PublicIPv4:   publicIPv4.String,
 			AgentVersion: agentVersion.String,
 			ReportedAt:   time.Unix(reportedAt.Int64, 0).UTC(),
 		}

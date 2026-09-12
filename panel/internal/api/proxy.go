@@ -14,7 +14,8 @@ type createProxyRequest struct {
 	ServerID          int64  `json:"server_id"`
 	Name              string `json:"name"`
 	ListenPort        int    `json:"listen_port"`
-	PublicHost        string `json:"public_host"`
+	EntryHostMode     string `json:"entry_host_mode"`
+	EntryHost         string `json:"entry_host"`
 	Enabled           *bool  `json:"enabled"`
 	Security          string `json:"security"`
 	ServerName        string `json:"server_name"`
@@ -28,7 +29,8 @@ type createProxyRequest struct {
 type updateProxyRequest struct {
 	Name          *string `json:"name"`
 	ListenPort    *int    `json:"listen_port"`
-	PublicHost    *string `json:"public_host"`
+	EntryHostMode *string `json:"entry_host_mode"`
+	EntryHost     *string `json:"entry_host"`
 	Enabled       *bool   `json:"enabled"`
 	Security      *string `json:"security"`
 	ServerName    *string `json:"server_name"`
@@ -50,20 +52,23 @@ type updateClientRequest struct {
 }
 
 type proxyResponse struct {
-	ID         int64                   `json:"id"`
-	ServerID   int64                   `json:"server_id"`
-	ServerName string                  `json:"server_name"`
-	ServerIPv4 []string                `json:"server_ipv4"`
-	ServerIPv6 []string                `json:"server_ipv6"`
-	Name       string                  `json:"name"`
-	Protocol   string                  `json:"protocol"`
-	ListenPort int                     `json:"listen_port"`
-	PublicHost string                  `json:"public_host"`
-	Enabled    bool                    `json:"enabled"`
-	Config     proxyConfigResponse     `json:"config"`
-	Clients    []clientSummaryResponse `json:"clients,omitempty"`
-	CreatedAt  time.Time               `json:"created_at"`
-	UpdatedAt  time.Time               `json:"updated_at"`
+	ID               int64                   `json:"id"`
+	ServerID         int64                   `json:"server_id"`
+	ServerName       string                  `json:"server_name"`
+	ServerIPv4       []string                `json:"server_ipv4"`
+	ServerIPv6       []string                `json:"server_ipv6"`
+	ServerPublicIPv4 string                  `json:"server_public_ipv4"`
+	Name             string                  `json:"name"`
+	Protocol         string                  `json:"protocol"`
+	ListenPort       int                     `json:"listen_port"`
+	EntryHostMode    string                  `json:"entry_host_mode"`
+	EntryHost        string                  `json:"entry_host"`
+	EntryAddress     string                  `json:"entry_address"`
+	Enabled          bool                    `json:"enabled"`
+	Config           proxyConfigResponse     `json:"config"`
+	Clients          []clientSummaryResponse `json:"clients,omitempty"`
+	CreatedAt        time.Time               `json:"created_at"`
+	UpdatedAt        time.Time               `json:"updated_at"`
 }
 
 type proxyConfigResponse struct {
@@ -139,9 +144,12 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 	if request.FirstClientName == "" {
 		request.FirstClientName = "默认客户端"
 	}
+	if request.EntryHostMode == "" {
+		request.EntryHostMode = proxystore.EntryHostAuto
+	}
 	value, mutation, err := s.proxies.Create(r.Context(), proxystore.CreateInput{
 		ServerID: request.ServerID, Name: request.Name, ListenPort: request.ListenPort,
-		PublicHost: request.PublicHost, Enabled: enabled, Security: request.Security,
+		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
 		FirstClientUDP443: request.FirstClientUDP443,
@@ -177,7 +185,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 		return
 	}
 	value, mutation, err := s.proxies.Update(r.Context(), id, proxystore.UpdateInput{
-		Name: request.Name, ListenPort: request.ListenPort, PublicHost: request.PublicHost,
+		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 	})
@@ -320,7 +328,8 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 	response := proxyResponse{
 		ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
 		ServerIPv4: value.ServerIPv4, ServerIPv6: value.ServerIPv6, Name: value.Name,
-		Protocol: value.Protocol, ListenPort: value.ListenPort, PublicHost: value.PublicHost,
+		ServerPublicIPv4: value.ServerPublicIPv4, Protocol: value.Protocol, ListenPort: value.ListenPort,
+		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		Config: proxyConfigResponse{
 			Transport: value.Config.Transport, Security: value.Config.Security,
@@ -362,8 +371,10 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "监听端口必须在 1–65535 之间")
 	case errors.Is(err, proxystore.ErrPortConflict):
 		writeError(w, http.StatusConflict, "该服务器上的监听端口已被其他代理节点使用")
-	case errors.Is(err, proxystore.ErrInvalidPublicHost):
-		writeError(w, http.StatusBadRequest, "节点域名必须是有效域名或 IP，且不能包含协议、路径或端口")
+	case errors.Is(err, proxystore.ErrInvalidEntryHostMode):
+		writeError(w, http.StatusBadRequest, "入口地址模式仅支持自动检测或手动输入")
+	case errors.Is(err, proxystore.ErrInvalidEntryHost):
+		writeError(w, http.StatusBadRequest, "手动入口地址必须是有效 IPv4、IPv6 或域名，且不能包含协议、路径或端口")
 	case errors.Is(err, proxystore.ErrInvalidServerName):
 		writeError(w, http.StatusBadRequest, "SNI 必须是有效域名或 IP")
 	case errors.Is(err, proxystore.ErrInvalidSecurity):
@@ -375,7 +386,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrLastClient):
 		writeError(w, http.StatusConflict, "代理节点必须至少保留一个客户端")
 	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
-		writeError(w, http.StatusConflict, "连接地址不可用，请先填写节点域名或等待服务器上报公网 IP")
+		writeError(w, http.StatusConflict, "连接地址不可用，请手动填写入口地址或等待服务器上报公网 IPv4")
 	default:
 		writeInternalError(w)
 	}

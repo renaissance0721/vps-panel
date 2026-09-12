@@ -22,7 +22,8 @@ func TestCreateTLSProxyWithFirstClientAndVersion(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	certificate, privateKey := testCertificate(t)
 	value, mutation, err := service.Create(t.Context(), CreateInput{
-		ServerID: serverID, Name: "TLS 节点", ListenPort: 443, PublicHost: "node.example.com",
+		ServerID: serverID, Name: "TLS 节点", ListenPort: 443,
+		EntryHostMode: EntryHostManual, EntryHost: "node.example.com",
 		Enabled: true, Security: SecurityTLS, ServerName: "tls.example.com",
 		Certificate: certificate, PrivateKey: privateKey, FirstClientName: "默认客户端",
 	})
@@ -54,7 +55,7 @@ func TestCreateTLSProxyWithFirstClientAndVersion(t *testing.T) {
 func TestCreateRealityProxyGeneratesCompatibleSecrets(t *testing.T) {
 	_, service, serverID := newTestService(t)
 	value, _, err := service.Create(t.Context(), CreateInput{
-		ServerID: serverID, Name: "Reality", ListenPort: 8443, Enabled: true,
+		ServerID: serverID, Name: "Reality", ListenPort: 8443, EntryHostMode: EntryHostAuto, Enabled: true,
 		Security: SecurityReality, ServerName: "www.example.com", RealityTarget: "www.example.com:443",
 		FirstClientName: "Phone",
 	})
@@ -77,7 +78,7 @@ func TestCreateRealityProxyGeneratesCompatibleSecrets(t *testing.T) {
 func TestProxyCreationRollsBackAndRejectsPortConflict(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	certificate, privateKey := testCertificate(t)
-	input := CreateInput{ServerID: serverID, Name: "one", ListenPort: 443, Enabled: true, Security: SecurityTLS, ServerName: "example.com", Certificate: certificate, PrivateKey: privateKey, FirstClientName: "default"}
+	input := CreateInput{ServerID: serverID, Name: "one", ListenPort: 443, EntryHostMode: EntryHostAuto, Enabled: true, Security: SecurityTLS, ServerName: "example.com", Certificate: certificate, PrivateKey: privateKey, FirstClientName: "default"}
 	if _, _, err := service.Create(t.Context(), input); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,7 @@ func TestProxyUpdatesPreserveTLSAndRealitySecrets(t *testing.T) {
 	_, service, serverID := newTestService(t)
 	certificate, privateKey := testCertificate(t)
 	tlsProxy, _, err := service.Create(t.Context(), CreateInput{
-		ServerID: serverID, Name: "TLS", ListenPort: 443, Enabled: true,
+		ServerID: serverID, Name: "TLS", ListenPort: 443, EntryHostMode: EntryHostAuto, Enabled: true,
 		Security: SecurityTLS, ServerName: "tls.example.com", Certificate: certificate,
 		PrivateKey: privateKey, FirstClientName: "default",
 	})
@@ -174,11 +175,12 @@ func TestProxyUpdatesPreserveTLSAndRealitySecrets(t *testing.T) {
 	}
 }
 
-func TestTLSShareUsesPublicHostAndPerClientUDPFlow(t *testing.T) {
+func TestTLSShareUsesManualEntryHostAndPerClientUDPFlow(t *testing.T) {
 	_, service, serverID := newTestService(t)
 	certificate, privateKey := testCertificate(t)
 	value, _, err := service.Create(t.Context(), CreateInput{
-		ServerID: serverID, Name: "TLS 节点", ListenPort: 2053, PublicHost: "node.example.com",
+		ServerID: serverID, Name: "TLS 节点", ListenPort: 2053,
+		EntryHostMode: EntryHostManual, EntryHost: "node.example.com",
 		Enabled: true, Security: SecurityTLS, ServerName: "sni.example.com",
 		Certificate: certificate, PrivateKey: privateKey, FirstClientName: "默认客户端",
 	})
@@ -242,15 +244,19 @@ func TestDesiredStateFiltersDisabledRecordsAndClientUDPDoesNotChangeIt(t *testin
 	}
 }
 
-func TestVLESSShareUsesHostFallbackAndNeverLeaksPrivateKey(t *testing.T) {
+func TestVLESSShareAutoUsesOnlyPublicIPv4AndManualOverridesIt(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	proxyValue := createRealityProxy(t, service, serverID, 443, "东京 节点")
-	if _, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID); !errors.Is(err, ErrConnectionAddressUnavailable) {
-		t.Fatalf("share without address error = %v", err)
-	}
 	if _, err := db.Exec(`INSERT INTO server_system_info
-		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, reported_at)
-		VALUES (?, '', '', '', '', '', ?, '[]', '', 1)`, serverID, `["10.0.0.1","1.2.3.4"]`); err != nil {
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', ?, ?, '', '', 1)`, serverID,
+		`["10.0.0.1","172.26.13.110","192.168.1.20"]`, `["2001:db8::20"]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID); !errors.Is(err, ErrConnectionAddressUnavailable) {
+		t.Fatalf("auto share fell back to NIC address: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = '198.51.100.44' WHERE server_id = ?`, serverID); err != nil {
 		t.Fatal(err)
 	}
 	share, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
@@ -261,7 +267,7 @@ func TestVLESSShareUsesHostFallbackAndNeverLeaksPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Scheme != "vless" || parsed.Host != "1.2.3.4:443" || parsed.Query().Get("security") != "reality" ||
+	if parsed.Scheme != "vless" || parsed.Host != "198.51.100.44:443" || parsed.Query().Get("security") != "reality" ||
 		parsed.Query().Get("pbk") != share.RealityPublicKey || parsed.Query().Get("sid") != share.RealityShortID ||
 		parsed.Query().Get("flow") != ServerFlow || parsed.Fragment != "东京 节点 - 默认客户端" {
 		t.Fatalf("share URI = %s", share.URI)
@@ -270,13 +276,38 @@ func TestVLESSShareUsesHostFallbackAndNeverLeaksPrivateKey(t *testing.T) {
 	if strings.Contains(share.URI, config.Reality.PrivateKey) || parsed.Query().Has("proxy_id") || parsed.Query().Has("client_id") {
 		t.Fatal("share URI leaked server secret or internal ID")
 	}
-	publicHost := "[2001:db8::1]"
-	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{PublicHost: &publicHost}); err != nil {
+	manualMode, manualHost := EntryHostManual, "1.2.3.4"
+	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{EntryHostMode: &manualMode, EntryHost: &manualHost}); err != nil {
 		t.Fatal(err)
 	}
-	share, err = service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
-	if err != nil || !strings.Contains(share.URI, "@[2001:db8::1]:443") {
-		t.Fatalf("IPv6 share = %q, %v", share.URI, err)
+	manualShare, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
+	if err != nil || manualShare.Address != "1.2.3.4" || !strings.Contains(manualShare.URI, "@1.2.3.4:443") ||
+		manualShare.ServerName != share.ServerName || manualShare.RealityPublicKey != share.RealityPublicKey ||
+		manualShare.RealityShortID != share.RealityShortID || manualShare.Flow != share.Flow {
+		t.Fatalf("manual IPv4 share = %+v, %v", manualShare, err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = '203.0.113.18' WHERE server_id = ?`, serverID); err != nil {
+		t.Fatal(err)
+	}
+	manualShareAfterPublicChange, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
+	if err != nil || manualShareAfterPublicChange.Address != "1.2.3.4" || manualShareAfterPublicChange.URI != manualShare.URI {
+		t.Fatalf("manual share changed with public IPv4 = %+v, %v", manualShareAfterPublicChange, err)
+	}
+	manualHost = "[2001:db8::1]"
+	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{EntryHost: &manualHost}); err != nil {
+		t.Fatal(err)
+	}
+	manualShare, err = service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
+	if err != nil || manualShare.Address != "2001:db8::1" || !strings.Contains(manualShare.URI, "@[2001:db8::1]:443") {
+		t.Fatalf("manual IPv6 share = %+v, %v", manualShare, err)
+	}
+	manualHost = "node.example.com"
+	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{EntryHost: &manualHost}); err != nil {
+		t.Fatal(err)
+	}
+	manualShare, err = service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
+	if err != nil || manualShare.Address != "node.example.com" || !strings.Contains(manualShare.URI, "@node.example.com:443") {
+		t.Fatalf("hostname share = %+v, %v", manualShare, err)
 	}
 }
 
@@ -311,7 +342,7 @@ func newTestService(t *testing.T) (*sql.DB, *Service, int64) {
 
 func createRealityProxy(t *testing.T, service *Service, serverID int64, port int, name string) Proxy {
 	t.Helper()
-	value, _, err := service.Create(t.Context(), CreateInput{ServerID: serverID, Name: name, ListenPort: port, Enabled: true, Security: SecurityReality, ServerName: "www.example.com", RealityTarget: "www.example.com:443", FirstClientName: "默认客户端"})
+	value, _, err := service.Create(t.Context(), CreateInput{ServerID: serverID, Name: name, ListenPort: port, EntryHostMode: EntryHostAuto, Enabled: true, Security: SecurityReality, ServerName: "www.example.com", RealityTarget: "www.example.com:443", FirstClientName: "默认客户端"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +367,8 @@ func testCertificate(t *testing.T) (string, string) {
 
 func getProxyForTest(service *Service, id int64) (Proxy, storedConfig, error) {
 	row := service.db.QueryRow(`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		proxies.name, proxies.protocol, proxies.listen_port, proxies.public_host, proxies.enabled,
+		system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		proxies.config_json, proxies.created_at, proxies.updated_at
 		FROM proxies JOIN servers ON servers.id = proxies.server_id
 		LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id WHERE proxies.id = ?`, id)

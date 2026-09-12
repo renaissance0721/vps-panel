@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseOSRelease(t *testing.T) {
@@ -21,6 +26,40 @@ VERSION_ID='12'
 	name, version = parseOSRelease([]byte("PRETTY_NAME=Ubuntu\nVERSION=24.04 LTS\n"))
 	if name != "Ubuntu" || version != "24.04 LTS" {
 		t.Fatalf("fallback parseOSRelease() = (%q, %q)", name, version)
+	}
+}
+
+func TestDetectPublicIPv4(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(" 198.51.100.24\n"))
+	}))
+	defer server.Close()
+	if value := detectPublicIPv4(context.Background(), server.Client(), server.URL); value != "198.51.100.24" {
+		t.Fatalf("detected public IPv4 = %q", value)
+	}
+
+	for _, response := range []string{"not-an-ip", "2001:db8::1", "10.0.0.1", strings.Repeat("1", publicIPv4ResponseLimit+1)} {
+		invalidServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(response))
+		}))
+		if value := detectPublicIPv4(context.Background(), invalidServer.Client(), invalidServer.URL); value != "" {
+			invalidServer.Close()
+			t.Fatalf("invalid response %q produced %q", response, value)
+		}
+		invalidServer.Close()
+	}
+}
+
+func TestDetectPublicIPv4TimeoutReturnsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("198.51.100.25"))
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 5 * time.Millisecond
+	if value := detectPublicIPv4(context.Background(), client, server.URL); value != "" {
+		t.Fatalf("timed out detection produced %q", value)
 	}
 }
 

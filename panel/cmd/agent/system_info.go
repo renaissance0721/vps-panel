@@ -3,27 +3,36 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 )
 
-const maxReportedIPAddresses = 16
+const (
+	maxReportedIPAddresses   = 16
+	publicIPv4Endpoint       = "https://api.ipify.org"
+	publicIPv4ResponseLimit  = 64
+	publicIPv4RequestTimeout = 5 * time.Second
+)
 
 type systemInfoMessage struct {
-	Type      string   `json:"type"`
-	Hostname  string   `json:"hostname"`
-	OSName    string   `json:"os_name"`
-	OSVersion string   `json:"os_version"`
-	Kernel    string   `json:"kernel"`
-	Arch      string   `json:"arch"`
-	IPv4      []string `json:"ipv4"`
-	IPv6      []string `json:"ipv6"`
+	Type       string   `json:"type"`
+	Hostname   string   `json:"hostname"`
+	OSName     string   `json:"os_name"`
+	OSVersion  string   `json:"os_version"`
+	Kernel     string   `json:"kernel"`
+	Arch       string   `json:"arch"`
+	IPv4       []string `json:"ipv4"`
+	IPv6       []string `json:"ipv6"`
+	PublicIPv4 string   `json:"public_ipv4"`
 }
 
 func collectSystemInfo() systemInfoMessage {
@@ -138,6 +147,39 @@ func sortedReportedIPs(values map[string]struct{}) []string {
 		result = result[:maxReportedIPAddresses]
 	}
 	return result
+}
+
+func newPublicIPv4HTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: publicIPv4RequestTimeout}
+	transport.DialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", address)
+	}
+	return &http.Client{Transport: transport, Timeout: publicIPv4RequestTimeout}
+}
+
+func detectPublicIPv4(ctx context.Context, client *http.Client, endpoint string) string {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ""
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return ""
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, publicIPv4ResponseLimit+1))
+	if err != nil || len(data) > publicIPv4ResponseLimit {
+		return ""
+	}
+	ip := net.ParseIP(strings.TrimSpace(string(data)))
+	if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return ""
+	}
+	return ip.To4().String()
 }
 
 func sendSystemInfo(ctx context.Context, connection *websocket.Conn, message systemInfoMessage) error {

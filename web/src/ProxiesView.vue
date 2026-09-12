@@ -5,6 +5,7 @@ import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'nai
 type ServerOption = {
   id: number
   name: string
+  system_info: { public_ipv4: string } | null
 }
 
 type ProxyConfig = {
@@ -47,10 +48,13 @@ type ProxyRecord = {
   server_name: string
   server_ipv4: string[]
   server_ipv6: string[]
+  server_public_ipv4: string
   name: string
   protocol: 'vless'
   listen_port: number
-  public_host: string
+  entry_host_mode: 'auto' | 'manual'
+  entry_host: string
+  entry_address: string
   enabled: boolean
   config: ProxyConfig
   clients?: ClientSummary[]
@@ -86,7 +90,8 @@ const editingProxyID = ref<number | null>(null)
 const proxyName = ref('')
 const proxyServerID = ref<number | null>(null)
 const proxyPort = ref(443)
-const proxyPublicHost = ref('')
+const proxyEntryHostMode = ref<'auto' | 'manual'>('auto')
+const proxyEntryHost = ref('')
 const proxyEnabled = ref(true)
 const proxySecurity = ref<'tls' | 'reality'>('reality')
 const proxyServerName = ref('')
@@ -111,11 +116,15 @@ const selectedShare = ref<ClientShare | null>(null)
 const copied = ref<'uuid' | 'uri' | null>(null)
 const copiedClientID = ref<number | null>(null)
 
+const selectedServerPublicIPv4 = computed(() =>
+  props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
+)
+
 const filteredProxies = computed(() => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return proxies.value
   return proxies.value.filter((value) =>
-    [value.name, value.server_name, value.public_host, value.config.security]
+    [value.name, value.server_name, value.entry_address, value.entry_host, value.config.security]
       .some((field) => field.toLowerCase().includes(keyword)),
   )
 })
@@ -167,7 +176,8 @@ function openEditProxy(value: ProxyRecord) {
   proxyName.value = value.name
   proxyServerID.value = value.server_id
   proxyPort.value = value.listen_port
-  proxyPublicHost.value = value.public_host
+  proxyEntryHostMode.value = value.entry_host_mode
+  proxyEntryHost.value = value.entry_host
   proxyEnabled.value = value.enabled
   proxySecurity.value = value.config.security
   proxyServerName.value = value.config.server_name
@@ -181,7 +191,8 @@ function resetProxyForm() {
   editingProxyID.value = null
   proxyName.value = ''
   proxyPort.value = 443
-  proxyPublicHost.value = ''
+  proxyEntryHostMode.value = 'auto'
+  proxyEntryHost.value = ''
   proxyEnabled.value = true
   proxySecurity.value = 'reality'
   proxyServerName.value = ''
@@ -205,11 +216,16 @@ async function saveProxy() {
     error.value = '请选择服务器'
     return
   }
+  if (proxyEntryHostMode.value === 'manual' && !proxyEntryHost.value.trim()) {
+    error.value = '请填写手动入口地址'
+    return
+  }
   await run(async () => {
     const common = {
       name: proxyName.value,
       listen_port: proxyPort.value,
-      public_host: proxyPublicHost.value,
+      entry_host_mode: proxyEntryHostMode.value,
+      entry_host: proxyEntryHost.value,
       enabled: proxyEnabled.value,
       security: proxySecurity.value,
       server_name: proxyServerName.value,
@@ -372,10 +388,6 @@ async function copyValue(type: 'uuid' | 'uri', value: string) {
   }
 }
 
-function ingressAddress(value: ProxyRecord) {
-  return value.server_ipv4[0] ?? value.server_ipv6[0] ?? '—'
-}
-
 function formatTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
@@ -401,7 +413,7 @@ onMounted(async () => {
   </n-alert>
 
   <div class="proxy-toolbar">
-    <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、域名或安全层" />
+    <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或安全层" />
     <n-button type="primary" :disabled="props.servers.length === 0" @click="openCreateProxy">
       新增代理节点
     </n-button>
@@ -414,7 +426,7 @@ onMounted(async () => {
       <table class="server-table proxy-table">
         <thead>
           <tr>
-            <th>名称</th><th>服务器</th><th>入口 IP</th><th>出口 IP</th><th>端口</th>
+            <th>名称</th><th>服务器</th><th>入口地址</th><th>出口 IP</th><th>端口</th>
             <th>协议</th><th>传输</th><th>安全层</th><th>流控</th><th>状态</th><th>操作</th>
           </tr>
         </thead>
@@ -423,8 +435,8 @@ onMounted(async () => {
             <td>{{ value.name }}</td>
             <td>{{ value.server_name }}</td>
             <td>
-              <span>{{ ingressAddress(value) }}</span>
-              <small v-if="value.public_host" class="secondary-text">{{ value.public_host }}</small>
+              <span>{{ value.entry_address || '未检测' }}</span>
+              <small class="secondary-text">{{ value.entry_host_mode === 'auto' ? '自动检测' : '手动' }}</small>
             </td>
             <td>--</td>
             <td>{{ value.listen_port }}</td>
@@ -456,7 +468,14 @@ onMounted(async () => {
           </select>
         </label>
         <label><span>监听端口</span><input v-model.number="proxyPort" class="settings-input" type="number" min="1" max="65535" /></label>
-        <label><span>节点域名（可选）</span><n-input v-model:value="proxyPublicHost" placeholder="例如：jp.example.com" /></label>
+        <label>
+          <span>入口地址模式</span>
+          <select v-model="proxyEntryHostMode" class="settings-input">
+            <option value="auto">自动检测</option><option value="manual">手动输入</option>
+          </select>
+        </label>
+        <label v-if="proxyEntryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="proxyEntryHost" placeholder="例如：1.2.3.4 或 jp.example.com" /></label>
+        <p v-else>自动使用服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
         <div class="fixed-fields"><span>协议：VLESS</span><span>传输：TCP</span><span>流控：XTLS Vision</span></div>
         <label>
           <span>安全层</span>
@@ -487,7 +506,7 @@ onMounted(async () => {
       <h3>基础</h3>
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedProxy.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedProxy.server_name }}</dd></div>
-        <div><dt>入口 IP</dt><dd>{{ ingressAddress(selectedProxy) }}</dd></div><div><dt>节点域名</dt><dd>{{ selectedProxy.public_host || '—' }}</dd></div>
+        <div><dt>入口模式</dt><dd>{{ selectedProxy.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>入口地址</dt><dd>{{ selectedProxy.entry_address || '未检测' }}</dd></div>
         <div><dt>监听地址</dt><dd>0.0.0.0:{{ selectedProxy.listen_port }}</dd></div><div><dt>状态</dt><dd>{{ selectedProxy.enabled ? '启用' : '禁用' }}</dd></div>
       </dl>
       <h3>协议</h3>

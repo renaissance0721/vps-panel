@@ -72,6 +72,7 @@ type ServerSystemInfo = {
   arch: string
   ipv4: string[]
   ipv6: string[]
+  public_ipv4: string
   agent_version: string
 }
 
@@ -1155,6 +1156,7 @@ onUnmounted(stopServerPolling)
                   <span v-for="address in selectedServer.system_info.ipv6" :key="address">{{ address }}</span>
                 </dd>
               </div>
+              <div><dt>公网 IPv4</dt><dd>{{ selectedServer.system_info.public_ipv4 || '未检测' }}</dd></div>
               <div><dt>Agent 版本</dt><dd>{{ selectedServer.system_info.agent_version || '—' }}</dd></div>
             </dl>
 

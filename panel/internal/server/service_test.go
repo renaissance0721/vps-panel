@@ -749,13 +749,14 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 	reportedAt := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return reportedAt }
 	report := SystemInfoReport{
-		Hostname:  " jp-01 ",
-		OSName:    "Debian GNU/Linux",
-		OSVersion: "12",
-		Kernel:    "6.1.0-amd64",
-		Arch:      "amd64",
-		IPv4:      []string{"203.0.113.10", "10.0.0.2", "203.0.113.10"},
-		IPv6:      []string{"2001:db8::10"},
+		Hostname:   " jp-01 ",
+		OSName:     "Debian GNU/Linux",
+		OSVersion:  "12",
+		Kernel:     "6.1.0-amd64",
+		Arch:       "amd64",
+		IPv4:       []string{"203.0.113.10", "10.0.0.2", "203.0.113.10"},
+		IPv6:       []string{"2001:db8::10"},
+		PublicIPv4: "198.51.100.20",
 	}
 	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, report); err != nil {
 		t.Fatalf("ReportSystemInfo() error = %v", err)
@@ -769,7 +770,8 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		value.SystemInfo.Arch != report.Arch || value.SystemInfo.AgentVersion != "v0.7.0" ||
 		!value.SystemInfo.ReportedAt.Equal(reportedAt) ||
 		strings.Join(value.SystemInfo.IPv4, ",") != "10.0.0.2,203.0.113.10" ||
-		strings.Join(value.SystemInfo.IPv6, ",") != "2001:db8::10" {
+		strings.Join(value.SystemInfo.IPv6, ",") != "2001:db8::10" ||
+		value.SystemInfo.PublicIPv4 != "198.51.100.20" {
 		t.Fatalf("stored system information = %+v", value.SystemInfo)
 	}
 
@@ -793,6 +795,11 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		IPv4: []string{"not-an-ip"},
 	}); !errors.Is(err, ErrInvalidSystemInfo) {
 		t.Fatalf("invalid IP error = %v, want ErrInvalidSystemInfo", err)
+	}
+	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+		PublicIPv4: "172.26.1.10",
+	}); !errors.Is(err, ErrInvalidSystemInfo) {
+		t.Fatalf("private public IPv4 error = %v, want ErrInvalidSystemInfo", err)
 	}
 	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		Hostname: strings.Repeat("a", 256),

@@ -64,7 +64,8 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 	if err := json.Unmarshal(creation.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Proxy.Clients) != 1 || created.Proxy.Config.RealityPublicKey == "" {
+	if len(created.Proxy.Clients) != 1 || created.Proxy.Config.RealityPublicKey == "" ||
+		created.Proxy.EntryHostMode != "auto" || created.Proxy.EntryHost != "" || created.Proxy.EntryAddress != "" {
 		t.Fatalf("created proxy = %+v", created.Proxy)
 	}
 	var configJSON string
@@ -126,7 +127,8 @@ func TestProxyAPIReturnsUsefulValidationErrors(t *testing.T) {
 		message string
 	}{
 		{"port", createProxyRequest{ServerID: createdServer.Server.ID, Name: "bad", ListenPort: 0}, http.StatusBadRequest, "监听端口"},
-		{"host", createProxyRequest{ServerID: createdServer.Server.ID, Name: "bad", ListenPort: 443, PublicHost: "https://example.com", Security: "reality", ServerName: "example.com", RealityTarget: "example.com:443"}, http.StatusBadRequest, "节点域名"},
+		{"mode", createProxyRequest{ServerID: createdServer.Server.ID, Name: "bad", ListenPort: 443, EntryHostMode: "invalid", Security: "reality", ServerName: "example.com", RealityTarget: "example.com:443"}, http.StatusBadRequest, "入口地址模式"},
+		{"host", createProxyRequest{ServerID: createdServer.Server.ID, Name: "bad", ListenPort: 443, EntryHostMode: "manual", EntryHost: "https://example.com", Security: "reality", ServerName: "example.com", RealityTarget: "example.com:443"}, http.StatusBadRequest, "手动入口地址"},
 		{"tls", createProxyRequest{ServerID: createdServer.Server.ID, Name: "bad", ListenPort: 443, Security: "tls", ServerName: "example.com"}, http.StatusBadRequest, "TLS 证书"},
 	} {
 		response := performRequest(t, handler, http.MethodPost, "/api/proxies", test.body, cookie)

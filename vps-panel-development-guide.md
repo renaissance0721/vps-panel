@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B 和 Phase 9A 已完成；Phase 7B 暂缓，不阻塞代理主链路。下一阶段为 Phase 9B Shadowsocks Proxy。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B 和 Phase 9A 的主体功能已完成；Phase 7B 暂缓。当前先完成 **Phase 9A 可用性修正（Xray/REALITY 搭建、入口地址、删除清理）**，验收通过后再进入 Phase 9B Shadowsocks Proxy。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -282,6 +282,8 @@ POST /api/agent/config/result
 ```
 
 如果 WebSocket 暂时断开，Agent 使用低频 REST 轮询兜底，例如每 30 秒检查一次版本。
+
+删除 Proxy / Client 同样走这条 desired-state 链路：数据库删除成功只代表“目标状态已改变”，只有 Agent 应用新版本并回报 success 后，才代表 VPS 上的受管运行配置已经完成清理。Agent 离线或 apply 失败时必须保留待同步 / 失败状态，不能把远端清理伪装成已完成。
 
 第一版建议的节点后端 API 保持很小：
 
@@ -731,7 +733,8 @@ server_id
 name
 protocol
 listen_port
-public_host
+entry_host_mode
+entry_host
 enabled
 config_json
 created_at
@@ -947,7 +950,7 @@ Client credential
 +
 Proxy 公共协议参数
 +
-Proxy.public_host 或 Server IP
+Proxy.entry_host（manual）或 Server.public_ipv4（auto）
 +
 Proxy.listen_port
 =
@@ -1965,6 +1968,8 @@ ip
 
 - IPv4
 - IPv6
+
+> Phase 9A 可用性修正额外增加 `public_ipv4`：它是 Agent 低频通过公网 IP echo 服务探测到的真实公网 IPv4，只用于 Proxy `auto` 入口地址。原 `IPv4 / IPv6` 继续表示本机网卡地址，两者不得混用。
 
 不要在第一版做：
 
@@ -3108,7 +3113,7 @@ Panel 至少保存：
 
 # 12. Phase 8B：Xray 托管基础与安全配置应用
 
-> 当前状态：已完成。Agent 使用固定的 Xray 官方 Release `v26.3.27` 与 amd64 / arm64 SHA256 校验，在独立受管路径安装并验证 Xray；已实现最小基础配置、candidate 官方校验、同目录原子替换、current / previous、独立 systemd unit、有限健康检查、失败回滚和 enabled / disabled 行为。当前 Panel 仍不创建真实 Proxy。
+> 当前状态：已完成基础托管。Agent 使用固定的 Xray 官方 Release `v26.3.27` 与 amd64 / arm64 SHA256 校验，在独立受管路径安装并验证 Xray；已实现 candidate 官方校验、原子替换、current / previous、独立 systemd unit、失败回滚和 enabled / disabled 行为。Phase 9A 可用性修正要求把健康检查从“仅 service active”加强为“service active + 目标 TCP listener 实际存在”，并补齐受管 Proxy 端口的最小防火墙同步。
 
 ## 目标
 
@@ -3163,6 +3168,8 @@ atomic replace
 restart
 ↓
 确认 service active
+↓
+确认所有预期 TCP listener 实际存在
 ↓
 成功
 ```
@@ -3219,7 +3226,7 @@ Xray 托管代码必须由 VPS Panel 独立实现。
 
 # 13. Phase 9A：VLESS Proxy + Client 基础管理 + 直连分享
 
-> 当前状态：已完成。Panel 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision、Proxy 与多 Client 管理、每 Client 独立 UUID 与直连 VLESS URI；Agent 已能把完整 typed desired state 渲染为一份受管 Xray 配置，并继续复用 Phase 8B 的安全应用与回滚链路。
+> 当前状态：主体功能已完成，当前进入可用性修正。Panel 已具备 VLESS + TCP + TLS / REALITY + XTLS Vision、Proxy 与多 Client、独立 UUID 与直连 URI；但实际搭建链路必须按本 Guide 的 13.11 修正规则重新对齐并完成真机验收后，才视为 Phase 9A 完整结束。
 
 > 本 Phase 的数据语义、协议组合和 Agent 配置以本文为准。
 >
@@ -3354,13 +3361,27 @@ REALITY + XTLS Vision
 
 ## 13.2 服务端固定语义
 
-两种模式都固定：
+两种模式的**业务传输语义**都固定：
 
 ```text
 protocol = vless
-network = tcp
+transport = tcp
 client.flow = xtls-rprx-vision
 ```
+
+但当前固定 Xray `v26.3.27` 的 renderer 采用项目已验证可工作的 Xray 表达：
+
+```text
+streamSettings.network = raw
+```
+
+客户端分享仍使用：
+
+```text
+type = tcp
+```
+
+不要把业务层 `transport=tcp` 机械等同为 Xray JSON 必须写 `network="tcp"`。
 
 TLS 模式：
 
@@ -3523,7 +3544,8 @@ server_id
 name
 protocol
 listen_port
-public_host
+entry_host_mode
+entry_host
 enabled
 config_json
 created_at
@@ -3536,25 +3558,36 @@ updated_at
 protocol = vless
 ```
 
-`public_host` 为可空的公开连接地址字段。
+入口地址拆成两个字段：
+
+```text
+entry_host_mode = auto | manual
+entry_host = 用户手工填写的 IPv4 / IPv6 / hostname（仅 manual 使用）
+```
 
 语义：
 
 ```text
-public_host = 空
-→ 直连分享时使用 Server IP
+entry_host_mode = auto
+→ 使用 Agent 单独检测并上报的 public_ipv4
 
-public_host = jp.example.com
-→ 直连分享时使用 jp.example.com
+entry_host_mode = manual
+→ 使用 entry_host
 ```
 
-第一版 UI 可以把它显示为：
+`auto` 不得再直接使用 `net.InterfaceAddrs()` 中的私网 IPv4，也不得自动回退到 IPv6。`manual` 允许 IPv4、IPv6 或 hostname。
+
+第一版 UI 显示为：
 
 ```text
-节点域名（可选）
+入口地址模式
+○ 自动检测
+○ 手动输入
+
+手动输入时：入口 IP / 域名
 ```
 
-该字段只表示客户端连接地址，不改变：
+入口地址只表示客户端连接地址，不改变：
 
 - Xray 服务端监听地址
 - Server 实际 IP
@@ -3562,7 +3595,7 @@ public_host = jp.example.com
 - TLS / REALITY 的 SNI / server_name
 - REALITY dest / target
 
-Panel 不负责自动创建、修改或验证 DNS 解析，只保存用户填写的已关联域名。
+Panel 不负责自动创建或修改 DNS。手动模式只保存用户填写的入口地址；自动模式的公网 IPv4 由 Agent 低频探测并单独上报，不与网卡 IPv4/IPv6 混用。
 
 `proxies.config_json` 只保存 VPS Panel 当前支持的服务端公共参数：
 
@@ -3768,18 +3801,23 @@ client_udp443 = true
 客户端连接地址统一按：
 
 ```text
-如果 Proxy.public_host 非空
-→ address = public_host
+entry_host_mode = manual
+→ address = entry_host
+
+entry_host_mode = auto 且 Server.public_ipv4 非空
+→ address = Server.public_ipv4
 
 否则
-→ address = Server IP
+→ connection address unavailable
 ```
 
 例如：
 
 ```text
-Server IP = 1.2.3.4
-public_host = jp.example.com
+Server 网卡 IPv4 = 172.26.13.110
+Server.public_ipv4 = 1.2.3.4
+entry_host_mode = manual
+entry_host = jp.example.com
 ```
 
 该 Client 的直连 URI 使用：
@@ -3788,7 +3826,7 @@ public_host = jp.example.com
 jp.example.com:端口
 ```
 
-而不是：
+如果切换为 `auto`，则使用 `Server.public_ipv4`，例如：
 
 ```text
 1.2.3.4:端口
@@ -3805,6 +3843,7 @@ VLESS URI 必须：
 - TLS / REALITY 只输出该分支真正需要的参数
 - 使用 Client 自己的 UUID
 - 使用 Client 自己派生的 flow
+- REALITY 直连 URI 与项目已验证可工作的 Xray 模式保持兼容：包含 `alpn=h2,http/1.1` 与 `headerType=none`
 - remark 默认使用 `Proxy 名称 - Client 名称`，保持可辨识
 - 不输出服务端 private key
 - REALITY 只输出客户端需要的 public key
@@ -3937,9 +3976,9 @@ Code Review 时如果发现实现和某个第三方面板高度同构，应当�
 27. 每个有效 VLESS Client 都能生成可导入客户端的直连 VLESS URI。
 28. URI 使用该 Client 自己的 UUID。
 29. `client_udp443=false/true` 分别导出正确的普通 Vision / udp443 flow。
-30. `public_host` 为空时 URI 地址回退到 Server IP。
-31. `public_host` 非空时 URI 地址优先使用该域名。
-32. 设置 `public_host` 不会修改 Xray listener、Server IP、SNI / server_name 或 DNS。
+30. `entry_host_mode=auto` 时 URI 只使用 Agent 检测到的 `Server.public_ipv4`，不得使用私网网卡 IPv4，也不得自动回退 IPv6。
+31. `entry_host_mode=manual` 时 URI 使用 `entry_host`；IPv6 必须正确输出为 `[IPv6]:port`。
+32. 入口地址设置不会修改 Xray listener、Server 网卡 IP、SNI / server_name、REALITY target 或 DNS。
 33. 分享 URI 中不出现第三方面板品牌、Panel 品牌标识、private key、Token 或内部数据库 ID。
 34. Frontend 可以在 Proxy 详情 Modal 管理 Client，并对每个 Client 提供复制直连链接操作。
 35. 当前不实现 Client 流量、额度、周期、到期、QR、订阅、Realm 中转分享。
@@ -3954,6 +3993,189 @@ Code Review 时如果发现实现和某个第三方面板高度同构，应当�
 - Client 流量 / quota / expiry
 - Realm
 - 完整订阅 / QR
+
+---
+
+## 13.11 Phase 9A 可用性修正：以已验证 Xray 搭建链路为基线
+
+> 本节优先于 Phase 9A 中较早的实现细节。当前先完成本节，再进入 Phase 9B。
+
+### 已发现的问题
+
+当前 Panel 虽然已经能生成并应用 VLESS + REALITY desired state，但“配置能通过 Xray test / systemd 为 active”不等于节点真正可连接。与项目自有、已实际验证可用的 `renaissance0721/singbox` Xray 模式对比后，当前需要修正以下差异：
+
+1. **Xray transport 表达**：业务层仍是 `TCP`，但固定 Xray `v26.3.27` 的服务端 renderer 使用 `streamSettings.network = "raw"`；客户端 URI 仍使用 `type=tcp`。
+2. **客户端兼容参数**：REALITY 直连 URI 保留标准 Vision 参数，并补齐已验证模式使用的 `alpn=h2,http/1.1` 与 `headerType=none`。服务端 flow 仍固定为 `xtls-rprx-vision`。
+3. **本地端口放行**：启用 Proxy 时，Agent 需要保证 VPS 本机防火墙不会阻断该 Proxy 的 TCP `listen_port`。只管理自己创建的规则，不清空、不接管用户规则；云厂商 Security Group / 云防火墙仍由用户负责。
+4. **健康检查不足**：Xray apply 成功不能只检查 `systemctl is-active`。必须同时确认每个 enabled Proxy 的预期 TCP listener 实际存在；service active 但端口未监听视为 apply 失败并触发 rollback。
+5. **入口地址误判**：`net.InterfaceAddrs()` 只表示本机网卡地址，在 AWS 等 NAT 云环境可能只有 `172.16/12` 私网 IPv4，而公网 Elastic IP 不在网卡上。Server 网卡 IP 与客户端连接入口必须分离。
+
+### 项目自有参考实现的使用边界
+
+允许把 `https://github.com/renaissance0721/singbox` 中已经验证工作的 Xray 模式作为**行为回归基线**，重点核对：
+
+- Xray `v26.3.27`
+- VLESS + REALITY + Vision renderer
+- `network=raw`
+- Reality `target / serverNames / privateKey / shortIds`
+- `xray run -test`
+- 服务重启后的真实 listener 检查
+- VLESS TCP 本机防火墙放行
+- 直连 VLESS URI 参数
+
+但 VPS Panel 仍必须按自己的 Go 架构、typed desired state、renderer / validator / apply / rollback 独立实现，不直接复制 Shell 函数、目录结构、systemd unit 或防火墙代码。官方 Xray 行为仍是最终依据。
+
+### REALITY 密钥
+
+项目自有脚本在 Xray 模式下使用 `xray x25519`。VPS Panel 可以继续使用等价的 Go X25519 实现，但必须有测试证明：
+
+```text
+private key
+→ 按 Xray v26.3.27 相同算法推导
+→ public key 与分享 URI 中 pbk 完全匹配
+```
+
+不要求仅为了形式一致而在 Agent 中调用 Shell。
+
+### 入口地址模式
+
+Proxy 固定使用：
+
+```text
+entry_host_mode = auto | manual
+entry_host
+```
+
+`auto`：
+
+- Agent 使用 Go HTTP Client 低频探测真实公网 IPv4并上报 `public_ipv4`。
+- 可参考项目自有脚本通过公网 IP echo 服务观察出口 IPv4 的思路，但不要调用 `curl`。
+- `public_ipv4` 检测失败不影响 Agent 主循环。
+- 当前自动模式只使用 `public_ipv4`，不自动回退网卡私网 IPv4或公网 IPv6。
+
+`manual`：
+
+- 用户手工填写 IPv4 / IPv6 / hostname。
+- IPv6 URI 必须正确生成 `[IPv6]:port`。
+
+Server 原有 `ipv4 / ipv6` 继续表示**网卡地址**，不改造成公网地址字段。
+
+### 防火墙规则
+
+Agent 只管理 VPS Panel 自己创建的 Proxy 端口规则。规则必须可以被稳定识别并删除。
+
+固定要求：
+
+- enabled VLESS Proxy → 放行对应 TCP `listen_port`。
+- 端口变更 → 新端口放行，旧的 Panel-managed 规则在不再被其他 Proxy 使用时删除。
+- Proxy 禁用 / 删除 → 删除对应的 Panel-managed 端口规则。
+- 不删除用户自己创建的 ufw / firewalld / iptables 规则。
+- 不自动操作 AWS Security Group 等云厂商防火墙。
+
+### 可用性验收
+
+Phase 9A 在完成本修正前不得仅以“配置 test 通过 / service active”判定完成。至少必须真机验证：
+
+```text
+创建 Proxy
+↓
+Agent 应用 desired state
+↓
+Xray config test 通过
+↓
+Xray service active
+↓
+TCP listener 实际存在
+↓
+本机防火墙规则不阻断
+↓
+NekoBox / Mihomo(Clash) 使用导出 URI 实际建立连接
+```
+
+---
+
+## 13.12 Proxy 删除与 Agent 远端清理语义
+
+删除 Proxy 不是“只删 Panel 数据库记录”。Proxy 属于 desired state；删除后 Agent 必须把该节点从 VPS 的**实际受管运行状态**中移除。
+
+### Panel 侧
+
+删除 Proxy 时必须在同一业务事务中：
+
+```text
+删除 Proxy
++
+级联删除其 Client
++
+desired_state_version + 1
+```
+
+提交成功后发送 `config_changed`。通知失败不能恢复已经提交的数据库事务；离线 Agent 依赖已有 REST 版本轮询 / 重连兜底最终同步。
+
+### Agent 侧：还有其他 Xray Proxy
+
+如果删除后该 Server 仍有其他 enabled Xray Proxy：
+
+```text
+拉取新的完整 desired state
+↓
+重新生成完整 candidate config
+↓
+被删除 Proxy 的 inbound / Client 不再出现
+↓
+Xray 官方配置校验
+↓
+原子替换
+↓
+restart
+↓
+service active + 剩余 listener 实际检查
+↓
+清理被删除 Proxy 不再使用的 Panel-managed 防火墙规则
+```
+
+禁止只在旧 JSON 上局部 `sed` 删除。
+
+### Agent 侧：删除的是最后一个 Xray Proxy
+
+如果新的 desired state 已经没有任何 enabled Xray Proxy：
+
+1. 停止并 disable `vps-panel-xray.service`。
+2. 删除/清空当前受管 active config，避免手工误启动后旧节点重新暴露。
+3. 清理所有仅属于已删除 Proxy 的 Panel-managed 防火墙端口规则。
+4. `previous` 只允许作为一次 apply 的回滚材料；删除成功后不得长期保留已经删除 Proxy / Client 的凭据，可删除或替换为当前干净状态。
+5. **保留** Panel 管理的 Xray binary、managed marker 和 systemd unit，作为运行环境缓存，后续新建 Proxy 可复用；“删除节点”不等于“卸载 Xray”。
+6. 不删除、不修改第三方 Xray / 防火墙配置。
+
+### 删除完成状态
+
+Panel 数据库删除成功 ≠ VPS 已完成远端清理。
+
+如果 Agent 离线、apply 失败或 rollback 回旧配置：
+
+- Panel 中 Proxy 已进入新的 desired state；
+- VPS 上旧节点可能暂时仍在运行；
+- 必须通过现有 config sync result 明确显示“待同步 / 同步失败”，不能显示为已经远端清理成功；
+- Agent 恢复连接后继续拉取最新版本并重试。
+
+只有 Agent 对删除后的 desired state 回报 success，才能认为该 VPS 的受管运行配置已经完成删除。
+
+### Client 删除
+
+删除单个 Client 时使用相同 desired-state 原则：重新生成整个 inbound 的 clients 列表；只移除该 Client 凭据，不影响同 Proxy 其他 Client。当前“至少保留一个 Client”的业务约束继续保留；要删除最后一个 Client，应删除整个 Proxy。
+
+### 删除验收
+
+至少测试：
+
+1. 删除多 Proxy 中的一个：VPS active config 中只移除该 inbound，其他 Proxy 正常。
+2. 被删除 Proxy 的 TCP 端口不再监听。
+3. 对应 Panel-managed 防火墙规则被清理，其他规则不受影响。
+4. 删除最后一个 Proxy：Xray service 停止并 disable，旧 active config 不会被手工启动重新暴露。
+5. Xray binary / managed unit 保留，可供下一次创建 Proxy 复用。
+6. Agent 离线时删除：Panel 记录删除并进入待同步，Agent 重连后最终清理 VPS。
+7. 删除 apply 失败：自动 rollback，Panel 收到 failed，不把远端状态伪装成成功。
+8. 删除 Client：只移除该 UUID，其他 Client 继续可用。
 
 ---
 
@@ -4598,13 +4820,13 @@ restart / reload
 
 > 分享 / 订阅的数据生成规则以本文为准。
 >
-> `public_host` 在 Proxy 列表中的次级显示、详情 Modal 中的位置、复制按钮和节点信息密度统一参考：
+> `entry_host_mode / entry_host` 在 Proxy 列表、详情 Modal、复制按钮和节点信息密度中的展示统一参考：
 >
 > ```text
 > vps-panel-frontend-guide.md
 > ```
 >
-> Frontend Guide 只决定展示方式；`public_host` 优先级、Server IP 回退和 Realm 接入地址规则仍以本文为准。
+> Frontend Guide 只决定展示方式；自动/手动入口地址、`public_ipv4` 与 Realm 接入地址规则仍以本文为准。
 
 
 Phase 9A 已经为每个 VLESS Client 提供**直连 VLESS URI + 复制**。
@@ -4642,20 +4864,29 @@ Proxy listen_port
 其中连接 host 的选择规则固定为：
 
 ```text
-Proxy.public_host 非空
-→ 使用 public_host
+Proxy.entry_host_mode = manual
+→ 使用 entry_host
 
-Proxy.public_host 为空
-→ 使用 Proxy 所在 Server 的 IP
+Proxy.entry_host_mode = auto
+→ 使用 Proxy 所在 Server 的 public_ipv4
+
+没有 public_ipv4
+→ 不生成可用直连地址，并提示改为手动输入
 ```
 
 例如：
 
 ```text
-Server IP:
+Server 网卡 IPv4:
+172.26.13.110
+
+Server.public_ipv4:
 1.2.3.4
 
-Proxy.public_host:
+Proxy.entry_host_mode:
+manual
+
+Proxy.entry_host:
 jp.example.com
 ```
 
@@ -4695,13 +4926,13 @@ Relay listen host / port
 ```
 
 Realm 接入节点的地址优先使用 Relay 自己的公开接入地址 / 域名（如果未来 Relay 提供该字段），
-而不是目标 Proxy 的 `public_host`。
+而不是目标 Proxy 的 `entry_host`。
 
 也就是说：
 
 ```text
 直连节点
-→ Proxy.public_host 或 Server IP
+→ Proxy.entry_host（manual）或 Server.public_ipv4（auto）
 
 Realm 接入节点
 → Relay 的接入 host / port
@@ -5579,7 +5810,7 @@ Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。�
 Phase 9A：VLESS Proxy + Client 基础管理 + 每 Client 直连 VLESS URI
 ```
 
-当前 Phase 8B 只完成 Agent 的 Xray 安全托管能力，仍不能从 Panel 创建真实代理节点；Phase 9A 完成后将首次形成“Proxy → Client → Xray → 直连 VLESS URI → 实际客户端导入”的完整最小可用链路。
+Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 主体功能也已建立 Proxy → Client → Xray → 直连 URI 链路。当前仍需先完成 Phase 9A 的真机可用性修正（13.11）与删除清理语义（13.12），验收通过后再进入 Phase 9B。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
@@ -5715,7 +5946,7 @@ Server
 
 > Realm 接入地址由 Proxy + Relay 在分享/订阅时派生；当前不需要 AccessEndpoint 表。
 
-> Proxy 可以配置可选 `public_host`；直连节点分享时优先使用该域名，未设置时回退到 Server IP。该字段只影响客户端连接地址，不修改服务端监听、SNI、REALITY 参数或 DNS。
+> Proxy 的连接入口使用 `entry_host_mode = auto | manual`：自动模式只使用 Agent 单独检测的 `public_ipv4`，手动模式使用 `entry_host`。入口地址只影响客户端连接地址，不修改服务端监听、SNI、REALITY target 或 DNS。
 
 > 当前不做 Chain；多跳等出现真实需求以后再设计。
 
@@ -5798,7 +6029,7 @@ Server
 - [x] 配置应用必须校验、原子替换、健康检查并支持失败回滚。
 - [x] 当前不建立 CoreInstance / AccessEndpoint / Chain 作为固定业务模型。
 - [x] Realm 接入地址由 Proxy + Relay 在分享/订阅时派生。
-- [x] Proxy 支持可选 `public_host`；分享 / 订阅时优先使用该域名，否则回退到 Server IP。
+- [x] Proxy 使用自动 / 手动入口地址模式；自动模式使用 `public_ipv4`，手动模式使用 `entry_host`，不再拿网卡私网 IP 或 IPv6 自动兜底。
 - [x] 前端相关 Phase 统一受 `vps-panel-frontend-guide.md` 约束；Server / Proxy / Realm 使用固定 Sidebar、宽列表和详情 Modal，不允许各 Phase 自行重做页面骨架。
 - [x] 必须支持完整 ZIP 导出与导入恢复。
 - [x] 新 VPS 导入备份后，Panel 内部数据与关联关系不需要人工调整。
@@ -5989,6 +6220,23 @@ Client 流量 / 额度 / 周期 / 到期
 
 ---
 
+## 2026-09-12 Phase 9A 可用性与删除语义修正
+
+本次修正优先级高于 2026-09-11 的 `public_host` 历史规则，且在进入 Phase 9B 前必须完成：
+
+1. 业务传输仍是 TCP；Xray `v26.3.27` renderer 的 VLESS + REALITY 使用已验证的 `streamSettings.network=raw`，客户端 URI 仍用 `type=tcp`。
+2. REALITY URI 补齐已验证兼容参数 `alpn=h2,http/1.1` 与 `headerType=none`。
+3. Agent apply 后必须检查真实 TCP listener，不能只看 systemd active。
+4. Agent 负责同步自己管理的 Proxy TCP 防火墙规则，但不碰用户规则和云厂商 Security Group。
+5. Proxy 入口地址改为 `auto/manual`：auto 使用单独探测的 `public_ipv4`；manual 使用 `entry_host`；网卡 `ipv4/ipv6` 只作为 Server 系统信息。
+6. 删除 Proxy 必须触发新的 desired state 并在 Agent 上真正清除 inbound / listener / Panel-managed firewall rule。
+7. 删除最后一个 Xray Proxy 后停止并 disable 受管 Xray，清理 active config / 含旧凭据的 rollback snapshot，但保留受管 Xray binary / unit 供以后复用。
+8. Agent 离线或 apply 失败时，Panel 只能显示待同步 / 同步失败；数据库删除成功不等于 VPS 已远端清理成功。
+
+详细规则见 Phase 9A 的 13.11 与 13.12。
+
+---
+
 ## 2026-09-11 总 Guide 与 Frontend Guide 联动
 
 新增固定文档职责：
@@ -6000,23 +6248,24 @@ Client 流量 / 额度 / 周期 / 到期
 5. “查看详情统一 Modal”“主列表宽且稳定”“Sidebar 贴左固定”成为跨 Phase 的前端硬性约束。
 6. Proxy Phase 必须参考 Frontend Guide 中入口 IP、出口 IP、端口、协议、传输、安全层、流控等列表字段规范。
 7. Realm Phase 必须参考 Frontend Guide 中入口 IP、监听端口、目标 Host / IP、目标端口、Network 等列表字段规范。
-8. `public_host` 的业务规则由总 Guide 决定；其列表 / Modal 展示由 Frontend Guide 决定。
+8. `entry_host_mode / entry_host / public_ipv4` 的业务规则由总 Guide 决定；其列表 / Modal 展示由 Frontend Guide 决定。
 9. 两份 Guide 冲突时：业务 / 数据 / 协议 / Agent / API / 安全以总 Guide 为准；视觉布局 / Modal / 表格结构以前端 Guide 为准。
 
 ---
 
-## 2026-09-11 Proxy 可选节点域名
+## 2026-09-11 Proxy 可选节点域名（已被 2026-09-12 入口地址模式覆盖）
 
-新增固定要求：
+本节保留为历史记录，不再作为当前实现依据。
 
-1. Proxy 增加可选 `public_host` 字段。
-2. UI 显示为“节点域名（可选）”或等价简洁文案。
-3. 用户填写已关联域名后，分享链接 / 订阅 / 二维码 / 客户端配置中的连接地址自动由 Server IP 替换为该域名。
-4. `public_host` 为空时，自动回退到 Server IP。
-5. `public_host` 只影响客户端连接 host，不修改 Xray listener、Server IP、TLS / REALITY SNI、REALITY dest / target 或 DNS。
-6. Panel 不负责自动创建、修改或验证 DNS 解析。
-7. VLESS TLS、VLESS REALITY、Shadowsocks 等直连 Proxy 统一复用同一地址选择逻辑。
-8. Realm 接入节点使用 Relay 自己的接入 host / port，不使用目标 Proxy 的 `public_host`。
+旧规则“`public_host` 为空就回退 Server IP”已经废弃。当前固定使用：
+
+```text
+entry_host_mode = auto | manual
+entry_host = 手工入口地址
+Server.public_ipv4 = Agent 单独检测的公网 IPv4
+```
+
+详细规则以“2026-09-12 Phase 9A 可用性修正”以及 Phase 9A 正文为准。
 
 ---
 

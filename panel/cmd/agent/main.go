@@ -26,14 +26,15 @@ const defaultConfigPath = "/etc/vps-panel-agent/config.json"
 var agentVersion = "dev"
 
 var (
-	agentHeartbeatInterval  = 10 * time.Second
-	agentMetricsInterval    = 5 * time.Second
-	agentConfigPollInterval = 30 * time.Second
-	dialAgentWebSocket      = websocket.Dial
-	writeAgentHeartbeat     = sendHeartbeat
-	writeAgentMetrics       = sendMetrics
-	newAgentMetrics         = newMetricsCollector
-	collectAgentMetrics     = func(collector *metricsCollector) (metricsMessage, bool) {
+	agentHeartbeatInterval    = 10 * time.Second
+	agentMetricsInterval      = 5 * time.Second
+	agentConfigPollInterval   = 30 * time.Second
+	publicIPv4RefreshInterval = 45 * time.Minute
+	dialAgentWebSocket        = websocket.Dial
+	writeAgentHeartbeat       = sendHeartbeat
+	writeAgentMetrics         = sendMetrics
+	newAgentMetrics           = newMetricsCollector
+	collectAgentMetrics       = func(collector *metricsCollector) (metricsMessage, bool) {
 		return collector.collect()
 	}
 	waitAgentReconnect = waitForReconnect
@@ -63,6 +64,12 @@ type config struct {
 	AgentToken string `json:"agent_token"`
 }
 
+type publicIPv4State struct {
+	detect    func(context.Context) string
+	value     string
+	checkedAt time.Time
+}
+
 func main() {
 	log.SetFlags(0)
 	if err := run(os.Args[1:]); err != nil {
@@ -84,7 +91,10 @@ func run(arguments []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return connectAgent(ctx, defaultConfigPath)
+	publicIPv4Client := newPublicIPv4HTTPClient()
+	return connectAgentWithPublicIPv4(ctx, defaultConfigPath, func(ctx context.Context) string {
+		return detectPublicIPv4(ctx, publicIPv4Client, publicIPv4Endpoint)
+	})
 }
 
 func runRegistration(arguments []string) error {
@@ -255,6 +265,10 @@ func saveConfig(path string, value config) error {
 }
 
 func connectAgent(ctx context.Context, configPath string) error {
+	return connectAgentWithPublicIPv4(ctx, configPath, func(context.Context) string { return "" })
+}
+
+func connectAgentWithPublicIPv4(ctx context.Context, configPath string, detect func(context.Context) string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read Agent config: %w", err)
@@ -267,10 +281,14 @@ func connectAgent(ctx context.Context, configPath string) error {
 		return errors.New("Agent config is incomplete")
 	}
 	configSync := newConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
+	publicIPv4 := &publicIPv4State{detect: detect}
+	detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
+	publicIPv4.current(detectionContext)
+	cancelDetection()
 
 	reconnectDelay := initialReconnectDelay
 	for {
-		connected, authenticationRejected := connectAgentOnce(ctx, value, configSync)
+		connected, authenticationRejected := connectAgentOnce(ctx, value, configSync, publicIPv4)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -296,7 +314,7 @@ func connectAgent(ctx context.Context, configPath string) error {
 	}
 }
 
-func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer) (bool, bool) {
+func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer, publicIPv4 *publicIPv4State) (bool, bool) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
 	connection, response, err := dialAgentWebSocket(
@@ -315,8 +333,12 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	connection.SetReadLimit(8 << 10)
 
 	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
+	message := collectSystemInfo()
+	detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
+	message.PublicIPv4 = publicIPv4.current(detectionContext)
+	cancelDetection()
 	systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
-	err = sendSystemInfo(systemInfoContext, connection, collectSystemInfo())
+	err = sendSystemInfo(systemInfoContext, connection, message)
 	cancelSystemInfo()
 	if err != nil {
 		return true, false
@@ -336,6 +358,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	defer metricsTicker.Stop()
 	configTicker := time.NewTicker(agentConfigPollInterval)
 	defer configTicker.Stop()
+	publicIPv4Ticker := time.NewTicker(publicIPv4RefreshInterval)
+	defer publicIPv4Ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -347,6 +371,17 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			attemptConfigSync(ctx, configSync)
 		case <-configTicker.C:
 			attemptConfigSync(ctx, configSync)
+		case <-publicIPv4Ticker.C:
+			message := collectSystemInfo()
+			detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
+			message.PublicIPv4 = publicIPv4.current(detectionContext)
+			cancelDetection()
+			systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
+			err := sendSystemInfo(systemInfoContext, connection, message)
+			cancelSystemInfo()
+			if err != nil {
+				return true, false
+			}
 		case <-heartbeatTicker.C:
 			heartbeatContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 			err := writeAgentHeartbeat(heartbeatContext, connection)
@@ -367,6 +402,16 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			}
 		}
 	}
+}
+
+func (state *publicIPv4State) current(ctx context.Context) string {
+	now := time.Now()
+	if !state.checkedAt.IsZero() && now.Sub(state.checkedAt) < publicIPv4RefreshInterval {
+		return state.value
+	}
+	state.value = state.detect(ctx)
+	state.checkedAt = now
+	return state.value
 }
 
 func readPanelMessages(ctx context.Context, connection *websocket.Conn, configChanged chan<- struct{}) error {

@@ -170,6 +170,7 @@ type systemInfoResponse struct {
 	Arch         string   `json:"arch"`
 	IPv4         []string `json:"ipv4"`
 	IPv6         []string `json:"ipv6"`
+	PublicIPv4   string   `json:"public_ipv4"`
 	AgentVersion string   `json:"agent_version"`
 }
 
@@ -236,14 +237,15 @@ type agentConfigChangedMessage struct {
 }
 
 type agentSystemInfoMessage struct {
-	Type      string   `json:"type"`
-	Hostname  string   `json:"hostname"`
-	OSName    string   `json:"os_name"`
-	OSVersion string   `json:"os_version"`
-	Kernel    string   `json:"kernel"`
-	Arch      string   `json:"arch"`
-	IPv4      []string `json:"ipv4"`
-	IPv6      []string `json:"ipv6"`
+	Type       string   `json:"type"`
+	Hostname   string   `json:"hostname"`
+	OSName     string   `json:"os_name"`
+	OSVersion  string   `json:"os_version"`
+	Kernel     string   `json:"kernel"`
+	Arch       string   `json:"arch"`
+	IPv4       []string `json:"ipv4"`
+	IPv6       []string `json:"ipv6"`
+	PublicIPv4 string   `json:"public_ipv4"`
 }
 
 type agentMetricsMessage struct {
@@ -489,13 +491,14 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			current, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, currentConnection, serverstore.SystemInfoReport{
-				Hostname:  systemInfo.Hostname,
-				OSName:    systemInfo.OSName,
-				OSVersion: systemInfo.OSVersion,
-				Kernel:    systemInfo.Kernel,
-				Arch:      systemInfo.Arch,
-				IPv4:      systemInfo.IPv4,
-				IPv6:      systemInfo.IPv6,
+				Hostname:   systemInfo.Hostname,
+				OSName:     systemInfo.OSName,
+				OSVersion:  systemInfo.OSVersion,
+				Kernel:     systemInfo.Kernel,
+				Arch:       systemInfo.Arch,
+				IPv4:       systemInfo.IPv4,
+				IPv6:       systemInfo.IPv6,
+				PublicIPv4: systemInfo.PublicIPv4,
 			})
 			if !current {
 				return
@@ -917,6 +920,7 @@ func toServerResponse(value serverstore.Server) serverResponse {
 			Arch:         value.SystemInfo.Arch,
 			IPv4:         value.SystemInfo.IPv4,
 			IPv6:         value.SystemInfo.IPv6,
+			PublicIPv4:   value.SystemInfo.PublicIPv4,
 			AgentVersion: value.SystemInfo.AgentVersion,
 		}
 	}

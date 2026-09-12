@@ -62,6 +62,8 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"server_metrics": {
 			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "traffic_adjustment_bytes", "cycle_started_at",
 		},
+		"server_system_info": {"public_ipv4"},
+		"proxies":            {"entry_host_mode", "entry_host"},
 	} {
 		for _, column := range columns {
 			var count int
@@ -74,6 +76,15 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 				t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
 			}
 		}
+	}
+	var legacyPublicHostCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('proxies') WHERE name = 'public_host'`,
+	).Scan(&legacyPublicHostCount); err != nil {
+		t.Fatalf("inspect legacy proxies.public_host: %v", err)
+	}
+	if legacyPublicHostCount != 0 {
+		t.Fatalf("fresh proxies.public_host column count = %d, want 0", legacyPublicHostCount)
 	}
 	if _, err := db.Exec(
 		`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (1, 'Defaults', 'pending', 1, 1)`,
@@ -119,6 +130,108 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("second migration error = %v", err)
+	}
+}
+
+func TestOpenMigratesProxyEntryHostAndPublicIPv4(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+		 VALUES (1, 'Legacy', 'offline', 1, 1)`,
+		`CREATE TABLE server_system_info (
+			server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+			hostname TEXT NOT NULL,
+			os_name TEXT NOT NULL,
+			os_version TEXT NOT NULL,
+			kernel TEXT NOT NULL,
+			arch TEXT NOT NULL,
+			ipv4 TEXT NOT NULL,
+			ipv6 TEXT NOT NULL,
+			agent_version TEXT NOT NULL,
+			reported_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO server_system_info
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, reported_at)
+		 VALUES (1, '', '', '', '', '', '[]', '[]', '', 1)`,
+		`CREATE TABLE proxies (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			protocol TEXT NOT NULL,
+			listen_port INTEGER NOT NULL,
+			public_host TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			config_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE (server_id, listen_port)
+		)`,
+		`INSERT INTO proxies
+		 (id, server_id, name, protocol, listen_port, public_host, enabled, config_json, created_at, updated_at)
+		 VALUES
+		 (1, 1, 'Manual', 'vless', 443, 'jp.example.com', 1, '{}', 1, 1),
+		 (2, 1, 'Auto', 'vless', 8443, '', 1, '{}', 1, 1)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	defer db.Close()
+	for _, expected := range []struct {
+		id   int64
+		mode string
+		host string
+	}{{1, "manual", "jp.example.com"}, {2, "auto", ""}} {
+		var mode, host string
+		if err := db.QueryRow(
+			`SELECT entry_host_mode, entry_host FROM proxies WHERE id = ?`, expected.id,
+		).Scan(&mode, &host); err != nil {
+			t.Fatal(err)
+		}
+		if mode != expected.mode || host != expected.host {
+			t.Fatalf("proxy %d entry host = (%q, %q), want (%q, %q)", expected.id, mode, host, expected.mode, expected.host)
+		}
+	}
+	var publicIPv4 string
+	if err := db.QueryRow(`SELECT public_ipv4 FROM server_system_info WHERE server_id = 1`).Scan(&publicIPv4); err != nil {
+		t.Fatal(err)
+	}
+	if publicIPv4 != "" {
+		t.Fatalf("migrated public IPv4 = %q, want empty", publicIPv4)
+	}
+
+	if _, err := db.Exec(`UPDATE proxies SET entry_host_mode = 'manual', entry_host = 'new.example.com' WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var mode, host string
+	if err := db.QueryRow(`SELECT entry_host_mode, entry_host FROM proxies WHERE id = 2`).Scan(&mode, &host); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "manual" || host != "new.example.com" {
+		t.Fatalf("repeat migration overwrote entry host: (%q, %q)", mode, host)
 	}
 }
 

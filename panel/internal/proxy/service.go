@@ -25,6 +25,8 @@ const (
 	TransportTCP    = "tcp"
 	SecurityTLS     = "tls"
 	SecurityReality = "reality"
+	EntryHostAuto   = "auto"
+	EntryHostManual = "manual"
 	ServerFlow      = "xtls-rprx-vision"
 	Fingerprint     = "chrome"
 	maxNameLength   = 100
@@ -37,7 +39,8 @@ var (
 	ErrInvalidName                  = errors.New("name must be 1-100 characters")
 	ErrInvalidPort                  = errors.New("listen port must be 1-65535")
 	ErrPortConflict                 = errors.New("listen port is already used on this server")
-	ErrInvalidPublicHost            = errors.New("public host must be a hostname or IP address without scheme, path, or port")
+	ErrInvalidEntryHostMode         = errors.New("entry host mode must be auto or manual")
+	ErrInvalidEntryHost             = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
 	ErrInvalidSecurity              = errors.New("security must be tls or reality")
 	ErrInvalidServerName            = errors.New("server name must be a hostname or IP address")
 	ErrInvalidTLS                   = errors.New("TLS certificate and private key are required and must match")
@@ -47,20 +50,23 @@ var (
 )
 
 type Proxy struct {
-	ID         int64
-	ServerID   int64
-	ServerName string
-	ServerIPv4 []string
-	ServerIPv6 []string
-	Name       string
-	Protocol   string
-	ListenPort int
-	PublicHost string
-	Enabled    bool
-	Config     PublicConfig
-	Clients    []ClientSummary
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID               int64
+	ServerID         int64
+	ServerName       string
+	ServerIPv4       []string
+	ServerIPv6       []string
+	ServerPublicIPv4 string
+	Name             string
+	Protocol         string
+	ListenPort       int
+	EntryHostMode    string
+	EntryHost        string
+	EntryAddress     string
+	Enabled          bool
+	Config           PublicConfig
+	Clients          []ClientSummary
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type PublicConfig struct {
@@ -115,7 +121,8 @@ type CreateInput struct {
 	ServerID          int64
 	Name              string
 	ListenPort        int
-	PublicHost        string
+	EntryHostMode     string
+	EntryHost         string
 	Enabled           bool
 	Security          string
 	ServerName        string
@@ -129,7 +136,8 @@ type CreateInput struct {
 type UpdateInput struct {
 	Name          *string
 	ListenPort    *int
-	PublicHost    *string
+	EntryHostMode *string
+	EntryHost     *string
 	Enabled       *bool
 	Security      *string
 	ServerName    *string
@@ -235,7 +243,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	if err := validatePort(input.ListenPort); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
-	publicHost, err := normalizeHost(input.PublicHost, true)
+	entryHostMode, entryHost, err := normalizeEntryHost(input.EntryHostMode, input.EntryHost)
 	if err != nil {
 		return Proxy{}, Mutation{}, err
 	}
@@ -267,9 +275,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
-		 (server_id, name, protocol, listen_port, public_host, enabled, config_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.ServerID, name, ProtocolVLESS, input.ListenPort, publicHost, input.Enabled,
+		 (server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.ServerID, name, ProtocolVLESS, input.ListenPort, entryHostMode, entryHost, input.Enabled,
 		string(configJSON), now.Unix(), now.Unix(),
 	)
 	if isUniqueConstraint(err) {
@@ -307,7 +315,8 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 func (s *Service) List(ctx context.Context) ([]Proxy, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 proxies.name, proxies.protocol, proxies.listen_port, proxies.public_host, proxies.enabled,
+		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
@@ -336,7 +345,8 @@ func (s *Service) List(ctx context.Context) ([]Proxy, error) {
 func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {
 	value, _, err := scanProxy(s.db.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 proxies.name, proxies.protocol, proxies.listen_port, proxies.public_host, proxies.enabled,
+		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
@@ -383,11 +393,16 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 		}
 		value.ListenPort = *input.ListenPort
 	}
-	if input.PublicHost != nil {
-		value.PublicHost, err = normalizeHost(*input.PublicHost, true)
-		if err != nil {
-			return Proxy{}, Mutation{}, err
-		}
+	entryHostMode, entryHost := value.EntryHostMode, value.EntryHost
+	if input.EntryHostMode != nil {
+		entryHostMode = *input.EntryHostMode
+	}
+	if input.EntryHost != nil {
+		entryHost = *input.EntryHost
+	}
+	value.EntryHostMode, value.EntryHost, err = normalizeEntryHost(entryHostMode, entryHost)
+	if err != nil {
+		return Proxy{}, Mutation{}, err
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
@@ -400,9 +415,9 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE proxies SET name = ?, listen_port = ?, public_host = ?, enabled = ?, config_json = ?, updated_at = ?
+		`UPDATE proxies SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
 		 WHERE id = ?`,
-		value.Name, value.ListenPort, value.PublicHost, value.Enabled, string(configJSON), now.Unix(), id,
+		value.Name, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), id,
 	)
 	if isUniqueConstraint(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
@@ -609,15 +624,15 @@ func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) 
 func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, error) {
 	var value Client
 	var credentialJSON, configJSON string
-	var proxyName, publicHost, ipv4JSON, ipv6JSON sql.NullString
+	var proxyName, entryHostMode, entryHost, publicIPv4 string
 	var listenPort int
 	var clientUDP443, enabled int
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
-		 proxies.name, proxies.listen_port, proxies.public_host, proxies.config_json,
-		 system_info.ipv4, system_info.ipv6
+		 proxies.name, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.config_json, COALESCE(system_info.public_ipv4, '')
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
@@ -625,7 +640,7 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &clientUDP443, &enabled,
-		&createdAt, &updatedAt, &proxyName, &listenPort, &publicHost, &configJSON, &ipv4JSON, &ipv6JSON,
+		&createdAt, &updatedAt, &proxyName, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClientShare{}, ErrClientNotFound
@@ -646,19 +661,16 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
-	address := publicHost.String
-	if address == "" {
-		address, err = selectPublicAddress(ipv4JSON.String, ipv6JSON.String)
-		if err != nil {
-			return ClientShare{}, err
-		}
+	address, err := resolveEntryAddress(entryHostMode, entryHost, publicIPv4)
+	if err != nil {
+		return ClientShare{}, err
 	}
 	flow := ServerFlow
 	if value.ClientUDP443 {
 		flow += "-udp443"
 	}
 	share := ClientShare{
-		Client: value, ProxyName: proxyName.String, Address: address, Port: listenPort,
+		Client: value, ProxyName: proxyName, Address: address, Port: listenPort,
 		Security: config.Security, ServerName: config.ServerName, Fingerprint: config.Fingerprint,
 		Flow: flow,
 	}
@@ -900,28 +912,44 @@ func validatePort(value int) error {
 	return nil
 }
 
+func normalizeEntryHost(mode, host string) (string, string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case EntryHostAuto:
+		return mode, "", nil
+	case EntryHostManual:
+		host, err := normalizeHost(host, false)
+		if err != nil {
+			return "", "", ErrInvalidEntryHost
+		}
+		return mode, host, nil
+	default:
+		return "", "", ErrInvalidEntryHostMode
+	}
+}
+
 func normalizeHost(value string, optional bool) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" && optional {
 		return "", nil
 	}
 	if value == "" || strings.ContainsAny(value, "/?#@") || strings.Contains(value, "://") {
-		return "", ErrInvalidPublicHost
+		return "", ErrInvalidEntryHost
 	}
 	if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
 		return ip.String(), nil
 	}
 	if strings.Contains(value, ":") || len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
-		return "", ErrInvalidPublicHost
+		return "", ErrInvalidEntryHost
 	}
 	for _, label := range strings.Split(value, ".") {
 		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return "", ErrInvalidPublicHost
+			return "", ErrInvalidEntryHost
 		}
 		for _, character := range label {
 			if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
 				(character < '0' || character > '9') && character != '-' {
-				return "", ErrInvalidPublicHost
+				return "", ErrInvalidEntryHost
 			}
 		}
 	}
@@ -1012,17 +1040,26 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	var value Proxy
-	var ipv4JSON, ipv6JSON sql.NullString
+	var ipv4JSON, ipv6JSON, publicIPv4 sql.NullString
 	var enabled int
 	var configJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.ServerID, &value.ServerName, &ipv4JSON, &ipv6JSON,
-		&value.Name, &value.Protocol, &value.ListenPort, &value.PublicHost, &enabled,
+		&publicIPv4, &value.Name, &value.Protocol, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &enabled,
 		&configJSON, &createdAt, &updatedAt); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
+	entryHostMode, entryHost, err := normalizeEntryHost(value.EntryHostMode, value.EntryHost)
+	if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
+		return Proxy{}, storedConfig{}, errors.New("invalid stored proxy entry host")
+	}
 	config, err := decodeConfig(configJSON)
 	if err != nil {
+		return Proxy{}, storedConfig{}, err
+	}
+	value.ServerPublicIPv4 = publicIPv4.String
+	value.EntryAddress, err = resolveEntryAddress(value.EntryHostMode, value.EntryHost, value.ServerPublicIPv4)
+	if err != nil && !errors.Is(err, ErrConnectionAddressUnavailable) {
 		return Proxy{}, storedConfig{}, err
 	}
 	value.Enabled = enabled != 0
@@ -1067,7 +1104,8 @@ func summarizeClient(value Client) ClientSummary {
 func getProxyForMutation(ctx context.Context, tx *sql.Tx, id int64) (Proxy, storedConfig, error) {
 	value, config, err := scanProxy(tx.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 proxies.name, proxies.protocol, proxies.listen_port, proxies.public_host, proxies.enabled,
+		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -1142,20 +1180,19 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 	return version, nil
 }
 
-func selectPublicAddress(ipv4JSON, ipv6JSON string) (string, error) {
-	for _, encoded := range []string{ipv4JSON, ipv6JSON} {
-		var values []string
-		if encoded == "" || json.Unmarshal([]byte(encoded), &values) != nil {
-			continue
-		}
-		for _, value := range values {
-			ip := net.ParseIP(value)
-			if ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() {
-				return ip.String(), nil
-			}
-		}
+func resolveEntryAddress(mode, entryHost, publicIPv4 string) (string, error) {
+	mode, entryHost, err := normalizeEntryHost(mode, entryHost)
+	if err != nil {
+		return "", err
 	}
-	return "", ErrConnectionAddressUnavailable
+	if mode == EntryHostManual {
+		return entryHost, nil
+	}
+	ip := net.ParseIP(strings.TrimSpace(publicIPv4))
+	if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return "", ErrConnectionAddressUnavailable
+	}
+	return ip.To4().String(), nil
 }
 
 func buildVLESSURI(share ClientShare) string {

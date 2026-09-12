@@ -116,6 +116,7 @@ func migrate(db *sql.DB) error {
 			arch TEXT NOT NULL,
 			ipv4 TEXT NOT NULL,
 			ipv6 TEXT NOT NULL,
+			public_ipv4 TEXT NOT NULL DEFAULT '',
 			agent_version TEXT NOT NULL,
 			reported_at INTEGER NOT NULL
 		)`,
@@ -141,7 +142,9 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			protocol TEXT NOT NULL CHECK (protocol IN ('vless')),
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
-			public_host TEXT NOT NULL DEFAULT '',
+			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
+				CHECK (entry_host_mode IN ('auto', 'manual')),
+			entry_host TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			config_json TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
@@ -188,7 +191,71 @@ func migrate(db *sql.DB) error {
 	if err := migrateAgentConfigSync(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerPublicIPv4(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateProxyEntryHost(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateServerPublicIPv4(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('server_system_info') WHERE name = 'public_ipv4'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect server_system_info.public_ipv4: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE server_system_info ADD COLUMN public_ipv4 TEXT NOT NULL DEFAULT ''`,
+		); err != nil {
+			return fmt.Errorf("add server_system_info.public_ipv4: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateProxyEntryHost(ctx context.Context, db *sql.DB) error {
+	var modeCount, hostCount, publicHostCount int
+	for name, destination := range map[string]*int{
+		"entry_host_mode": &modeCount,
+		"entry_host":      &hostCount,
+		"public_host":     &publicHostCount,
+	} {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('proxies') WHERE name = ?`, name,
+		).Scan(destination); err != nil {
+			return fmt.Errorf("inspect proxies.%s: %w", name, err)
+		}
+	}
+	added := modeCount == 0 || hostCount == 0
+	if modeCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE proxies ADD COLUMN entry_host_mode TEXT NOT NULL DEFAULT 'auto'
+			 CHECK (entry_host_mode IN ('auto', 'manual'))`,
+		); err != nil {
+			return fmt.Errorf("add proxies.entry_host_mode: %w", err)
+		}
+	}
+	if hostCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE proxies ADD COLUMN entry_host TEXT NOT NULL DEFAULT ''`,
+		); err != nil {
+			return fmt.Errorf("add proxies.entry_host: %w", err)
+		}
+	}
+	if added && publicHostCount != 0 {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE proxies
+			 SET entry_host_mode = CASE WHEN trim(public_host) = '' THEN 'auto' ELSE 'manual' END,
+			     entry_host = trim(public_host)`,
+		); err != nil {
+			return fmt.Errorf("migrate proxies.public_host: %w", err)
+		}
+	}
 	return nil
 }
 

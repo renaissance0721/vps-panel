@@ -380,6 +380,7 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 		"arch":"amd64",
 		"ipv4":["203.0.113.10"],
 		"ipv6":["2001:db8::10"],
+		"public_ipv4":"198.51.100.20",
 		"agent_version":"forged-version"
 	}`)); err != nil {
 		t.Fatalf("write Agent system information: %v", err)
@@ -430,6 +431,7 @@ func TestAgentWebSocketAuthenticationAndStatus(t *testing.T) {
 	if len(listed.Servers) != 1 || listed.Servers[0].SystemInfo == nil ||
 		strings.Join(listed.Servers[0].SystemInfo.IPv4, ",") != "203.0.113.10" ||
 		strings.Join(listed.Servers[0].SystemInfo.IPv6, ",") != "2001:db8::10" ||
+		listed.Servers[0].SystemInfo.PublicIPv4 != "198.51.100.20" ||
 		listed.Servers[0].Metrics == nil || listed.Servers[0].Metrics.CPUPercent != 33.4 ||
 		listed.Servers[0].Metrics.MemoryUsedBytes != 134217728 ||
 		listed.Servers[0].Metrics.MemoryTotalBytes != 536870912 ||

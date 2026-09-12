@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A 和 Phase 8A 已完成；Phase 7B 暂缓，不阻塞代理主链路。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A 和 Phase 8B 已完成；Phase 7B 暂缓，不阻塞代理主链路。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -3018,6 +3018,8 @@ Panel 至少保存：
 
 # 12. Phase 8B：Xray 托管基础与安全配置应用
 
+> 当前状态：已完成。Agent 使用固定的 Xray 官方 Release `v26.3.27` 与 amd64 / arm64 SHA256 校验，在独立受管路径安装并验证 Xray；已实现最小基础配置、candidate 官方校验、同目录原子替换、current / previous、独立 systemd unit、有限健康检查、失败回滚和 enabled / disabled 行为。当前 Panel 仍不创建真实 Proxy。
+
 ## 目标
 
 让统一 Agent 能安全托管一份由 VPS Panel 完全拥有的 Xray。
@@ -5452,15 +5454,15 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A 和 Phase 8A 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A 和 Phase 8B 已完成。
 
 Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路下一步为：
 
 ```text
-Phase 8B：Xray 托管基础与安全配置应用
+Phase 9A：VLESS + TCP + TLS / REALITY + XTLS Vision
 ```
 
-当前 Phase 8A 仍不能从 Panel 创建真实代理节点；真实节点需在 Phase 8B Xray 托管基础和 Phase 9A VLESS 完成后才可用。
+当前 Phase 8B 只完成 Agent 的 Xray 安全托管能力，仍不能从 Panel 创建真实代理节点；真实节点需在 Phase 9A VLESS 完成后才可用。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 

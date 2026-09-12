@@ -290,6 +290,7 @@ func TestInstallAgentScript(t *testing.T) {
 		"RestartSec=3",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
+		"ReadWritePaths=/opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system",
 		"systemctl enable",
 		"systemctl restart",
 	} {

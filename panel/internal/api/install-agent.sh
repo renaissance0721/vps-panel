@@ -110,6 +110,8 @@ curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
 
 chmod 0755 "$download_path"
 install -d -m 0700 "$CONFIG_DIR"
+install -d -m 0755 /opt/vps-panel/xray
+install -d -m 0700 /etc/vps-panel/xray
 
 cat >"$unit_path" <<EOF
 [Unit]
@@ -126,6 +128,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+ReadWritePaths=/opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system
 
 [Install]
 WantedBy=multi-user.target

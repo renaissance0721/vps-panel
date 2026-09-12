@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -49,6 +50,12 @@ func TestConfigSynchronizerReportsSuccessOnceAndRetriesFailure(t *testing.T) {
 	defer panel.Close()
 
 	synchronizer := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "config-secret"}, panel.Client())
+	synchronizer.applyState = func(_ context.Context, state desiredState) error {
+		if state.Xray.Enabled {
+			return errors.New(unsupportedManagedConfigMessage)
+		}
+		return nil
+	}
 	if err := synchronizer.sync(t.Context()); err != nil {
 		t.Fatalf("initial config sync: %v", err)
 	}
@@ -89,6 +96,23 @@ func TestConfigSynchronizerReportsSuccessOnceAndRetriesFailure(t *testing.T) {
 	}
 	if synchronizer.lastSuccessfulVersion != 2 {
 		t.Fatalf("last successful version = %d, want 2", synchronizer.lastSuccessfulVersion)
+	}
+}
+
+func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: private diagnostic", errManagedXrayDownload), errManagedXrayDownload.Error()},
+		{fmt.Errorf("%w: candidate details", errManagedXrayValidation), errManagedXrayValidation.Error()},
+		{fmt.Errorf("%w: systemctl details", errManagedXrayStart), errManagedXrayStart.Error()},
+		{errors.New("internal path detail"), "managed Xray apply failed"},
+	}
+	for _, test := range tests {
+		if got := desiredStateErrorMessage(test.err); got != test.want {
+			t.Fatalf("desired state message = %q, want %q", got, test.want)
+		}
 	}
 }
 

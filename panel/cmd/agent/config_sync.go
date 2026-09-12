@@ -15,6 +15,13 @@ import (
 
 const unsupportedManagedConfigMessage = "managed proxy configuration is not supported by this Agent version"
 
+var errUnsupportedManagedConfig = errors.New(unsupportedManagedConfigMessage)
+
+const (
+	configRequestTimeout = 10 * time.Second
+	configApplyTimeout   = 90 * time.Second
+)
+
 type desiredState struct {
 	Version int64             `json:"version"`
 	Xray    desiredXrayState  `json:"xray"`
@@ -40,19 +47,23 @@ type configResult struct {
 type configSynchronizer struct {
 	config                config
 	client                *http.Client
+	applyState            func(context.Context, desiredState) error
 	mu                    sync.Mutex
 	lastSuccessfulVersion int64
 }
 
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
-	return &configSynchronizer{config: value, client: client}
+	manager := newXrayManager()
+	return &configSynchronizer{config: value, client: client, applyState: manager.apply}
 }
 
 func (s *configSynchronizer) sync(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	state, err := s.fetch(ctx)
+	fetchContext, cancelFetch := context.WithTimeout(ctx, configRequestTimeout)
+	state, err := s.fetch(fetchContext)
+	cancelFetch()
 	if err != nil {
 		return err
 	}
@@ -60,13 +71,18 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 		return nil
 	}
 
-	applyErr := applyDesiredState(state)
+	applyContext, cancelApply := context.WithTimeout(ctx, configApplyTimeout)
+	applyErr := s.applyState(applyContext, state)
+	cancelApply()
 	result := configResult{Version: state.Version, Status: "success"}
 	if applyErr != nil {
 		result.Status = "failed"
-		result.Message = unsupportedManagedConfigMessage
+		result.Message = desiredStateErrorMessage(applyErr)
 	}
-	if err := s.report(ctx, result); err != nil {
+	reportContext, cancelReport := context.WithTimeout(ctx, configRequestTimeout)
+	err = s.report(reportContext, result)
+	cancelReport()
+	if err != nil {
 		return err
 	}
 	if applyErr != nil {
@@ -124,18 +140,26 @@ func (s *configSynchronizer) report(ctx context.Context, result configResult) er
 	return nil
 }
 
-func applyDesiredState(state desiredState) error {
-	if state.Xray.Enabled || len(state.Xray.Proxies) != 0 ||
-		state.Realm.Enabled || len(state.Realm.Relays) != 0 {
-		return errors.New(unsupportedManagedConfigMessage)
+func desiredStateErrorMessage(err error) string {
+	for _, publicError := range []error{
+		errUnsupportedManagedConfig,
+		errManagedXrayDownload,
+		errManagedXrayChecksum,
+		errManagedXrayValidation,
+		errManagedXrayStart,
+		errManagedXrayStop,
+		errManagedXrayConflict,
+		errManagedXrayArch,
+	} {
+		if err.Error() == publicError.Error() || errors.Is(err, publicError) {
+			return publicError.Error()
+		}
 	}
-	return nil
+	return "managed Xray apply failed"
 }
 
 func attemptConfigSync(ctx context.Context, synchronizer *configSynchronizer) {
-	syncContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := synchronizer.sync(syncContext); err != nil && ctx.Err() == nil {
+	if err := synchronizer.sync(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("Agent config sync failed: %v", err)
 	}
 }

@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A 和 Phase 8B 已完成；Phase 7B 暂缓，不阻塞代理主链路。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A 和 Phase 8B 已完成；Phase 7B 暂缓，不阻塞代理主链路。下一阶段 Phase 9A 直接同时建立 VLESS Proxy、Client 基础管理和每 Client 直连 VLESS URI。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -53,8 +53,8 @@ VPS Panel 的目标不是单纯做一个“探针面板”，而是做一个统�
 - 可设置月流量额度、单向/双向计费方式和每月流量重置时间
 - 服务器信息中显示本周期已用流量 / 总流量
 - 提供统一的 Panel ↔ Agent 节点后端 API，Panel 不直接依赖 Xray / Realm 配置文件格式
-- 第一版由统一 Agent 管理 Xray，并支持 VLESS + TCP + XTLS Vision；安全层允许 TLS / REALITY 二选一，两种模式都支持客户端 `xtls-rprx-vision-udp443`；同时支持 Shadowsocks
-- Proxy 下提供 Client 管理，并在独立阶段实现每 Client 流量、流量额度、重置周期与到期控制
+- 第一版由统一 Agent 管理 Xray，并支持 VLESS + TCP + XTLS Vision；安全层允许 TLS / REALITY 二选一，两种模式都支持客户端 `xtls-rprx-vision-udp443`；VLESS 第一阶段即建立 Proxy + Client 模型，并可为每个 Client 生成直连 VLESS URI；随后再支持 Shadowsocks
+- Proxy 下提供 Client 管理；Client 基础管理从 VLESS Phase 起即为一等模型，后续独立阶段再实现每 Client 流量、流量额度、重置周期与到期控制
 - 同一个 Agent 管理 Realm 和端口转发规则
 - 节点分享、订阅、二维码
 - `admin / vip` 两级账号体系
@@ -753,7 +753,6 @@ protocol = vless | shadowsocks
   "transport": "tcp",
   "security": "tls",
   "server_flow": "xtls-rprx-vision",
-  "client_udp443": false,
   "server_name": "example.com",
   "certificate_ref": "..."
 }
@@ -766,7 +765,6 @@ protocol = vless | shadowsocks
   "transport": "tcp",
   "security": "reality",
   "server_flow": "xtls-rprx-vision",
-  "client_udp443": false,
   "server_name": "www.microsoft.com",
   "dest": "www.microsoft.com:443",
   "private_key": "...",
@@ -775,30 +773,33 @@ protocol = vless | shadowsocks
 }
 ```
 
-这里建议业务字段固定使用：
+这里建议 Proxy 业务字段固定使用：
 
 ```text
 transport = tcp
 security = tls | reality
 server_flow = xtls-rprx-vision
-client_udp443 = true | false
 ```
 
-前端只让用户选择：
+`client_udp443` 从 Phase 9A 起属于 **Client 级客户端选项**，不再属于 Proxy 服务端配置。
+
+前端在 Proxy 层只让用户选择：
 
 ```text
 安全：
 ○ TLS
 ○ REALITY
-
-允许 UDP/443 / QUIC：
-○ 关闭
-○ 开启
 ```
 
 不要让前端随意填写 `flow` 字符串。
 
-在生成客户端配置时：
+每个 Client 独立保存：
+
+```text
+client_udp443 = false | true
+```
+
+在生成该 Client 的分享配置时：
 
 ```text
 client_udp443 = false
@@ -808,7 +809,7 @@ client_udp443 = true
 → flow = xtls-rprx-vision-udp443
 ```
 
-这样可以避免把客户端专用 `-udp443` 错写进服务端配置。
+服务端 Xray inbound 中所有 VLESS Client 的 flow 仍固定为 `xtls-rprx-vision`。这样可以避免把客户端专用 `-udp443` 错写进服务端配置，也允许同一个 Proxy 下不同 Client 使用不同的客户端 UDP/443 选项。
 
 TLS 与 REALITY 的协议字段必须分支校验：
 
@@ -837,7 +838,7 @@ Panel 后端仍应按 `protocol`：
 
 - 校验允许字段
 - 校验端口
-- 校验 UUID / 密钥 / method 等必要值
+- 校验 Client UUID / 密钥 / method 等必要值
 - 生成规范 desired state
 
 以后如果真的需要 sing-box / Mihomo，再根据真实需求决定是否增加 `backend` 字段或新的数据模型；当前不提前创建 `CoreInstance`。
@@ -871,16 +872,104 @@ Client 不是新的 Proxy，也不是新的 Agent。
 - 共享 Proxy 的监听地址、端口、传输层、安全层和服务端参数
 - 各自拥有独立凭据
 - 各自拥有独立启用状态
+- 可以拥有独立的客户端 `UDP/443 / QUIC` 选项
+- Phase 9A 起即可分别生成直连分享 URI
 - 后续各自统计 Xray per-client 上行 / 下行流量
-- 可以设置独立流量额度
-- 可以设置独立流量重置周期
-- 可以设置独立到期时间
+- 后续可以设置独立流量额度
+- 后续可以设置独立流量重置周期
+- 后续可以设置独立到期时间
 
-Phase 9A / 9B 如果暂时仍以“一个 Proxy 一份凭据”完成代理主链路，可以先保留当前单凭据实现。
+### Client 从 VLESS Phase 起就是一等模型
 
-进入 Phase 10A 时，再正式建立 `clients`，并把已有 Proxy 的单凭据安全迁移成默认 Client，必须保留原 UUID / Password 和现有分享行为，不要求用户重新生成节点。
+从新的开发路线开始，不再采用：
 
-进入 Phase 10B 后：
+```text
+先实现一个 Proxy 一份 UUID
+↓
+后续阶段再迁移成 Client
+```
+
+而是直接：
+
+```text
+Phase 9A
+VLESS Proxy
++
+clients
++
+每 Client 独立 UUID
++
+每 Client 直连 VLESS URI
+```
+
+因此：
+
+- VLESS UUID 从第一天起归属 Client，不归属 Proxy。
+- `proxies.config_json` 不保存某个“默认 UUID”。
+- 新建 VLESS Proxy 时必须同时创建至少一个默认 Client。
+- 同一个 VLESS inbound 可以包含多个 Client。
+- 新增 / 删除 / 启用 / 禁用 Client 都属于该 Server desired state 的真实变化。
+- 不为每个 Client 新建端口、Proxy、Agent 或 Xray 进程。
+
+### Client 第一阶段字段
+
+VLESS 第一阶段的 Client 至少包含：
+
+```text
+id
+proxy_id
+name
+credential_json
+client_udp443
+enabled
+created_at
+updated_at
+```
+
+其中：
+
+```text
+credential_json
+→ 只保存 VLESS UUID 等协议必要凭据
+
+client_udp443
+→ 只影响该 Client 导出的客户端 flow
+```
+
+第一阶段不把流量、额度、周期、到期字段提前塞进 `clients`。
+
+### 分享语义
+
+Phase 9A 即允许每个有效 VLESS Client 生成自己的**直连 VLESS URI**：
+
+```text
+Client credential
++
+Proxy 公共协议参数
++
+Proxy.public_host 或 Server IP
++
+Proxy.listen_port
+=
+该 Client 的直连 VLESS URI
+```
+
+这一阶段只做单 Client 的直接 VLESS URI / 复制能力。
+
+不在 Phase 9A 做：
+
+- 订阅 URL
+- QR
+- Clash / Mihomo 批量订阅
+- sing-box 批量配置
+- Realm 中转分享地址
+- 批量导出
+
+这些仍留到后续完整分享 / 订阅 Phase。
+
+### 后续 Client 流量
+
+进入 Phase 10 后：
 
 ```text
 Server 总流量
@@ -895,7 +984,6 @@ Client 流量
 不要把 Client 流量反推成 Server 网卡总流量，也不要让 Server 月流量依赖 Xray。
 
 ---
-
 
 ## 2.5 Relay
 
@@ -948,7 +1036,9 @@ Panel 解析目标 Proxy 的 Server / 地址 / 监听端口。
 当用户通过 Realm 访问某个 Proxy 时，客户端节点可以在生成分享 / 订阅时直接组合：
 
 ```text
-Proxy 的协议与凭据
+Client credential
++
+Proxy 的协议与服务端参数
 +
 Relay 的监听 host / port
 =
@@ -3127,7 +3217,7 @@ Xray 托管代码必须由 VPS Panel 独立实现。
 
 ---
 
-# 13. Phase 9A：VLESS + TCP + TLS / REALITY + XTLS Vision
+# 13. Phase 9A：VLESS Proxy + Client 基础管理 + 直连分享
 
 > 本 Phase 的数据语义、协议组合和 Agent 配置以本文为准。
 >
@@ -3142,6 +3232,9 @@ Xray 托管代码必须由 VPS Panel 独立实现。
 > - Proxy / 节点列表
 > - Proxy 详情 Modal
 > - Proxy 新增 / 编辑 Modal
+> - Proxy 详情中的 Client 区域
+> - Client 新增 / 编辑 / 查看 Modal
+> - 每 Client 直连链接复制
 > - 操作列
 > - Modal 固定规范
 >
@@ -3150,7 +3243,7 @@ Xray 托管代码必须由 VPS Panel 独立实现。
 
 ## 目标
 
-在 Phase 8B 的受管 Xray 上实现第一个真实 Proxy。
+在 Phase 8B 的受管 Xray 上实现第一个真实 VLESS Proxy，并从第一天起同时建立 Client 模型和每 Client 直连 VLESS URI。
 
 第一版 VLESS 固定：
 
@@ -3183,6 +3276,26 @@ xtls-rprx-vision-udp443
 
 不要把 XTLS Vision 推迟到以后。
 
+同时，本 Phase 必须完成：
+
+```text
+VLESS Proxy
++
+至少一个默认 Client
++
+同 Proxy 多 Client CRUD
++
+每 Client 独立 UUID
++
+每 Client enabled
++
+每 Client client_udp443
++
+每 Client 直连 VLESS URI
+```
+
+不再先把 UUID 临时放在 Proxy 里，也不再等待后续 Phase 才建立 `clients`。
+
 ---
 
 ## 13.1 第一版 UI 边界
@@ -3202,10 +3315,20 @@ TCP                       固定
 
 Flow
 XTLS Vision               固定
+```
+
+创建 Proxy 时同时创建首个 Client：
+
+```text
+Client 名称
+默认客户端                默认值，可修改
+
+UUID
+自动生成                  后端生成
 
 允许 UDP/443 / QUIC
 ○ 关闭
-○ 开启                    用户二选一
+○ 开启                    这是 Client 级选项
 ```
 
 不要把第一版做成协议组合器。
@@ -3273,7 +3396,7 @@ TLS 分支至少能够管理：
 ```text
 listen address
 listen port
-UUID / Client credential
+Client UUID（来自该 Proxy 的 clients）
 server_name / SNI
 certificate
 private key
@@ -3311,7 +3434,7 @@ REALITY 分支至少能够管理：
 ```text
 listen address
 listen port
-UUID / Client credential
+Client UUID（来自该 Proxy 的 clients）
 server_name / SNI
 dest / target
 private_key
@@ -3379,11 +3502,16 @@ xtls-rprx-vision-udp443
 
 ## 13.6 数据库
 
-本阶段创建：
+本阶段同时创建：
 
 ```text
 proxies
+clients
 ```
+
+不再把 Client 推迟到后续迁移。
+
+### proxies
 
 最小字段：
 
@@ -3393,6 +3521,7 @@ server_id
 name
 protocol
 listen_port
+public_host
 enabled
 config_json
 created_at
@@ -3411,10 +3540,10 @@ protocol = vless
 
 ```text
 public_host = 空
-→ 分享 / 订阅时使用 Server IP
+→ 直连分享时使用 Server IP
 
 public_host = jp.example.com
-→ 分享 / 订阅时使用 jp.example.com
+→ 直连分享时使用 jp.example.com
 ```
 
 第一版 UI 可以把它显示为：
@@ -3433,29 +3562,80 @@ public_host = jp.example.com
 
 Panel 不负责自动创建、修改或验证 DNS 解析，只保存用户填写的已关联域名。
 
-第一版 `config_json` 只保存 VPS Panel 当前支持的：
+`proxies.config_json` 只保存 VPS Panel 当前支持的服务端公共参数：
 
 ```text
-TCP
-TLS | REALITY
-XTLS Vision
-client_udp443
+transport = tcp
+security = tls | reality
+server_flow = xtls-rprx-vision
 ```
 
-以及对应安全分支真正需要的字段。
+以及对应 TLS / REALITY 分支真正需要的字段。
 
-不要保存整份用户可编辑的原始 Xray JSON。
+**不要在 Proxy 中保存某个单独 UUID。**
+
+### clients
+
+VLESS 第一阶段最小字段：
+
+```text
+id
+proxy_id
+name
+credential_json
+client_udp443
+enabled
+created_at
+updated_at
+```
+
+要求：
+
+```text
+credential_json
+→ 第一版只包含 VLESS UUID 等必要凭据
+
+client_udp443
+→ BOOLEAN / 等价最小表示
+→ 默认 false
+```
+
+后端必须：
+
+- 创建 Client 时生成合法 UUID
+- 保证同一 Proxy 下 Client 数据正确关联
+- 严格校验 credential，不接受任意 Xray JSON
+- 删除 Proxy 时安全清理其 Client
+- 新建 VLESS Proxy 时在同一业务操作中创建至少一个默认 Client
+- 如果 Proxy 创建失败，不留下孤立 Client
+- 如果默认 Client 创建失败，不留下半创建 Proxy
+
+第一阶段 Client 不增加：
+
+```text
+quota
+reset
+expiry
+traffic
+last_active
+```
+
+这些属于 Phase 10。
+
+### 后端校验
 
 Panel 后端必须自己：
 
-- 根据 `security` 分支校验
-- 校验 UUID
+- 根据 Proxy `security` 分支校验
 - 校验端口
 - 校验 TLS 必需字段
 - 校验 REALITY 必需字段
+- 校验 Client UUID
 - 固定 `transport = tcp`
 - 固定服务端 `flow = xtls-rprx-vision`
-- 生成规范 desired state
+- 根据 Proxy + Client 生成规范 desired state
+
+不要保存整份用户可编辑的原始 Xray JSON。
 
 然后由 Agent renderer 生成 Xray 配置。
 
@@ -3463,10 +3643,10 @@ Panel 后端必须自己：
 
 ## 13.7 desired state
 
-Panel 修改 Proxy 后：
+Proxy 或 Client 发生真实配置变化后：
 
 ```text
-数据库保存
+数据库事务保存
 ↓
 desired_state_version + 1
 ↓
@@ -3474,7 +3654,8 @@ WS config_changed
 ↓
 Agent GET /api/agent/config
 ↓
-根据该 Server 的所有 Proxy 重新生成完整 Xray candidate config
+根据该 Server 的全部 Proxy + 有效 Client
+重新生成完整 Xray candidate config
 ↓
 Xray 官方配置校验
 ↓
@@ -3489,15 +3670,54 @@ health check
 └── failed  → rollback → POST config/result failed
 ```
 
-Agent 不对正式 Xray 配置做局部 `sed` 修改。
+VLESS desired state 中，一个 Proxy 应携带其有效 Client 列表。
+
+语义示例：
+
+```json
+{
+  "protocol": "vless",
+  "listen_port": 443,
+  "security": "reality",
+  "clients": [
+    {
+      "id": "client-internal-id",
+      "uuid": "..."
+    },
+    {
+      "id": "client-internal-id-2",
+      "uuid": "..."
+    }
+  ]
+}
+```
+
+这里只表达业务语义，不要求 API 机械采用上面字段名。
+
+固定要求：
+
+- `Proxy.enabled = false` 时该 Proxy 不进入有效 Xray inbound。
+- `Client.enabled = false` 时该 Client 不进入该 inbound 的有效 clients。
+- 一个 Proxy 下多个 Client 共用同一 listener / port / security。
+- Agent 不为每个 Client 创建额外 inbound。
+- Xray 服务端 Client flow 始终为 `xtls-rprx-vision`。
+- `client_udp443` 不需要写进服务端 Xray inbound；它只用于该 Client 的分享 URI。
+- 新增 / 编辑 / 启用 / 禁用 / 删除 Client 都必须 bump 对应 Server 的 desired state version。
+- Agent 不对正式 Xray 配置做局部 `sed` 修改。
 
 ---
 
-## 13.8 分享 / 客户端参数边界
+## 13.8 每 Client 直连 VLESS URI
 
-Phase 9A 可以先保存并验证生成客户端配置所需的数据，但完整订阅 / 二维码 UI 仍放到后续分享阶段。
+Phase 9A 不再只“保存以后分享所需的数据”。
 
-TLS 模式至少能够正确表达：
+本 Phase 必须已经能够为每个有效 VLESS Client 生成可复制的**直连 VLESS URI**。
+
+完整订阅、二维码和多格式客户端配置仍放到 Phase 12。
+
+### TLS Client 参数
+
+至少能够正确表达：
 
 ```text
 address
@@ -3508,9 +3728,12 @@ network = tcp
 sni
 fingerprint
 flow
+remark
 ```
 
-REALITY 模式至少能够正确表达：
+### REALITY Client 参数
+
+至少能够正确表达：
 
 ```text
 address
@@ -3523,9 +3746,22 @@ public key
 short id
 fingerprint
 flow
+remark
 ```
 
-客户端 `flow` 根据 `client_udp443` 派生。
+每个 Client 的 `flow` 根据自己的 `client_udp443` 派生：
+
+```text
+client_udp443 = false
+→ xtls-rprx-vision
+
+client_udp443 = true
+→ xtls-rprx-vision-udp443
+```
+
+这不改变服务端 inbound Client flow。
+
+### 连接 host
 
 客户端连接地址统一按：
 
@@ -3544,7 +3780,7 @@ Server IP = 1.2.3.4
 public_host = jp.example.com
 ```
 
-生成的节点连接地址使用：
+该 Client 的直连 URI 使用：
 
 ```text
 jp.example.com:端口
@@ -3556,9 +3792,25 @@ jp.example.com:端口
 1.2.3.4:端口
 ```
 
-这里只替换客户端节点链接中的连接 host，不自动修改 SNI、证书域名、REALITY server_name 或其他安全参数。
+这里只替换客户端连接 host，不自动修改 SNI、证书域名、REALITY server_name、dest 或其他安全参数。
 
-不要在分享链接 / 配置中加入：
+### URI 输出规则
+
+VLESS URI 必须：
+
+- 使用当前通用客户端可识别的标准 VLESS URI 语义
+- 对 query / remark 中需要编码的内容正确进行 URL 编码
+- TLS / REALITY 只输出该分支真正需要的参数
+- 使用 Client 自己的 UUID
+- 使用 Client 自己派生的 flow
+- remark 默认使用 `Proxy 名称 - Client 名称`，保持可辨识
+- 不输出服务端 private key
+- REALITY 只输出客户端需要的 public key
+- 不输出 Agent / Panel Token
+- 不输出内部数据库标识
+- 不加入品牌标记
+
+不要在分享 URI 中加入：
 
 ```text
 3x-ui
@@ -3572,7 +3824,27 @@ panel-managed
 
 等非协议必要标识。
 
-节点 remark 默认只使用用户设置的节点名称。
+### 本阶段分享能力边界
+
+Phase 9A 只实现：
+
+```text
+每 Client 直连 VLESS URI
++
+复制
+```
+
+明确不做：
+
+```text
+二维码
+订阅 URL
+Clash / Mihomo 批量配置
+sing-box 批量配置
+SS URI
+Realm 中转 URI
+批量导出
+```
 
 ---
 
@@ -3635,34 +3907,51 @@ Code Review 时如果发现实现和某个第三方面板高度同构，应当�
 至少验证：
 
 1. 可以在指定 Server 创建 VLESS Proxy。
-2. Transport 第一版固定为 TCP。
-3. Flow 第一版固定为 XTLS Vision。
-4. 用户可以选择 TLS 或 REALITY。
-5. TLS 模式可以正常生成并应用 Xray 配置。
-6. REALITY 模式可以正常生成并应用 Xray 配置。
-7. TLS 与 REALITY 服务端 client flow 都是 `xtls-rprx-vision`。
-8. 两种安全模式都能生成普通 Vision 客户端参数。
-9. 两种安全模式都能生成 `xtls-rprx-vision-udp443` 客户端参数。
-10. 开启 UDP/443 选项不会让服务端新增 UDP/443 listener。
-11. UDP/443 选项不会改变服务端 inbound flow。
-12. TLS private key 不出现在普通日志。
-13. REALITY private key 不出现在普通日志。
-14. REALITY private/public key 与 short id 可以正确生成、保存和读取。
-15. TLS / REALITY 条件字段不会互相错误要求。
-16. 修改 Proxy 后只增加 desired state version，不生成通用 task。
-17. Agent 使用完整 candidate config 应用。
-18. 配置校验失败不会覆盖当前可用配置。
-19. restart / health check 失败会回滚 previous。
-20. 分享 / 客户端配置中不出现第三方面板品牌或非必要 Panel 标识。
-21. 实现代码无第三方面板复制痕迹。
-22. Proxy 可以保存可选 `public_host`。
-23. `public_host` 为空时，客户端连接地址回退到 Server IP。
-24. `public_host` 非空时，客户端连接地址优先使用该域名。
-25. 设置 `public_host` 不会修改 Xray listener、Server IP、SNI / server_name 或 DNS。
-26. gofmt / go test / go build / 前端 build 通过。
+2. 创建 VLESS Proxy 时同时创建至少一个默认 Client，不出现“无凭据的半成品 Proxy”。
+3. `proxies` 不保存单一 VLESS UUID；VLESS UUID 属于 `clients`。
+4. 一个 Proxy 可以拥有多个 Client。
+5. 每个 VLESS Client 有独立 UUID。
+6. 多个 Client 共用同一个 Proxy listener / port / transport / security。
+7. 新增 Client 不创建额外 Proxy、端口、Agent 或 Xray 进程。
+8. 禁用一个 Client 后 desired state 不再让该 Client 可用，但不影响同 Proxy 其他 Client。
+9. 删除一个 Client 不影响同 Proxy 其他 Client。
+10. Transport 第一版固定为 TCP。
+11. Flow 服务端第一版固定为 XTLS Vision / `xtls-rprx-vision`。
+12. 用户可以选择 TLS 或 REALITY。
+13. TLS 模式可以正常生成并应用 Xray 配置。
+14. REALITY 模式可以正常生成并应用 Xray 配置。
+15. TLS 与 REALITY 的所有有效 Client 在服务端都使用 `xtls-rprx-vision`。
+16. 每个 Client 可以独立选择是否允许 UDP/443 / QUIC。
+17. Client UDP/443 选项只改变该 Client 导出的 flow，不让服务端新增 UDP/443 listener。
+18. Client UDP/443 选项不改变服务端 inbound flow。
+19. TLS private key 不出现在普通日志或分享 URI。
+20. REALITY private key 不出现在普通日志或分享 URI。
+21. REALITY private/public key 与 short id 可以正确生成、保存和读取。
+22. TLS / REALITY 条件字段不会互相错误要求。
+23. Proxy 或 Client 的有效配置变化会增加对应 Server desired state version，不生成通用 task。
+24. Agent 使用完整 candidate config 应用。
+25. 配置校验失败不会覆盖当前可用配置。
+26. restart / health check 失败会回滚 previous。
+27. 每个有效 VLESS Client 都能生成可导入客户端的直连 VLESS URI。
+28. URI 使用该 Client 自己的 UUID。
+29. `client_udp443=false/true` 分别导出正确的普通 Vision / udp443 flow。
+30. `public_host` 为空时 URI 地址回退到 Server IP。
+31. `public_host` 非空时 URI 地址优先使用该域名。
+32. 设置 `public_host` 不会修改 Xray listener、Server IP、SNI / server_name 或 DNS。
+33. 分享 URI 中不出现第三方面板品牌、Panel 品牌标识、private key、Token 或内部数据库 ID。
+34. Frontend 可以在 Proxy 详情 Modal 管理 Client，并对每个 Client 提供复制直连链接操作。
+35. 当前不实现 Client 流量、额度、周期、到期、QR、订阅、Realm 中转分享。
+36. 实现代码无第三方面板复制痕迹。
+37. gofmt / go test / go build / 前端 build 通过。
 
 完成 Phase 9A 后停止。
-不要继续 Shadowsocks。
+
+不要继续：
+
+- Shadowsocks
+- Client 流量 / quota / expiry
+- Realm
+- 完整订阅 / QR
 
 ---
 
@@ -3675,7 +3964,9 @@ Code Review 时如果发现实现和某个第三方面板高度同构，应当�
 > 对 Shadowsocks 不适用的“传输 / 安全层 / 流控”列统一显示 `--`，不要为了填满表格制造虚假概念。
 
 
-在第一版 VLESS（TLS / REALITY + XTLS Vision）稳定后，同一套 `proxies` 表增加：
+在第一版 VLESS（TLS / REALITY + XTLS Vision）和 Client 基础管理稳定后，同一套 `proxies` 表增加：
+
+> `clients` 已在 Phase 9A 建立。Shadowsocks 是否以及如何映射一条 Proxy 下多个独立 Client，必须以当前 Xray 官方 Shadowsocks 能力为准；不要为了统一模型伪造协议不支持的行为。
 
 ```text
 protocol = shadowsocks
@@ -3697,196 +3988,16 @@ Server
 
 ---
 
-# 15. Phase 10：Client
+# 15. Phase 10：Client 流量、额度、周期与到期
 
-> Client 固定属于 Proxy。
+> Client 基础管理已经提前并入 Phase 9A，不再保留单独的“Client 基础管理”子阶段。
 >
-> Client UI 默认作为 Proxy 详情 / 编辑流程的一部分，继续遵守 `vps-panel-frontend-guide.md` 的固定容器与 Modal 规则。
+> Phase 10 只在现有 `clients` 基础上增加应用层流量、额度、重置周期、到期与派生有效状态。
 >
-> 可以研究 3x-ui 等第三方面板已经提供了哪些 Client 功能，例如“独立凭据、流量额度、重置周期、到期时间、流量统计”等产品能力；但仍严格遵守本 Guide 的原创实现要求：
+> Client UI 继续作为 Proxy 详情 / 编辑流程的一部分，遵守 `vps-panel-frontend-guide.md` 的固定容器与 Modal 规则。
 >
-> - 不复制第三方面板代码
-> - 不机械复制数据库 schema
-> - 不机械复制 API
-> - 不复制其字段命名体系
-> - 不复刻其前端布局和交互
->
-> 最终实现必须回到 VPS Panel 自己的 Proxy / Client / Agent / desired-state 模型。
+> 可以研究第三方面板已经提供了哪些 Client 流量产品能力，但禁止复制其代码、数据库 schema、API、字段体系、配置模板或 UI。
 
-## 15.1 Phase 10A：Client 基础管理
-
-### 目标
-
-把：
-
-```text
-一个 Proxy = 一份凭据
-```
-
-扩展为：
-
-```text
-Proxy
-├── Client A
-├── Client B
-└── Client C
-```
-
-例如：
-
-```text
-VLESS
-├── PC
-├── Android
-└── iPhone
-```
-
-Client 第一阶段只解决：
-
-- 独立名称
-- 独立凭据
-- 用户手动启用 / 禁用
-- Client CRUD
-- desired state 正确渲染到 Xray
-
-### 数据模型
-
-进入 Phase 10A 时正式创建：
-
-```text
-clients
-```
-
-最小字段建议：
-
-```text
-id
-proxy_id
-name
-credential_json
-enabled
-created_at
-updated_at
-```
-
-`credential_json` 只保存该协议当前必要的凭据字段，并由后端严格校验，不允许前端提交任意 Xray JSON。
-
-例如 VLESS：
-
-```text
-UUID
-```
-
-Shadowsocks 如果当前 Xray 模式确实支持一条 Proxy 下多个独立用户，再按官方能力映射；不要为了统一模型伪造不支持的行为。
-
-### 从单凭据 Proxy 迁移
-
-如果 Phase 9A / 9B 已经存在单凭据 Proxy：
-
-进入 Phase 10A 的 migration 必须：
-
-1. 为已有 Proxy 创建一个默认 Client。
-2. 保留原 UUID / Password。
-3. 不要求用户重新生成节点。
-4. 不改变现有 Proxy 监听地址、端口和安全层。
-5. 分享 / 订阅在迁移后继续生成可用配置。
-6. migration 必须幂等。
-
-迁移完成后：
-
-> 凭据的业务归属从 Proxy 单凭据过渡到 Client。
-
-Proxy 继续保存：
-
-- 协议
-- 监听端口
-- transport
-- security
-- flow
-- public_host
-- 服务端公共参数
-
-Client 保存：
-
-- 独立 credential
-- Client 自身状态
-
-### Xray desired state
-
-Panel 为同一个 Proxy 渲染多个 Client 到同一个 Xray inbound。
-
-不要：
-
-- 为每个 Client 新建一个 Proxy
-- 为每个 Client 新建监听端口
-- 为每个 Client 新建 Agent
-- 为每个 Client 建独立 Xray 进程
-
-### UI
-
-Proxy 详情 Modal 增加：
-
-```text
-客户端
-```
-
-区域。
-
-列表至少展示：
-
-```text
-名称
-状态
-凭据摘要
-操作
-```
-
-操作：
-
-```text
-查看
-编辑
-启用 / 禁用
-删除
-```
-
-敏感凭据默认遮蔽。
-
-查看 / 编辑继续使用 Modal，不行内展开，不为 Client 建一套完全不同的页面骨架。
-
-### Phase 10A 不做
-
-当前不做：
-
-- Client 流量
-- Client 流量额度
-- Client 周期重置
-- Client 到期
-- Client 预警
-- Client 自动失效
-- Client 历史流量图
-- 精确连接级在线列表
-
-### Phase 10A 验收
-
-至少验证：
-
-1. 一个 Proxy 可以拥有多个 Client。
-2. 每个 VLESS Client 有独立 UUID。
-3. 删除一个 Client 不影响同 Proxy 的其他 Client。
-4. 禁用一个 Client 后 desired state 不再让该 Client 可用。
-5. 不为 Client 创建额外端口或额外 Xray 进程。
-6. 已有单凭据 Proxy 能安全迁移为默认 Client。
-7. 迁移后原节点凭据保持可用。
-8. Proxy 详情 Modal 可以管理 Client。
-9. 实现无第三方面板代码 / schema / UI 复制痕迹。
-
-完成 Phase 10A 后停止。
-不要继续 Phase 10B。
-
----
-
-## 15.2 Phase 10B：Client 流量、额度、周期与到期
 
 ### 目标
 
@@ -3942,7 +4053,7 @@ Client 流量
 
 ### Agent 流量采集
 
-Phase 10B 开始后，Agent 才实现本 Guide 预留的：
+Phase 10 开始后，Agent 才实现本 Guide 预留的：
 
 ```text
 POST /api/agent/traffic
@@ -4362,7 +4473,7 @@ Android  已到期      9.0G / 不限    不重置 2026-09-01   3 天前
 
 不要行内展开。
 
-### Phase 10B 明确不做
+### Phase 10 明确不做
 
 不要实现：
 
@@ -4376,7 +4487,7 @@ Android  已到期      9.0G / 不限    不重置 2026-09-01   3 天前
 - 多 Panel / 多 Xray 实例流量聚合
 - 第三方面板兼容格式
 
-### Phase 10B 验收
+### Phase 10 验收
 
 至少验证：
 
@@ -4403,7 +4514,7 @@ Android  已到期      9.0G / 不限    不重置 2026-09-01   3 天前
 21. 不实现历史图、实时速度、通知、限速。
 22. 实现无 3x-ui / x-ui 等第三方面板代码、schema、API 或 UI 复制痕迹。
 
-完成 Phase 10B 后停止。
+完成 Phase 10 后停止。
 不要继续 Realm。
 
 ---
@@ -4494,14 +4605,19 @@ restart / reload
 > Frontend Guide 只决定展示方式；`public_host` 优先级、Server IP 回退和 Realm 接入地址规则仍以本文为准。
 
 
-到这一阶段再生成：
+Phase 9A 已经为每个 VLESS Client 提供**直连 VLESS URI + 复制**。
 
-- VLESS URI
+到 Phase 12 再把“单 Client 直连 URI”扩展成完整分享层：
+
 - SS URI
-- 二维码
+- VLESS / SS 二维码
 - Clash / Mihomo 配置
 - sing-box 客户端配置
 - 订阅链接
+- Realm 中转后的分享配置
+- 批量分享 / 导出
+
+Phase 12 不应重写 Phase 9A 的 VLESS 参数语义，而是复用同一套 Proxy + Client 分享数据生成逻辑。
 
 生成直连节点：
 
@@ -5101,8 +5217,8 @@ users.role = admin | vip
 当前明确：
 
 - `proxies` 只在 VLESS Phase 真正开始时创建。
-- `clients` 在 Phase 10A 正式创建，用于一条 Proxy 下多个独立凭据。
-- `client_metrics` 在 Phase 10B 创建，只保存最新 Xray baseline、当前周期累计与最近活动，不做历史时序。
+- `clients` 与 `proxies` 一起在 Phase 9A 正式创建，用于一条 VLESS Proxy 下多个独立凭据。
+- `client_metrics` 在 Phase 10 创建，只保存最新 Xray baseline、当前周期累计与最近活动，不做历史时序。
 - `relays` 只在 Realm Phase 真正开始时创建。
 - 当前不创建 `cores` / `tasks` / `endpoints` / `chains`。
 
@@ -5416,15 +5532,14 @@ Phase 8B
 Xray 托管基础 + 安全配置应用
         ↓
 Phase 9A
-VLESS + TCP + TLS / REALITY + XTLS Vision（含 client udp443）
+VLESS + TCP + TLS / REALITY + XTLS Vision
++ Client 基础管理 / 多凭据
++ 每 Client 直连 VLESS URI
         ↓
 Phase 9B
 Shadowsocks Proxy
         ↓
-Phase 10A
-Client 基础管理 / 多凭据
-        ↓
-Phase 10B
+Phase 10
 Client 流量 / 额度 / 周期 / 到期
         ↓
 Phase 11
@@ -5459,10 +5574,10 @@ Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、P
 Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路下一步为：
 
 ```text
-Phase 9A：VLESS + TCP + TLS / REALITY + XTLS Vision
+Phase 9A：VLESS Proxy + Client 基础管理 + 每 Client 直连 VLESS URI
 ```
 
-当前 Phase 8B 只完成 Agent 的 Xray 安全托管能力，仍不能从 Panel 创建真实代理节点；真实节点需在 Phase 9A VLESS 完成后才可用。
+当前 Phase 8B 只完成 Agent 的 Xray 安全托管能力，仍不能从 Panel 创建真实代理节点；Phase 9A 完成后将首次形成“Proxy → Client → Xray → 直连 VLESS URI → 实际客户端导入”的完整最小可用链路。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
@@ -5602,7 +5717,7 @@ Server
 
 > 当前不做 Chain；多跳等出现真实需求以后再设计。
 
-> Client 固定属于 Proxy；Phase 10A 建立多 Client 模型，Phase 10B 使用 Xray per-client stats 实现独立流量、额度、周期和到期控制。
+> Client 固定属于 Proxy；Phase 9A 与 VLESS Proxy 同时建立多 Client 模型并提供每 Client 直连 VLESS URI；Phase 10 使用 Xray per-client stats 实现独立流量、额度、周期和到期控制。
 
 > Server 总流量与 Client 流量是两套独立统计：Server 读取 Linux 网卡；Client 读取 Xray per-client stats。
 
@@ -5655,8 +5770,8 @@ Server
 - [x] 不开放任意 Shell API。
 - [x] Proxy 直接属于 Server。
 - [x] Client 属于 Proxy；同一 Proxy 可以拥有多个独立凭据 Client。
-- [x] Phase 10A 正式建立 Client，多 Client 共享同一个 Proxy listener / 协议参数，不为每 Client 新建端口或 Xray 进程。
-- [x] Phase 10B 的 Client 流量来自 Xray per-client stats，不使用 Linux 网卡区分 Client。
+- [x] Phase 9A 与 VLESS Proxy 同时正式建立 Client，多 Client 共享同一个 Proxy listener / 协议参数，不为每 Client 新建端口或 Xray 进程。
+- [x] Phase 10 的 Client 流量来自 Xray per-client stats，不使用 Linux 网卡区分 Client。
 - [x] Client 支持独立流量额度，输入单位默认 G、可选 T，内部统一保存 bytes。
 - [x] Client 流量周期第一版支持 never / daily / weekly / monthly，不做 hourly。
 - [x] Client 支持独立到期时间。
@@ -5831,38 +5946,44 @@ Server
 
 ---
 
-## 2026-09-12 Client 管理与 per-client 流量设计
+## 2026-09-12 VLESS 与 Client 开发顺序调整
 
-正式将 Client 从“可能以后需要”提升为固定后续阶段：
+为尽快形成可实际使用的完整代理链路，Client 基础管理不再等待后续独立子阶段，而是直接并入 Phase 9A：
 
 ```text
-Phase 10A
-Client 基础管理 / 多凭据
+Phase 9A
+VLESS Proxy
++ Client 基础管理 / 多凭据
++ 每 Client 直连 VLESS URI
 
-Phase 10B
+Phase 10
 Client 流量 / 额度 / 周期 / 到期
 ```
 
 固定要求：
 
 1. Client 属于 Proxy，一个 Proxy 可以有多个 Client。
-2. Client 不新建 Proxy listener、端口、Agent 或 Xray 进程。
-3. Phase 10A 将已有单凭据 Proxy 安全迁移为默认 Client，保留原 credential。
-4. Phase 10B 使用 Xray 官方 per-client stats 能力统计独立 uplink / downlink。
-5. Agent 通过专用 `POST /api/agent/traffic` 上报应用层累计流量；机器 `metrics` WebSocket 仍只负责 Server 网卡统计。
-6. Panel 对 Xray cumulative counter 计算 delta，并处理 Xray 重启 / counter 归零。
-7. Client 支持独立流量额度，默认单位 G、可选 T。
-8. Client 周期第一版支持 never / daily / weekly / monthly；不做 hourly。
-9. 周期时间统一按 `Asia/Shanghai`。
-10. Client 支持独立到期时间。
-11. `enabled` 是用户手动开关；`expired / quota_exhausted / effective_enabled` 为派生状态。
-12. 流量耗尽或到期后 Client 从有效 desired state 中失效，不永久修改用户开关。
-13. 周期重置后，如果用户仍启用且未到期，可自动恢复。
-14. Client 支持手动重置本周期流量。
-15. 第一版显示最近活动时间，不把“最近有流量”伪装成精确在线连接状态。
-16. 90% 显示流量预警，100% 显示流量已用完。
-17. 不做 Client 历史流量图、实时速度、自定义阈值、通知、限速或精确连接级在线检测。
-18. 可以参考 3x-ui 等第三方面板的功能清单与用户需求，但禁止复制代码、数据库、API、字段体系、配置模板或 UI。
+2. VLESS UUID 从 Phase 9A 起直接属于 Client，不再临时作为 Proxy 的单一凭据。
+3. 新建 VLESS Proxy 时同步创建至少一个默认 Client，避免后续单凭据迁移。
+4. Client 不新建 Proxy listener、端口、Agent 或 Xray 进程。
+5. 每个 VLESS Client 可以独立启用 / 禁用，并独立设置客户端 `client_udp443`。
+6. `client_udp443` 只改变该 Client 导出的 flow，服务端 flow 仍固定为 `xtls-rprx-vision`。
+7. Phase 9A 即为每个有效 Client 生成直连 VLESS URI；QR、订阅、Realm 中转分享、批量客户端配置仍留在 Phase 12。
+8. Phase 10 使用 Xray 官方 per-client stats 能力统计独立 uplink / downlink。
+9. Agent 通过专用 `POST /api/agent/traffic` 上报应用层累计流量；机器 `metrics` WebSocket 仍只负责 Server 网卡统计。
+10. Panel 对 Xray cumulative counter 计算 delta，并处理 Xray 重启 / counter 归零。
+11. Client 支持独立流量额度，默认单位 G、可选 T。
+12. Client 周期第一版支持 never / daily / weekly / monthly；不做 hourly。
+13. 周期时间统一按 `Asia/Shanghai`。
+14. Client 支持独立到期时间。
+15. `enabled` 是用户手动开关；`expired / quota_exhausted / effective_enabled` 为派生状态。
+16. 流量耗尽或到期后 Client 从有效 desired state 中失效，不永久修改用户开关。
+17. 周期重置后，如果用户仍启用且未到期，可自动恢复。
+18. Client 支持手动重置本周期流量。
+19. 第一版显示最近活动时间，不把“最近有流量”伪装成精确在线连接状态。
+20. 90% 显示流量预警，100% 显示流量已用完。
+21. 不做 Client 历史流量图、实时速度、自定义阈值、通知、限速或精确连接级在线检测。
+22. 可以参考第三方面板的功能清单与用户需求，但禁止复制代码、数据库、API、字段体系、配置模板或 UI。
 
 ---
 

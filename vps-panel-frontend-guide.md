@@ -362,6 +362,15 @@ IP 可以两行显示：
 
 代理节点页面必须保持信息清晰、可扫读。
 
+从 Phase 9A 起，VLESS 的业务模型固定为：
+
+```text
+Proxy
+└── Client（一个或多个）
+```
+
+Proxy 主列表展示服务端公共参数；Client 凭据、Client UDP/443 与直连分享链接统一进入 Proxy 详情 Modal 管理。
+
 列表至少清晰标出：
 
 ```text
@@ -484,25 +493,21 @@ VLESS + TCP + REALITY + XTLS Vision
 流控：XTLS Vision
 ```
 
-如果客户端启用 UDP/443：
+如果某个 Client 启用 UDP/443：
 
-不要把列表的服务端 Flow 改成：
+不要把 Proxy 主列表的服务端 Flow 改成：
 
 ```text
 xtls-rprx-vision-udp443
 ```
 
-服务端显示仍然：
+Proxy 主列表仍然显示：
 
 ```text
 XTLS Vision
 ```
 
-可以在详情 Modal 中额外显示：
-
-```text
-客户端 UDP/443：允许
-```
+`UDP/443 / QUIC` 是 **Client 级客户端选项**，应在 Proxy 详情中的 Client 区域或 Client Modal 展示，不放进 Proxy 主列表制造“整个 Proxy 都开启了 udp443”的误解。
 
 ---
 
@@ -540,7 +545,20 @@ XTLS Vision
 
 Proxy 的所有详情使用 Modal。
 
-建议按区块：
+Phase 9A 起，VLESS Proxy 与 Client 基础管理同时存在：
+
+```text
+Proxy
+├── 公共服务端参数
+└── Clients
+    ├── PC
+    ├── iPhone
+    └── Android
+```
+
+因此 **UUID 不再作为 Proxy 详情字段展示**，而是在 Client 区域管理。
+
+建议 Proxy 详情按区块：
 
 ```text
 基础
@@ -556,27 +574,23 @@ Proxy 的所有详情使用 Modal。
 - Protocol
 - Transport
 - Security
-- Flow
+- Server Flow
 
 VLESS TLS
-- UUID
 - SNI
-- Certificate
+- Certificate 状态
 - Fingerprint
-- Client UDP/443
 
 VLESS REALITY
-- UUID
 - SNI
 - Dest
 - Public Key
 - Short ID
 - Fingerprint
-- Client UDP/443
 
-Shadowsocks
+Shadowsocks（实现后）
 - Method
-- Password / credential 状态
+- 公共参数
 ```
 
 敏感字段：
@@ -584,8 +598,124 @@ Shadowsocks
 - 默认遮蔽。
 - 不在列表直接显示。
 - private key 不默认显示。
+- Client UUID 只在 Client 区域 / Client Modal 中按需查看或复制。
 - 需要复制时使用明确的复制按钮。
 - 不在 UI 到处重复 secret。
+
+---
+
+## 9.1 Client 区域
+
+VLESS Proxy 详情 Modal 必须包含一个明确的：
+
+```text
+客户端
+```
+
+区域。
+
+第一阶段列表建议：
+
+```text
+名称        状态      UUID 摘要          UDP/443      操作
+PC          启用      8f2a…c91d          关闭         [复制链接] [查看] [编辑] [禁用] [删除]
+iPhone      启用      c1e0…88ab          开启         [复制链接] [查看] [编辑] [禁用] [删除]
+```
+
+要求：
+
+- Client 是 Proxy 详情的一部分，不新建独立 Client 主导航页。
+- 一个 Proxy 可以有多个 Client。
+- UUID 默认只显示摘要，不在表格完整裸露。
+- 高频操作优先紧凑。
+- `复制链接` 复制该 Client 的**直连 VLESS URI**。
+- `复制链接` 不需要先打开另一个页面。
+- 删除 / 禁用只影响当前 Client。
+- 不因为增加 Client 区域改变 Proxy 主列表宽度或页面骨架。
+- Client 较多时，Client 区域内部可以滚动或使用紧凑表格，不展开到 Proxy 主列表行内。
+
+### 空状态
+
+正常创建 VLESS Proxy 时会同时创建至少一个默认 Client，因此不应长期出现无 Client 的可用 VLESS Proxy。
+
+如果因异常数据出现空 Client：
+
+```text
+暂无客户端    [+ 新增客户端]
+```
+
+不要伪造 UUID。
+
+---
+
+## 9.2 Client 新增 / 编辑 Modal
+
+Client 使用小型 Modal，不使用独立页面。
+
+第一阶段字段：
+
+```text
+名称
+
+UUID
+自动生成 / 只读展示
+
+允许 UDP/443 / QUIC
+开 / 关
+
+状态
+启用 / 禁用
+```
+
+要求：
+
+- 创建 Client 时 UUID 由 Panel 后端生成。
+- 第一版不需要在 UI 提供任意 UUID 生成器或高级凭据编辑器。
+- 编辑 Client 时不要把 Proxy 的 SNI、REALITY、端口等公共参数重复放进来。
+- `允许 UDP/443 / QUIC` 是 Client 级选项。
+- 关闭：
+  `flow = xtls-rprx-vision`
+- 开启：
+  `flow = xtls-rprx-vision-udp443`
+- 这里只影响客户端分享参数；Proxy 主列表和服务端 Flow 仍显示 XTLS Vision。
+
+---
+
+## 9.3 Client 查看 / 分享 Modal
+
+如果用户点击 Client 的“查看”，使用小型 Modal。
+
+至少展示：
+
+```text
+名称
+状态
+UUID
+客户端 Flow
+连接地址
+端口
+Security
+SNI
+REALITY Public Key / Short ID（如适用）
+直连 VLESS URI
+```
+
+操作至少：
+
+```text
+复制 UUID
+复制 VLESS 链接
+```
+
+要求：
+
+- 不显示 REALITY private key。
+- 不显示 TLS private key。
+- 不显示 Agent Token / Panel Token。
+- `public_host` 非空时，连接地址优先显示 public_host。
+- `public_host` 为空时，回退显示 Server IP。
+- remark 默认由 Proxy 名称 + Client 名称组成，方便客户端区分。
+- 当前只做直连 VLESS URI；二维码、订阅、Realm 中转链接后续再做。
 
 ---
 
@@ -627,10 +757,44 @@ TCP        固定
 
 Flow
 XTLS Vision    固定
+```
+
+`允许 UDP/443 / QUIC` 不再放在 Proxy 公共配置中；它属于 Client。
+
+### 新建 VLESS Proxy 时同步创建首个 Client
+
+“新增节点” Modal 在 VLESS 公共参数之后增加一个轻量首个 Client 区域：
+
+```text
+首个 Client
+
+名称
+默认客户端        默认值，可修改
+
+UUID
+自动生成
 
 允许 UDP/443 / QUIC
 开 / 关
 ```
+
+保存时：
+
+```text
+创建 Proxy
++
+创建首个 Client
+```
+
+作为一次完整业务操作。
+
+前端不应先创建一个无凭据 Proxy，再要求用户去另一个页面补 Client。
+
+编辑已有 Proxy 时：
+
+- 这里只编辑 Proxy 公共参数。
+- Client 在 Proxy 详情的 Client 区域单独管理。
+- 不把多个 Client 全部塞进 Proxy 编辑表单。
 
 TLS / REALITY 使用条件表单：
 
@@ -969,6 +1133,8 @@ modals/
   ServerDetailModal.vue
   ProxyDetailModal.vue
   ProxyEditModal.vue
+  ClientDetailModal.vue
+  ClientEditModal.vue
   RealmDetailModal.vue
   RealmEditModal.vue
 ```
@@ -1017,22 +1183,32 @@ Sidebar active 项使用项目自己的主色浅背景即可。
 3. 主内容区从 Sidebar 右侧开始并充分利用屏幕宽度。
 4. Server 列表容器明显比旧版更宽，不被窄 `max-width` 限制。
 5. Server / Proxy / Realm 使用统一的长列表视觉结构。
-6. 所有列表的操作列固定在最右侧。
+6. 所有主列表的操作列固定在最右侧。
 7. Server 详情使用 Modal。
 8. Proxy 详情使用 Modal。
 9. Realm 详情使用 Modal。
-10. 不存在列表行内展开详情。
+10. 不存在资源主列表行内展开详情。
 11. 不为资源查看详情跳转单独页面。
 12. Proxy 列表清晰展示入口 IP、出口 IP、端口、协议、传输层、安全层和流控。
 13. VLESS TLS / REALITY 的安全层能够一眼区分。
-14. VLESS 的 Flow 清晰显示 XTLS Vision。
-15. Shadowsocks 对不适用字段显示 `--`，不制造虚假协议层。
-16. Proxy 配置 `public_host` 后，列表仍保留入口 IP，并以次级信息显示节点域名。
-17. Realm 列表清晰展示入口 IP、监听端口、目标 host / IP、目标端口和网络类型。
-18. 搜索框与“新增”按钮保持在页面标题右侧区域。
-19. 打开 / 关闭 Modal 不改变列表宽度和滚动位置。
-20. 不新增 Vue Router / Pinia / 其他 UI Framework，除非未来出现明确需求。
-21. UI 只借鉴 Komari 的布局逻辑与信息密度，不复制其品牌、代码、样式或组件实现。
+14. VLESS Proxy 主列表的 Flow 始终清晰显示 XTLS Vision，不因某个 Client 开启 UDP/443 而改成 udp443 flow。
+15. Proxy 配置 `public_host` 后，列表仍保留入口 IP，并以次级信息显示节点域名。
+16. VLESS Proxy 详情包含 Client 区域。
+17. 一个 Proxy 的多个 Client 使用紧凑列表展示，不为每个 Client 创建独立主页面。
+18. Client UUID 在列表默认摘要显示，完整 UUID 只在 Client 查看 / 编辑流程中按需展示。
+19. 每个 Client 都有明确的启用 / 禁用状态。
+20. `允许 UDP/443 / QUIC` 位于 Client UI，不位于 Proxy 公共配置。
+21. 每个有效 VLESS Client 都提供“复制 VLESS 链接”操作。
+22. Client 直连分享中不展示 REALITY private key、TLS private key、Agent Token 或 Panel Token。
+23. 新建 VLESS Proxy 时同步创建首个 Client，不出现需要跨页面补凭据的半成品创建流程。
+24. Proxy 编辑只编辑公共参数；Client 继续在 Client 区域单独管理。
+25. 当前 Client UI 不提前加入流量、quota、周期、到期、历史图或精确在线状态。
+26. Shadowsocks 对不适用字段显示 `--`，不制造虚假协议层。
+27. Realm 列表清晰展示入口 IP、监听端口、目标 host / IP、目标端口和网络类型。
+28. 搜索框与“新增”按钮保持在页面标题右侧区域。
+29. 打开 / 关闭 Modal 不改变列表宽度和滚动位置。
+30. 不新增 Vue Router / Pinia / 其他 UI Framework，除非未来出现明确需求。
+31. UI 只借鉴 Komari 的布局逻辑与信息密度，不复制其品牌、代码、样式或组件实现。
 
 ---
 
@@ -1052,6 +1228,13 @@ Proxy：
 长列表，必须看清
 入口 IP / 出口 IP / 端口 /
 协议 / 传输 / 安全层 / 流控。
+
+Client：
+属于 Proxy。
+在 Proxy 详情 Modal 内用紧凑列表管理，
+每 Client 独立 UUID / enabled / UDP443，
+并可复制直连 VLESS URI。
+不为 Client 新建独立主页面。
 
 Realm：
 长列表，必须看清

@@ -16,8 +16,10 @@ import {
   parseTrafficLimit,
   trafficWarningLevel,
   type TrafficLimitUnit,
+  useTrafficForm,
 } from './traffic'
 import ProxiesView from './ProxiesView.vue'
+import { formatExpirationDate, formatServerExpiration } from './server'
 
 type User = {
   id: number
@@ -108,7 +110,6 @@ const selectedServer = ref<ServerRecord | null>(null)
 const createdServer = ref<CreatedServer | null>(null)
 const serverModalOpen = ref(false)
 const expirationModalOpen = ref(false)
-const trafficModalOpen = ref(false)
 const trafficAdjustmentModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
@@ -121,11 +122,6 @@ const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
 const expirationInput = ref('')
-const trafficLimitInput = ref('')
-const trafficLimitUnit = ref<TrafficLimitUnit>('G')
-const trafficCountMode = ref<ServerRecord['traffic_count_mode']>('single')
-const trafficResetDay = ref(1)
-const trafficResetTime = ref('00:00')
 const trafficAdjustmentInput = ref('')
 const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
 
@@ -135,6 +131,34 @@ const confirmPassword = ref('')
 
 let serverLoadPromise: Promise<void> | null = null
 let serverPollTimer: number | undefined
+
+const {
+  trafficModalOpen,
+  trafficFormError,
+  trafficLimitInput,
+  trafficLimitUnit,
+  trafficCountMode,
+  trafficResetDay,
+  trafficResetTime,
+  openTrafficModal,
+  closeTrafficModal,
+  resetTrafficForm,
+  saveTrafficConfig,
+} = useTrafficForm(
+  selectedServer,
+  submitting,
+  async (serverID, payload) => {
+    const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    return response.server
+  },
+  loadServers,
+  (message) => {
+    error.value = message
+  },
+)
 
 const invitationToken = new URLSearchParams(window.location.search).get('token') ?? ''
 const isInvitationPage = computed(
@@ -445,63 +469,6 @@ async function updateExpiration(expiresAt: string | null) {
   })
 }
 
-function openTrafficModal() {
-  if (!selectedServer.value || selectedServer.value.archived_at) return
-  const limit = formatTrafficLimitInput(selectedServer.value.monthly_traffic_limit_bytes)
-  trafficLimitInput.value = limit.value
-  trafficLimitUnit.value = limit.unit
-  trafficCountMode.value = selectedServer.value.traffic_count_mode
-  trafficResetDay.value = selectedServer.value.traffic_reset_day
-  trafficResetTime.value = selectedServer.value.traffic_reset_time
-  trafficModalOpen.value = true
-}
-
-function closeTrafficModal() {
-  trafficModalOpen.value = false
-  resetTrafficForm()
-}
-
-function resetTrafficForm() {
-  trafficLimitInput.value = ''
-  trafficLimitUnit.value = 'G'
-  trafficCountMode.value = 'single'
-  trafficResetDay.value = 1
-  trafficResetTime.value = '00:00'
-}
-
-async function saveTrafficConfig() {
-  if (!selectedServer.value) return
-  const monthlyLimit = parseTrafficLimit(trafficLimitInput.value, trafficLimitUnit.value)
-  if (monthlyLimit === undefined) {
-    error.value = '月流量额度格式无效，请输入大于 0 的数值，或留空表示不限'
-    return
-  }
-  if (!Number.isInteger(trafficResetDay.value) || trafficResetDay.value < 1 || trafficResetDay.value > 31) {
-    error.value = '流量重置日必须在 1–31 之间'
-    return
-  }
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(trafficResetTime.value)) {
-    error.value = '流量重置时间格式无效'
-    return
-  }
-  const serverID = selectedServer.value.id
-  await submit(async () => {
-    const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        monthly_traffic_limit_bytes: monthlyLimit,
-        traffic_count_mode: trafficCountMode.value,
-        traffic_reset_day: trafficResetDay.value,
-        traffic_reset_time: trafficResetTime.value,
-      }),
-    })
-    selectedServer.value = response.server
-    trafficModalOpen.value = false
-    resetTrafficForm()
-    await loadServers()
-  })
-}
-
 function openTrafficAdjustmentModal() {
   if (!selectedServer.value || selectedServer.value.archived_at) return
   const target = formatTrafficLimitInput(selectedServer.value.traffic_used_bytes)
@@ -624,19 +591,6 @@ function formatTime(value: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
-}
-
-function formatExpirationDate(value: string) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-  const parts = Object.fromEntries(
-    formatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]),
-  )
-  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function formatPercent(value: number) {
@@ -994,7 +948,7 @@ onUnmounted(stopServerPolling)
                     <th>名称</th>
                     <th>状态</th>
                     <th>本周期流量</th>
-                    <th>创建时间</th>
+                    <th>到期时间</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -1023,7 +977,7 @@ onUnmounted(stopServerPolling)
                       </div>
                     </td>
                     <td>{{ trafficUsageLabel(value) }}</td>
-                    <td>{{ formatTime(value.created_at) }}</td>
+                    <td>{{ formatServerExpiration(value.expires_at) }}</td>
                     <td class="server-actions">
                       <n-button
                         size="small"
@@ -1351,6 +1305,9 @@ onUnmounted(stopServerPolling)
             @close="closeTrafficModal"
           >
             <form class="traffic-form" @submit.prevent="saveTrafficConfig">
+              <n-alert v-if="trafficFormError" type="error" class="form-alert">
+                {{ trafficFormError }}
+              </n-alert>
               <label>
                 <span>月流量额度</span>
                 <div class="traffic-limit-input">

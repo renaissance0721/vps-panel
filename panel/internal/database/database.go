@@ -69,6 +69,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			desired_state_version INTEGER NOT NULL DEFAULT 1,
 			archived_at INTEGER,
 			expires_at INTEGER,
 			monthly_traffic_limit_bytes INTEGER CHECK (monthly_traffic_limit_bytes >= 0),
@@ -98,6 +99,11 @@ func migrate(db *sql.DB) error {
 			version TEXT NOT NULL,
 			registered_at INTEGER NOT NULL,
 			last_seen_at INTEGER,
+			applied_config_version INTEGER NOT NULL DEFAULT 0,
+			config_sync_status TEXT NOT NULL DEFAULT 'pending'
+				CHECK (config_sync_status IN ('pending', 'success', 'failed')),
+			config_sync_error TEXT NOT NULL DEFAULT '',
+			config_synced_at INTEGER,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -154,7 +160,39 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerTraffic(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateAgentConfigSync(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateAgentConfigSync(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"servers", "desired_state_version", "desired_state_version INTEGER NOT NULL DEFAULT 1"},
+		{"agents", "applied_config_version", "applied_config_version INTEGER NOT NULL DEFAULT 0"},
+		{"agents", "config_sync_status", "config_sync_status TEXT NOT NULL DEFAULT 'pending' CHECK (config_sync_status IN ('pending', 'success', 'failed'))"},
+		{"agents", "config_sync_error", "config_sync_error TEXT NOT NULL DEFAULT ''"},
+		{"agents", "config_synced_at", "config_synced_at INTEGER"},
+	}
+	for _, column := range columns {
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", column.table)
+		if err := db.QueryRowContext(ctx, query, column.name).Scan(&count); err != nil {
+			return fmt.Errorf("inspect %s.%s column: %w", column.table, column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", column.table, column.definition)
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add %s.%s column: %w", column.table, column.name, err)
+		}
+	}
 	return nil
 }
 

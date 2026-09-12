@@ -247,6 +247,9 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 	connected := make(chan string, 1)
 	handlerResult := make(chan error, 1)
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			handlerResult <- err
@@ -352,9 +355,13 @@ func TestConnectAgentRetriesUnavailablePanelAndCancelsWait(t *testing.T) {
 		<-ctx.Done()
 		return false
 	}
+	fallbackPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveTestAgentConfig(w, r)
+	}))
+	defer fallbackPanel.Close()
 
 	configPath := writeAgentConfig(t, config{
-		PanelURL: "https://panel.example", ServerID: 5, AgentID: 6, AgentToken: "retry-secret",
+		PanelURL: fallbackPanel.URL, ServerID: 5, AgentID: 6, AgentToken: "retry-secret",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -403,9 +410,13 @@ func TestConnectAgentRetriesUnauthorizedWithoutChangingConfigOrLoggingToken(t *t
 	}
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
+	fallbackPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serveTestAgentConfig(w, r)
+	}))
+	defer fallbackPanel.Close()
 
 	configPath := writeAgentConfig(t, config{
-		PanelURL: "https://panel.example", ServerID: 8, AgentID: 9, AgentToken: "auth-secret",
+		PanelURL: fallbackPanel.URL, ServerID: 8, AgentID: 9, AgentToken: "auth-secret",
 	})
 	originalConfig, err := os.ReadFile(configPath)
 	if err != nil {
@@ -452,6 +463,9 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	secondConnected := make(chan struct{}, 1)
 	handlerErrors := make(chan error, 2)
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer heartbeat-secret" {
 			handlerErrors <- errors.New("missing Agent authorization")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -574,6 +588,9 @@ func TestConnectAgentSendsMetricsAndHeartbeat(t *testing.T) {
 	received := make(chan metricsMessage, 1)
 	handlerErrors := make(chan error, 1)
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			handlerErrors <- err
@@ -667,6 +684,9 @@ func TestMetricsCollectionFailureDoesNotStopHeartbeat(t *testing.T) {
 
 	heartbeat := make(chan struct{}, 1)
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -746,6 +766,9 @@ func TestMetricsWriteFailureStartsReconnect(t *testing.T) {
 	}
 
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -800,6 +823,9 @@ func TestHeartbeatWriteFailureStartsReconnect(t *testing.T) {
 	}
 
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
 		connection, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -859,4 +885,18 @@ func writeAgentConfig(t *testing.T, value config) string {
 		t.Fatalf("save Agent config: %v", err)
 	}
 	return path
+}
+
+func serveTestAgentConfig(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/agent/config":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":1,"xray":{"enabled":false,"proxies":[]},"realm":{"enabled":false,"relays":[]}}`))
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/api/agent/config/result":
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	default:
+		return false
+	}
 }

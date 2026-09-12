@@ -1,8 +1,10 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成至 **Phase 7A**：提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
+多 VPS 管理面板。目前已完成 **Phase 7A** 和 **Phase 8A**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步基础、SQLite、健康检查，以及 Panel 和 Agent 的原生 Linux + systemd 部署。
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标、到期副作用、代理内核或端口转发。
+
+Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。当前 desired state 仍为空，Panel **不能创建真实代理节点**；需要继续完成 Phase 8B Xray 托管基础和 Phase 9A VLESS 后，真实节点才可用。
 
 ## VPS 部署
 

@@ -52,7 +52,10 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	for table, columns := range map[string][]string{
 		"servers": {
-			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
+			"desired_state_version", "monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
+		},
+		"agents": {
+			"applied_config_version", "config_sync_status", "config_sync_error", "config_synced_at",
 		},
 		"server_metrics": {
 			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "traffic_adjustment_bytes", "cycle_started_at",
@@ -91,6 +94,29 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	if adjustment != 0 {
 		t.Fatalf("traffic adjustment default = %d, want 0", adjustment)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO agents (server_id, token_hash, version, registered_at, created_at, updated_at)
+		 VALUES (1, 'agent-hash', 'test', 1, 1, 1)`,
+	); err != nil {
+		t.Fatalf("insert Agent with config sync defaults: %v", err)
+	}
+	var desiredVersion, appliedVersion int64
+	var syncStatus, syncError string
+	var syncedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT servers.desired_state_version, agents.applied_config_version,
+		 agents.config_sync_status, agents.config_sync_error, agents.config_synced_at
+		 FROM servers JOIN agents ON agents.server_id = servers.id WHERE servers.id = 1`,
+	).Scan(&desiredVersion, &appliedVersion, &syncStatus, &syncError, &syncedAt); err != nil {
+		t.Fatalf("read config sync defaults: %v", err)
+	}
+	if desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid {
+		t.Fatalf("config sync defaults = (%d, %d, %q, %q, %v)",
+			desiredVersion, appliedVersion, syncStatus, syncError, syncedAt.Valid)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("second migration error = %v", err)
 	}
 }
 
@@ -409,16 +435,21 @@ func TestOpenMigratesAgentLastSeenWithoutLosingData(t *testing.T) {
 	if columnCount != 1 {
 		t.Fatalf("last_seen_at column count = %d, want 1", columnCount)
 	}
-	var serverID int64
-	var tokenHash string
-	var lastSeenAt sql.NullInt64
+	var serverID, desiredVersion, appliedVersion int64
+	var tokenHash, syncStatus, syncError string
+	var lastSeenAt, syncedAt sql.NullInt64
 	if err := db.QueryRow(
-		`SELECT server_id, token_hash, last_seen_at FROM agents WHERE id = 9`,
-	).Scan(&serverID, &tokenHash, &lastSeenAt); err != nil {
+		`SELECT agents.server_id, agents.token_hash, agents.last_seen_at,
+		 servers.desired_state_version, agents.applied_config_version,
+		 agents.config_sync_status, agents.config_sync_error, agents.config_synced_at
+		 FROM agents JOIN servers ON servers.id = agents.server_id WHERE agents.id = 9`,
+	).Scan(&serverID, &tokenHash, &lastSeenAt, &desiredVersion, &appliedVersion, &syncStatus, &syncError, &syncedAt); err != nil {
 		t.Fatalf("read migrated Agent: %v", err)
 	}
-	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid {
-		t.Fatalf("migrated Agent = (%d, %q, %v), want preserved row with NULL last_seen_at", serverID, tokenHash, lastSeenAt.Valid)
+	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid ||
+		desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid {
+		t.Fatalf("migrated Agent = (%d, %q, %v, %d, %d, %q, %q, %v)",
+			serverID, tokenHash, lastSeenAt.Valid, desiredVersion, appliedVersion, syncStatus, syncError, syncedAt.Valid)
 	}
 	var systemInfoTableCount int
 	if err := db.QueryRow(

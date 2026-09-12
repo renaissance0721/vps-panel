@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B 和 Phase 6A–6B 已完成；下一步进入 Phase 7A 机器流量与月流量管理。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A 和 Phase 8A 已完成；Phase 7B 暂缓，不阻塞代理主链路。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -2004,6 +2004,8 @@ Root filesystem 即可。
 
 # 9. Phase 7A：机器网卡累计流量与月流量统计
 
+> 当前状态：已完成。
+
 ## 目标
 
 本阶段只解决一件事：
@@ -2699,6 +2701,8 @@ cycle_tx_bytes
 
 # 10. Phase 7B：服务器分组、标签与筛选
 
+> 当前状态：暂缓，不阻塞代理主链路。
+
 > 本 Phase 涉及 Server 列表工具栏、筛选器、分组 / 标签显示。
 >
 > UI 实现必须参考 `vps-panel-frontend-guide.md` 中：
@@ -2848,6 +2852,8 @@ CPU / RAM / Disk / Uptime
 ---
 
 # 11. Phase 8A：通用 Agent 配置同步 API
+
+> 当前状态：已完成。Panel 与 Agent 已建立带版本的完整 desired state 拉取、同步结果回报、`config_changed` 通知和约 30 秒 REST 兜底链路；当前仍只支持空 Xray / Realm 配置的 no-op apply。
 
 ## 目标
 
@@ -5397,7 +5403,7 @@ Phase 7A
 机器网卡累计流量 + 月流量额度 / 重置
         ↓
 Phase 7B
-服务器分组 / 标签 / 筛选
+服务器分组 / 标签 / 筛选（暂缓，不阻塞代理主链路）
         ↓
 第一阶段服务器管理 MVP
         ↓
@@ -5446,13 +5452,15 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A 和 Phase 6B 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A 和 Phase 8A 已完成。
 
-下一步固定为：
+Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路下一步为：
 
 ```text
-Phase 7A：机器网卡流量、月流量额度与重置周期
+Phase 8B：Xray 托管基础与安全配置应用
 ```
+
+当前 Phase 8A 仍不能从 Panel 创建真实代理节点；真实节点需在 Phase 8B Xray 托管基础和 Phase 9A VLESS 完成后才可用。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 

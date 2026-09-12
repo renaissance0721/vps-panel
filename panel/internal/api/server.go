@@ -35,7 +35,12 @@ type server struct {
 	webRoot       string
 	panelVersion  string
 	connectionsMu sync.Mutex
-	connections   map[int64]*websocket.Conn
+	connections   map[int64]*agentConnection
+}
+
+type agentConnection struct {
+	socket  *websocket.Conn
+	writeMu sync.Mutex
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
@@ -49,7 +54,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 		servers:      serverstore.NewService(db),
 		webRoot:      webRoot,
 		panelVersion: panelVersion,
-		connections:  make(map[int64]*websocket.Conn),
+		connections:  make(map[int64]*agentConnection),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
@@ -59,6 +64,8 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
+	mux.HandleFunc("GET /api/agent/config", s.getAgentConfig)
+	mux.HandleFunc("POST /api/agent/config/result", s.recordAgentConfigResult)
 	mux.HandleFunc("GET /api/agent/ws", s.agentWebSocket)
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))
@@ -187,6 +194,33 @@ type agentRegistrationResponse struct {
 	AgentToken string `json:"agent_token"`
 }
 
+type agentDesiredStateResponse struct {
+	Version int64                  `json:"version"`
+	Xray    agentDesiredXrayState  `json:"xray"`
+	Realm   agentDesiredRealmState `json:"realm"`
+}
+
+type agentDesiredXrayState struct {
+	Enabled bool  `json:"enabled"`
+	Proxies []any `json:"proxies"`
+}
+
+type agentDesiredRealmState struct {
+	Enabled bool  `json:"enabled"`
+	Relays  []any `json:"relays"`
+}
+
+type agentConfigResultRequest struct {
+	Version int64  `json:"version"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+type agentConfigChangedMessage struct {
+	Type    string `json:"type"`
+	Version int64  `json:"version"`
+}
+
 type agentSystemInfoMessage struct {
 	Type      string   `json:"type"`
 	Hostname  string   `json:"hostname"`
@@ -310,20 +344,72 @@ func (s *server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
+func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
+	agent, _, ok := s.authenticateAgentRequest(w, r)
+	if !ok {
+		return
+	}
+	state, err := s.servers.GetDesiredState(r.Context(), agent.ID, agent.ServerID)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
+		Version: state.Version,
+		Xray: agentDesiredXrayState{
+			Proxies: make([]any, 0),
+		},
+		Realm: agentDesiredRealmState{
+			Relays: make([]any, 0),
+		},
+	})
+}
+
+func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request) {
+	agent, agentToken, ok := s.authenticateAgentRequest(w, r)
+	if !ok {
+		return
+	}
+	var request agentConfigResultRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.Message != "" && strings.Contains(request.Message, agentToken) {
+		writeError(w, http.StatusBadRequest, "Agent 配置同步结果无效")
+		return
+	}
+	if err := s.servers.RecordConfigResult(r.Context(), agent.ID, agent.ServerID, serverstore.ConfigResult{
+		Version: request.Version,
+		Status:  request.Status,
+		Message: request.Message,
+	}); err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
+func (s *server) authenticateAgentRequest(w http.ResponseWriter, r *http.Request) (serverstore.Agent, string, bool) {
 	authorization := strings.Fields(r.Header.Get("Authorization"))
 	if len(authorization) != 2 || !strings.EqualFold(authorization[0], "Bearer") {
 		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
-		return
+		return serverstore.Agent{}, "", false
 	}
-
 	agent, err := s.servers.AuthenticateAgent(r.Context(), authorization[1])
 	if errors.Is(err, serverstore.ErrInvalidAgentToken) {
 		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
-		return
+		return serverstore.Agent{}, "", false
 	}
 	if err != nil {
 		writeInternalError(w)
+		return serverstore.Agent{}, "", false
+	}
+	return agent, authorization[1], true
+}
+
+func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
+	agent, _, ok := s.authenticateAgentRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -333,16 +419,17 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer connection.CloseNow()
 	connection.SetReadLimit(8 << 10)
-	previous := s.trackAgentConnection(agent.ServerID, connection)
+	currentConnection := &agentConnection{socket: connection}
+	previous := s.trackAgentConnection(agent.ServerID, currentConnection)
 	if previous != nil {
-		previous.CloseNow()
+		previous.socket.CloseNow()
 	}
 
 	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = s.servers.SetAgentConnected(statusContext, agent.ID, agent.ServerID)
 	cancel()
 	if err != nil {
-		s.untrackAgentConnection(agent.ServerID, connection)
+		s.untrackAgentConnection(agent.ServerID, currentConnection)
 		if errors.Is(err, serverstore.ErrArchived) || errors.Is(err, serverstore.ErrNotFound) {
 			return
 		}
@@ -357,7 +444,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		if readErr != nil {
 			break
 		}
-		if !s.isCurrentAgentConnection(agent.ServerID, connection) {
+		if !s.isCurrentAgentConnection(agent.ServerID, currentConnection) {
 			return
 		}
 		var payload struct {
@@ -386,7 +473,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				validMessage = false
 				break
 			}
-			current, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, connection, serverstore.SystemInfoReport{
+			current, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, currentConnection, serverstore.SystemInfoReport{
 				Hostname:  systemInfo.Hostname,
 				OSName:    systemInfo.OSName,
 				OSVersion: systemInfo.OSVersion,
@@ -423,7 +510,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				nicRXBytes = *metrics.NICRXBytes
 				nicTXBytes = *metrics.NICTXBytes
 			}
-			current, reportErr := s.reportCurrentMetrics(agent.ServerID, agent.ID, connection, serverstore.MetricsReport{
+			current, reportErr := s.reportCurrentMetrics(agent.ServerID, agent.ID, currentConnection, serverstore.MetricsReport{
 				CPUPercent:       metrics.CPUPercent,
 				MemoryUsedBytes:  metrics.MemoryUsedBytes,
 				MemoryTotalBytes: metrics.MemoryTotalBytes,
@@ -454,7 +541,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	current, err := s.disconnectCurrentAgent(agent.ServerID, connection)
+	current, err := s.disconnectCurrentAgent(agent.ServerID, currentConnection)
 	if !current {
 		return
 	}
@@ -876,7 +963,7 @@ func releaseVersion(value string) string {
 	return value
 }
 
-func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn) *websocket.Conn {
+func (s *server) trackAgentConnection(serverID int64, connection *agentConnection) *agentConnection {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	previous := s.connections[serverID]
@@ -884,7 +971,7 @@ func (s *server) trackAgentConnection(serverID int64, connection *websocket.Conn
 	return previous
 }
 
-func (s *server) untrackAgentConnection(serverID int64, connection *websocket.Conn) bool {
+func (s *server) untrackAgentConnection(serverID int64, connection *agentConnection) bool {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	if s.connections[serverID] != connection {
@@ -894,13 +981,13 @@ func (s *server) untrackAgentConnection(serverID int64, connection *websocket.Co
 	return true
 }
 
-func (s *server) isCurrentAgentConnection(serverID int64, connection *websocket.Conn) bool {
+func (s *server) isCurrentAgentConnection(serverID int64, connection *agentConnection) bool {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	return s.connections[serverID] == connection
 }
 
-func (s *server) disconnectCurrentAgent(serverID int64, connection *websocket.Conn) (bool, error) {
+func (s *server) disconnectCurrentAgent(serverID int64, connection *agentConnection) (bool, error) {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	if s.connections[serverID] != connection {
@@ -914,7 +1001,7 @@ func (s *server) disconnectCurrentAgent(serverID int64, connection *websocket.Co
 
 func (s *server) reportCurrentSystemInfo(
 	serverID, agentID int64,
-	connection *websocket.Conn,
+	connection *agentConnection,
 	report serverstore.SystemInfoReport,
 ) (bool, error) {
 	s.connectionsMu.Lock()
@@ -929,7 +1016,7 @@ func (s *server) reportCurrentSystemInfo(
 
 func (s *server) reportCurrentMetrics(
 	serverID, agentID int64,
-	connection *websocket.Conn,
+	connection *agentConnection,
 	report serverstore.MetricsReport,
 ) (bool, error) {
 	s.connectionsMu.Lock()
@@ -942,13 +1029,44 @@ func (s *server) reportCurrentMetrics(
 	return true, s.servers.ReportMetrics(ctx, agentID, serverID, report)
 }
 
+func (s *server) notifyConfigChanged(serverID, version int64) error {
+	if version <= 0 {
+		return errors.New("invalid desired state version")
+	}
+	s.connectionsMu.Lock()
+	connection := s.connections[serverID]
+	s.connectionsMu.Unlock()
+	if connection == nil {
+		return nil
+	}
+
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	s.connectionsMu.Lock()
+	current := s.connections[serverID] == connection
+	s.connectionsMu.Unlock()
+	if !current {
+		return nil
+	}
+	payload, err := json.Marshal(agentConfigChangedMessage{Type: "config_changed", Version: version})
+	if err != nil {
+		return fmt.Errorf("encode Agent config notification: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := connection.socket.Write(ctx, websocket.MessageText, payload); err != nil {
+		return fmt.Errorf("notify Agent config changed: %w", err)
+	}
+	return nil
+}
+
 func (s *server) closeAgentConnections(serverID int64) {
 	s.connectionsMu.Lock()
 	connection := s.connections[serverID]
 	delete(s.connections, serverID)
 	s.connectionsMu.Unlock()
 	if connection != nil {
-		connection.CloseNow()
+		connection.socket.CloseNow()
 	}
 }
 
@@ -1049,6 +1167,12 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "月流量设置无效")
 	case errors.Is(err, serverstore.ErrInvalidTrafficTarget):
 		writeError(w, http.StatusBadRequest, "目标已用流量必须是非负整数")
+	case errors.Is(err, serverstore.ErrInvalidConfigResult):
+		writeError(w, http.StatusBadRequest, "Agent 配置同步结果无效")
+	case errors.Is(err, serverstore.ErrConfigVersionAhead):
+		writeError(w, http.StatusBadRequest, "Agent 配置版本高于当前目标版本")
+	case errors.Is(err, serverstore.ErrInvalidAgentToken):
+		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
 	default:
 		writeInternalError(w)
 	}

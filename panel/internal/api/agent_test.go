@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -94,6 +96,167 @@ func TestAgentRegistrationAPI(t *testing.T) {
 	}, nil)
 	if reused.Code != http.StatusUnauthorized {
 		t.Fatalf("reused registration status = %d, want %d", reused.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	firstServer, err := service.Create(t.Context(), "Config API One")
+	if err != nil {
+		t.Fatalf("create first Server: %v", err)
+	}
+	firstAgent, err := service.RegisterAgent(t.Context(), firstServer.EnrollmentToken, "v0.10.0", false)
+	if err != nil {
+		t.Fatalf("register first Agent: %v", err)
+	}
+	secondServer, err := service.Create(t.Context(), "Config API Two")
+	if err != nil {
+		t.Fatalf("create second Server: %v", err)
+	}
+	if _, err := service.RegisterAgent(t.Context(), secondServer.EnrollmentToken, "v0.10.0", false); err != nil {
+		t.Fatalf("register second Agent: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE servers SET desired_state_version = 3 WHERE id = ?`, secondServer.ID); err != nil {
+		t.Fatalf("set second desired state version: %v", err)
+	}
+	handler := NewHandler(db, t.TempDir())
+
+	for name, tokenValue := range map[string]string{"missing": "", "invalid": "wrong-token"} {
+		t.Run(name, func(t *testing.T) {
+			response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, tokenValue)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("GET config status = %d, want 401", response.Code)
+			}
+		})
+	}
+	response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, firstAgent.Token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET config status = %d, body = %q", response.Code, response.Body.String())
+	}
+	var state agentDesiredStateResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatalf("decode desired state: %v", err)
+	}
+	if state.Version != 1 || state.Xray.Enabled || state.Xray.Proxies == nil || len(state.Xray.Proxies) != 0 ||
+		state.Realm.Enabled || state.Realm.Relays == nil || len(state.Realm.Relays) != 0 {
+		t.Fatalf("initial desired state = %+v", state)
+	}
+}
+
+func TestAgentConfigResultAPIValidationAndPersistence(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Config Result")
+	if err != nil {
+		t.Fatalf("create Server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.10.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	handler := NewHandler(db, t.TempDir())
+
+	unauthorized := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": 1, "status": "success", "message": "",
+	}, "")
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized result status = %d, want 401", unauthorized.Code)
+	}
+	failed := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": 1, "status": "failed", "message": "safe apply error",
+	}, registered.Token)
+	if failed.Code != http.StatusNoContent {
+		t.Fatalf("failed result status = %d, body = %q", failed.Code, failed.Body.String())
+	}
+	var appliedVersion int64
+	var status, message string
+	if err := db.QueryRow(
+		`SELECT applied_config_version, config_sync_status, config_sync_error FROM agents WHERE id = ?`, registered.ID,
+	).Scan(&appliedVersion, &status, &message); err != nil {
+		t.Fatalf("read failed config result: %v", err)
+	}
+	if appliedVersion != 0 || status != serverstore.ConfigSyncFailed || message != "safe apply error" {
+		t.Fatalf("failed config state = (%d, %q, %q)", appliedVersion, status, message)
+	}
+
+	success := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": 1, "status": "success", "message": "",
+	}, registered.Token)
+	if success.Code != http.StatusNoContent {
+		t.Fatalf("success result status = %d, body = %q", success.Code, success.Body.String())
+	}
+	if err := db.QueryRow(
+		`SELECT applied_config_version, config_sync_status, config_sync_error FROM agents WHERE id = ?`, registered.ID,
+	).Scan(&appliedVersion, &status, &message); err != nil {
+		t.Fatalf("read successful config result: %v", err)
+	}
+	if appliedVersion != 1 || status != serverstore.ConfigSyncSuccess || message != "" {
+		t.Fatalf("successful config state = (%d, %q, %q)", appliedVersion, status, message)
+	}
+
+	for name, body := range map[string]map[string]any{
+		"future version": {"version": 2, "status": "success", "message": ""},
+		"invalid status": {"version": 1, "status": "other", "message": ""},
+		"long message":   {"version": 1, "status": "failed", "message": strings.Repeat("x", 4097)},
+		"token message":  {"version": 1, "status": "failed", "message": "secret " + registered.Token},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", body, registered.Token)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("invalid result status = %d, body = %q", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestPanelSendsConfigChangedToCurrentAgentConnection(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Config Notification")
+	if err != nil {
+		t.Fatalf("create Server: %v", err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.10.0", false)
+	if err != nil {
+		t.Fatalf("register Agent: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE servers SET desired_state_version = 7 WHERE id = ?`, created.ID); err != nil {
+		t.Fatalf("set desired state version: %v", err)
+	}
+	handler := &server{servers: service, connections: make(map[int64]*agentConnection)}
+	panel := httptest.NewServer(http.HandlerFunc(handler.agentWebSocket))
+	defer panel.Close()
+	header := http.Header{"Authorization": []string{"Bearer " + registered.Token}}
+	connection, response, err := websocket.Dial(t.Context(), panel.URL, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
+	}
+	defer connection.CloseNow()
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	if err := handler.notifyConfigChanged(created.ID, 7); err != nil {
+		t.Fatalf("notify config changed: %v", err)
+	}
+	messageType, message, err := connection.Read(t.Context())
+	if err != nil {
+		t.Fatalf("read config notification: %v", err)
+	}
+	var notification agentConfigChangedMessage
+	if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil ||
+		notification.Type != "config_changed" || notification.Version != 7 {
+		t.Fatalf("config notification = %q", message)
 	}
 }
 
@@ -421,17 +584,19 @@ func TestOldConnectionCannotOverwriteSystemInfo(t *testing.T) {
 	currentConnection := new(websocket.Conn)
 	handler := &server{
 		servers: service,
-		connections: map[int64]*websocket.Conn{
-			created.ID: currentConnection,
+		connections: map[int64]*agentConnection{
+			created.ID: {socket: currentConnection},
 		},
 	}
-	current, err := handler.reportCurrentSystemInfo(created.ID, registered.ID, oldConnection, serverstore.SystemInfoReport{
+	oldTrackedConnection := &agentConnection{socket: oldConnection}
+	currentTrackedConnection := handler.connections[created.ID]
+	current, err := handler.reportCurrentSystemInfo(created.ID, registered.ID, oldTrackedConnection, serverstore.SystemInfoReport{
 		Hostname: "stale-host", IPv4: []string{}, IPv6: []string{},
 	})
 	if err != nil || current {
 		t.Fatalf("old connection report = (current %v, error %v), want ignored", current, err)
 	}
-	current, err = handler.reportCurrentSystemInfo(created.ID, registered.ID, currentConnection, serverstore.SystemInfoReport{
+	current, err = handler.reportCurrentSystemInfo(created.ID, registered.ID, currentTrackedConnection, serverstore.SystemInfoReport{
 		Hostname: "current-host", IPv4: []string{}, IPv6: []string{},
 	})
 	if err != nil || !current {
@@ -504,17 +669,19 @@ func TestOldConnectionCannotOverwriteMetrics(t *testing.T) {
 	currentConnection := new(websocket.Conn)
 	handler := &server{
 		servers: service,
-		connections: map[int64]*websocket.Conn{
-			created.ID: currentConnection,
+		connections: map[int64]*agentConnection{
+			created.ID: {socket: currentConnection},
 		},
 	}
-	current, err := handler.reportCurrentMetrics(created.ID, registered.ID, oldConnection, serverstore.MetricsReport{
+	oldTrackedConnection := &agentConnection{socket: oldConnection}
+	currentTrackedConnection := handler.connections[created.ID]
+	current, err := handler.reportCurrentMetrics(created.ID, registered.ID, oldTrackedConnection, serverstore.MetricsReport{
 		CPUPercent: 99,
 	})
 	if err != nil || current {
 		t.Fatalf("old connection metrics = (current %v, error %v), want ignored", current, err)
 	}
-	current, err = handler.reportCurrentMetrics(created.ID, registered.ID, currentConnection, serverstore.MetricsReport{
+	current, err = handler.reportCurrentMetrics(created.ID, registered.ID, currentTrackedConnection, serverstore.MetricsReport{
 		CPUPercent: 25,
 	})
 	if err != nil || !current {
@@ -783,4 +950,32 @@ func waitForMetrics(t *testing.T, service *serverstore.Service, serverID int64, 
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+func performAgentRequest(
+	t *testing.T,
+	handler http.Handler,
+	method, target string,
+	body any,
+	agentToken string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	var requestBody io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode Agent request: %v", err)
+		}
+		requestBody = bytes.NewReader(encoded)
+	}
+	request := httptest.NewRequest(method, target, requestBody)
+	if agentToken != "" {
+		request.Header.Set("Authorization", "Bearer "+agentToken)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }

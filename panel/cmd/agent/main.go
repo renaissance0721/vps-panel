@@ -26,13 +26,14 @@ const defaultConfigPath = "/etc/vps-panel-agent/config.json"
 var agentVersion = "dev"
 
 var (
-	agentHeartbeatInterval = 10 * time.Second
-	agentMetricsInterval   = 5 * time.Second
-	dialAgentWebSocket     = websocket.Dial
-	writeAgentHeartbeat    = sendHeartbeat
-	writeAgentMetrics      = sendMetrics
-	newAgentMetrics        = newMetricsCollector
-	collectAgentMetrics    = func(collector *metricsCollector) (metricsMessage, bool) {
+	agentHeartbeatInterval  = 10 * time.Second
+	agentMetricsInterval    = 5 * time.Second
+	agentConfigPollInterval = 30 * time.Second
+	dialAgentWebSocket      = websocket.Dial
+	writeAgentHeartbeat     = sendHeartbeat
+	writeAgentMetrics       = sendMetrics
+	newAgentMetrics         = newMetricsCollector
+	collectAgentMetrics     = func(collector *metricsCollector) (metricsMessage, bool) {
 		return collector.collect()
 	}
 	waitAgentReconnect = waitForReconnect
@@ -265,12 +266,16 @@ func connectAgent(ctx context.Context, configPath string) error {
 	if value.PanelURL == "" || value.ServerID <= 0 || value.AgentID <= 0 || value.AgentToken == "" {
 		return errors.New("Agent config is incomplete")
 	}
+	configSync := newConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
 
 	reconnectDelay := initialReconnectDelay
 	for {
-		connected, authenticationRejected := connectAgentOnce(ctx, value)
+		connected, authenticationRejected := connectAgentOnce(ctx, value, configSync)
 		if ctx.Err() != nil {
 			return nil
+		}
+		if !connected {
+			attemptConfigSync(ctx, configSync)
 		}
 		if authenticationRejected {
 			log.Print("Agent authentication rejected by Panel; will retry")
@@ -291,7 +296,7 @@ func connectAgent(ctx context.Context, configPath string) error {
 	}
 }
 
-func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
+func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer) (bool, bool) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
 	connection, response, err := dialAgentWebSocket(
@@ -307,6 +312,7 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 		return false, false
 	}
 	defer connection.CloseNow()
+	connection.SetReadLimit(8 << 10)
 
 	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
 	systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
@@ -316,18 +322,31 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 		return true, false
 	}
 	metricsCollector := newAgentMetrics()
-	disconnected := connection.CloseRead(context.Background())
+	connectionContext, cancelConnection := context.WithCancel(ctx)
+	defer cancelConnection()
+	configChanged := make(chan struct{}, 1)
+	disconnected := make(chan error, 1)
+	go func() {
+		disconnected <- readPanelMessages(connectionContext, connection, configChanged)
+	}()
+	attemptConfigSync(ctx, configSync)
 	heartbeatTicker := time.NewTicker(agentHeartbeatInterval)
 	defer heartbeatTicker.Stop()
 	metricsTicker := time.NewTicker(agentMetricsInterval)
 	defer metricsTicker.Stop()
+	configTicker := time.NewTicker(agentConfigPollInterval)
+	defer configTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			_ = connection.Close(websocket.StatusNormalClosure, "Agent stopped")
 			return true, false
-		case <-disconnected.Done():
+		case <-disconnected:
 			return true, false
+		case <-configChanged:
+			attemptConfigSync(ctx, configSync)
+		case <-configTicker.C:
+			attemptConfigSync(ctx, configSync)
 		case <-heartbeatTicker.C:
 			heartbeatContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 			err := writeAgentHeartbeat(heartbeatContext, connection)
@@ -346,6 +365,27 @@ func connectAgentOnce(ctx context.Context, value config) (bool, bool) {
 			if err != nil {
 				return true, false
 			}
+		}
+	}
+}
+
+func readPanelMessages(ctx context.Context, connection *websocket.Conn, configChanged chan<- struct{}) error {
+	for {
+		messageType, message, err := connection.Read(ctx)
+		if err != nil {
+			return err
+		}
+		var notification struct {
+			Type    string `json:"type"`
+			Version int64  `json:"version"`
+		}
+		if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil ||
+			notification.Type != "config_changed" || notification.Version <= 0 {
+			return errors.New("Panel sent an invalid WebSocket message")
+		}
+		select {
+		case configChanged <- struct{}{}:
+		default:
 		}
 	}
 }

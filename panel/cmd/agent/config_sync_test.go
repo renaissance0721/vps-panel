@@ -107,6 +107,8 @@ func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
 		{fmt.Errorf("%w: private diagnostic", errManagedXrayDownload), errManagedXrayDownload.Error()},
 		{fmt.Errorf("%w: candidate details", errManagedXrayValidation), errManagedXrayValidation.Error()},
 		{fmt.Errorf("%w: systemctl details", errManagedXrayStart), errManagedXrayStart.Error()},
+		{fmt.Errorf("%w: missing port", errManagedXrayHealth), errManagedXrayHealth.Error()},
+		{fmt.Errorf("%w: iptables details", errManagedProxyFirewall), errManagedProxyFirewall.Error()},
 		{errors.New("internal path detail"), "managed Xray apply failed"},
 	}
 	for _, test := range tests {

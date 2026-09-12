@@ -6,15 +6,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +38,7 @@ var (
 	errManagedXrayChecksum   = errors.New("managed Xray checksum verification failed")
 	errManagedXrayValidation = errors.New("managed Xray configuration validation failed")
 	errManagedXrayStart      = errors.New("managed Xray service failed to start")
+	errManagedXrayHealth     = errors.New("managed Xray listener health check failed")
 	errManagedXrayStop       = errors.New("managed Xray service failed to stop")
 	errManagedXrayConflict   = errors.New("existing unmanaged Xray installation detected")
 	errManagedXrayArch       = errors.New("managed Xray is unsupported on this architecture")
@@ -56,46 +61,51 @@ var managedXrayAssets = map[string]managedXrayAsset{
 }
 
 type xrayManager struct {
-	installDir       string
-	binaryPath       string
-	markerPath       string
-	configDir        string
-	configPath       string
-	previousPath     string
-	unitPath         string
-	serviceName      string
-	unmanagedUnits   []string
-	goos             string
-	goarch           string
-	releaseBaseURL   string
-	assets           map[string]managedXrayAsset
-	client           *http.Client
-	runCommand       func(context.Context, string, ...string) ([]byte, error)
-	wait             func(context.Context, time.Duration) error
-	healthAttempts   int
-	healthCheckDelay time.Duration
+	installDir        string
+	binaryPath        string
+	markerPath        string
+	configDir         string
+	configPath        string
+	previousPath      string
+	unitPath          string
+	serviceName       string
+	unmanagedUnits    []string
+	goos              string
+	goarch            string
+	releaseBaseURL    string
+	assets            map[string]managedXrayAsset
+	client            *http.Client
+	runCommand        func(context.Context, string, ...string) ([]byte, error)
+	probeListener     func(context.Context, int) error
+	reconcileFirewall func(context.Context, []int) error
+	wait              func(context.Context, time.Duration) error
+	healthAttempts    int
+	healthCheckDelay  time.Duration
 }
 
 func newXrayManager() *xrayManager {
+	firewall := newProxyFirewall()
 	return &xrayManager{
-		installDir:       "/opt/vps-panel/xray",
-		binaryPath:       "/opt/vps-panel/xray/xray",
-		markerPath:       "/opt/vps-panel/xray/.managed-by-vps-panel",
-		configDir:        "/etc/vps-panel/xray",
-		configPath:       "/etc/vps-panel/xray/config.json",
-		previousPath:     "/etc/vps-panel/xray/config.previous.json",
-		unitPath:         "/etc/systemd/system/vps-panel-xray.service",
-		serviceName:      managedXrayServiceName,
-		unmanagedUnits:   []string{"/etc/systemd/system/xray.service", "/lib/systemd/system/xray.service", "/usr/lib/systemd/system/xray.service"},
-		goos:             runtime.GOOS,
-		goarch:           runtime.GOARCH,
-		releaseBaseURL:   managedXrayReleaseBaseURL,
-		assets:           managedXrayAssets,
-		client:           &http.Client{Timeout: 60 * time.Second},
-		runCommand:       runXrayCommand,
-		wait:             waitForXray,
-		healthAttempts:   6,
-		healthCheckDelay: 500 * time.Millisecond,
+		installDir:        "/opt/vps-panel/xray",
+		binaryPath:        "/opt/vps-panel/xray/xray",
+		markerPath:        "/opt/vps-panel/xray/.managed-by-vps-panel",
+		configDir:         "/etc/vps-panel/xray",
+		configPath:        "/etc/vps-panel/xray/config.json",
+		previousPath:      "/etc/vps-panel/xray/config.previous.json",
+		unitPath:          "/etc/systemd/system/vps-panel-xray.service",
+		serviceName:       managedXrayServiceName,
+		unmanagedUnits:    []string{"/etc/systemd/system/xray.service", "/lib/systemd/system/xray.service", "/usr/lib/systemd/system/xray.service"},
+		goos:              runtime.GOOS,
+		goarch:            runtime.GOARCH,
+		releaseBaseURL:    managedXrayReleaseBaseURL,
+		assets:            managedXrayAssets,
+		client:            &http.Client{Timeout: 60 * time.Second},
+		runCommand:        runXrayCommand,
+		probeListener:     probeXrayListener,
+		reconcileFirewall: firewall.reconcile,
+		wait:              waitForXray,
+		healthAttempts:    6,
+		healthCheckDelay:  500 * time.Millisecond,
 	}
 }
 
@@ -120,10 +130,19 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	if _, err := m.runCommand(ctx, "systemctl", "disable", "--now", m.serviceName); err != nil {
 		return fmt.Errorf("%w: %v", errManagedXrayStop, err)
 	}
+	for _, path := range []string{m.configPath, m.previousPath} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove managed Xray config: %w", err)
+		}
+	}
+	if err := m.reconcileFirewall(ctx, nil); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error {
+	expectedPorts := expectedProxyPorts(proxies)
 	candidate, err := renderManagedXrayConfig(proxies)
 	if err != nil {
 		return err
@@ -169,18 +188,23 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		if err != nil {
 			return err
 		}
-		if active {
-			return nil
+		if active && m.listenersHealthy(ctx, expectedPorts) {
+			return m.reconcileFirewall(ctx, expectedPorts)
 		}
-		if _, err := m.runCommand(ctx, "systemctl", "start", m.serviceName); err != nil {
+		action := "start"
+		if active {
+			action = "restart"
+		}
+		if _, err := m.runCommand(ctx, "systemctl", action, m.serviceName); err != nil {
 			return fmt.Errorf("%w: %v", errManagedXrayStart, err)
 		}
-		if err := m.waitUntilActive(ctx); err != nil {
+		if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
 			return err
 		}
-		return nil
+		return m.reconcileFirewall(ctx, expectedPorts)
 	}
 
+	previousPorts, previousPortsKnown := renderedConfigPorts(current)
 	if exists {
 		if err := writeFileAtomically(m.previousPath, current, 0o600); err != nil {
 			return fmt.Errorf("save previous managed Xray config: %w", err)
@@ -191,15 +215,18 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 	}
 
 	if _, err := m.runCommand(ctx, "systemctl", "restart", m.serviceName); err != nil {
-		return m.rollbackFailedApply(ctx, exists, fmt.Errorf("%w: %v", errManagedXrayStart, err))
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
 	}
-	if err := m.waitUntilActive(ctx); err != nil {
-		return m.rollbackFailedApply(ctx, exists, err)
+	if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, err)
+	}
+	if err := m.reconcileFirewall(ctx, expectedPorts); err != nil {
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, err)
 	}
 	return nil
 }
 
-func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, applyErr error) error {
+func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, previousPorts []int, previousPortsKnown bool, applyErr error) error {
 	log.Printf("new config apply failed: %v", applyErr)
 	rollbackContext, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), managedXrayRollbackTimeout)
 	defer cancelRollback()
@@ -230,8 +257,13 @@ func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool,
 		log.Printf("rollback failed: restart previous managed Xray config: %v", err)
 		return applyErr
 	}
-	if err := m.waitUntilActive(rollbackContext); err != nil {
+	if err := m.waitUntilHealthy(rollbackContext, previousPorts); err != nil {
 		log.Printf("rollback failed: %v", err)
+	}
+	if previousPortsKnown {
+		if err := m.reconcileFirewall(rollbackContext, previousPorts); err != nil {
+			log.Printf("rollback failed: restore managed firewall rules: %v", err)
+		}
 	}
 	return applyErr
 }
@@ -516,20 +548,26 @@ func (m *xrayManager) isActive(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (m *xrayManager) waitUntilActive(ctx context.Context) error {
-	consecutiveActive := 0
+func (m *xrayManager) waitUntilHealthy(ctx context.Context, ports []int) error {
+	consecutiveHealthy := 0
+	wasActive := false
 	for attempt := 0; attempt < m.healthAttempts; attempt++ {
 		active, err := m.isActive(ctx)
 		if err != nil {
 			return err
 		}
 		if active {
-			consecutiveActive++
-			if consecutiveActive == 2 || m.healthAttempts == 1 {
-				return nil
+			wasActive = true
+			if m.listenersHealthy(ctx, ports) {
+				consecutiveHealthy++
+				if consecutiveHealthy == 2 || m.healthAttempts == 1 {
+					return nil
+				}
+			} else {
+				consecutiveHealthy = 0
 			}
 		} else {
-			consecutiveActive = 0
+			consecutiveHealthy = 0
 		}
 		if attempt+1 < m.healthAttempts {
 			if err := m.wait(ctx, m.healthCheckDelay); err != nil {
@@ -537,7 +575,55 @@ func (m *xrayManager) waitUntilActive(ctx context.Context) error {
 			}
 		}
 	}
+	if wasActive {
+		return errManagedXrayHealth
+	}
 	return errManagedXrayStart
+}
+
+func (m *xrayManager) listenersHealthy(ctx context.Context, ports []int) bool {
+	for _, port := range ports {
+		if err := m.probeListener(ctx, port); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func probeXrayListener(ctx context.Context, port int) error {
+	connection, err := (&net.Dialer{Timeout: 300 * time.Millisecond}).DialContext(
+		ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+	)
+	if err != nil {
+		return err
+	}
+	return connection.Close()
+}
+
+func expectedProxyPorts(proxies []desiredProxy) []int {
+	ports := make([]int, 0, len(proxies))
+	seen := make(map[int]struct{}, len(proxies))
+	for _, proxy := range proxies {
+		if _, exists := seen[proxy.Port]; exists {
+			continue
+		}
+		seen[proxy.Port] = struct{}{}
+		ports = append(ports, proxy.Port)
+	}
+	sort.Ints(ports)
+	return ports
+}
+
+func renderedConfigPorts(value []byte) ([]int, bool) {
+	var config renderedXrayConfig
+	if len(value) == 0 || json.Unmarshal(value, &config) != nil {
+		return nil, false
+	}
+	ports := make([]int, 0, len(config.Inbounds))
+	for _, inbound := range config.Inbounds {
+		ports = append(ports, inbound.Port)
+	}
+	return ports, true
 }
 
 func renderManagedXrayBaseConfig() []byte {

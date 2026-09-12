@@ -1173,6 +1173,12 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 	if count != 1 {
 		return 0, ErrServerNotFound
 	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+		now.Unix(), serverID,
+	); err != nil {
+		return 0, fmt.Errorf("mark Agent config sync pending: %w", err)
+	}
 	var version int64
 	if err := tx.QueryRowContext(ctx, `SELECT desired_state_version FROM servers WHERE id = ?`, serverID).Scan(&version); err != nil {
 		return 0, fmt.Errorf("read desired state version: %w", err)
@@ -1204,6 +1210,8 @@ func buildVLESSURI(share ClientShare) string {
 	query.Set("sni", share.ServerName)
 	query.Set("type", TransportTCP)
 	if share.Security == SecurityReality {
+		query.Set("alpn", "h2,http/1.1")
+		query.Set("headerType", "none")
 		query.Set("pbk", share.RealityPublicKey)
 		query.Set("sid", share.RealityShortID)
 	}

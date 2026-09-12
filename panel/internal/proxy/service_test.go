@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -210,6 +211,9 @@ func TestTLSShareUsesManualEntryHostAndPerClientUDPFlow(t *testing.T) {
 	if strings.Contains(firstShare.URI, privateKey) || firstURI.Query().Has("pbk") || firstURI.Query().Has("sid") {
 		t.Fatal("TLS share leaked server material or REALITY parameters")
 	}
+	if firstURI.Query().Has("alpn") || firstURI.Query().Has("headerType") {
+		t.Fatal("TLS share unexpectedly contains REALITY transport parameters")
+	}
 }
 
 func TestDesiredStateFiltersDisabledRecordsAndClientUDPDoesNotChangeIt(t *testing.T) {
@@ -269,10 +273,20 @@ func TestVLESSShareAutoUsesOnlyPublicIPv4AndManualOverridesIt(t *testing.T) {
 	}
 	if parsed.Scheme != "vless" || parsed.Host != "198.51.100.44:443" || parsed.Query().Get("security") != "reality" ||
 		parsed.Query().Get("pbk") != share.RealityPublicKey || parsed.Query().Get("sid") != share.RealityShortID ||
+		parsed.Query().Get("alpn") != "h2,http/1.1" || parsed.Query().Get("headerType") != "none" ||
+		parsed.Query().Get("type") != TransportTCP ||
 		parsed.Query().Get("flow") != ServerFlow || parsed.Fragment != "东京 节点 - 默认客户端" {
 		t.Fatalf("share URI = %s", share.URI)
 	}
-	_, config, _ := getProxyForTest(service, proxyValue.ID)
+	_, config, err := getProxyForTest(service, proxyValue.ID)
+	if err != nil || config.Reality == nil {
+		t.Fatalf("stored REALITY config = %+v, %v", config, err)
+	}
+	privateKey, err := ecdh.X25519().NewPrivateKey(mustDecodeBase64(t, config.Reality.PrivateKey))
+	if err != nil || base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()) != config.Reality.PublicKey ||
+		config.Reality.PublicKey != share.RealityPublicKey {
+		t.Fatal("stored and shared REALITY public keys do not match the private key")
+	}
 	if strings.Contains(share.URI, config.Reality.PrivateKey) || parsed.Query().Has("proxy_id") || parsed.Query().Has("client_id") {
 		t.Fatal("share URI leaked server secret or internal ID")
 	}
@@ -309,12 +323,39 @@ func TestVLESSShareAutoUsesOnlyPublicIPv4AndManualOverridesIt(t *testing.T) {
 	if err != nil || manualShare.Address != "node.example.com" || !strings.Contains(manualShare.URI, "@node.example.com:443") {
 		t.Fatalf("hostname share = %+v, %v", manualShare, err)
 	}
+	udp443 := true
+	if _, _, err := service.UpdateClient(t.Context(), proxyValue.Clients[0].ID, ClientUpdateInput{ClientUDP443: &udp443}); err != nil {
+		t.Fatal(err)
+	}
+	udpShare, err := service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpURI, err := url.Parse(udpShare.URI)
+	if err != nil || udpURI.Query().Get("flow") != ServerFlow+"-udp443" || udpURI.Query().Get("pbk") != share.RealityPublicKey ||
+		udpURI.Query().Get("alpn") != "h2,http/1.1" || udpURI.Query().Get("headerType") != "none" {
+		t.Fatalf("REALITY UDP/443 share = %s, %v", udpShare.URI, err)
+	}
 }
 
 func TestProxyDeleteCascadesClientsAndServerDeleteCascadesProxy(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	first := createRealityProxy(t, service, serverID, 443, "First")
+	second := createRealityProxy(t, service, serverID, 8443, "Second")
 	if _, err := service.Delete(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(t, db, 1, 1)
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired, err := ListDesired(t.Context(), tx, serverID)
+	_ = tx.Rollback()
+	if err != nil || len(desired) != 1 || desired[0].ID != second.ID || desired[0].Port != 8443 {
+		t.Fatalf("desired state after Proxy delete = %+v, %v", desired, err)
+	}
+	if _, err := service.Delete(t.Context(), second.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertCounts(t, db, 0, 0)
@@ -323,6 +364,66 @@ func TestProxyDeleteCascadesClientsAndServerDeleteCascadesProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCounts(t, db, 0, 0)
+}
+
+func TestDesiredMutationsMarkExistingAgentPendingWithoutAdvancingAppliedVersion(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO agents
+		(server_id, token_hash, version, registered_at, last_seen_at, applied_config_version,
+		 config_sync_status, config_sync_error, config_synced_at, created_at, updated_at)
+		VALUES (?, 'agent-token', 'test', 1, 1, 7, 'failed', 'old failure', 123, 1, 1)`, serverID); err != nil {
+		t.Fatal(err)
+	}
+	assertPending := func(label string) {
+		t.Helper()
+		var applied int64
+		var status, message string
+		var syncedAt sql.NullInt64
+		if err := db.QueryRow(`SELECT applied_config_version, config_sync_status, config_sync_error, config_synced_at
+			FROM agents WHERE server_id = ?`, serverID).Scan(&applied, &status, &message, &syncedAt); err != nil {
+			t.Fatal(err)
+		}
+		if applied != 7 || status != "pending" || message != "" || !syncedAt.Valid || syncedAt.Int64 != 123 {
+			t.Fatalf("%s Agent config state = applied %d status %q error %q synced %v", label, applied, status, message, syncedAt)
+		}
+	}
+	reset := func() {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE agents SET config_sync_status = 'failed', config_sync_error = 'old failure' WHERE server_id = ?`, serverID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	proxyValue := createRealityProxy(t, service, serverID, 443, "Proxy")
+	assertPending("Proxy create")
+	reset()
+	proxyName := "Proxy updated"
+	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{Name: &proxyName}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending("Proxy update")
+	reset()
+	client, _, err := service.CreateClient(t.Context(), proxyValue.ID, ClientCreateInput{Name: "second", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPending("Client create")
+	reset()
+	clientName := "second updated"
+	if _, _, err := service.UpdateClient(t.Context(), client.ID, ClientUpdateInput{Name: &clientName}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending("Client update")
+	reset()
+	if _, err := service.DeleteClient(t.Context(), client.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertPending("Client delete")
+	reset()
+	if _, err := service.Delete(t.Context(), proxyValue.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertPending("Proxy delete")
 }
 
 func newTestService(t *testing.T) (*sql.DB, *Service, int64) {
@@ -383,4 +484,13 @@ func assertCounts(t *testing.T, db *sql.DB, proxies, clients int) {
 	if proxyCount != proxies || clientCount != clients {
 		t.Fatalf("counts = proxies %d clients %d", proxyCount, clientCount)
 	}
+}
+
+func mustDecodeBase64(t *testing.T, value string) []byte {
+	t.Helper()
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }

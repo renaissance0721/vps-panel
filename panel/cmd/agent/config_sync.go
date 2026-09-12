@@ -177,9 +177,11 @@ func desiredStateErrorMessage(err error) string {
 		errManagedXrayChecksum,
 		errManagedXrayValidation,
 		errManagedXrayStart,
+		errManagedXrayHealth,
 		errManagedXrayStop,
 		errManagedXrayConflict,
 		errManagedXrayArch,
+		errManagedProxyFirewall,
 	} {
 		if err.Error() == publicError.Error() || errors.Is(err, publicError) {
 			return publicError.Error()

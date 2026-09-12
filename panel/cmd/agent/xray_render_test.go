@@ -32,6 +32,7 @@ func TestRenderManagedXrayTLSWithMultipleClients(t *testing.T) {
 	}
 	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Settings.Clients) != 2 ||
 		config.Inbounds[0].Settings.Clients[0].Flow != "xtls-rprx-vision" ||
+		config.Inbounds[0].StreamSettings.Network != "tcp" ||
 		config.Inbounds[0].StreamSettings.TLSSettings == nil ||
 		config.Inbounds[0].StreamSettings.RealitySettings != nil {
 		t.Fatalf("rendered TLS config = %+v", config)
@@ -52,6 +53,8 @@ func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(config.Inbounds) != 2 || config.Inbounds[1].StreamSettings.RealitySettings == nil ||
+		config.Inbounds[1].StreamSettings.Network != "raw" ||
+		config.Inbounds[1].Settings.Clients[0].Flow != "xtls-rprx-vision" ||
 		config.Inbounds[1].StreamSettings.RealitySettings.Target != "www.example.com:443" ||
 		config.Inbounds[1].StreamSettings.TLSSettings != nil {
 		t.Fatalf("rendered REALITY config = %+v", config)

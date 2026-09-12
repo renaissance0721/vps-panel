@@ -103,6 +103,7 @@ func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
 				}},
 			}
 		} else {
+			inbound.StreamSettings.Network = "raw"
 			inbound.StreamSettings.RealitySettings = &renderedRealitySettings{
 				Show: false, Target: proxy.Reality.Target, Xver: 0,
 				ServerNames: []string{proxy.ServerName}, PrivateKey: proxy.Reality.PrivateKey,

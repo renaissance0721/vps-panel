@@ -249,6 +249,50 @@ func TestManagedXraySameConfigAvoidsRestartAndRepairsInactiveService(t *testing.
 	}
 }
 
+func TestManagedXraySameConfigActiveAndHealthyAvoidsRestart(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	proxy := testDesiredTLSProxy()
+	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}
+	config, err := renderManagedXrayConfig(state.Xray.Proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, manager.configPath, config, 0o600)
+	commands.active = true
+	var probed []int
+	manager.probeListener = func(_ context.Context, port int) error {
+		probed = append(probed, port)
+		return nil
+	}
+
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatalf("apply healthy same config: %v", err)
+	}
+	if commands.count("systemctl", "start") != 0 || commands.count("systemctl", "restart") != 0 || len(probed) != 1 || probed[0] != proxy.Port {
+		t.Fatalf("healthy no-op calls = %v, probed = %v", commands.calls, probed)
+	}
+}
+
+func TestManagedXraySameConfigMissingListenerRestartsAndFails(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	proxy := testDesiredTLSProxy()
+	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}
+	config, err := renderManagedXrayConfig(state.Xray.Proxies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, manager.configPath, config, 0o600)
+	commands.active = true
+	manager.probeListener = func(context.Context, int) error { return errors.New("not listening") }
+
+	err = manager.apply(t.Context(), state)
+	if !errors.Is(err, errManagedXrayHealth) || commands.count("systemctl", "restart") != 1 {
+		t.Fatalf("missing listener error = %v, calls = %v", err, commands.calls)
+	}
+}
+
 func TestManagedXrayNewConfigSavesPreviousAndStarts(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	seedManagedXray(t, manager, []byte("binary"))
@@ -261,6 +305,112 @@ func TestManagedXrayNewConfigSavesPreviousAndStarts(t *testing.T) {
 	assertFileEquals(t, manager.configPath, renderManagedXrayBaseConfig())
 	if commands.count("systemctl", "restart") != 1 || !commands.active {
 		t.Fatalf("systemd calls = %v, active = %v", commands.calls, commands.active)
+	}
+}
+
+func TestManagedXrayRemovedProxyAppliesOnlyRemainingPort(t *testing.T) {
+	manager, _ := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	removed := testDesiredTLSProxy()
+	remaining := testDesiredTLSProxy()
+	remaining.ID = 2
+	remaining.Port = 8443
+	remaining.Clients[0].ID = 2
+	remaining.Clients[0].UUID = "123e4567-e89b-42d3-a456-426614174001"
+	oldConfig, err := renderManagedXrayConfig([]desiredProxy{removed, remaining})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, manager.configPath, oldConfig, 0o600)
+	var probed, firewallPorts []int
+	manager.probeListener = func(_ context.Context, port int) error {
+		probed = append(probed, port)
+		return nil
+	}
+	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
+		firewallPorts = append([]int(nil), ports...)
+		return nil
+	}
+
+	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{remaining}}}
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(manager.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered renderedXrayConfig
+	if err := json.Unmarshal(current, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Inbounds) != 1 || rendered.Inbounds[0].Port != remaining.Port ||
+		strings.Contains(string(current), removed.Clients[0].UUID) {
+		t.Fatalf("rendered config after Proxy removal = %s", current)
+	}
+	if len(probed) != 2 || probed[0] != remaining.Port || probed[1] != remaining.Port ||
+		len(firewallPorts) != 1 || firewallPorts[0] != remaining.Port {
+		t.Fatalf("removed Proxy health/firewall = probed %v, firewall %v", probed, firewallPorts)
+	}
+}
+
+func TestManagedXrayMissingListenerRollsBackNewConfig(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	oldProxy := testDesiredTLSProxy()
+	oldProxy.Port = 8443
+	oldConfig, err := renderManagedXrayConfig([]desiredProxy{oldProxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, manager.configPath, oldConfig, 0o600)
+	manager.probeListener = func(_ context.Context, port int) error {
+		if port == oldProxy.Port {
+			return nil
+		}
+		return errors.New("not listening")
+	}
+
+	err = manager.apply(t.Context(), desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{testDesiredTLSProxy()}}})
+	if !errors.Is(err, errManagedXrayHealth) {
+		t.Fatalf("missing listener error = %v", err)
+	}
+	assertFileEquals(t, manager.configPath, oldConfig)
+	if !commands.active || commands.count("systemctl", "restart") != 2 {
+		t.Fatalf("rollback systemd state = %v, calls %v", commands.active, commands.calls)
+	}
+}
+
+func TestManagedXrayFirewallFailureRollsBackNewConfig(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	oldProxy := testDesiredTLSProxy()
+	oldProxy.Port = 8443
+	old, err := renderManagedXrayConfig([]desiredProxy{oldProxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, manager.configPath, old, 0o600)
+	var firewallCalls [][]int
+	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
+		firewallCalls = append(firewallCalls, append([]int(nil), ports...))
+		if len(firewallCalls) == 1 {
+			return errManagedProxyFirewall
+		}
+		return nil
+	}
+
+	err = manager.apply(t.Context(), desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{testDesiredTLSProxy()}}})
+	if !errors.Is(err, errManagedProxyFirewall) {
+		t.Fatalf("firewall failure error = %v", err)
+	}
+	assertFileEquals(t, manager.configPath, old)
+	if !commands.active || commands.count("systemctl", "restart") != 2 {
+		t.Fatalf("rollback systemd state = %v, calls %v", commands.active, commands.calls)
+	}
+	if len(firewallCalls) != 2 || len(firewallCalls[0]) != 1 || firewallCalls[0][0] != 443 ||
+		len(firewallCalls[1]) != 1 || firewallCalls[1][0] != oldProxy.Port {
+		t.Fatalf("firewall rollback calls = %v", firewallCalls)
 	}
 }
 
@@ -311,20 +461,34 @@ func TestManagedXrayRollbackFailureDoesNotPanic(t *testing.T) {
 	assertFileEquals(t, manager.configPath, old)
 }
 
-func TestManagedXrayDisablePreservesFilesAndReenableAvoidsDownload(t *testing.T) {
+func TestManagedXrayDisableCleansRuntimeFilesAndReenableAvoidsDownload(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	seedManagedXray(t, manager, []byte("binary"))
 	writeTestFile(t, manager.configPath, renderManagedXrayBaseConfig(), 0o600)
 	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("unit\n"), 0o644)
 	commands.active = true
+	var firewallCalls [][]int
+	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
+		firewallCalls = append(firewallCalls, append([]int(nil), ports...))
+		return nil
+	}
 
 	if err := manager.apply(t.Context(), desiredState{}); err != nil {
 		t.Fatalf("disable Xray: %v", err)
 	}
-	for _, path := range []string{manager.binaryPath, manager.configPath, manager.previousPath} {
+	for _, path := range []string{manager.binaryPath, manager.markerPath, manager.unitPath} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("disabled Xray removed %s: %v", path, err)
 		}
+	}
+	for _, path := range []string{manager.configPath, manager.previousPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("disabled Xray retained %s: %v", path, err)
+		}
+	}
+	if len(firewallCalls) != 1 || len(firewallCalls[0]) != 0 {
+		t.Fatalf("disable firewall calls = %v", firewallCalls)
 	}
 	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("re-enable downloaded correct managed binary")
@@ -333,8 +497,33 @@ func TestManagedXrayDisablePreservesFilesAndReenableAvoidsDownload(t *testing.T)
 	if err := manager.apply(t.Context(), enabledXrayState()); err != nil {
 		t.Fatalf("re-enable Xray: %v", err)
 	}
-	if !commands.active || commands.count("systemctl", "start") != 1 {
+	if !commands.active || commands.count("systemctl", "restart") != 1 {
 		t.Fatalf("re-enabled service = %v, calls %v", commands.active, commands.calls)
+	}
+	assertFileEquals(t, manager.configPath, renderManagedXrayBaseConfig())
+}
+
+func TestManagedXrayDisableFailureKeepsRuntimeFiles(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, []byte("current\n"), 0o600)
+	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
+	commands.active = true
+	commands.failDisable = true
+	firewallCalled := false
+	manager.reconcileFirewall = func(context.Context, []int) error {
+		firewallCalled = true
+		return nil
+	}
+
+	err := manager.apply(t.Context(), desiredState{})
+	if !errors.Is(err, errManagedXrayStop) {
+		t.Fatalf("disable failure error = %v", err)
+	}
+	assertFileEquals(t, manager.configPath, []byte("current\n"))
+	assertFileEquals(t, manager.previousPath, []byte("previous\n"))
+	if firewallCalled {
+		t.Fatal("failed disable reconciled firewall")
 	}
 }
 
@@ -361,24 +550,26 @@ func newTestXrayManager(t *testing.T) (*xrayManager, *xrayCommandRecorder) {
 	root := t.TempDir()
 	commands := &xrayCommandRecorder{versionOutput: "Xray " + strings.TrimPrefix(managedXrayVersion, "v") + " test"}
 	manager := &xrayManager{
-		installDir:       filepath.Join(root, "opt", "vps-panel", "xray"),
-		binaryPath:       filepath.Join(root, "opt", "vps-panel", "xray", "xray"),
-		markerPath:       filepath.Join(root, "opt", "vps-panel", "xray", ".managed-by-vps-panel"),
-		configDir:        filepath.Join(root, "etc", "vps-panel", "xray"),
-		configPath:       filepath.Join(root, "etc", "vps-panel", "xray", "config.json"),
-		previousPath:     filepath.Join(root, "etc", "vps-panel", "xray", "config.previous.json"),
-		unitPath:         filepath.Join(root, "etc", "systemd", "system", "vps-panel-xray.service"),
-		serviceName:      managedXrayServiceName,
-		unmanagedUnits:   []string{filepath.Join(root, "etc", "systemd", "system", "xray.service")},
-		goos:             "linux",
-		goarch:           "amd64",
-		releaseBaseURL:   "http://127.0.0.1:1",
-		assets:           managedXrayAssets,
-		client:           &http.Client{Timeout: time.Second},
-		runCommand:       commands.run,
-		wait:             func(context.Context, time.Duration) error { return nil },
-		healthAttempts:   2,
-		healthCheckDelay: 0,
+		installDir:        filepath.Join(root, "opt", "vps-panel", "xray"),
+		binaryPath:        filepath.Join(root, "opt", "vps-panel", "xray", "xray"),
+		markerPath:        filepath.Join(root, "opt", "vps-panel", "xray", ".managed-by-vps-panel"),
+		configDir:         filepath.Join(root, "etc", "vps-panel", "xray"),
+		configPath:        filepath.Join(root, "etc", "vps-panel", "xray", "config.json"),
+		previousPath:      filepath.Join(root, "etc", "vps-panel", "xray", "config.previous.json"),
+		unitPath:          filepath.Join(root, "etc", "systemd", "system", "vps-panel-xray.service"),
+		serviceName:       managedXrayServiceName,
+		unmanagedUnits:    []string{filepath.Join(root, "etc", "systemd", "system", "xray.service")},
+		goos:              "linux",
+		goarch:            "amd64",
+		releaseBaseURL:    "http://127.0.0.1:1",
+		assets:            managedXrayAssets,
+		client:            &http.Client{Timeout: time.Second},
+		runCommand:        commands.run,
+		probeListener:     func(context.Context, int) error { return nil },
+		reconcileFirewall: func(context.Context, []int) error { return nil },
+		wait:              func(context.Context, time.Duration) error { return nil },
+		healthAttempts:    2,
+		healthCheckDelay:  0,
 	}
 	return manager, commands
 }
@@ -388,6 +579,7 @@ type xrayCommandRecorder struct {
 	calls           [][]string
 	active          bool
 	failValidation  bool
+	failDisable     bool
 	versionOutput   string
 	restartOutcomes []bool
 }
@@ -424,6 +616,9 @@ func (r *xrayCommandRecorder) run(_ context.Context, name string, arguments ...s
 	case "start":
 		r.active = true
 	case "stop", "disable":
+		if r.failDisable {
+			return []byte("disable failed"), errors.New("disable failed")
+		}
 		r.active = false
 	case "is-active":
 		if !r.active {

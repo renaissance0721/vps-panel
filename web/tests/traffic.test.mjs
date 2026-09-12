@@ -41,3 +41,12 @@ test('流量预警不会改变服务器状态', () => {
     assert.equal(server.status, status)
   }
 })
+
+test('流量预警使用 API 返回的校准后已用流量', () => {
+  const limit = 500 * GIBIBYTE
+  const warningResponse = { traffic_used_bytes: 460 * GIBIBYTE }
+  const exhaustedResponse = { traffic_used_bytes: 620 * GIBIBYTE }
+
+  assert.equal(trafficWarningLevel(warningResponse.traffic_used_bytes, limit), 'warning')
+  assert.equal(trafficWarningLevel(exhaustedResponse.traffic_used_bytes, limit), 'exhausted')
+})

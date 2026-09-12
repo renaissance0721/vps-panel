@@ -125,6 +125,7 @@ func migrate(db *sql.DB) error {
 			nic_tx_bytes INTEGER NOT NULL DEFAULT 0,
 			cycle_rx_bytes INTEGER NOT NULL DEFAULT 0,
 			cycle_tx_bytes INTEGER NOT NULL DEFAULT 0,
+			traffic_adjustment_bytes INTEGER NOT NULL DEFAULT 0,
 			cycle_started_at INTEGER,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -171,6 +172,7 @@ func migrateServerTraffic(ctx context.Context, db *sql.DB) error {
 		{"server_metrics", "nic_tx_bytes", "nic_tx_bytes INTEGER NOT NULL DEFAULT 0"},
 		{"server_metrics", "cycle_rx_bytes", "cycle_rx_bytes INTEGER NOT NULL DEFAULT 0"},
 		{"server_metrics", "cycle_tx_bytes", "cycle_tx_bytes INTEGER NOT NULL DEFAULT 0"},
+		{"server_metrics", "traffic_adjustment_bytes", "traffic_adjustment_bytes INTEGER NOT NULL DEFAULT 0"},
 		{"server_metrics", "cycle_started_at", "cycle_started_at INTEGER"},
 	}
 	for _, column := range columns {

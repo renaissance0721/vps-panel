@@ -247,7 +247,8 @@ h1 {
 }
 
 .expiration-modal-card,
-.traffic-modal-card {
+.traffic-modal-card,
+.traffic-adjustment-modal-card {
   width: min(420px, calc(100vw - 32px));
 }
 
@@ -324,6 +325,13 @@ h1 {
 
 .section-heading .system-info-title {
   margin: 0 0 12px;
+}
+
+.section-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .address-list span {

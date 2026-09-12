@@ -68,6 +68,8 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("PATCH /api/servers/{id}", s.requireAuthentication(s.updateServerExpiration))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
+	mux.HandleFunc("PATCH /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.updateTrafficAdjustment))
+	mux.HandleFunc("DELETE /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.clearTrafficAdjustment))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
@@ -117,6 +119,10 @@ type updateServerRequest struct {
 	TrafficResetTime         *string         `json:"traffic_reset_time"`
 }
 
+type updateTrafficAdjustmentRequest struct {
+	TargetUsedBytes *int64 `json:"target_used_bytes"`
+}
+
 type serverResponse struct {
 	ID                       int64               `json:"id"`
 	Name                     string              `json:"name"`
@@ -147,18 +153,19 @@ type systemInfoResponse struct {
 }
 
 type metricsResponse struct {
-	CPUPercent       float64    `json:"cpu_percent"`
-	MemoryUsedBytes  int64      `json:"memory_used_bytes"`
-	MemoryTotalBytes int64      `json:"memory_total_bytes"`
-	DiskUsedBytes    int64      `json:"disk_used_bytes"`
-	DiskTotalBytes   int64      `json:"disk_total_bytes"`
-	UptimeSeconds    int64      `json:"uptime_seconds"`
-	NICRXBytes       int64      `json:"nic_rx_bytes"`
-	NICTXBytes       int64      `json:"nic_tx_bytes"`
-	CycleRXBytes     int64      `json:"cycle_rx_bytes"`
-	CycleTXBytes     int64      `json:"cycle_tx_bytes"`
-	CycleStartedAt   *time.Time `json:"cycle_started_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	CPUPercent             float64    `json:"cpu_percent"`
+	MemoryUsedBytes        int64      `json:"memory_used_bytes"`
+	MemoryTotalBytes       int64      `json:"memory_total_bytes"`
+	DiskUsedBytes          int64      `json:"disk_used_bytes"`
+	DiskTotalBytes         int64      `json:"disk_total_bytes"`
+	UptimeSeconds          int64      `json:"uptime_seconds"`
+	NICRXBytes             int64      `json:"nic_rx_bytes"`
+	NICTXBytes             int64      `json:"nic_tx_bytes"`
+	CycleRXBytes           int64      `json:"cycle_rx_bytes"`
+	CycleTXBytes           int64      `json:"cycle_tx_bytes"`
+	TrafficAdjustmentBytes int64      `json:"traffic_adjustment_bytes"`
+	CycleStartedAt         *time.Time `json:"cycle_started_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 type createdServerResponse struct {
@@ -611,6 +618,40 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
 }
 
+func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	var request updateTrafficAdjustmentRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.TargetUsedBytes == nil {
+		writeError(w, http.StatusBadRequest, "目标已用流量格式无效")
+		return
+	}
+	updated, err := s.servers.UpdateTrafficAdjustment(r.Context(), id, *request.TargetUsedBytes)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+}
+
+func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	updated, err := s.servers.ClearTrafficAdjustment(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+}
+
 func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
@@ -779,18 +820,19 @@ func toServerResponse(value serverstore.Server) serverResponse {
 	}
 	if value.Metrics != nil {
 		response.Metrics = &metricsResponse{
-			CPUPercent:       value.Metrics.CPUPercent,
-			MemoryUsedBytes:  value.Metrics.MemoryUsedBytes,
-			MemoryTotalBytes: value.Metrics.MemoryTotalBytes,
-			DiskUsedBytes:    value.Metrics.DiskUsedBytes,
-			DiskTotalBytes:   value.Metrics.DiskTotalBytes,
-			UptimeSeconds:    value.Metrics.UptimeSeconds,
-			NICRXBytes:       value.Metrics.NICRXBytes,
-			NICTXBytes:       value.Metrics.NICTXBytes,
-			CycleRXBytes:     value.Metrics.CycleRXBytes,
-			CycleTXBytes:     value.Metrics.CycleTXBytes,
-			CycleStartedAt:   value.Metrics.CycleStartedAt,
-			UpdatedAt:        value.Metrics.UpdatedAt,
+			CPUPercent:             value.Metrics.CPUPercent,
+			MemoryUsedBytes:        value.Metrics.MemoryUsedBytes,
+			MemoryTotalBytes:       value.Metrics.MemoryTotalBytes,
+			DiskUsedBytes:          value.Metrics.DiskUsedBytes,
+			DiskTotalBytes:         value.Metrics.DiskTotalBytes,
+			UptimeSeconds:          value.Metrics.UptimeSeconds,
+			NICRXBytes:             value.Metrics.NICRXBytes,
+			NICTXBytes:             value.Metrics.NICTXBytes,
+			CycleRXBytes:           value.Metrics.CycleRXBytes,
+			CycleTXBytes:           value.Metrics.CycleTXBytes,
+			TrafficAdjustmentBytes: value.Metrics.TrafficAdjustmentBytes,
+			CycleStartedAt:         value.Metrics.CycleStartedAt,
+			UpdatedAt:              value.Metrics.UpdatedAt,
 		}
 	}
 	return response
@@ -1005,6 +1047,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
 	case errors.Is(err, serverstore.ErrInvalidTrafficConfig):
 		writeError(w, http.StatusBadRequest, "月流量设置无效")
+	case errors.Is(err, serverstore.ErrInvalidTrafficTarget):
+		writeError(w, http.StatusBadRequest, "目标已用流量必须是非负整数")
 	default:
 		writeInternalError(w)
 	}

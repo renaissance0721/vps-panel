@@ -252,6 +252,8 @@ func TestServerAPILifecycle(t *testing.T) {
 		{http.MethodGet, "/api/servers/1"},
 		{http.MethodPatch, "/api/servers/1"},
 		{http.MethodDelete, "/api/servers/1"},
+		{http.MethodPatch, "/api/servers/1/traffic-adjustment"},
+		{http.MethodDelete, "/api/servers/1/traffic-adjustment"},
 		{http.MethodPost, "/api/servers/1/enrollment"},
 		{http.MethodDelete, "/api/servers/1/permanent"},
 	} {
@@ -401,6 +403,63 @@ func TestServerAPILifecycle(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid traffic settings %v status = %d, body = %q", invalidTraffic, response.Code, response.Body.String())
 		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO server_metrics
+		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, nic_rx_bytes, nic_tx_bytes,
+		  cycle_rx_bytes, cycle_tx_bytes, cycle_started_at, updated_at)
+		 VALUES (?, 1, 2, 3, 4, 5, 6, 1000, 2000, 100, 200, 10, 11)`,
+		created.Server.ID,
+	); err != nil {
+		t.Fatalf("insert metrics for traffic adjustment: %v", err)
+	}
+	adjustmentPath := serverPath + "/traffic-adjustment"
+	adjustmentResponse := performRequest(
+		t, handler, http.MethodPatch, adjustmentPath, map[string]any{"target_used_bytes": 1000}, sessionCookie,
+	)
+	if adjustmentResponse.Code != http.StatusOK {
+		t.Fatalf("update traffic adjustment status = %d, body = %q", adjustmentResponse.Code, adjustmentResponse.Body.String())
+	}
+	var adjusted struct {
+		Server serverResponse `json:"server"`
+	}
+	if err := json.Unmarshal(adjustmentResponse.Body.Bytes(), &adjusted); err != nil {
+		t.Fatalf("decode traffic adjustment: %v", err)
+	}
+	if adjusted.Server.TrafficUsedBytes != 1000 || adjusted.Server.Metrics == nil ||
+		adjusted.Server.Metrics.TrafficAdjustmentBytes != 700 {
+		t.Fatalf("adjusted traffic response = %+v", adjusted.Server)
+	}
+	var nicRX, nicTX, cycleRX, cycleTX, cycleStarted, adjustment int64
+	if err := db.QueryRow(
+		`SELECT nic_rx_bytes, nic_tx_bytes, cycle_rx_bytes, cycle_tx_bytes,
+		 cycle_started_at, traffic_adjustment_bytes FROM server_metrics WHERE server_id = ?`,
+		created.Server.ID,
+	).Scan(&nicRX, &nicTX, &cycleRX, &cycleTX, &cycleStarted, &adjustment); err != nil {
+		t.Fatalf("read adjusted traffic counters: %v", err)
+	}
+	if nicRX != 1000 || nicTX != 2000 || cycleRX != 100 || cycleTX != 200 || cycleStarted != 10 || adjustment != 700 {
+		t.Fatalf("adjusted traffic storage = (%d, %d, %d, %d, %d, %d)",
+			nicRX, nicTX, cycleRX, cycleTX, cycleStarted, adjustment)
+	}
+	for _, invalidAdjustment := range map[string]any{
+		"missing":  map[string]any{},
+		"null":     map[string]any{"target_used_bytes": nil},
+		"negative": map[string]any{"target_used_bytes": -1},
+	} {
+		response := performRequest(t, handler, http.MethodPatch, adjustmentPath, invalidAdjustment, sessionCookie)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid traffic adjustment %v status = %d, body = %q", invalidAdjustment, response.Code, response.Body.String())
+		}
+	}
+	clearAdjustmentResponse := performRequest(
+		t, handler, http.MethodDelete, adjustmentPath, nil, sessionCookie,
+	)
+	if clearAdjustmentResponse.Code != http.StatusOK ||
+		!strings.Contains(clearAdjustmentResponse.Body.String(), `"traffic_used_bytes":300`) ||
+		!strings.Contains(clearAdjustmentResponse.Body.String(), `"traffic_adjustment_bytes":0`) {
+		t.Fatalf("clear traffic adjustment = (%d, %q)", clearAdjustmentResponse.Code, clearAdjustmentResponse.Body.String())
 	}
 	updateExpirationResponse := performRequest(
 		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,

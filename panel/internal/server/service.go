@@ -42,6 +42,7 @@ var (
 	ErrInvalidSystemInfo    = errors.New("invalid system information")
 	ErrInvalidMetrics       = errors.New("invalid server metrics")
 	ErrInvalidTrafficConfig = errors.New("invalid server traffic configuration")
+	ErrInvalidTrafficTarget = errors.New("invalid server traffic target")
 )
 
 type Server struct {
@@ -62,16 +63,39 @@ type Server struct {
 }
 
 func (server Server) TrafficUsedBytes() int64 {
+	measured := server.MeasuredTrafficUsedBytes()
+	if server.Metrics == nil {
+		return measured
+	}
+	adjustment := server.Metrics.TrafficAdjustmentBytes
+	if adjustment > 0 && measured > math.MaxInt64-adjustment {
+		return math.MaxInt64
+	}
+	if adjustment < 0 && adjustment < -measured {
+		return 0
+	}
+	return measured + adjustment
+}
+
+func (server Server) MeasuredTrafficUsedBytes() int64 {
 	if server.Metrics == nil {
 		return 0
 	}
-	if server.TrafficCountMode == TrafficBidirectional {
-		if server.Metrics.CycleRXBytes > math.MaxInt64-server.Metrics.CycleTXBytes {
-			return math.MaxInt64
-		}
-		return server.Metrics.CycleRXBytes + server.Metrics.CycleTXBytes
+	return measuredTrafficUsedBytes(
+		server.TrafficCountMode, server.Metrics.CycleRXBytes, server.Metrics.CycleTXBytes,
+	)
+}
+
+func measuredTrafficUsedBytes(countMode string, cycleRXBytes, cycleTXBytes int64) int64 {
+	cycleTX := max(cycleTXBytes, 0)
+	if countMode != TrafficBidirectional {
+		return cycleTX
 	}
-	return server.Metrics.CycleTXBytes
+	cycleRX := max(cycleRXBytes, 0)
+	if cycleRX > math.MaxInt64-cycleTX {
+		return math.MaxInt64
+	}
+	return cycleRX + cycleTX
 }
 
 type SystemInfo struct {
@@ -97,18 +121,19 @@ type SystemInfoReport struct {
 }
 
 type Metrics struct {
-	CPUPercent       float64
-	MemoryUsedBytes  int64
-	MemoryTotalBytes int64
-	DiskUsedBytes    int64
-	DiskTotalBytes   int64
-	UptimeSeconds    int64
-	NICRXBytes       int64
-	NICTXBytes       int64
-	CycleRXBytes     int64
-	CycleTXBytes     int64
-	CycleStartedAt   *time.Time
-	UpdatedAt        time.Time
+	CPUPercent             float64
+	MemoryUsedBytes        int64
+	MemoryTotalBytes       int64
+	DiskUsedBytes          int64
+	DiskTotalBytes         int64
+	UptimeSeconds          int64
+	NICRXBytes             int64
+	NICTXBytes             int64
+	CycleRXBytes           int64
+	CycleTXBytes           int64
+	TrafficAdjustmentBytes int64
+	CycleStartedAt         *time.Time
+	UpdatedAt              time.Time
 }
 
 type MetricsReport struct {
@@ -231,7 +256,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
 		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
-		 metrics.cycle_started_at, metrics.updated_at,
+		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -310,7 +335,7 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
 		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
-		 metrics.cycle_started_at, metrics.updated_at,
+		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -348,7 +373,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
 		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes,
-		 metrics.cycle_started_at, metrics.updated_at,
+		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -416,6 +441,69 @@ func (s *Service) UpdateTrafficConfig(ctx context.Context, id int64, config Traf
 	}
 	if count != 1 {
 		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *Service) UpdateTrafficAdjustment(ctx context.Context, id, targetUsedBytes int64) (Server, error) {
+	if targetUsedBytes < 0 {
+		return Server{}, ErrInvalidTrafficTarget
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Server{}, fmt.Errorf("begin traffic adjustment: %w", err)
+	}
+	defer tx.Rollback()
+
+	var countMode string
+	var cycleRX, cycleTX sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		`SELECT servers.traffic_count_mode, metrics.cycle_rx_bytes, metrics.cycle_tx_bytes
+		 FROM servers
+		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
+		 WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
+	).Scan(&countMode, &cycleRX, &cycleTX)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Server{}, ErrNotFound
+	}
+	if err != nil {
+		return Server{}, fmt.Errorf("read server traffic usage: %w", err)
+	}
+	measuredUsedBytes := measuredTrafficUsedBytes(countMode, cycleRX.Int64, cycleTX.Int64)
+	adjustmentBytes := targetUsedBytes - measuredUsedBytes
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO server_metrics
+		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, traffic_adjustment_bytes, updated_at)
+		 VALUES (?, 0, 0, 0, 0, 0, 0, ?, ?)
+		 ON CONFLICT(server_id) DO UPDATE SET
+		 traffic_adjustment_bytes = excluded.traffic_adjustment_bytes`,
+		id, adjustmentBytes, now,
+	); err != nil {
+		return Server{}, fmt.Errorf("save traffic adjustment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Server{}, fmt.Errorf("commit traffic adjustment: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *Service) ClearTrafficAdjustment(ctx context.Context, id int64) (Server, error) {
+	var existingID int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM servers WHERE id = ? AND archived_at IS NULL`, id,
+	).Scan(&existingID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Server{}, ErrNotFound
+	}
+	if err != nil {
+		return Server{}, fmt.Errorf("read server for traffic adjustment clear: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE server_metrics SET traffic_adjustment_bytes = 0 WHERE server_id = ?`, id,
+	); err != nil {
+		return Server{}, fmt.Errorf("clear traffic adjustment: %w", err)
 	}
 	return s.Get(ctx, id)
 }
@@ -760,12 +848,13 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		return fmt.Errorf("read reporting Agent for metrics: %w", err)
 	}
 	nowTime := s.now().UTC().Truncate(time.Second)
-	var nicRX, nicTX, cycleRX, cycleTX int64
+	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment int64
 	var storedCycleStart sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT nic_rx_bytes, nic_tx_bytes, cycle_rx_bytes, cycle_tx_bytes, cycle_started_at
+		`SELECT nic_rx_bytes, nic_tx_bytes, cycle_rx_bytes, cycle_tx_bytes,
+		 traffic_adjustment_bytes, cycle_started_at
 		 FROM server_metrics WHERE server_id = ?`, serverID,
-	).Scan(&nicRX, &nicTX, &cycleRX, &cycleTX, &storedCycleStart)
+	).Scan(&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &storedCycleStart)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
@@ -787,6 +876,7 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		case time.Unix(storedCycleStart.Int64, 0).UTC().Before(cycleStart):
 			cycleRX = 0
 			cycleTX = 0
+			trafficAdjustment = 0
 		default:
 			deltaRX := trafficDelta(report.NICRXBytes, nicRX)
 			deltaTX := trafficDelta(report.NICTXBytes, nicTX)
@@ -807,8 +897,8 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		`INSERT INTO server_metrics
 		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
 		  disk_used_bytes, disk_total_bytes, uptime_seconds, nic_rx_bytes, nic_tx_bytes,
-		  cycle_rx_bytes, cycle_tx_bytes, cycle_started_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  cycle_rx_bytes, cycle_tx_bytes, traffic_adjustment_bytes, cycle_started_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(server_id) DO UPDATE SET
 		 cpu_percent = excluded.cpu_percent,
 		 memory_used_bytes = excluded.memory_used_bytes,
@@ -820,11 +910,12 @@ func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, re
 		 nic_tx_bytes = excluded.nic_tx_bytes,
 		 cycle_rx_bytes = excluded.cycle_rx_bytes,
 		 cycle_tx_bytes = excluded.cycle_tx_bytes,
+		 traffic_adjustment_bytes = excluded.traffic_adjustment_bytes,
 		 cycle_started_at = excluded.cycle_started_at,
 		 updated_at = excluded.updated_at`,
 		serverID, report.CPUPercent, report.MemoryUsedBytes, report.MemoryTotalBytes,
 		report.DiskUsedBytes, report.DiskTotalBytes, report.UptimeSeconds,
-		nicRX, nicTX, cycleRX, cycleTX, cycleStartValue, now,
+		nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartValue, now,
 	); err != nil {
 		return fmt.Errorf("save server metrics: %w", err)
 	}
@@ -983,7 +1074,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var reportedAt sql.NullInt64
 	var cpuPercent sql.NullFloat64
 	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime sql.NullInt64
-	var nicRX, nicTX, cycleRX, cycleTX, cycleStartedAt, metricsUpdatedAt sql.NullInt64
+	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt,
@@ -991,7 +1082,7 @@ func scanServer(row rowScanner) (Server, error) {
 		&lastSeenAt,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
-		&nicRX, &nicTX, &cycleRX, &cycleTX, &cycleStartedAt, &metricsUpdatedAt,
+		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return Server{}, err
@@ -1032,17 +1123,18 @@ func scanServer(row rowScanner) (Server, error) {
 	}
 	if metricsUpdatedAt.Valid {
 		metrics := &Metrics{
-			CPUPercent:       cpuPercent.Float64,
-			MemoryUsedBytes:  memoryUsed.Int64,
-			MemoryTotalBytes: memoryTotal.Int64,
-			DiskUsedBytes:    diskUsed.Int64,
-			DiskTotalBytes:   diskTotal.Int64,
-			UptimeSeconds:    uptime.Int64,
-			NICRXBytes:       nicRX.Int64,
-			NICTXBytes:       nicTX.Int64,
-			CycleRXBytes:     cycleRX.Int64,
-			CycleTXBytes:     cycleTX.Int64,
-			UpdatedAt:        time.Unix(metricsUpdatedAt.Int64, 0).UTC(),
+			CPUPercent:             cpuPercent.Float64,
+			MemoryUsedBytes:        memoryUsed.Int64,
+			MemoryTotalBytes:       memoryTotal.Int64,
+			DiskUsedBytes:          diskUsed.Int64,
+			DiskTotalBytes:         diskTotal.Int64,
+			UptimeSeconds:          uptime.Int64,
+			NICRXBytes:             nicRX.Int64,
+			NICTXBytes:             nicTX.Int64,
+			CycleRXBytes:           cycleRX.Int64,
+			CycleTXBytes:           cycleTX.Int64,
+			TrafficAdjustmentBytes: trafficAdjustment.Int64,
+			UpdatedAt:              time.Unix(metricsUpdatedAt.Int64, 0).UTC(),
 		}
 		if cycleStartedAt.Valid {
 			startedAt := time.Unix(cycleStartedAt.Int64, 0).UTC()

@@ -55,7 +55,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
 		},
 		"server_metrics": {
-			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "cycle_started_at",
+			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "traffic_adjustment_bytes", "cycle_started_at",
 		},
 	} {
 		for _, column := range columns {
@@ -69,6 +69,28 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 				t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
 			}
 		}
+	}
+	if _, err := db.Exec(
+		`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (1, 'Defaults', 'pending', 1, 1)`,
+	); err != nil {
+		t.Fatalf("insert server for metrics defaults: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO server_metrics
+		 (server_id, cpu_percent, memory_used_bytes, memory_total_bytes,
+		  disk_used_bytes, disk_total_bytes, uptime_seconds, updated_at)
+		 VALUES (1, 0, 0, 0, 0, 0, 0, 1)`,
+	); err != nil {
+		t.Fatalf("insert metrics with defaults: %v", err)
+	}
+	var adjustment int64
+	if err := db.QueryRow(
+		`SELECT traffic_adjustment_bytes FROM server_metrics WHERE server_id = 1`,
+	).Scan(&adjustment); err != nil {
+		t.Fatalf("read traffic adjustment default: %v", err)
+	}
+	if adjustment != 0 {
+		t.Fatalf("traffic adjustment default = %d, want 0", adjustment)
 	}
 }
 
@@ -123,22 +145,22 @@ func TestOpenMigratesTrafficColumnsWithoutLosingMetrics(t *testing.T) {
 	var resetDay int
 	var limit sql.NullInt64
 	var cpu float64
-	var nicRX, nicTX, cycleRX, cycleTX int64
+	var nicRX, nicTX, cycleRX, cycleTX, adjustment int64
 	var cycleStarted sql.NullInt64
 	if err := db.QueryRow(
 		`SELECT servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time, metrics.cpu_percent,
 		 metrics.nic_rx_bytes, metrics.nic_tx_bytes, metrics.cycle_rx_bytes,
-		 metrics.cycle_tx_bytes, metrics.cycle_started_at
+		 metrics.cycle_tx_bytes, metrics.traffic_adjustment_bytes, metrics.cycle_started_at
 		 FROM servers JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE servers.id = 1`,
-	).Scan(&limit, &mode, &resetDay, &resetTime, &cpu, &nicRX, &nicTX, &cycleRX, &cycleTX, &cycleStarted); err != nil {
+	).Scan(&limit, &mode, &resetDay, &resetTime, &cpu, &nicRX, &nicTX, &cycleRX, &cycleTX, &adjustment, &cycleStarted); err != nil {
 		t.Fatalf("read migrated traffic data: %v", err)
 	}
 	if limit.Valid || mode != "single" || resetDay != 1 || resetTime != "00:00" ||
-		cpu != 12.5 || nicRX != 0 || nicTX != 0 || cycleRX != 0 || cycleTX != 0 || cycleStarted.Valid {
-		t.Fatalf("migrated traffic defaults = (%v, %q, %d, %q, %.1f, %d, %d, %d, %d, %v)",
-			limit, mode, resetDay, resetTime, cpu, nicRX, nicTX, cycleRX, cycleTX, cycleStarted)
+		cpu != 12.5 || nicRX != 0 || nicTX != 0 || cycleRX != 0 || cycleTX != 0 || adjustment != 0 || cycleStarted.Valid {
+		t.Fatalf("migrated traffic defaults = (%v, %q, %d, %q, %.1f, %d, %d, %d, %d, %d, %v)",
+			limit, mode, resetDay, resetTime, cpu, nicRX, nicTX, cycleRX, cycleTX, adjustment, cycleStarted)
 	}
 }
 

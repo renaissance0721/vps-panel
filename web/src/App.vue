@@ -85,6 +85,7 @@ type ServerMetrics = {
   nic_tx_bytes: number
   cycle_rx_bytes: number
   cycle_tx_bytes: number
+  traffic_adjustment_bytes: number
   cycle_started_at: string | null
   updated_at: string
 }
@@ -106,6 +107,7 @@ const createdServer = ref<CreatedServer | null>(null)
 const serverModalOpen = ref(false)
 const expirationModalOpen = ref(false)
 const trafficModalOpen = ref(false)
+const trafficAdjustmentModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
 const currentPage = ref<'overview' | 'servers'>('overview')
@@ -122,6 +124,8 @@ const trafficLimitUnit = ref<TrafficLimitUnit>('G')
 const trafficCountMode = ref<ServerRecord['traffic_count_mode']>('single')
 const trafficResetDay = ref(1)
 const trafficResetTime = ref('00:00')
+const trafficAdjustmentInput = ref('')
+const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
 
 const username = ref('')
 const password = ref('')
@@ -286,6 +290,7 @@ async function logout() {
     createdServer.value = null
     serverModalOpen.value = false
     expirationModalOpen.value = false
+    trafficAdjustmentModalOpen.value = false
     sidebarOpen.value = false
     expirationInput.value = ''
     generatedLink.value = ''
@@ -334,6 +339,7 @@ async function createServerRecord() {
     copiedCommand.value = false
     expirationModalOpen.value = false
     trafficModalOpen.value = false
+    trafficAdjustmentModalOpen.value = false
     await loadServers()
   })
 }
@@ -344,6 +350,7 @@ function viewServer(value: ServerRecord) {
   copiedCommand.value = false
   expirationModalOpen.value = false
   trafficModalOpen.value = false
+  trafficAdjustmentModalOpen.value = false
   expirationInput.value = ''
   serverModalOpen.value = true
 }
@@ -378,6 +385,7 @@ async function regenerateEnrollment(value: ServerRecord) {
     copiedCommand.value = false
     expirationModalOpen.value = false
     trafficModalOpen.value = false
+    trafficAdjustmentModalOpen.value = false
     await loadServers()
   })
 }
@@ -390,6 +398,8 @@ function closeServerDetails() {
   expirationInput.value = ''
   trafficModalOpen.value = false
   resetTrafficForm()
+  trafficAdjustmentModalOpen.value = false
+  resetTrafficAdjustmentForm()
 }
 
 function openExpirationModal() {
@@ -486,6 +496,64 @@ async function saveTrafficConfig() {
     selectedServer.value = response.server
     trafficModalOpen.value = false
     resetTrafficForm()
+    await loadServers()
+  })
+}
+
+function openTrafficAdjustmentModal() {
+  if (!selectedServer.value || selectedServer.value.archived_at) return
+  const target = formatTrafficLimitInput(selectedServer.value.traffic_used_bytes)
+  trafficAdjustmentInput.value = target.value || '0'
+  trafficAdjustmentUnit.value = target.unit
+  trafficAdjustmentModalOpen.value = true
+}
+
+function closeTrafficAdjustmentModal() {
+  trafficAdjustmentModalOpen.value = false
+  resetTrafficAdjustmentForm()
+}
+
+function resetTrafficAdjustmentForm() {
+  trafficAdjustmentInput.value = ''
+  trafficAdjustmentUnit.value = 'G'
+}
+
+async function saveTrafficAdjustment() {
+  if (!selectedServer.value) return
+  if (trafficAdjustmentInput.value.trim() === '') {
+    error.value = '请输入目标已用流量'
+    return
+  }
+  const parsed = parseTrafficLimit(trafficAdjustmentInput.value, trafficAdjustmentUnit.value)
+  if (parsed === undefined) {
+    error.value = '目标已用流量格式无效，请输入不小于 0 的数值'
+    return
+  }
+  const serverID = selectedServer.value.id
+  await submit(async () => {
+    const response = await api<{ server: ServerRecord }>(
+      `/api/servers/${serverID}/traffic-adjustment`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ target_used_bytes: parsed ?? 0 }),
+      },
+    )
+    selectedServer.value = response.server
+    closeTrafficAdjustmentModal()
+    await loadServers()
+  })
+}
+
+async function clearTrafficAdjustment() {
+  if (!selectedServer.value) return
+  const serverID = selectedServer.value.id
+  await submit(async () => {
+    const response = await api<{ server: ServerRecord }>(
+      `/api/servers/${serverID}/traffic-adjustment`,
+      { method: 'DELETE' },
+    )
+    selectedServer.value = response.server
+    closeTrafficAdjustmentModal()
     await loadServers()
   })
 }
@@ -604,6 +672,25 @@ function trafficUsageLabel(value: ServerRecord) {
 
 function trafficCountModeLabel(mode: ServerRecord['traffic_count_mode']) {
   return mode === 'bidirectional' ? '双向（RX + TX）' : '单向（TX）'
+}
+
+function measuredTrafficUsed(value: ServerRecord) {
+  const tx = value.metrics?.cycle_tx_bytes ?? 0
+  return value.traffic_count_mode === 'bidirectional'
+    ? (value.metrics?.cycle_rx_bytes ?? 0) + tx
+    : tx
+}
+
+function trafficAdjustmentLabel(value: ServerRecord) {
+  const adjustment = value.metrics?.traffic_adjustment_bytes ?? 0
+  if (adjustment === 0) return '未校准'
+  const formatted = formatTrafficBytes(Math.abs(adjustment))
+  return adjustment > 0 ? `+${formatted}` : `-${formatted}`
+}
+
+function trafficUsagePercentLabel(value: ServerRecord) {
+  if (!value.monthly_traffic_limit_bytes) return '—'
+  return formatPercent((value.traffic_used_bytes / value.monthly_traffic_limit_bytes) * 100)
 }
 
 function formatUptime(value: number) {
@@ -1088,15 +1175,24 @@ onUnmounted(stopServerPolling)
 
             <div class="section-heading">
               <h3 class="system-info-title">月流量</h3>
-              <n-button
-                v-if="!selectedServer.archived_at"
-                size="tiny"
-                secondary
-                :disabled="submitting"
-                @click="openTrafficModal"
-              >
-                修改设置
-              </n-button>
+              <div v-if="!selectedServer.archived_at" class="section-heading-actions">
+                <n-button
+                  size="tiny"
+                  secondary
+                  :disabled="submitting"
+                  @click="openTrafficModal"
+                >
+                  修改设置
+                </n-button>
+                <n-button
+                  size="tiny"
+                  secondary
+                  :disabled="submitting"
+                  @click="openTrafficAdjustmentModal"
+                >
+                  校准本周期流量
+                </n-button>
+              </div>
             </div>
             <dl class="server-details">
               <div>
@@ -1107,11 +1203,25 @@ onUnmounted(stopServerPolling)
                 <dt>本周期 TX</dt>
                 <dd>{{ formatTrafficBytes(selectedServer.metrics?.cycle_tx_bytes ?? 0) }}</dd>
               </div>
-              <div><dt>已用 / 总量</dt><dd>{{ trafficUsageLabel(selectedServer) }}</dd></div>
               <div>
                 <dt>统计方式</dt>
                 <dd>{{ trafficCountModeLabel(selectedServer.traffic_count_mode) }}</dd>
               </div>
+              <div>
+                <dt>机器统计已用</dt>
+                <dd>{{ formatTrafficBytes(measuredTrafficUsed(selectedServer)) }}</dd>
+              </div>
+              <div><dt>校准偏移</dt><dd>{{ trafficAdjustmentLabel(selectedServer) }}</dd></div>
+              <div><dt>当前已用</dt><dd>{{ formatTrafficBytes(selectedServer.traffic_used_bytes) }}</dd></div>
+              <div>
+                <dt>月流量额度</dt>
+                <dd>
+                  {{ selectedServer.monthly_traffic_limit_bytes
+                    ? formatTrafficBytes(selectedServer.monthly_traffic_limit_bytes)
+                    : '不限' }}
+                </dd>
+              </div>
+              <div><dt>使用比例</dt><dd>{{ trafficUsagePercentLabel(selectedServer) }}</dd></div>
               <div>
                 <dt>重置时间</dt>
                 <dd>每月 {{ selectedServer.traffic_reset_day }} 日 {{ selectedServer.traffic_reset_time }}</dd>
@@ -1279,9 +1389,65 @@ onUnmounted(stopServerPolling)
                   :disabled="submitting"
                 />
               </label>
-              <p>重置时间按 Asia/Shanghai 计算；当月没有该日期时使用当月最后一天。</p>
+              <p>重置时间按 Asia/Shanghai 计算；当月没有该日期时使用当月最后一天。修改统计方式不会清除现有校准偏移，必要时请重新校准。</p>
               <div class="expiration-modal-actions">
                 <n-button :disabled="submitting" @click="closeTrafficModal">取消</n-button>
+                <n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button>
+              </div>
+            </form>
+          </n-card>
+        </n-modal>
+
+        <n-modal
+          v-model:show="trafficAdjustmentModalOpen"
+          :mask-closable="!submitting"
+          @after-leave="resetTrafficAdjustmentForm"
+        >
+          <n-card
+            v-if="selectedServer"
+            class="traffic-adjustment-modal-card"
+            title="校准本周期流量"
+            :bordered="false"
+            closable
+            @close="closeTrafficAdjustmentModal"
+          >
+            <form class="traffic-form" @submit.prevent="saveTrafficAdjustment">
+              <dl class="server-details">
+                <div>
+                  <dt>当前机器统计</dt>
+                  <dd>{{ formatTrafficBytes(measuredTrafficUsed(selectedServer)) }}</dd>
+                </div>
+                <div><dt>当前校准偏移</dt><dd>{{ trafficAdjustmentLabel(selectedServer) }}</dd></div>
+                <div><dt>当前最终已用</dt><dd>{{ formatTrafficBytes(selectedServer.traffic_used_bytes) }}</dd></div>
+              </dl>
+              <label>
+                <span>目标已用流量</span>
+                <div class="traffic-limit-input">
+                  <input
+                    v-model="trafficAdjustmentInput"
+                    class="settings-input"
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="例如 183"
+                    :disabled="submitting"
+                  />
+                  <select
+                    v-model="trafficAdjustmentUnit"
+                    class="settings-input"
+                    aria-label="目标已用流量单位"
+                    :disabled="submitting"
+                  >
+                    <option value="G">G</option>
+                    <option value="T">T</option>
+                  </select>
+                </div>
+              </label>
+              <div class="expiration-modal-actions">
+                <n-button secondary :disabled="submitting" @click="clearTrafficAdjustment">
+                  清除校准
+                </n-button>
+                <n-button :disabled="submitting" @click="closeTrafficAdjustmentModal">取消</n-button>
                 <n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button>
               </div>
             </form>

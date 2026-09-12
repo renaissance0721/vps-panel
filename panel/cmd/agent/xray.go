@@ -127,8 +127,14 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	if !managed {
 		return nil
 	}
-	if _, err := m.runCommand(ctx, "systemctl", "disable", "--now", m.serviceName); err != nil {
-		return fmt.Errorf("%w: %v", errManagedXrayStop, err)
+	unitExists, err := pathExists(m.unitPath)
+	if err != nil {
+		return fmt.Errorf("inspect managed Xray systemd unit: %w", err)
+	}
+	if unitExists {
+		if _, err := m.runCommand(ctx, "systemctl", "disable", "--now", m.serviceName); err != nil {
+			return fmt.Errorf("%w: %v", errManagedXrayStop, err)
+		}
 	}
 	for _, path := range []string{m.configPath, m.previousPath} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -154,7 +160,7 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		return fmt.Errorf("prepare managed Xray config directory: %w", err)
 	}
 
-	candidatePath, err := writeTemporaryFile(m.configDir, ".config-candidate-*", candidate, 0o600)
+	candidatePath, err := writeTemporaryFile(m.configDir, ".config-candidate-*.json", candidate, 0o600)
 	if err != nil {
 		return fmt.Errorf("write managed Xray candidate: %w", err)
 	}

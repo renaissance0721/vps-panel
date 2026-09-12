@@ -219,6 +219,13 @@ func TestManagedXrayValidationFailureKeepsCurrentConfig(t *testing.T) {
 	if commands.count("systemctl", "restart") != 0 {
 		t.Fatalf("validation failure restarted service: %v", commands.calls)
 	}
+	validationPaths := commands.validationPaths()
+	if len(validationPaths) != 1 || !strings.HasSuffix(validationPaths[0], ".json") || filepath.Dir(validationPaths[0]) != manager.configDir {
+		t.Fatalf("validation candidate paths = %v", validationPaths)
+	}
+	if _, err := os.Stat(validationPaths[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("validation candidate was not cleaned up: %v", err)
+	}
 }
 
 func TestManagedXraySameConfigAvoidsRestartAndRepairsInactiveService(t *testing.T) {
@@ -490,6 +497,9 @@ func TestManagedXrayDisableCleansRuntimeFilesAndReenableAvoidsDownload(t *testin
 	if len(firewallCalls) != 1 || len(firewallCalls[0]) != 0 {
 		t.Fatalf("disable firewall calls = %v", firewallCalls)
 	}
+	if commands.count("systemctl", "disable") != 1 {
+		t.Fatalf("disable systemd calls = %v", commands.calls)
+	}
 	manager.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("re-enable downloaded correct managed binary")
 		return nil, errors.New("unexpected download")
@@ -503,11 +513,47 @@ func TestManagedXrayDisableCleansRuntimeFilesAndReenableAvoidsDownload(t *testin
 	assertFileEquals(t, manager.configPath, renderManagedXrayBaseConfig())
 }
 
+func TestManagedXrayDisableWithoutUnitStillCleansRuntimeState(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, []byte("current\n"), 0o600)
+	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
+	var firewallCalls int
+	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
+		firewallCalls++
+		if len(ports) != 0 {
+			t.Fatalf("disable firewall ports = %v", ports)
+		}
+		return nil
+	}
+
+	if err := manager.apply(t.Context(), desiredState{}); err != nil {
+		t.Fatalf("disable without unit: %v", err)
+	}
+	if commands.count("systemctl", "disable") != 0 {
+		t.Fatalf("missing unit caused systemctl call: %v", commands.calls)
+	}
+	for _, path := range []string{manager.configPath, manager.previousPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("disable without unit retained %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{manager.binaryPath, manager.markerPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("disable without unit removed %s: %v", path, err)
+		}
+	}
+	if firewallCalls != 1 {
+		t.Fatalf("disable without unit firewall calls = %d", firewallCalls)
+	}
+}
+
 func TestManagedXrayDisableFailureKeepsRuntimeFiles(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	seedManagedXray(t, manager, []byte("binary"))
 	writeTestFile(t, manager.configPath, []byte("current\n"), 0o600)
 	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("unit\n"), 0o644)
 	commands.active = true
 	commands.failDisable = true
 	firewallCalled := false
@@ -650,6 +696,18 @@ func (r *xrayCommandRecorder) countVersion() int {
 		}
 	}
 	return count
+}
+
+func (r *xrayCommandRecorder) validationPaths() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	paths := make([]string, 0)
+	for _, call := range r.calls {
+		if len(call) == 5 && call[1] == "run" && call[2] == "-test" && call[3] == "-config" {
+			paths = append(paths, call[4])
+		}
+	}
+	return paths
 }
 
 func seedManagedXray(t *testing.T, manager *xrayManager, binary []byte) {

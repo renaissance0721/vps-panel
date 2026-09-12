@@ -122,7 +122,7 @@ const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
 const expirationInput = ref('')
-const trafficAdjustmentInput = ref('')
+const trafficAdjustmentInput = ref<string | number>('')
 const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
 
 const username = ref('')
@@ -489,7 +489,7 @@ function resetTrafficAdjustmentForm() {
 
 async function saveTrafficAdjustment() {
   if (!selectedServer.value) return
-  if (trafficAdjustmentInput.value.trim() === '') {
+  if (String(trafficAdjustmentInput.value).trim() === '') {
     error.value = '请输入目标已用流量'
     return
   }

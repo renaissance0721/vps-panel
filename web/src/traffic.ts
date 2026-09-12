@@ -26,10 +26,10 @@ export type TrafficConfigPayload = {
 }
 
 export function parseTrafficLimit(
-  value: string,
+  value: string | number,
   unit: TrafficLimitUnit,
 ): number | null | undefined {
-  const normalized = value.trim()
+  const normalized = String(value).trim()
   if (normalized === '') return null
   if (!/^\d+(?:\.\d+)?$/.test(normalized)) return undefined
 
@@ -80,7 +80,7 @@ export function useTrafficForm<T extends TrafficConfigServer>(
 ) {
   const trafficModalOpen = ref(false)
   const trafficFormError = ref('')
-  const trafficLimitInput = ref('')
+  const trafficLimitInput = ref<string | number>('')
   const trafficLimitUnit = ref<TrafficLimitUnit>('G')
   const trafficCountMode = ref<TrafficCountMode>('single')
   const trafficResetDay = ref(1)

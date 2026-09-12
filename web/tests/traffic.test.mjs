@@ -21,6 +21,12 @@ test('G 和 T 正确转换为字节', () => {
   assert.equal(parseTrafficLimit('500', 'G'), 500 * GIBIBYTE)
   assert.equal(parseTrafficLimit('1', 'T'), TEBIBYTE)
   assert.equal(parseTrafficLimit('2', 'T'), 2 * TEBIBYTE)
+  assert.equal(parseTrafficLimit(500, 'G'), 500 * GIBIBYTE)
+  assert.equal(parseTrafficLimit(1, 'T'), TEBIBYTE)
+})
+
+test('流量校准解析接受 number 输入', () => {
+  assert.equal(parseTrafficLimit(183, 'G'), 183 * GIBIBYTE)
 })
 
 test('已有额度优先使用整 T，否则使用 G', () => {
@@ -116,7 +122,7 @@ test('合法月流量设置发送更新并在成功后关闭 Modal', async () =>
     return updated
   }, async () => { loads++ })
   form.openTrafficModal()
-  form.trafficLimitInput.value = '500'
+  form.trafficLimitInput.value = 500
   form.trafficCountMode.value = 'bidirectional'
   form.trafficResetDay.value = 15
   form.trafficResetTime.value = '08:30'

@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A 和 Phase 8B 已完成；Phase 7B 暂缓，不阻塞代理主链路。下一阶段 Phase 9A 直接同时建立 VLESS Proxy、Client 基础管理和每 Client 直连 VLESS URI。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B 和 Phase 9A 已完成；Phase 7B 暂缓，不阻塞代理主链路。下一阶段为 Phase 9B Shadowsocks Proxy。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -3218,6 +3218,8 @@ Xray 托管代码必须由 VPS Panel 独立实现。
 ---
 
 # 13. Phase 9A：VLESS Proxy + Client 基础管理 + 直连分享
+
+> 当前状态：已完成。Panel 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision、Proxy 与多 Client 管理、每 Client 独立 UUID 与直连 VLESS URI；Agent 已能把完整 typed desired state 渲染为一份受管 Xray 配置，并继续复用 Phase 8B 的安全应用与回滚链路。
 
 > 本 Phase 的数据语义、协议组合和 Agent 配置以本文为准。
 >

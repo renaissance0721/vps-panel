@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -32,6 +33,7 @@ type server struct {
 	db            *sql.DB
 	authService   *auth.Service
 	servers       *serverstore.Service
+	proxies       *proxystore.Service
 	webRoot       string
 	panelVersion  string
 	connectionsMu sync.Mutex
@@ -52,6 +54,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 		db:           db,
 		authService:  auth.NewService(db),
 		servers:      serverstore.NewService(db),
+		proxies:      proxystore.NewService(db),
 		webRoot:      webRoot,
 		panelVersion: panelVersion,
 		connections:  make(map[int64]*agentConnection),
@@ -79,6 +82,17 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("DELETE /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.clearTrafficAdjustment))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
+	mux.HandleFunc("GET /api/proxies", s.requireAuthentication(s.listProxies))
+	mux.HandleFunc("POST /api/proxies", s.requireAuthentication(s.createProxy))
+	mux.HandleFunc("GET /api/proxies/{id}", s.requireAuthentication(s.getProxy))
+	mux.HandleFunc("PATCH /api/proxies/{id}", s.requireAuthentication(s.updateProxy))
+	mux.HandleFunc("DELETE /api/proxies/{id}", s.requireAuthentication(s.deleteProxy))
+	mux.HandleFunc("GET /api/proxies/{id}/clients", s.requireAuthentication(s.listProxyClients))
+	mux.HandleFunc("POST /api/proxies/{id}/clients", s.requireAuthentication(s.createProxyClient))
+	mux.HandleFunc("GET /api/clients/{id}", s.requireAuthentication(s.getProxyClient))
+	mux.HandleFunc("PATCH /api/clients/{id}", s.requireAuthentication(s.updateProxyClient))
+	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuthentication(s.deleteProxyClient))
+	mux.HandleFunc("GET /api/clients/{id}/share", s.requireAuthentication(s.getProxyClientShare))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -201,8 +215,8 @@ type agentDesiredStateResponse struct {
 }
 
 type agentDesiredXrayState struct {
-	Enabled bool  `json:"enabled"`
-	Proxies []any `json:"proxies"`
+	Enabled bool                      `json:"enabled"`
+	Proxies []proxystore.DesiredProxy `json:"proxies"`
 }
 
 type agentDesiredRealmState struct {
@@ -357,7 +371,8 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
 		Version: state.Version,
 		Xray: agentDesiredXrayState{
-			Proxies: make([]any, 0),
+			Enabled: len(state.Proxies) > 0,
+			Proxies: state.Proxies,
 		},
 		Realm: agentDesiredRealmState{
 			Relays: make([]any, 0),

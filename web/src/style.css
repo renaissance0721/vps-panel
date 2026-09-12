@@ -207,6 +207,24 @@ h1 {
   margin-bottom: 20px;
 }
 
+.proxy-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 420px) auto;
+  justify-content: end;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.proxy-table {
+  min-width: 1180px;
+}
+
+.secondary-text {
+  display: block;
+  margin-top: 3px;
+  color: #65717e;
+}
+
 .server-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -268,7 +286,8 @@ h1 {
 }
 
 .expiration-form p,
-.traffic-form p {
+.traffic-form p,
+.proxy-form p {
   margin: 4px 0 10px;
   color: #65717e;
   font-size: 13px;
@@ -308,6 +327,98 @@ h1 {
   width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
+}
+
+.proxy-form-card,
+.proxy-detail-card {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.client-form-card,
+.client-detail-card {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.proxy-form,
+.proxy-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.proxy-form {
+  gap: 16px;
+}
+
+.proxy-form label > span,
+.share-field strong {
+  color: #47525d;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.proxy-form .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fixed-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 12px;
+  border-radius: 4px;
+  color: #47525d;
+  background: #f6f8fa;
+  font-size: 13px;
+}
+
+.client-fieldset {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #e3e8ee;
+  border-radius: 6px;
+}
+
+.client-fieldset legend {
+  padding: 0 6px;
+  font-weight: 700;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.proxy-detail-card h3 {
+  margin: 20px 0 12px;
+  font-size: 16px;
+}
+
+.proxy-detail-card h3:first-child {
+  margin-top: 0;
+}
+
+.proxy-detail-card .section-heading h3 {
+  margin: 0;
+}
+
+.client-table {
+  min-width: 720px;
+}
+
+.share-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
 }
 
 .system-info-title {
@@ -513,6 +624,10 @@ h1 {
     width: 100%;
     max-width: 100%;
     margin-left: 0;
+  }
+
+  .proxy-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .mobile-header button {

@@ -100,13 +100,13 @@ func newXrayManager() *xrayManager {
 }
 
 func (m *xrayManager) apply(ctx context.Context, state desiredState) error {
-	if len(state.Xray.Proxies) != 0 || state.Realm.Enabled || len(state.Realm.Relays) != 0 {
+	if state.Realm.Enabled || len(state.Realm.Relays) != 0 || (!state.Xray.Enabled && len(state.Xray.Proxies) != 0) {
 		return errUnsupportedManagedConfig
 	}
 	if !state.Xray.Enabled {
 		return m.disable(ctx)
 	}
-	return m.enable(ctx)
+	return m.enable(ctx, state.Xray.Proxies)
 }
 
 func (m *xrayManager) disable(ctx context.Context) error {
@@ -123,7 +123,11 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	return nil
 }
 
-func (m *xrayManager) enable(ctx context.Context) error {
+func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error {
+	candidate, err := renderManagedXrayConfig(proxies)
+	if err != nil {
+		return err
+	}
 	if err := m.ensureManagedXray(ctx); err != nil {
 		return err
 	}
@@ -131,7 +135,6 @@ func (m *xrayManager) enable(ctx context.Context) error {
 		return fmt.Errorf("prepare managed Xray config directory: %w", err)
 	}
 
-	candidate := renderManagedXrayBaseConfig()
 	candidatePath, err := writeTemporaryFile(m.configDir, ".config-candidate-*", candidate, 0o600)
 	if err != nil {
 		return fmt.Errorf("write managed Xray candidate: %w", err)
@@ -538,19 +541,8 @@ func (m *xrayManager) waitUntilActive(ctx context.Context) error {
 }
 
 func renderManagedXrayBaseConfig() []byte {
-	return []byte(`{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-`)
+	value, _ := renderManagedXrayConfig(nil)
+	return value
 }
 
 func writeTemporaryFile(directory, pattern string, data []byte, mode os.FileMode) (string, error) {

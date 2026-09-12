@@ -29,8 +29,38 @@ type desiredState struct {
 }
 
 type desiredXrayState struct {
-	Enabled bool              `json:"enabled"`
-	Proxies []json.RawMessage `json:"proxies"`
+	Enabled bool           `json:"enabled"`
+	Proxies []desiredProxy `json:"proxies"`
+}
+
+type desiredProxy struct {
+	ID         int64           `json:"id"`
+	Listen     string          `json:"listen"`
+	Port       int             `json:"port"`
+	Protocol   string          `json:"protocol"`
+	Transport  string          `json:"transport"`
+	Security   string          `json:"security"`
+	ServerFlow string          `json:"server_flow"`
+	ServerName string          `json:"server_name"`
+	TLS        *desiredTLS     `json:"tls,omitempty"`
+	Reality    *desiredReality `json:"reality,omitempty"`
+	Clients    []desiredClient `json:"clients"`
+}
+
+type desiredTLS struct {
+	Certificate string `json:"certificate"`
+	PrivateKey  string `json:"private_key"`
+}
+
+type desiredReality struct {
+	Target     string `json:"target"`
+	PrivateKey string `json:"private_key"`
+	ShortID    string `json:"short_id"`
+}
+
+type desiredClient struct {
+	ID   int64  `json:"id"`
+	UUID string `json:"uuid"`
 }
 
 type desiredRealmState struct {

@@ -341,7 +341,7 @@ func TestManagedXrayDisablePreservesFilesAndReenableAvoidsDownload(t *testing.T)
 func TestManagedXrayRejectsUnsupportedDesiredStates(t *testing.T) {
 	manager, _ := newTestXrayManager(t)
 	tests := []desiredState{
-		{Xray: desiredXrayState{Proxies: []json.RawMessage{[]byte(`{}`)}}},
+		{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{{Protocol: "unsupported"}}}},
 		{Realm: desiredRealmState{Enabled: true}},
 		{Realm: desiredRealmState{Relays: []json.RawMessage{[]byte(`{}`)}}},
 	}

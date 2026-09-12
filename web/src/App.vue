@@ -17,6 +17,7 @@ import {
   trafficWarningLevel,
   type TrafficLimitUnit,
 } from './traffic'
+import ProxiesView from './ProxiesView.vue'
 
 type User = {
   id: number
@@ -110,7 +111,7 @@ const trafficModalOpen = ref(false)
 const trafficAdjustmentModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
-const currentPage = ref<'overview' | 'servers'>('overview')
+const currentPage = ref<'overview' | 'servers' | 'proxies'>('overview')
 const serverListMode = ref<'active' | 'archived'>('active')
 const loading = ref(true)
 const submitting = ref(false)
@@ -611,7 +612,7 @@ function clearCredentials() {
   confirmPassword.value = ''
 }
 
-function selectPage(page: 'overview' | 'servers') {
+function selectPage(page: 'overview' | 'servers' | 'proxies') {
   currentPage.value = page
   sidebarOpen.value = false
 }
@@ -856,6 +857,13 @@ onUnmounted(stopServerPolling)
             >
               服务器
             </button>
+            <button
+              type="button"
+              :class="{ active: currentPage === 'proxies' }"
+              @click="selectPage('proxies')"
+            >
+              代理节点
+            </button>
           </nav>
           <div class="sidebar-account">
             <span>{{ state.user?.username }}</span>
@@ -877,7 +885,7 @@ onUnmounted(stopServerPolling)
           </header>
           <div class="admin-page">
             <header class="page-heading">
-              <h1>{{ currentPage === 'overview' ? '概览' : '服务器' }}</h1>
+              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : '代理节点' }}</h1>
             </header>
 
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
@@ -940,7 +948,7 @@ onUnmounted(stopServerPolling)
           </n-card>
         </template>
 
-        <template v-else>
+        <template v-else-if="currentPage === 'servers'">
           <div class="admin-nav server-list-nav" aria-label="服务器列表">
             <n-button
               size="small"
@@ -1073,6 +1081,8 @@ onUnmounted(stopServerPolling)
             </div>
           </n-card>
         </template>
+
+        <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" />
 
         <n-modal
           v-if="selectedServer"

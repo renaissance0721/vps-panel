@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
@@ -180,6 +181,7 @@ type Agent struct {
 
 type DesiredState struct {
 	Version int64
+	Proxies []proxystore.DesiredProxy
 }
 
 type ConfigResult struct {
@@ -699,8 +701,13 @@ func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Age
 }
 
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DesiredState{}, fmt.Errorf("begin desired state read: %w", err)
+	}
+	defer tx.Rollback()
 	var state DesiredState
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT servers.desired_state_version
 		 FROM agents JOIN servers ON servers.id = agents.server_id
 		 WHERE agents.id = ? AND agents.server_id = ? AND servers.archived_at IS NULL`,
@@ -711,6 +718,13 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	}
 	if err != nil {
 		return DesiredState{}, fmt.Errorf("read desired state: %w", err)
+	}
+	state.Proxies, err = proxystore.ListDesired(ctx, tx, serverID)
+	if err != nil {
+		return DesiredState{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return DesiredState{}, fmt.Errorf("commit desired state read: %w", err)
 	}
 	return state, nil
 }

@@ -135,6 +135,31 @@ func migrate(db *sql.DB) error {
 			cycle_started_at INTEGER,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proxies (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless')),
+			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			public_host TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			config_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE (server_id, listen_port)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_proxies_server_id ON proxies(server_id)`,
+		`CREATE TABLE IF NOT EXISTS clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			credential_json TEXT NOT NULL,
+			client_udp443 INTEGER NOT NULL DEFAULT 0 CHECK (client_udp443 IN (0, 1)),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_clients_proxy_id ON clients(proxy_id)`,
 	}
 
 	for _, statement := range statements {

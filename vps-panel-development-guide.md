@@ -54,7 +54,7 @@ VPS Panel 的目标不是单纯做一个“探针面板”，而是做一个统�
 - 服务器信息中显示本周期已用流量 / 总流量
 - 提供统一的 Panel ↔ Agent 节点后端 API，Panel 不直接依赖 Xray / Realm 配置文件格式
 - 第一版由统一 Agent 管理 Xray，并支持 VLESS + TCP + XTLS Vision；安全层允许 TLS / REALITY 二选一，两种模式都支持客户端 `xtls-rprx-vision-udp443`；同时支持 Shadowsocks
-- Proxy 下按真实需求增加 Client 管理
+- Proxy 下提供 Client 管理，并在独立阶段实现每 Client 流量、流量额度、重置周期与到期控制
 - 同一个 Agent 管理 Realm 和端口转发规则
 - 节点分享、订阅、二维码
 - `admin / vip` 两级账号体系
@@ -846,7 +846,7 @@ Panel 后端仍应按 `protocol`：
 
 ## 2.4 Client
 
-Client 是 Proxy 下的用户、设备或凭据。
+Client 是 Proxy 下的独立用户、设备或凭据。
 
 例如：
 
@@ -857,20 +857,45 @@ VLESS Reality
 └── Android
 ```
 
-Client 属于 Proxy：
+固定关系：
 
 ```text
 Proxy
 └── Client
 ```
 
-第一版 Proxy 如果只有一份凭据，可以先不创建 Client 表。
+Client 不是新的 Proxy，也不是新的 Agent。
 
-等真实需要“一条 Proxy 多个 UUID / 多个设备”时，再引入 Client。
+同一个 Proxy 可以拥有多个 Client；这些 Client：
 
-不要为了未来可能需要而提前拆表。
+- 共享 Proxy 的监听地址、端口、传输层、安全层和服务端参数
+- 各自拥有独立凭据
+- 各自拥有独立启用状态
+- 后续各自统计 Xray per-client 上行 / 下行流量
+- 可以设置独立流量额度
+- 可以设置独立流量重置周期
+- 可以设置独立到期时间
+
+Phase 9A / 9B 如果暂时仍以“一个 Proxy 一份凭据”完成代理主链路，可以先保留当前单凭据实现。
+
+进入 Phase 10A 时，再正式建立 `clients`，并把已有 Proxy 的单凭据安全迁移成默认 Client，必须保留原 UUID / Password 和现有分享行为，不要求用户重新生成节点。
+
+进入 Phase 10B 后：
+
+```text
+Server 总流量
+→ Linux 网卡累计 RX / TX
+
+Client 流量
+→ Xray per-client stats
+```
+
+两者是独立统计口径。
+
+不要把 Client 流量反推成 Server 网卡总流量，也不要让 Server 月流量依赖 Xray。
 
 ---
+
 
 ## 2.5 Relay
 
@@ -2136,15 +2161,46 @@ traffic_count_mode = bidirectional
 
 即使不限，Panel 仍继续记录累计 RX / TX。
 
-第一版 UI 可以接受用户输入：
+月流量额度输入使用：
 
 ```text
-500G
-1T
-2T
+[ 数值 ] [ G ▼ ]
 ```
 
-内部统一换算为字节保存。
+单位只支持：
+
+```text
+G
+T
+```
+
+默认单位：
+
+```text
+G
+```
+
+内部仍然只保存：
+
+```text
+monthly_traffic_limit_bytes
+```
+
+不要增加 `traffic_unit` / `display_unit` 之类的数据库字段。
+
+换算固定为：
+
+```text
+1 G = 1024^3 bytes
+1 T = 1024^4 bytes
+```
+
+重新打开编辑 Modal 时：
+
+- 能整除 `1T` 的额度优先显示为 `T`
+- 其他额度显示为 `G`
+
+单位只是输入 / 展示层，后端真实值始终为 bytes。
 
 ---
 
@@ -2167,6 +2223,7 @@ nic_tx_bytes
 cycle_rx_bytes
 cycle_tx_bytes
 cycle_started_at
+traffic_adjustment_bytes
 ```
 
 现有 CPU / RAM / Disk / Uptime 字段保持不变。
@@ -2335,7 +2392,97 @@ nic_tx_bytes = 当前 Agent 上报值
 
 ---
 
-## 9.8 UI
+## 9.8 本周期流量手动校准
+
+必须允许用户手动设置：
+
+```text
+本周期当前已用流量
+```
+
+典型场景：
+
+```text
+商家后台：
+183G / 500G
+
+VPS Panel 今天才开始监控：
+20G
+```
+
+用户可以在 Server 详情中执行：
+
+```text
+校准本周期流量
+```
+
+输入目标值，例如：
+
+```text
+183 G
+```
+
+单位同样只支持：
+
+```text
+G
+T
+```
+
+不要修改：
+
+- Linux 网卡计数器
+- `cycle_rx_bytes`
+- `cycle_tx_bytes`
+
+使用一个当前周期校准偏移量：
+
+```text
+measured_used
+= single 时 cycle_tx_bytes
+= bidirectional 时 cycle_rx_bytes + cycle_tx_bytes
+
+traffic_adjustment_bytes
+= 用户输入的目标已用量 - measured_used
+
+displayed_used
+= max(0, measured_used + traffic_adjustment_bytes)
+```
+
+例如：
+
+```text
+机器已统计 20G
+用户校准为 183G
+
+traffic_adjustment_bytes = 163G
+
+之后机器新增 10G
+displayed_used = 193G
+```
+
+`traffic_adjustment_bytes` 允许为负数。
+
+校准只属于当前流量周期。
+
+进入新周期时：
+
+```text
+traffic_adjustment_bytes = 0
+```
+
+如果用户切换单向 / 双向统计方式：
+
+- 保留原始 `cycle_rx_bytes / cycle_tx_bytes`
+- 根据新模式重新计算 `measured_used`
+- 保留当前 adjustment
+- UI 提示如果需要与商家后台继续完全一致，可以重新校准
+
+不要把人工校准值硬塞进 RX / TX。
+
+---
+
+## 9.9 UI
 
 本节只规定**流量字段必须展示什么**。
 
@@ -2376,9 +2523,26 @@ Server 详情至少显示：
 ```text
 剩余流量
 使用率
+校准偏移
 ```
 
-但不是 Phase 7A 的必要条件。
+其中使用率同时用于列表中的轻量预警 Tag：
+
+```text
+>= 90% 且 < 100%
+→ 流量预警
+
+>= 100%
+→ 流量已用完
+```
+
+Server 详情提供：
+
+```text
+校准本周期流量
+```
+
+操作入口，使用 Modal，不做行内展开。
 
 不要显示：
 
@@ -2391,17 +2555,64 @@ Server 详情至少显示：
 
 ---
 
-## 9.9 超额行为
+## 9.10 流量预警与超额行为
 
-当前只统计和显示。
+Server 的流量预警只做 Panel UI 派生状态。
 
-即使：
+使用：
 
 ```text
-已用流量 >= 月流量总额
+displayed_used
+monthly_traffic_limit_bytes
 ```
 
-也不要自动：
+计算使用率。
+
+固定规则：
+
+```text
+未设置额度
+→ 不显示预警
+
+used < 90%
+→ 不显示预警
+
+90% <= used < 100%
+→ 流量预警
+
+used >= 100%
+→ 流量已用完
+```
+
+预警不能修改：
+
+```text
+server.status
+```
+
+因此可以同时显示：
+
+```text
+[在线] [流量预警]
+```
+
+或者：
+
+```text
+[在线] [流量已用完]
+```
+
+不要增加：
+
+```text
+traffic_warning
+traffic_status
+warning_level
+```
+
+等持久化状态字段。
+
+即使流量达到或超过上限，也不要自动：
 
 - 断网
 - 停止 Agent
@@ -2410,17 +2621,18 @@ Server 详情至少显示：
 - 修改防火墙
 - 限速
 
-第一版不做流量阈值通知或自动动作。
+当前只做 Panel UI 状态提示，不发送 Telegram / Email / Webhook。
 
 ---
 
-## 9.10 本阶段明确不做
+## 9.11 本阶段明确不做
 
-以下全部后移，不阻塞 Phase 7A：
+以下仍然后移，不阻塞 Phase 7A：
 
 ```text
-本周期人工校准
-80% / 90% / 100% 流量预警
+可自定义流量预警阈值
+Telegram / Email / Webhook 通知
+流量超额自动断网 / 自动停服务 / 自动限速
 到期 30 天 / 7 天预警
 概览页流量汇总
 实时上下行速度
@@ -2428,6 +2640,8 @@ Server 详情至少显示：
 每日 / 每小时流量
 Speedtest / iperf
 ```
+
+当前预警阈值固定为 90% / 100%，不做每台 Server 自定义。
 
 以后确实需要时再单独增加。
 
@@ -2444,7 +2658,7 @@ cycle_tx_bytes
 
 ---
 
-## 9.11 验收
+## 9.12 验收
 
 至少验证：
 
@@ -2452,7 +2666,7 @@ cycle_tx_bytes
 2. Agent 不进行 Speedtest、iperf 或任何主动带宽测速。
 3. Agent 不计算 RX/s、TX/s 或实时下载 / 上传速度。
 4. Agent 复用现有 `metrics` WebSocket 消息上报累计 RX / TX。
-5. 不新增独立 traffic API、traffic WebSocket 或高频采样器。
+5. 不新增独立 traffic WebSocket 或高频采样器。
 6. Panel 能持久化上次网卡累计计数。
 7. Panel 能通过 delta 正确累计本周期 RX / TX。
 8. 单向模式按 TX 计算月流量。
@@ -2462,13 +2676,21 @@ cycle_tx_bytes
 12. 到达新周期后，下一次 metrics 上报会开启新的周期并建立新 baseline。
 13. 月流量重置不修改 Linux 网卡计数器。
 14. Server 可以设置月流量总额。
-15. Server 可以选择单向 / 双向。
-16. Server 可以设置每月流量重置日和时间。
-17. 服务器列表能显示 `已用 / 总量`。
-18. Server 详情能显示本周期 RX / TX。
-19. 未设置额度时能显示 `已用 / 不限`。
-20. 不实现人工校准、阈值预警、实时速度、历史图。
-21. 不因为流量超额自动停服务。
+15. 月流量输入默认单位为 G，并可选择 T。
+16. G / T 最终统一转换为 bytes 保存。
+17. Server 可以选择单向 / 双向。
+18. Server 可以设置每月流量重置日和时间。
+19. Server 可以手动校准当前周期已用流量。
+20. 校准不会修改原始 RX / TX。
+21. 新周期开始时校准偏移自动归零。
+22. 服务器列表能显示 `已用 / 总量`。
+23. Server 详情能显示本周期 RX / TX。
+24. 未设置额度时能显示 `已用 / 不限`。
+25. 使用率达到 90% 时显示“流量预警”。
+26. 使用率达到或超过 100% 时显示“流量已用完”。
+27. 预警不会修改 Server online / offline / pending 状态。
+28. 不实现自定义阈值、通知、实时速度、历史图。
+29. 不因为流量超额自动停服务。
 
 完成 Phase 7A 后停止。
 不要继续服务器分组 / 标签。
@@ -3469,18 +3691,37 @@ Server
 
 # 15. Phase 10：Client
 
-> 如果本 Phase 需要新增 Client UI，默认作为 Proxy 详情 / 编辑流程的一部分。
+> Client 固定属于 Proxy。
 >
-> 优先继续使用 Frontend Guide 的 Proxy Modal 结构，不要为了 Client 单独创建新的页面骨架，除非后续真实需求证明 Modal 无法合理承载。
+> Client UI 默认作为 Proxy 详情 / 编辑流程的一部分，继续遵守 `vps-panel-frontend-guide.md` 的固定容器与 Modal 规则。
+>
+> 可以研究 3x-ui 等第三方面板已经提供了哪些 Client 功能，例如“独立凭据、流量额度、重置周期、到期时间、流量统计”等产品能力；但仍严格遵守本 Guide 的原创实现要求：
+>
+> - 不复制第三方面板代码
+> - 不机械复制数据库 schema
+> - 不机械复制 API
+> - 不复制其字段命名体系
+> - 不复刻其前端布局和交互
+>
+> 最终实现必须回到 VPS Panel 自己的 Proxy / Client / Agent / desired-state 模型。
 
+## 15.1 Phase 10A：Client 基础管理
 
-只有在真实需要“一条 Proxy 多个凭据”时再实现 Client。
+### 目标
 
-关系：
+把：
+
+```text
+一个 Proxy = 一份凭据
+```
+
+扩展为：
 
 ```text
 Proxy
-└── Client
+├── Client A
+├── Client B
+└── Client C
 ```
 
 例如：
@@ -3492,15 +3733,670 @@ VLESS
 └── iPhone
 ```
 
-第一版 Client 只保存当前必要字段，例如：
+Client 第一阶段只解决：
 
-- name
-- credential / UUID
-- enabled
+- 独立名称
+- 独立凭据
+- 用户手动启用 / 禁用
+- Client CRUD
+- desired state 正确渲染到 Xray
 
-expiry、流量额度、单用户统计等以后按真实需求增加。
+### 数据模型
 
-如果当前 Proxy 一份凭据已经够用，可以推迟本 Phase。
+进入 Phase 10A 时正式创建：
+
+```text
+clients
+```
+
+最小字段建议：
+
+```text
+id
+proxy_id
+name
+credential_json
+enabled
+created_at
+updated_at
+```
+
+`credential_json` 只保存该协议当前必要的凭据字段，并由后端严格校验，不允许前端提交任意 Xray JSON。
+
+例如 VLESS：
+
+```text
+UUID
+```
+
+Shadowsocks 如果当前 Xray 模式确实支持一条 Proxy 下多个独立用户，再按官方能力映射；不要为了统一模型伪造不支持的行为。
+
+### 从单凭据 Proxy 迁移
+
+如果 Phase 9A / 9B 已经存在单凭据 Proxy：
+
+进入 Phase 10A 的 migration 必须：
+
+1. 为已有 Proxy 创建一个默认 Client。
+2. 保留原 UUID / Password。
+3. 不要求用户重新生成节点。
+4. 不改变现有 Proxy 监听地址、端口和安全层。
+5. 分享 / 订阅在迁移后继续生成可用配置。
+6. migration 必须幂等。
+
+迁移完成后：
+
+> 凭据的业务归属从 Proxy 单凭据过渡到 Client。
+
+Proxy 继续保存：
+
+- 协议
+- 监听端口
+- transport
+- security
+- flow
+- public_host
+- 服务端公共参数
+
+Client 保存：
+
+- 独立 credential
+- Client 自身状态
+
+### Xray desired state
+
+Panel 为同一个 Proxy 渲染多个 Client 到同一个 Xray inbound。
+
+不要：
+
+- 为每个 Client 新建一个 Proxy
+- 为每个 Client 新建监听端口
+- 为每个 Client 新建 Agent
+- 为每个 Client 建独立 Xray 进程
+
+### UI
+
+Proxy 详情 Modal 增加：
+
+```text
+客户端
+```
+
+区域。
+
+列表至少展示：
+
+```text
+名称
+状态
+凭据摘要
+操作
+```
+
+操作：
+
+```text
+查看
+编辑
+启用 / 禁用
+删除
+```
+
+敏感凭据默认遮蔽。
+
+查看 / 编辑继续使用 Modal，不行内展开，不为 Client 建一套完全不同的页面骨架。
+
+### Phase 10A 不做
+
+当前不做：
+
+- Client 流量
+- Client 流量额度
+- Client 周期重置
+- Client 到期
+- Client 预警
+- Client 自动失效
+- Client 历史流量图
+- 精确连接级在线列表
+
+### Phase 10A 验收
+
+至少验证：
+
+1. 一个 Proxy 可以拥有多个 Client。
+2. 每个 VLESS Client 有独立 UUID。
+3. 删除一个 Client 不影响同 Proxy 的其他 Client。
+4. 禁用一个 Client 后 desired state 不再让该 Client 可用。
+5. 不为 Client 创建额外端口或额外 Xray 进程。
+6. 已有单凭据 Proxy 能安全迁移为默认 Client。
+7. 迁移后原节点凭据保持可用。
+8. Proxy 详情 Modal 可以管理 Client。
+9. 实现无第三方面板代码 / schema / UI 复制痕迹。
+
+完成 Phase 10A 后停止。
+不要继续 Phase 10B。
+
+---
+
+## 15.2 Phase 10B：Client 流量、额度、周期与到期
+
+### 目标
+
+在 Client 基础管理稳定以后，实现：
+
+```text
+每 Client 独立流量统计
++
+流量额度
++
+流量重置周期
++
+到期时间
++
+流量预警
++
+流量耗尽 / 到期后的自动不可用
+```
+
+Client 流量来源固定为：
+
+```text
+Xray per-client stats
+```
+
+不要读取 Linux 网卡来区分不同 Client。
+
+因此统计关系是：
+
+```text
+Server 月流量
+→ Linux 主网卡 RX / TX
+
+Client 流量
+→ Xray per-client uplink / downlink
+```
+
+两套数据互不替代。
+
+### Xray 统计标识
+
+每个 Client 必须有一个稳定、唯一、非敏感的内部统计标识，用于把 Xray per-client stats 映射回 Panel Client。
+
+该标识：
+
+- 由 VPS Panel 独立设计
+- 不使用第三方面板专有格式
+- 不需要出现在分享 URI / 订阅配置中
+- 不使用用户 secret 作为日志 / stats key
+- Client 修改显示名称后仍能稳定映射
+
+实现时优先依据 Xray 官方 stats / policy 能力。
+
+### Agent 流量采集
+
+Phase 10B 开始后，Agent 才实现本 Guide 预留的：
+
+```text
+POST /api/agent/traffic
+```
+
+用途仅限：
+
+> 上报 Proxy / Client 应用层累计流量状态。
+
+不要把 Client traffic 塞入机器 `metrics` WebSocket。
+
+Agent：
+
+1. 查询本机受管 Xray 的 per-client cumulative counters。
+2. 取得每个 Client 的 uplink / downlink。
+3. 按稳定 Client 标识上报 Panel。
+4. 不计算额度。
+5. 不计算到期。
+6. 不决定是否禁用 Client。
+
+轮询不需要高频。
+
+第一版建议：
+
+```text
+10 ~ 30 秒
+```
+
+保持简单即可。
+
+### Panel 增量累计
+
+不要假设 Xray counter 永远不会重置。
+
+对每个 Client 保存最近一次：
+
+```text
+xray_uplink_bytes
+xray_downlink_bytes
+```
+
+Panel 根据连续上报计算：
+
+```text
+delta_up
+delta_down
+```
+
+然后累计：
+
+```text
+cycle_uplink_bytes
+cycle_downlink_bytes
+```
+
+如果 Xray 重启或 counter 下降：
+
+```text
+current < previous
+→ 本次 delta = 0
+→ current 成为新 baseline
+```
+
+不能产生负流量。
+
+### 数据模型
+
+在 `clients` 增加当前需要的配置：
+
+```text
+traffic_limit_bytes
+traffic_reset_mode
+traffic_reset_weekday
+traffic_reset_day
+traffic_reset_time
+expires_at
+```
+
+其中：
+
+```text
+traffic_limit_bytes = NULL / 0
+→ 不限
+```
+
+`traffic_reset_mode` 第一版只支持：
+
+```text
+never
+daily
+weekly
+monthly
+```
+
+第一版不做 hourly。
+
+`traffic_reset_time` 按 `Asia/Shanghai` 理解。
+
+weekly 需要 weekday。
+
+monthly 需要 day。
+
+如果 monthly 设置 29 / 30 / 31，而当月没有该日期：
+
+```text
+→ 当月最后一天同一时间
+```
+
+Client 到期时间允许：
+
+```text
+不限
+指定日期 / 时间
+```
+
+数据库内部继续保存 UTC / Unix Timestamp，业务解释和展示按 `Asia/Shanghai`。
+
+Client 流量状态建议放在独立的小表：
+
+```text
+client_metrics
+```
+
+第一版最小字段：
+
+```text
+client_id
+xray_uplink_bytes
+xray_downlink_bytes
+cycle_uplink_bytes
+cycle_downlink_bytes
+cycle_started_at
+last_activity_at
+updated_at
+```
+
+不要创建小时 / 日历史表。
+
+`last_activity_at` 的语义固定为：
+
+> 最近一次检测到该 Client 流量 counter 增长的时间。
+
+它不是“当前连接仍在线”的绝对证明。
+
+前端优先显示：
+
+```text
+最近活动
+```
+
+不要把它误标成精确在线状态。
+
+### Client 已用流量
+
+第一版 Client 已用量固定为：
+
+```text
+used_bytes
+= cycle_uplink_bytes + cycle_downlink_bytes
+```
+
+Client 不提供 Server 那样的“单向 / 双向计费模式”。
+
+如果未来真实需要，再单独增加。
+
+### Client 流量额度单位
+
+UI 与 Server 流量设置保持一致：
+
+```text
+[ 数值 ] [ G ▼ ]
+```
+
+单位只允许：
+
+```text
+G
+T
+```
+
+默认：
+
+```text
+G
+```
+
+内部只保存：
+
+```text
+traffic_limit_bytes
+```
+
+换算：
+
+```text
+1 G = 1024^3 bytes
+1 T = 1024^4 bytes
+```
+
+不要保存 display unit。
+
+### Client 流量周期
+
+支持：
+
+```text
+不重置
+每天
+每周
+每月
+```
+
+例如：
+
+```text
+每天 00:00
+每周一 00:00
+每月 1 日 00:00
+```
+
+周期切换不要求独立 cron / job queue。
+
+Panel 在下一次有效 Client traffic report 到来时判断是否跨周期。
+
+跨周期时：
+
+```text
+cycle_uplink_bytes = 0
+cycle_downlink_bytes = 0
+cycle_started_at = 新周期
+xray baseline = 当前 Xray counter
+```
+
+不要修改 Xray 内部 counter。
+
+### 到期与流量耗尽
+
+Client 的用户开关和业务可用状态必须分开。
+
+保存：
+
+```text
+enabled
+```
+
+只表示：
+
+> 用户是否主动启用这个 Client。
+
+另外派生：
+
+```text
+expired
+quota_exhausted
+effective_enabled
+```
+
+规则：
+
+```text
+expired
+= expires_at 已经过期
+
+quota_exhausted
+= 设置了 traffic_limit_bytes
+  且 used_bytes >= traffic_limit_bytes
+
+effective_enabled
+= enabled
+  && !expired
+  && !quota_exhausted
+```
+
+不要因为到期 / 流量耗尽直接把用户的 `enabled` 永久改成 false。
+
+这样：
+
+- 用户主动关闭的 Client 不会被系统自动打开
+- 月度 / 周期流量重置后，quota_exhausted 自动消失
+- 如果 Client 仍处于 enabled 且未过期，可自动恢复可用
+- 到期 Client 在修改 expiry 前保持不可用
+
+Panel 生成 desired state 时只把 `effective_enabled = true` 的 Client 渲染成可用 Xray user。
+
+当 quota / expiry 导致 effective state 变化时：
+
+```text
+desired_state_version + 1
+→ config_changed
+→ Agent 拉取新 desired state
+→ 安全应用 Xray 配置
+```
+
+不增加通用 task runner。
+
+### Client 流量预警
+
+固定：
+
+```text
+未设置额度
+→ 无预警
+
+used < 90%
+→ 正常
+
+90% <= used < 100%
+→ 流量预警
+
+used >= 100%
+→ 流量已用完
+```
+
+预警状态由 Panel 派生，不保存冗余 warning 字段。
+
+### Client 到期状态
+
+固定：
+
+```text
+未设置 expires_at
+→ 不限
+
+未到期
+→ 正常
+
+已到期
+→ 已到期 / 不可用
+```
+
+第一版不做：
+
+- 到期前 30 天通知
+- 到期前 7 天通知
+- Email
+- Telegram
+- Webhook
+
+### 手动重置本周期流量
+
+Client 详情提供：
+
+```text
+重置本周期流量
+```
+
+该操作只重置 Panel 当前 Client 周期累计：
+
+```text
+cycle_uplink_bytes = 0
+cycle_downlink_bytes = 0
+cycle_started_at = now
+xray_uplink baseline = 当前已知 counter
+xray_downlink baseline = 当前已知 counter
+```
+
+不要修改：
+
+- Client 流量额度
+- expires_at
+- Client credential
+- Xray 的全局计数器
+- 其他 Client
+
+### UI
+
+Client 继续放在 Proxy 详情体系中，不新增独立大页面作为第一选择。
+
+Client 列表至少清晰展示：
+
+```text
+名称
+状态
+已用 / 总量
+周期
+到期时间
+最近活动
+操作
+```
+
+示例：
+
+```text
+PC       正常       39.7G / 100G   每月   2027-01-01   2 分钟前
+iPhone   流量预警   92.1G / 100G   每月   2027-01-01   刚刚
+Android  已到期      9.0G / 不限    不重置 2026-09-01   3 天前
+```
+
+查看 Client 详情使用 Modal。
+
+详情至少展示：
+
+```text
+名称
+凭据摘要
+用户启用状态
+实际可用状态
+
+本周期上行
+本周期下行
+本周期已用 / 总量
+流量周期
+下次重置
+
+到期时间
+最近活动
+```
+
+操作：
+
+```text
+编辑
+启用 / 禁用
+重置本周期流量
+删除
+```
+
+不要行内展开。
+
+### Phase 10B 明确不做
+
+不要实现：
+
+- Client 小时 / 日历史流量图
+- Client 实时上传 / 下载速度
+- 自定义 80% / 85% / 90% 阈值
+- Email / Telegram / Webhook
+- Client 自动限速
+- Client IP 数量限制
+- 精确连接级在线用户列表
+- 多 Panel / 多 Xray 实例流量聚合
+- 第三方面板兼容格式
+
+### Phase 10B 验收
+
+至少验证：
+
+1. 同一 Proxy 下多个 Client 的 Xray 流量可以独立识别。
+2. Agent 能上报每 Client 累计 uplink / downlink。
+3. Xray counter 正常增长时 delta 正确。
+4. Xray 重启 / counter 下降时不会产生负流量。
+5. Panel / Agent 普通重启不会丢失已累计 Client 周期流量。
+6. Client 可以设置 G / T 流量额度。
+7. 未设置额度时显示不限。
+8. Client 可以选择 never / daily / weekly / monthly 周期。
+9. monthly 29 / 30 / 31 日按当月最后一天处理。
+10. 到达新周期后周期累计归零，并以当前 Xray counter 作为新 baseline。
+11. Client 可以设置或清除到期时间。
+12. 使用率达到 90% 显示流量预警。
+13. 使用率达到 100% 显示流量已用完。
+14. 流量耗尽后 Client 从 effective desired state 中失效。
+15. 新周期开始后，如果 Client 用户开关仍启用且未过期，可以恢复可用。
+16. Client 到期后自动从 effective desired state 中失效。
+17. 修改到期时间后可以恢复可用。
+18. 用户手动 `enabled = false` 不会被周期重置自动打开。
+19. 手动重置本周期流量不会影响其他 Client。
+20. Client 详情和列表遵守 Modal / 固定容器规则。
+21. 不实现历史图、实时速度、通知、限速。
+22. 实现无 3x-ui / x-ui 等第三方面板代码、schema、API 或 UI 复制痕迹。
+
+完成 Phase 10B 后停止。
+不要继续 Realm。
 
 ---
 
@@ -3602,12 +4498,20 @@ restart / reload
 生成直连节点：
 
 ```text
-Proxy credentials
+Client credential
++
+Proxy 协议参数
 +
 连接 host
 +
 Proxy listen_port
 ```
+
+如果一个 Proxy 有多个 Client：
+
+> 每个有效 Client 都可以基于同一个 Proxy 生成自己的直连分享配置。
+
+不要继续把 credential 当成 Proxy 的永久单一属性。
 
 其中连接 host 的选择规则固定为：
 
@@ -3657,7 +4561,9 @@ Panel 不负责自动修改 DNS。
 生成 Realm 接入节点：
 
 ```text
-同一个 Proxy credentials
+同一个 Client credential
++
+同一个 Proxy 协议参数
 +
 Relay listen host / port
 ```
@@ -4054,8 +4960,8 @@ format_version
 
 - Metrics 历史图
 - Xray / Realm 日志
-- Proxy 流量
-- Client 流量
+- Proxy 聚合流量视图（如果 Client 聚合仍不能满足）
+- 更精确的 Client 当前在线连接检测
 - Agent 自动更新
 - Xray 自动更新
 - Realm 自动更新
@@ -4187,7 +5093,8 @@ users.role = admin | vip
 当前明确：
 
 - `proxies` 只在 VLESS Phase 真正开始时创建。
-- `clients` 只在真实需要一条 Proxy 多凭据时创建。
+- `clients` 在 Phase 10A 正式创建，用于一条 Proxy 下多个独立凭据。
+- `client_metrics` 在 Phase 10B 创建，只保存最新 Xray baseline、当前周期累计与最近活动，不做历史时序。
 - `relays` 只在 Realm Phase 真正开始时创建。
 - 当前不创建 `cores` / `tasks` / `endpoints` / `chains`。
 
@@ -4506,8 +5413,11 @@ VLESS + TCP + TLS / REALITY + XTLS Vision（含 client udp443）
 Phase 9B
 Shadowsocks Proxy
         ↓
-Phase 10
-Client（真实需要时）
+Phase 10A
+Client 基础管理 / 多凭据
+        ↓
+Phase 10B
+Client 流量 / 额度 / 周期 / 到期
         ↓
 Phase 11
 Realm + Relay
@@ -4624,7 +5534,7 @@ Panel
 ├── Agent Connections
 ├── Metrics
 ├── Proxy Management
-├── Client Management（需要时）
+├── Client Management
 ├── Relay Management
 └── Subscription
    │
@@ -4649,7 +5559,7 @@ Panel
 Server
 ├── Agent
 ├── Proxy
-│   └── Client（需要时）
+│   └── Client
 └── Relay
     └── target = Proxy 或 host:port
 ```
@@ -4682,7 +5592,11 @@ Server
 
 > 当前不做 Chain；多跳等出现真实需求以后再设计。
 
-> Client 属于 Proxy，但只有真正需要多凭据时才建立 Client 表。
+> Client 固定属于 Proxy；Phase 10A 建立多 Client 模型，Phase 10B 使用 Xray per-client stats 实现独立流量、额度、周期和到期控制。
+
+> Server 总流量与 Client 流量是两套独立统计：Server 读取 Linux 网卡；Client 读取 Xray per-client stats。
+
+> Client 的 `enabled` 是用户开关；到期和流量耗尽通过 `effective_enabled` 派生，不永久覆盖用户开关。
 
 > 第一个初始化账号是唯一 admin；邀请注册账号统一为 vip。
 
@@ -4730,7 +5644,17 @@ Server
 - [x] 不以 SSH 作为日常控制通道。
 - [x] 不开放任意 Shell API。
 - [x] Proxy 直接属于 Server。
-- [x] Client 属于 Proxy。
+- [x] Client 属于 Proxy；同一 Proxy 可以拥有多个独立凭据 Client。
+- [x] Phase 10A 正式建立 Client，多 Client 共享同一个 Proxy listener / 协议参数，不为每 Client 新建端口或 Xray 进程。
+- [x] Phase 10B 的 Client 流量来自 Xray per-client stats，不使用 Linux 网卡区分 Client。
+- [x] Client 支持独立流量额度，输入单位默认 G、可选 T，内部统一保存 bytes。
+- [x] Client 流量周期第一版支持 never / daily / weekly / monthly，不做 hourly。
+- [x] Client 支持独立到期时间。
+- [x] Client 流量达到 90% 显示预警，达到 100% 视为 quota_exhausted。
+- [x] Client 到期或流量耗尽后从 effective desired state 中失效，但不永久覆盖用户 `enabled` 开关。
+- [x] Client 周期重置后，如果用户仍启用且未到期，可自动恢复可用。
+- [x] Client 支持手动重置本周期流量，不修改 credential / quota / expiry / 其他 Client。
+- [x] Client 第一版只保存当前周期累计，不保存小时 / 日历史流量。
 - [x] Realm Relay 不复制 Proxy。
 - [x] 第一版代理后端固定为 Xray。
 - [x] VLESS / Shadowsocks 第一版都由同一个 Xray 承载。
@@ -4763,7 +5687,11 @@ Server
 - [x] 第一版不计算或展示实时 RX/s / TX/s。
 - [x] 网卡累计 RX / TX 复用现有 `metrics` WebSocket 上报，不增加独立 Traffic API。
 - [x] 第一版不保存流量历史时序，只保存最新网卡 baseline 与当前周期累计值。
-- [x] 第一版不做人工流量校准、流量阈值预警或概览流量汇总。
+- [x] Server 月流量额度输入默认单位为 G、可选 T，内部统一保存 bytes。
+- [x] Server 支持手动校准当前周期已用流量，使用 `traffic_adjustment_bytes`，不修改原始 RX / TX。
+- [x] Server 使用率达到 90% 显示“流量预警”，达到 100% 显示“流量已用完”；预警只做 UI 派生状态。
+- [x] Server 流量超额不自动断网、停 Agent、停 Xray 或限速。
+- [x] 第一版不做自定义预警阈值、外部通知或概览流量汇总。
 - [x] Server 信息必须以类似 `100G（已用）/500G（总）` 的形式显示月流量。
 - [x] Panel 默认业务时区固定为 `Asia/Shanghai`。
 - [x] 每月重置日不存在时按当月最后一天执行。
@@ -4872,8 +5800,61 @@ Server
 12. 当前服务器到期只负责配置与展示，不自动删除、关机或停节点。
 13. Agent 不进行主动测速，也不计算实时下载 / 上传速度。
 14. 机器累计流量复用现有 `metrics` WebSocket 上报，不新增独立 traffic API。
-15. 第一版不保存流量历史时序，不实现人工校准或阈值预警。
+15. 第一版仍不保存流量历史时序；人工校准与固定 90% / 100% UI 预警已在 2026-09-12 重新纳入。
 
+
+## 2026-09-12 Server 流量额度单位、校准与预警
+
+在 Phase 7A 基础流量统计之上追加：
+
+1. 月流量额度输入采用“数值 + 单位”形式。
+2. 单位默认 G，可选 T。
+3. 后端只保存 bytes，不保存 display unit。
+4. Server 支持手动校准当前周期已用流量。
+5. 校准使用 `traffic_adjustment_bytes` 偏移，不修改原始 `cycle_rx_bytes / cycle_tx_bytes`。
+6. 新周期开始时自动清除 adjustment。
+7. 使用率达到 90% 显示“流量预警”。
+8. 使用率达到或超过 100% 显示“流量已用完”。
+9. 预警不修改 Server online / offline / pending。
+10. 不自动断网、停 Agent、停 Xray、限速。
+11. 第一版不支持自定义阈值和外部通知。
+
+---
+
+## 2026-09-12 Client 管理与 per-client 流量设计
+
+正式将 Client 从“可能以后需要”提升为固定后续阶段：
+
+```text
+Phase 10A
+Client 基础管理 / 多凭据
+
+Phase 10B
+Client 流量 / 额度 / 周期 / 到期
+```
+
+固定要求：
+
+1. Client 属于 Proxy，一个 Proxy 可以有多个 Client。
+2. Client 不新建 Proxy listener、端口、Agent 或 Xray 进程。
+3. Phase 10A 将已有单凭据 Proxy 安全迁移为默认 Client，保留原 credential。
+4. Phase 10B 使用 Xray 官方 per-client stats 能力统计独立 uplink / downlink。
+5. Agent 通过专用 `POST /api/agent/traffic` 上报应用层累计流量；机器 `metrics` WebSocket 仍只负责 Server 网卡统计。
+6. Panel 对 Xray cumulative counter 计算 delta，并处理 Xray 重启 / counter 归零。
+7. Client 支持独立流量额度，默认单位 G、可选 T。
+8. Client 周期第一版支持 never / daily / weekly / monthly；不做 hourly。
+9. 周期时间统一按 `Asia/Shanghai`。
+10. Client 支持独立到期时间。
+11. `enabled` 是用户手动开关；`expired / quota_exhausted / effective_enabled` 为派生状态。
+12. 流量耗尽或到期后 Client 从有效 desired state 中失效，不永久修改用户开关。
+13. 周期重置后，如果用户仍启用且未到期，可自动恢复。
+14. Client 支持手动重置本周期流量。
+15. 第一版显示最近活动时间，不把“最近有流量”伪装成精确在线连接状态。
+16. 90% 显示流量预警，100% 显示流量已用完。
+17. 不做 Client 历史流量图、实时速度、自定义阈值、通知、限速或精确连接级在线检测。
+18. 可以参考 3x-ui 等第三方面板的功能清单与用户需求，但禁止复制代码、数据库、API、字段体系、配置模板或 UI。
+
+---
 
 ## 2026-09-11 总 Guide 与 Frontend Guide 联动
 
@@ -4908,6 +5889,10 @@ Server
 
 ## 2026-09-11 简化机器流量统计要求
 
+> 历史记录：本节当时曾移除人工校准和阈值预警。
+>
+> 其中“人工校准 / 90% 与 100% UI 预警”已在 2026-09-12 的新决定中重新纳入；实时速度、历史时序和主动测速仍保持不做。
+
 本次覆盖此前较重的实时速度、人工校准和预警设计：
 
 1. Agent 只读取 Linux 主网卡累计 `RX / TX` 字节数。
@@ -4920,7 +5905,7 @@ Server
 8. 月流量单向模式按 TX；双向模式按 RX + TX。
 9. 月流量重置按 `Asia/Shanghai` 计算；新周期在下一次 metrics 上报时开启，不增加专用 scheduler。
 10. 第一版不建立流量历史时序表、小时 / 日流量表或历史图。
-11. 第一版不实现人工流量校准、80% / 90% / 100% 流量预警、概览流量汇总。
+11. 【已被 2026-09-12 部分覆盖】当时不实现人工流量校准和阈值预警；现已重新加入人工校准、固定 90% / 100% UI 预警，但仍不做自定义阈值与概览流量汇总。
 12. Server 列表保留明确的 `已用 / 总量`；详情展示本周期 RX / TX、统计方式、重置时间和周期开始时间。
 13. 流量超额只展示数据，不自动断网、停 Agent、停 Xray、限速或修改防火墙。
 14. 原 Phase 7B“实时上下行速度”删除；原 Phase 7B“服务器分组、标签与筛选”顺延为 Phase 7B。

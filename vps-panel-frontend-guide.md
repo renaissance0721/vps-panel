@@ -584,8 +584,6 @@ VLESS TLS
 VLESS REALITY
 - SNI
 - Dest
-- Public Key
-- Short ID
 - Fingerprint
 
 Shadowsocks（实现后）
@@ -593,11 +591,11 @@ Shadowsocks（实现后）
 - 公共参数
 ```
 
-敏感字段：
+密钥字段：
 
-- 默认遮蔽。
-- 不在列表直接显示。
-- private key 不默认显示。
+- REALITY public key / short ID 不在 Proxy 详情单独展示。
+- REALITY / TLS private key 不得由普通详情 API 返回，也不在浏览器返回数据结构中保留。
+- Client 分享链接可由后端内部使用 public key 生成，UI 只接收完整 URI。
 - Client UUID 只在 Client 区域 / Client Modal 中按需查看或复制。
 - 需要复制时使用明确的复制按钮。
 - 不在 UI 到处重复 secret。
@@ -617,9 +615,9 @@ VLESS Proxy 详情 Modal 必须包含一个明确的：
 第一阶段列表建议：
 
 ```text
-名称        状态      UUID 摘要          UDP/443      操作
-PC          启用      8f2a…c91d          关闭         [复制链接] [查看] [编辑] [禁用] [删除]
-iPhone      启用      c1e0…88ab          开启         [复制链接] [查看] [编辑] [禁用] [删除]
+名称        状态      已用 / 总量      周期       最近活动      操作
+PC          启用      39.7G / 100G      每月       2 分钟前       [复制链接] [查看] [编辑] [禁用] [删除]
+iPhone      启用      9.0G / 不限       不重置     刚刚           [复制链接] [查看] [编辑] [禁用] [删除]
 ```
 
 要求：
@@ -665,6 +663,10 @@ UUID
 
 状态
 启用 / 禁用
+
+流量额度 + G/T
+重置周期
+条件字段（time / weekday / day）
 ```
 
 要求：
@@ -692,11 +694,14 @@ UUID
 状态
 UUID
 客户端 Flow
+本周期上行 / 下行 / 已用
+总额度
+流量周期 / 下次重置
+最近活动
 连接地址
 端口
 Security
 SNI
-REALITY Public Key / Short ID（如适用）
 直连 VLESS URI
 ```
 
@@ -705,12 +710,14 @@ REALITY Public Key / Short ID（如适用）
 ```text
 复制 UUID
 复制 VLESS 链接
+重置本周期流量
 ```
 
 要求：
 
 - 不显示 REALITY private key。
 - 不显示 TLS private key。
+- 不单独显示 REALITY public key / short ID。
 - 不显示 Agent Token / Panel Token。
 - `public_host` 非空时，连接地址优先显示 public_host。
 - `public_host` 为空时，回退显示 Server IP。
@@ -1202,7 +1209,7 @@ Sidebar active 项使用项目自己的主色浅背景即可。
 22. Client 直连分享中不展示 REALITY private key、TLS private key、Agent Token 或 Panel Token。
 23. 新建 VLESS Proxy 时同步创建首个 Client，不出现需要跨页面补凭据的半成品创建流程。
 24. Proxy 编辑只编辑公共参数；Client 继续在 Client 区域单独管理。
-25. 当前 Client UI 不提前加入流量、quota、周期、到期、历史图或精确在线状态。
+25. Client UI 已支持本周期流量、G/T 额度、never / daily / weekly / monthly 周期和手动重置；当前不提前加入到期、超额自动失效、历史图或精确在线状态。
 26. Shadowsocks 对不适用字段显示 `--`，不制造虚假协议层。
 27. Realm 列表清晰展示入口 IP、监听端口、目标 host / IP、目标端口和网络类型。
 28. 搜索框与“新增”按钮保持在页面标题右侧区域。

@@ -250,6 +250,163 @@ func TestClientRenameDoesNotChangeStatsIdentifier(t *testing.T) {
 	}
 }
 
+func TestClientTrafficCycleBoundariesUseShanghaiTime(t *testing.T) {
+	shanghai := time.FixedZone("Asia/Shanghai", 8*60*60)
+	tests := []struct {
+		name      string
+		now       time.Time
+		config    ClientTrafficConfig
+		wantStart time.Time
+		wantNext  time.Time
+	}{
+		{
+			name:      "daily",
+			now:       time.Date(2026, 9, 13, 0, 30, 0, 0, shanghai),
+			config:    ClientTrafficConfig{ResetMode: TrafficResetDaily, Weekday: 1, Day: 1, ResetTime: "00:00"},
+			wantStart: time.Date(2026, 9, 13, 0, 0, 0, 0, shanghai),
+			wantNext:  time.Date(2026, 9, 14, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:      "weekly Monday",
+			now:       time.Date(2026, 9, 16, 12, 0, 0, 0, shanghai),
+			config:    ClientTrafficConfig{ResetMode: TrafficResetWeekly, Weekday: 1, Day: 1, ResetTime: "06:30"},
+			wantStart: time.Date(2026, 9, 14, 6, 30, 0, 0, shanghai),
+			wantNext:  time.Date(2026, 9, 21, 6, 30, 0, 0, shanghai),
+		},
+		{
+			name:      "monthly day 29 clamps in non-leap February",
+			now:       time.Date(2027, 3, 1, 12, 0, 0, 0, shanghai),
+			config:    ClientTrafficConfig{ResetMode: TrafficResetMonthly, Weekday: 1, Day: 29, ResetTime: "08:00"},
+			wantStart: time.Date(2027, 2, 28, 8, 0, 0, 0, shanghai),
+			wantNext:  time.Date(2027, 3, 29, 8, 0, 0, 0, shanghai),
+		},
+		{
+			name:      "monthly day 31 clamps to February",
+			now:       time.Date(2027, 3, 1, 12, 0, 0, 0, shanghai),
+			config:    ClientTrafficConfig{ResetMode: TrafficResetMonthly, Weekday: 1, Day: 31, ResetTime: "00:00"},
+			wantStart: time.Date(2027, 2, 28, 0, 0, 0, 0, shanghai),
+			wantNext:  time.Date(2027, 3, 31, 0, 0, 0, 0, shanghai),
+		},
+		{
+			name:      "monthly day 30 clamps in leap February",
+			now:       time.Date(2028, 3, 1, 12, 0, 0, 0, shanghai),
+			config:    ClientTrafficConfig{ResetMode: TrafficResetMonthly, Weekday: 1, Day: 30, ResetTime: "23:59"},
+			wantStart: time.Date(2028, 2, 29, 23, 59, 0, 0, shanghai),
+			wantNext:  time.Date(2028, 3, 30, 23, 59, 0, 0, shanghai),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			start, err := currentClientCycleStart(
+				test.now, test.config.ResetMode, test.config.Weekday, test.config.Day, test.config.ResetTime,
+			)
+			if err != nil || !start.Equal(test.wantStart) {
+				t.Fatalf("current boundary = (%s, %v), want %s", start, err, test.wantStart)
+			}
+			next, err := nextClientResetAt(
+				test.now, test.config.ResetMode, test.config.Weekday, test.config.Day, test.config.ResetTime,
+			)
+			if err != nil || next == nil || !next.Equal(test.wantNext) {
+				t.Fatalf("next boundary = (%v, %v), want %s", next, err, test.wantNext)
+			}
+		})
+	}
+	if next, err := nextClientResetAt(time.Now(), TrafficResetNever, 1, 1, "00:00"); err != nil || next != nil {
+		t.Fatalf("never next reset = (%v, %v), want nil", next, err)
+	}
+}
+
+func TestClientTrafficScheduledResetAndManualResetPreserveBaselines(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	proxyValue := createRealityProxy(t, service, serverID, 443, "Resets")
+	clientID := proxyValue.Clients[0].ID
+	limit := int64(100) << 30
+	traffic := ClientTrafficConfig{
+		LimitBytes: &limit, ResetMode: TrafficResetDaily, Weekday: 1, Day: 1, ResetTime: "00:00",
+	}
+	if _, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 9, 12, 15, 50, 0, 0, time.UTC) // 23:50 in Shanghai.
+	service.now = func() time.Time { return now }
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 100, DownlinkBytes: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 150, DownlinkBytes: 260}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics := readClientMetrics(t, service, clientID)
+	if metrics.CycleUplinkBytes != 50 || metrics.CycleDownlinkBytes != 60 {
+		t.Fatalf("pre-boundary metrics = %+v", metrics)
+	}
+
+	now = time.Date(2026, 9, 12, 16, 5, 0, 0, time.UTC) // 00:05 the next day in Shanghai.
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 180, DownlinkBytes: 300}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics = readClientMetrics(t, service, clientID)
+	if metrics.XrayUplinkBytes != 180 || metrics.XrayDownlinkBytes != 300 ||
+		metrics.CycleUplinkBytes != 0 || metrics.CycleDownlinkBytes != 0 ||
+		!metrics.CycleStartedAt.Equal(time.Date(2026, 9, 12, 16, 0, 0, 0, time.UTC)) {
+		t.Fatalf("scheduled reset metrics = %+v", metrics)
+	}
+
+	now = now.Add(time.Minute)
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 190, DownlinkBytes: 320}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResetClientTraffic(t.Context(), clientID); err != nil {
+		t.Fatal(err)
+	}
+	metrics = readClientMetrics(t, service, clientID)
+	if metrics.XrayUplinkBytes != 190 || metrics.XrayDownlinkBytes != 320 ||
+		metrics.CycleUplinkBytes != 0 || metrics.CycleDownlinkBytes != 0 || !metrics.CycleStartedAt.Equal(now) {
+		t.Fatalf("manual reset metrics = %+v", metrics)
+	}
+
+	now = now.Add(time.Minute)
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 197, DownlinkBytes: 331}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics = readClientMetrics(t, service, clientID)
+	if metrics.CycleUplinkBytes != 7 || metrics.CycleDownlinkBytes != 11 {
+		t.Fatalf("post-manual-reset delta = %+v", metrics)
+	}
+}
+
+func TestUpdatingClientTrafficConfigDoesNotClearMetrics(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	proxyValue := createRealityProxy(t, service, serverID, 443, "Config update")
+	clientID := proxyValue.Clients[0].ID
+	now := time.Date(2026, 9, 13, 1, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 100, DownlinkBytes: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 130, DownlinkBytes: 240}}); err != nil {
+		t.Fatal(err)
+	}
+	before := readClientMetrics(t, service, clientID)
+	limit := int64(2) << 40
+	traffic := ClientTrafficConfig{
+		LimitBytes: &limit, ResetMode: TrafficResetWeekly, Weekday: 7, Day: 1, ResetTime: "03:30",
+	}
+	updated, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := readClientMetrics(t, service, clientID)
+	if after.CycleUplinkBytes != before.CycleUplinkBytes || after.CycleDownlinkBytes != before.CycleDownlinkBytes ||
+		after.XrayUplinkBytes != before.XrayUplinkBytes || after.XrayDownlinkBytes != before.XrayDownlinkBytes ||
+		updated.TrafficLimitBytes == nil || *updated.TrafficLimitBytes != limit ||
+		updated.TrafficResetMode != TrafficResetWeekly || updated.TrafficResetWeekday != 7 || updated.TrafficResetTime != "03:30" {
+		t.Fatalf("updated client = %+v, metrics before/after = %+v / %+v", updated, before, after)
+	}
+}
+
 func desiredClientStatsID(t *testing.T, db *sql.DB, serverID, clientID int64) string {
 	t.Helper()
 	values, err := ListDesired(t.Context(), db, serverID)

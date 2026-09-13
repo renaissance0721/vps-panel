@@ -37,6 +37,7 @@ type AuthState = {
 type Health = {
   status: string
   database: string
+  version?: string
 }
 
 type Invitation = {
@@ -64,6 +65,10 @@ type ServerRecord = {
   metrics: ServerMetrics | null
   created_at: string
   updated_at: string
+  agent_version: string
+  agent_upgrade_target?: string
+  agent_upgrade_status?: 'upgrading' | 'failed'
+  agent_upgrade_error?: string
 }
 
 type ServerSystemInfo = {
@@ -121,6 +126,7 @@ const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
 const copiedCommand = ref(false)
+const copiedUpgradeCommand = ref(false)
 const expirationInput = ref('')
 const trafficAdjustmentInput = ref<string | number>('')
 const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
@@ -166,6 +172,15 @@ const isInvitationPage = computed(
 )
 const isHealthy = computed(
   () => health.value?.status === 'ok' && health.value.database === 'ok',
+)
+const panelReleaseVersion = computed(() => {
+  const value = health.value?.version ?? ''
+  return /^v\d+\.\d+\.\d+$/.test(value) ? value : ''
+})
+const bootstrapUpgradeCommand = computed(() =>
+  panelReleaseVersion.value
+    ? `curl -fsSL ${window.location.origin}/upgrade-agent.sh | bash`
+    : '',
 )
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -374,11 +389,39 @@ function viewServer(value: ServerRecord) {
   selectedServer.value = value
   createdServer.value = null
   copiedCommand.value = false
+  copiedUpgradeCommand.value = false
   expirationModalOpen.value = false
   trafficModalOpen.value = false
   trafficAdjustmentModalOpen.value = false
   expirationInput.value = ''
   serverModalOpen.value = true
+}
+
+function agentUpgradeStatus(value: ServerRecord) {
+  if (value.agent_upgrade_status === 'upgrading') return '升级中'
+  if (value.agent_upgrade_status === 'failed') return '升级失败'
+  if (!value.agent_version) return '尚未注册'
+  if (!panelReleaseVersion.value) return '开发版本不可升级'
+  if (value.agent_version === panelReleaseVersion.value) return '最新'
+  return '可升级'
+}
+
+async function upgradeAgent(value: ServerRecord) {
+  if (!panelReleaseVersion.value || value.status !== 'online') return
+  if (!window.confirm(`确定将 Agent 升级到 ${panelReleaseVersion.value} 吗？升级会短暂断开连接，但不会重新注册。`)) return
+  await submit(async () => {
+    await api(`/api/servers/${value.id}/agent-upgrade`, { method: 'POST' })
+    await loadServers()
+  })
+}
+
+async function copyUpgradeCommand() {
+  try {
+    await navigator.clipboard.writeText(bootstrapUpgradeCommand.value)
+    copiedUpgradeCommand.value = true
+  } catch {
+    error.value = '无法自动复制，请手动复制升级命令'
+  }
 }
 
 async function archiveServer(value: ServerRecord) {
@@ -1084,6 +1127,32 @@ onUnmounted(stopServerPolling)
               </div>
             </dl>
 
+            <div class="section-heading">
+              <h3 class="system-info-title">Agent</h3>
+              <n-button
+                v-if="state.user?.role === 'admin' && selectedServer.agent_version && selectedServer.agent_version !== panelReleaseVersion"
+                size="small"
+                type="primary"
+                secondary
+                :loading="submitting || selectedServer.agent_upgrade_status === 'upgrading'"
+                :disabled="!panelReleaseVersion || selectedServer.status !== 'online' || selectedServer.agent_upgrade_status === 'upgrading'"
+                @click="upgradeAgent(selectedServer)"
+              >
+                {{ panelReleaseVersion ? `升级 Agent 到 ${panelReleaseVersion}` : '开发版本不可升级' }}
+              </n-button>
+            </div>
+            <dl class="server-details">
+              <div><dt>Agent 版本</dt><dd>{{ selectedServer.agent_version || '—' }}</dd></div>
+              <div><dt>Panel 版本</dt><dd>{{ health?.version || 'dev' }}</dd></div>
+              <div><dt>升级状态</dt><dd>{{ agentUpgradeStatus(selectedServer) }}</dd></div>
+              <div v-if="selectedServer.agent_upgrade_status === 'failed'"><dt>失败原因</dt><dd>{{ selectedServer.agent_upgrade_error || '升级失败' }}</dd></div>
+            </dl>
+            <div v-if="state.user?.role === 'admin' && bootstrapUpgradeCommand && selectedServer.agent_version && selectedServer.agent_version !== panelReleaseVersion" class="secret-field">
+              <strong>旧版 Agent 引导升级命令（无需 Token）</strong>
+              <n-input :value="bootstrapUpgradeCommand" readonly />
+              <n-button size="small" secondary @click="copyUpgradeCommand">{{ copiedUpgradeCommand ? '已复制' : '复制命令' }}</n-button>
+            </div>
+
             <h3 class="system-info-title">系统信息</h3>
             <n-empty
               v-if="!selectedServer.system_info"
@@ -1111,7 +1180,6 @@ onUnmounted(stopServerPolling)
                 </dd>
               </div>
               <div><dt>公网 IPv4</dt><dd>{{ selectedServer.system_info.public_ipv4 || '未检测' }}</dd></div>
-              <div><dt>Agent 版本</dt><dd>{{ selectedServer.system_info.agent_version || '—' }}</dd></div>
             </dl>
 
             <h3 class="system-info-title">动态指标</h3>

@@ -87,6 +87,9 @@ func run(arguments []string) error {
 	if len(arguments) > 0 && arguments[0] == "register" {
 		return runRegistration(arguments[1:])
 	}
+	if len(arguments) > 0 && arguments[0] == "_apply-upgrade" {
+		return runApplyUpgrade(arguments[1:])
+	}
 	if len(arguments) != 0 {
 		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
 	}
@@ -96,6 +99,24 @@ func run(arguments []string) error {
 	return connectAgentWithPublicIPv4(ctx, defaultConfigPath, func(ctx context.Context) string {
 		return detectPublicIPv4(ctx, publicIPv4Client, publicIPv4Endpoint)
 	})
+}
+
+func runApplyUpgrade(arguments []string) error {
+	flags := flag.NewFlagSet("_apply-upgrade", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stagedPath := flags.String("staged", "", "staged Agent binary")
+	targetVersion := flags.String("target", "", "target Agent version")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return errors.New("invalid Agent upgrade helper arguments")
+	}
+	value, configErr := readAgentConfig(defaultConfigPath)
+	err := applyStagedAgentUpgrade(*stagedPath, *targetVersion)
+	if err != nil && configErr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		reportAgentUpgradeFailure(ctx, &http.Client{Timeout: 10 * time.Second}, value, *targetVersion, err)
+		cancel()
+	}
+	return err
 }
 
 func runRegistration(arguments []string) error {
@@ -270,16 +291,9 @@ func connectAgent(ctx context.Context, configPath string) error {
 }
 
 func connectAgentWithPublicIPv4(ctx context.Context, configPath string, detect func(context.Context) string) error {
-	data, err := os.ReadFile(configPath)
+	value, err := readAgentConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read Agent config: %w", err)
-	}
-	var value config
-	if err := json.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("decode Agent config: %w", err)
-	}
-	if value.PanelURL == "" || value.ServerID <= 0 || value.AgentID <= 0 || value.AgentToken == "" {
-		return errors.New("Agent config is incomplete")
+		return err
 	}
 	configSync := newConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
 	publicIPv4 := &publicIPv4State{detect: detect}
@@ -315,9 +329,25 @@ func connectAgentWithPublicIPv4(ctx context.Context, configPath string, detect f
 	}
 }
 
+func readAgentConfig(configPath string) (config, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return config{}, fmt.Errorf("read Agent config: %w", err)
+	}
+	var value config
+	if err := json.Unmarshal(data, &value); err != nil {
+		return config{}, fmt.Errorf("decode Agent config: %w", err)
+	}
+	if value.PanelURL == "" || value.ServerID <= 0 || value.AgentID <= 0 || value.AgentToken == "" {
+		return config{}, errors.New("Agent config is incomplete")
+	}
+	return value, nil
+}
+
 func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer, publicIPv4 *publicIPv4State) (bool, bool) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
+	header.Set("X-VPS-Panel-Agent-Version", agentVersion)
 	connection, response, err := dialAgentWebSocket(
 		ctx,
 		value.PanelURL+"/api/agent/ws",
@@ -349,9 +379,12 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	connectionContext, cancelConnection := context.WithCancel(ctx)
 	defer cancelConnection()
 	configChanged := make(chan struct{}, 1)
+	upgradeRequested := make(chan string, 1)
+	upgradeFinished := make(chan error, 1)
+	upgradeInProgress := false
 	disconnected := make(chan error, 1)
 	go func() {
-		disconnected <- readPanelMessages(connectionContext, connection, configChanged)
+		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested)
 	}()
 	attemptConfigSync(ctx, configSync)
 	heartbeatTicker := time.NewTicker(agentHeartbeatInterval)
@@ -373,6 +406,27 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			return true, false
 		case <-configChanged:
 			attemptConfigSync(ctx, configSync)
+		case version := <-upgradeRequested:
+			if upgradeInProgress {
+				continue
+			}
+			upgradeInProgress = true
+			go func() {
+				upgradeContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				err := prepareAgentUpgrade(
+					upgradeContext, &http.Client{Timeout: 30 * time.Second}, value, version,
+				)
+				if err != nil {
+					reportAgentUpgradeFailure(upgradeContext, &http.Client{Timeout: 10 * time.Second}, value, version, err)
+				}
+				cancel()
+				upgradeFinished <- err
+			}()
+		case upgradeErr := <-upgradeFinished:
+			upgradeInProgress = false
+			if upgradeErr != nil {
+				log.Printf("upgrade Agent: %v", upgradeErr)
+			}
 		case <-configTicker.C:
 			attemptConfigSync(ctx, configSync)
 		case <-clientTrafficTicker.C:
@@ -425,23 +479,45 @@ func (state *publicIPv4State) current(ctx context.Context) string {
 	return state.value
 }
 
-func readPanelMessages(ctx context.Context, connection *websocket.Conn, configChanged chan<- struct{}) error {
+func readPanelMessages(
+	ctx context.Context,
+	connection *websocket.Conn,
+	configChanged chan<- struct{},
+	upgradeRequested chan<- string,
+) error {
 	for {
 		messageType, message, err := connection.Read(ctx)
 		if err != nil {
 			return err
 		}
 		var notification struct {
-			Type    string `json:"type"`
-			Version int64  `json:"version"`
+			Type    string          `json:"type"`
+			Version json.RawMessage `json:"version"`
 		}
-		if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil ||
-			notification.Type != "config_changed" || notification.Version <= 0 {
+		if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil {
 			return errors.New("Panel sent an invalid WebSocket message")
 		}
-		select {
-		case configChanged <- struct{}{}:
+		switch notification.Type {
+		case "config_changed":
+			var version int64
+			if json.Unmarshal(notification.Version, &version) != nil || version <= 0 {
+				return errors.New("Panel sent an invalid WebSocket message")
+			}
+			select {
+			case configChanged <- struct{}{}:
+			default:
+			}
+		case "agent_upgrade":
+			var version string
+			if json.Unmarshal(notification.Version, &version) != nil || !isFormalAgentVersion(version) {
+				return errors.New("Panel sent an invalid WebSocket message")
+			}
+			select {
+			case upgradeRequested <- version:
+			default:
+			}
 		default:
+			return errors.New("Panel sent an invalid WebSocket message")
 		}
 	}
 }

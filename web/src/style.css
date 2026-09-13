@@ -299,6 +299,12 @@ h1 {
   gap: 8px;
 }
 
+.inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 8px;
+}
+
 .date-input,
 .settings-input {
   width: 100%;

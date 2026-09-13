@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 readonly REPOSITORY="renaissance0721/vps-panel"
 readonly RELEASES_BASE="https://github.com/${REPOSITORY}/releases"
-readonly BINARY_PATH="/usr/local/bin/vps-panel-agent"
+readonly AGENT_DIR="/opt/vps-panel/agent"
+readonly BINARY_PATH="${AGENT_DIR}/vps-panel-agent"
 readonly CONFIG_DIR="/etc/vps-panel-agent"
 readonly SERVICE_FILE="/etc/systemd/system/vps-panel-agent.service"
 readonly SERVICE_NAME="vps-panel-agent.service"
@@ -110,6 +111,7 @@ curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
 
 chmod 0755 "$download_path"
 install -d -m 0700 "$CONFIG_DIR"
+install -d -m 0755 "$AGENT_DIR"
 install -d -m 0755 /opt/vps-panel/xray
 install -d -m 0700 /etc/vps-panel/xray
 
@@ -128,7 +130,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system
+ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system
 
 [Install]
 WantedBy=multi-user.target
@@ -137,7 +139,6 @@ log "Registering Agent..."
 "$download_path" register --server "$server_url" --token "$enrollment_token"
 enrollment_token=""
 
-install -d -m 0755 /usr/local/bin
 install -m 0755 "$download_path" "$BINARY_PATH"
 install -m 0644 "$unit_path" "$SERVICE_FILE"
 

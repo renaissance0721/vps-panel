@@ -1,9 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
@@ -47,12 +52,23 @@ type createClientRequest struct {
 	Name         string `json:"name"`
 	ClientUDP443 bool   `json:"client_udp443"`
 	Enabled      *bool  `json:"enabled"`
+	clientTrafficRequest
 }
 
 type updateClientRequest struct {
 	Name         *string `json:"name"`
 	ClientUDP443 *bool   `json:"client_udp443"`
 	Enabled      *bool   `json:"enabled"`
+	clientTrafficRequest
+}
+
+type clientTrafficRequest struct {
+	TrafficLimit        json.RawMessage `json:"traffic_limit"`
+	LimitUnit           *string         `json:"limit_unit"`
+	TrafficResetMode    *string         `json:"traffic_reset_mode"`
+	TrafficResetWeekday *int            `json:"traffic_reset_weekday"`
+	TrafficResetDay     *int            `json:"traffic_reset_day"`
+	TrafficResetTime    *string         `json:"traffic_reset_time"`
 }
 
 type proxyResponse struct {
@@ -83,34 +99,44 @@ type proxyConfigResponse struct {
 	Fingerprint              string `json:"fingerprint,omitempty"`
 	TLSCertificateConfigured bool   `json:"tls_certificate_configured"`
 	RealityTarget            string `json:"reality_target,omitempty"`
-	RealityPublicKey         string `json:"reality_public_key,omitempty"`
-	RealityShortID           string `json:"reality_short_id,omitempty"`
 	Method                   string `json:"method,omitempty"`
 	Network                  string `json:"network,omitempty"`
 }
 
 type clientSummaryResponse struct {
-	ID           int64                 `json:"id"`
-	ProxyID      int64                 `json:"proxy_id"`
-	Name         string                `json:"name"`
-	UUIDSummary  string                `json:"uuid_summary"`
-	ClientUDP443 bool                  `json:"client_udp443"`
-	Enabled      bool                  `json:"enabled"`
-	Metrics      clientMetricsResponse `json:"metrics"`
-	CreatedAt    time.Time             `json:"created_at"`
-	UpdatedAt    time.Time             `json:"updated_at"`
+	ID                  int64                 `json:"id"`
+	ProxyID             int64                 `json:"proxy_id"`
+	Name                string                `json:"name"`
+	UUIDSummary         string                `json:"uuid_summary"`
+	ClientUDP443        bool                  `json:"client_udp443"`
+	Enabled             bool                  `json:"enabled"`
+	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
+	TrafficResetMode    string                `json:"traffic_reset_mode"`
+	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
+	TrafficResetDay     int                   `json:"traffic_reset_day"`
+	TrafficResetTime    string                `json:"traffic_reset_time"`
+	NextResetAt         *time.Time            `json:"next_reset_at"`
+	Metrics             clientMetricsResponse `json:"metrics"`
+	CreatedAt           time.Time             `json:"created_at"`
+	UpdatedAt           time.Time             `json:"updated_at"`
 }
 
 type clientResponse struct {
-	ID           int64                 `json:"id"`
-	ProxyID      int64                 `json:"proxy_id"`
-	Name         string                `json:"name"`
-	UUID         string                `json:"uuid,omitempty"`
-	ClientUDP443 bool                  `json:"client_udp443"`
-	Enabled      bool                  `json:"enabled"`
-	Metrics      clientMetricsResponse `json:"metrics"`
-	CreatedAt    time.Time             `json:"created_at"`
-	UpdatedAt    time.Time             `json:"updated_at"`
+	ID                  int64                 `json:"id"`
+	ProxyID             int64                 `json:"proxy_id"`
+	Name                string                `json:"name"`
+	UUID                string                `json:"uuid,omitempty"`
+	ClientUDP443        bool                  `json:"client_udp443"`
+	Enabled             bool                  `json:"enabled"`
+	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
+	TrafficResetMode    string                `json:"traffic_reset_mode"`
+	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
+	TrafficResetDay     int                   `json:"traffic_reset_day"`
+	TrafficResetTime    string                `json:"traffic_reset_time"`
+	NextResetAt         *time.Time            `json:"next_reset_at"`
+	Metrics             clientMetricsResponse `json:"metrics"`
+	CreatedAt           time.Time             `json:"created_at"`
+	UpdatedAt           time.Time             `json:"updated_at"`
 }
 
 type clientMetricsResponse struct {
@@ -123,20 +149,18 @@ type clientMetricsResponse struct {
 }
 
 type clientShareResponse struct {
-	Client           clientResponse `json:"client"`
-	ProxyName        string         `json:"proxy_name"`
-	Address          string         `json:"address"`
-	Port             int            `json:"port"`
-	Protocol         string         `json:"protocol"`
-	Method           string         `json:"method,omitempty"`
-	Network          string         `json:"network,omitempty"`
-	Security         string         `json:"security,omitempty"`
-	ServerName       string         `json:"server_name,omitempty"`
-	Fingerprint      string         `json:"fingerprint,omitempty"`
-	Flow             string         `json:"flow,omitempty"`
-	RealityPublicKey string         `json:"reality_public_key,omitempty"`
-	RealityShortID   string         `json:"reality_short_id,omitempty"`
-	URI              string         `json:"uri"`
+	Client      clientResponse `json:"client"`
+	ProxyName   string         `json:"proxy_name"`
+	Address     string         `json:"address"`
+	Port        int            `json:"port"`
+	Protocol    string         `json:"protocol"`
+	Method      string         `json:"method,omitempty"`
+	Network     string         `json:"network,omitempty"`
+	Security    string         `json:"security,omitempty"`
+	ServerName  string         `json:"server_name,omitempty"`
+	Fingerprint string         `json:"fingerprint,omitempty"`
+	Flow        string         `json:"flow,omitempty"`
+	URI         string         `json:"uri"`
 }
 
 func (s *server) listProxies(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -274,7 +298,14 @@ func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
-	value, mutation, err := s.proxies.CreateClient(r.Context(), id, proxystore.ClientCreateInput{Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: enabled})
+	traffic, _, err := parseClientTrafficRequest(request.clientTrafficRequest, proxystore.ClientTrafficConfig{})
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	value, mutation, err := s.proxies.CreateClient(r.Context(), id, proxystore.ClientCreateInput{
+		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: enabled, Traffic: traffic,
+	})
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -305,12 +336,45 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	value, mutation, err := s.proxies.UpdateClient(r.Context(), id, proxystore.ClientUpdateInput{Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled})
+	var traffic *proxystore.ClientTrafficConfig
+	if hasClientTrafficRequest(request.clientTrafficRequest) {
+		current, err := s.proxies.GetClient(r.Context(), id)
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+		parsed, _, err := parseClientTrafficRequest(request.clientTrafficRequest, proxystore.ClientTrafficConfig{
+			LimitBytes: current.TrafficLimitBytes, ResetMode: current.TrafficResetMode,
+			Weekday: current.TrafficResetWeekday, Day: current.TrafficResetDay,
+			ResetTime: current.TrafficResetTime,
+		})
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+		traffic = &parsed
+	}
+	value, mutation, err := s.proxies.UpdateClient(r.Context(), id, proxystore.ClientUpdateInput{
+		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled, Traffic: traffic,
+	})
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
+}
+
+func (s *server) resetProxyClientTraffic(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
+	if !ok {
+		return
+	}
+	value, err := s.proxies.ResetClientTraffic(r.Context(), id)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
@@ -342,8 +406,7 @@ func (s *server) getProxyClientShare(w http.ResponseWriter, r *http.Request, _ a
 		Client: toClientResponse(value.Client), ProxyName: value.ProxyName, Address: value.Address,
 		Port: value.Port, Protocol: value.Protocol, Method: value.Method, Network: value.Network,
 		Security: value.Security, ServerName: value.ServerName,
-		Fingerprint: value.Fingerprint, Flow: value.Flow, RealityPublicKey: value.RealityPublicKey,
-		RealityShortID: value.RealityShortID, URI: value.URI,
+		Fingerprint: value.Fingerprint, Flow: value.Flow, URI: value.URI,
 	}})
 }
 
@@ -365,8 +428,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 			ServerFlow: value.Config.ServerFlow, ServerName: value.Config.ServerName,
 			Fingerprint:              value.Config.Fingerprint,
 			TLSCertificateConfigured: value.Config.TLSCertificateConfigured,
-			RealityTarget:            value.Config.RealityTarget, RealityPublicKey: value.Config.RealityPublicKey,
-			RealityShortID: value.Config.RealityShortID, Method: value.Config.Method, Network: value.Config.Network,
+			RealityTarget:            value.Config.RealityTarget, Method: value.Config.Method, Network: value.Config.Network,
 		},
 	}
 	if value.Clients != nil {
@@ -379,11 +441,29 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 }
 
 func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryResponse {
-	return clientSummaryResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUIDSummary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	client := proxystore.Client{
+		TrafficResetMode: value.TrafficResetMode, TrafficResetWeekday: value.TrafficResetWeekday,
+		TrafficResetDay: value.TrafficResetDay, TrafficResetTime: value.TrafficResetTime,
+	}
+	return clientSummaryResponse{
+		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUIDSummary,
+		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
+		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
+		TrafficResetTime: value.TrafficResetTime, NextResetAt: client.NextResetAt(time.Now()),
+		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
 }
 
 func toClientResponse(value proxystore.Client) clientResponse {
-	return clientResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUID: value.UUID, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return clientResponse{
+		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUID: value.UUID,
+		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
+		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
+		TrafficResetTime: value.TrafficResetTime, NextResetAt: value.NextResetAt(time.Now()),
+		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
 }
 
 func toClientMetricsResponse(value *proxystore.ClientMetrics) clientMetricsResponse {
@@ -396,6 +476,88 @@ func toClientMetricsResponse(value *proxystore.ClientMetrics) clientMetricsRespo
 		UsedBytes:      value.CycleUplinkBytes + value.CycleDownlinkBytes,
 		CycleStartedAt: &cycleStartedAt, LastActivityAt: value.LastActivityAt, UpdatedAt: &updatedAt,
 	}
+}
+
+var clientTrafficAmountPattern = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+
+func hasClientTrafficRequest(request clientTrafficRequest) bool {
+	return len(request.TrafficLimit) != 0 || request.LimitUnit != nil || request.TrafficResetMode != nil ||
+		request.TrafficResetWeekday != nil || request.TrafficResetDay != nil || request.TrafficResetTime != nil
+}
+
+func parseClientTrafficRequest(
+	request clientTrafficRequest,
+	base proxystore.ClientTrafficConfig,
+) (proxystore.ClientTrafficConfig, bool, error) {
+	hasAny := hasClientTrafficRequest(request)
+	if base.ResetMode == "" {
+		base.ResetMode = proxystore.TrafficResetNever
+		base.Weekday = 1
+		base.Day = 1
+		base.ResetTime = "00:00"
+	}
+	if len(request.TrafficLimit) != 0 {
+		limit, err := parseClientTrafficLimit(request.TrafficLimit, request.LimitUnit)
+		if err != nil {
+			return proxystore.ClientTrafficConfig{}, hasAny, err
+		}
+		base.LimitBytes = limit
+	} else if request.LimitUnit != nil {
+		return proxystore.ClientTrafficConfig{}, hasAny, proxystore.ErrInvalidClientTrafficConfig
+	}
+	if request.TrafficResetMode != nil {
+		base.ResetMode = strings.TrimSpace(*request.TrafficResetMode)
+	}
+	if request.TrafficResetWeekday != nil {
+		base.Weekday = *request.TrafficResetWeekday
+	}
+	if request.TrafficResetDay != nil {
+		base.Day = *request.TrafficResetDay
+	}
+	if request.TrafficResetTime != nil {
+		base.ResetTime = strings.TrimSpace(*request.TrafficResetTime)
+	}
+	return base, hasAny, nil
+}
+
+func parseClientTrafficLimit(raw json.RawMessage, unit *string) (*int64, error) {
+	value := strings.TrimSpace(string(raw))
+	if value == "null" || value == `""` || value == "0" || value == `"0"` {
+		return nil, nil
+	}
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		var decoded string
+		if json.Unmarshal(raw, &decoded) != nil {
+			return nil, proxystore.ErrInvalidClientTrafficConfig
+		}
+		value = strings.TrimSpace(decoded)
+	}
+	if !clientTrafficAmountPattern.MatchString(value) {
+		return nil, proxystore.ErrInvalidClientTrafficConfig
+	}
+	amount, err := strconv.ParseFloat(value, 64)
+	if err != nil || amount < 0 {
+		return nil, proxystore.ErrInvalidClientTrafficConfig
+	}
+	if amount == 0 {
+		return nil, nil
+	}
+	unitValue := "G"
+	if unit != nil {
+		unitValue = strings.ToUpper(strings.TrimSpace(*unit))
+	}
+	multiplier := float64(int64(1) << 30)
+	if unitValue == "T" {
+		multiplier = float64(int64(1) << 40)
+	} else if unitValue != "G" {
+		return nil, proxystore.ErrInvalidClientTrafficConfig
+	}
+	bytes := math.Round(amount * multiplier)
+	if bytes <= 0 || bytes > float64(math.MaxInt64) {
+		return nil, proxystore.ErrInvalidClientTrafficConfig
+	}
+	result := int64(bytes)
+	return &result, nil
 }
 
 func writeProxyError(w http.ResponseWriter, err error) {
@@ -440,6 +602,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "代理节点必须至少保留一个客户端")
 	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
 		writeError(w, http.StatusConflict, "连接地址不可用，请手动填写入口地址或等待服务器上报公网 IPv4")
+	case errors.Is(err, proxystore.ErrInvalidClientTrafficConfig):
+		writeError(w, http.StatusBadRequest, "客户端流量设置无效")
 	default:
 		writeInternalError(w)
 	}

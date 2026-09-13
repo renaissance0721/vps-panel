@@ -106,6 +106,10 @@ func migrate(db *sql.DB) error {
 				CHECK (config_sync_status IN ('pending', 'success', 'failed')),
 			config_sync_error TEXT NOT NULL DEFAULT '',
 			config_synced_at INTEGER,
+			upgrade_target_version TEXT NOT NULL DEFAULT '',
+			upgrade_status TEXT NOT NULL DEFAULT ''
+				CHECK (upgrade_status IN ('', 'upgrading', 'failed')),
+			upgrade_error TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -161,6 +165,14 @@ func migrate(db *sql.DB) error {
 			credential_json TEXT NOT NULL,
 			client_udp443 INTEGER NOT NULL DEFAULT 0 CHECK (client_udp443 IN (0, 1)),
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes >= 0),
+			traffic_reset_mode TEXT NOT NULL DEFAULT 'never'
+				CHECK (traffic_reset_mode IN ('never', 'daily', 'weekly', 'monthly')),
+			traffic_reset_weekday INTEGER NOT NULL DEFAULT 1
+				CHECK (traffic_reset_weekday BETWEEN 1 AND 7),
+			traffic_reset_day INTEGER NOT NULL DEFAULT 1
+				CHECK (traffic_reset_day BETWEEN 1 AND 31),
+			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -203,6 +215,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateAgentConfigSync(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateAgentUpgrade(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerPublicIPv4(ctx, db); err != nil {
 		return err
 	}
@@ -212,7 +227,64 @@ func migrate(db *sql.DB) error {
 	if err := migrateProxyProtocols(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateClientTrafficConfig(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateAgentUpgrade(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"upgrade_target_version", "upgrade_target_version TEXT NOT NULL DEFAULT ''"},
+		{"upgrade_status", "upgrade_status TEXT NOT NULL DEFAULT '' CHECK (upgrade_status IN ('', 'upgrading', 'failed'))"},
+		{"upgrade_error", "upgrade_error TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect agents.%s column: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE agents ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add agents.%s column: %w", column.name, err)
+		}
+	}
+	return nil
+}
+
+func migrateClientTrafficConfig(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"traffic_limit_bytes", "traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes >= 0)"},
+		{"traffic_reset_mode", "traffic_reset_mode TEXT NOT NULL DEFAULT 'never' CHECK (traffic_reset_mode IN ('never', 'daily', 'weekly', 'monthly'))"},
+		{"traffic_reset_weekday", "traffic_reset_weekday INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_weekday BETWEEN 1 AND 7)"},
+		{"traffic_reset_day", "traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31)"},
+		{"traffic_reset_time", "traffic_reset_time TEXT NOT NULL DEFAULT '00:00'"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('clients') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect clients.%s column: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE clients ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add clients.%s column: %w", column.name, err)
+		}
+	}
 	return nil
 }
 

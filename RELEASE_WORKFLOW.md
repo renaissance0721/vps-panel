@@ -97,6 +97,7 @@ Panel binary
 Web frontend
 Agent amd64
 Agent arm64
+Agent SHA256SUMS
 ```
 
 其中 Panel tar.gz 应至少包含：
@@ -159,6 +160,17 @@ v0.7.0
 ```
 
 正式安装 Agent 时，应优先下载与当前 Panel Release 相同版本的 Agent。
+
+### 4.4 Agent 校验与原地升级
+
+正式 Release 必须同时生成 `SHA256SUMS`，且至少包含：
+
+```text
+vps-panel-agent-linux-amd64
+vps-panel-agent-linux-arm64
+```
+
+Panel 只允许将在线 Agent 升级到 Panel 当前的正式版本。Agent 必须先校验 SHA256 和二进制 `version` 输出，再原子替换 `/opt/vps-panel/agent/vps-panel-agent`；升级不重写或重新注册 `/etc/vps-panel-agent/config.json`。
 
 ---
 
@@ -406,11 +418,12 @@ Release 完成后，不只看 GitHub 页面。
 1. Release tag 指向正确 commit。
 2. amd64 / arm64 Panel tar.gz 均存在。
 3. amd64 / arm64 Agent binary 均存在。
-4. 解压 Panel tar.gz 后存在：
+4. `SHA256SUMS` 存在，包含两个 Agent binary，且本地重算结果一致。
+5. 解压 Panel tar.gz 后存在：
    - `vps-panel`
    - `web/index.html`
-5. Release 包不包含已经删除的旧 UI。
-6. 测试服务器执行 `vp update` 后：
+6. Release 包不包含已经删除的旧 UI。
+7. 测试服务器执行 `vp update` 后：
    - SQLite 数据保留
    - 用户数据保留
    - Server 数据保留
@@ -418,7 +431,7 @@ Release 完成后，不只看 GitHub 页面。
    - Web 前端更新
    - systemd 正常
    - Caddy 正常
-7. `/api/health` 返回正确版本。
+8. `/api/health` 返回正确版本。
 
 ---
 

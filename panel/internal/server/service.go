@@ -28,6 +28,8 @@ const (
 	ConfigSyncPending       = "pending"
 	ConfigSyncSuccess       = "success"
 	ConfigSyncFailed        = "failed"
+	AgentUpgradeUpgrading   = "upgrading"
+	AgentUpgradeFailed      = "failed"
 	EnrollmentLifetime      = 24 * time.Hour
 	maxNameLength           = 100
 	maxIPAddresses          = 16
@@ -50,6 +52,9 @@ var (
 	ErrInvalidTrafficTarget = errors.New("invalid server traffic target")
 	ErrInvalidConfigResult  = errors.New("invalid Agent config result")
 	ErrConfigVersionAhead   = errors.New("Agent config result version is newer than desired state")
+	ErrAgentOffline         = errors.New("Agent is offline")
+	ErrAgentNotRegistered   = errors.New("Agent is not registered")
+	ErrInvalidUpgrade       = errors.New("invalid Agent upgrade")
 )
 
 type Server struct {
@@ -63,6 +68,10 @@ type Server struct {
 	TrafficResetDay          int
 	TrafficResetTime         string
 	LastSeenAt               *time.Time
+	AgentVersion             string
+	AgentUpgradeTarget       string
+	AgentUpgradeStatus       string
+	AgentUpgradeError        string
 	SystemInfo               *SystemInfo
 	Metrics                  *Metrics
 	CreatedAt                time.Time
@@ -181,6 +190,10 @@ type Agent struct {
 	ServerID int64
 }
 
+type AgentUpgrade struct {
+	AlreadyCurrent bool
+}
+
 type DesiredState struct {
 	Version int64
 	Proxies []proxystore.DesiredProxy
@@ -269,7 +282,11 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
-		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+			 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+			 (SELECT version FROM agents WHERE agents.server_id = servers.id),
+			 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
+			 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
+			 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -349,6 +366,10 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT version FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -387,6 +408,10 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT version FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
+		 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -702,6 +727,114 @@ func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Age
 	return agent, nil
 }
 
+func (s *Service) PrepareAgentUpgrade(ctx context.Context, serverID int64, targetVersion string) (AgentUpgrade, error) {
+	targetVersion = strings.TrimSpace(targetVersion)
+	if targetVersion == "" || utf8.RuneCountInString(targetVersion) > 64 {
+		return AgentUpgrade{}, ErrInvalidUpgrade
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AgentUpgrade{}, fmt.Errorf("begin Agent upgrade: %w", err)
+	}
+	defer tx.Rollback()
+	var status string
+	var archivedAt sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, archived_at FROM servers WHERE id = ?`, serverID,
+	).Scan(&status, &archivedAt); errors.Is(err, sql.ErrNoRows) {
+		return AgentUpgrade{}, ErrNotFound
+	} else if err != nil {
+		return AgentUpgrade{}, fmt.Errorf("read Agent upgrade server: %w", err)
+	}
+	if archivedAt.Valid || status != StatusOnline {
+		return AgentUpgrade{}, ErrAgentOffline
+	}
+	var agentID int64
+	var currentVersion string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, version FROM agents WHERE server_id = ?`, serverID,
+	).Scan(&agentID, &currentVersion); errors.Is(err, sql.ErrNoRows) {
+		return AgentUpgrade{}, ErrAgentNotRegistered
+	} else if err != nil {
+		return AgentUpgrade{}, fmt.Errorf("read Agent for upgrade: %w", err)
+	}
+	if currentVersion == targetVersion {
+		return AgentUpgrade{AlreadyCurrent: true}, nil
+	}
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET upgrade_target_version = ?, upgrade_status = ?, upgrade_error = '', updated_at = ?
+		 WHERE id = ? AND server_id = ?`,
+		targetVersion, AgentUpgradeUpgrading, now, agentID, serverID,
+	); err != nil {
+		return AgentUpgrade{}, fmt.Errorf("prepare Agent upgrade: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return AgentUpgrade{}, fmt.Errorf("commit Agent upgrade: %w", err)
+	}
+	return AgentUpgrade{}, nil
+}
+
+func (s *Service) RecordAgentUpgradeFailure(
+	ctx context.Context,
+	agentID, serverID int64,
+	targetVersion, message string,
+) error {
+	targetVersion = strings.TrimSpace(targetVersion)
+	message = strings.TrimSpace(message)
+	if targetVersion == "" || utf8.RuneCountInString(targetVersion) > 64 || message == "" {
+		return ErrInvalidUpgrade
+	}
+	if len(message) > maxConfigSyncErrorBytes {
+		message = message[:maxConfigSyncErrorBytes]
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE agents SET upgrade_status = ?, upgrade_error = ?, updated_at = ?
+		 WHERE id = ? AND server_id = ? AND upgrade_target_version = ? AND upgrade_status = ?`,
+		AgentUpgradeFailed, message, s.now().UTC().Truncate(time.Second).Unix(),
+		agentID, serverID, targetVersion, AgentUpgradeUpgrading,
+	)
+	if err != nil {
+		return fmt.Errorf("record Agent upgrade failure: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read Agent upgrade failure count: %w", err)
+	}
+	if count != 1 {
+		return ErrInvalidUpgrade
+	}
+	return nil
+}
+
+func (s *Service) MarkAgentUpgradeFailed(
+	ctx context.Context,
+	serverID int64,
+	targetVersion, message string,
+) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ErrInvalidUpgrade
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE agents SET upgrade_status = ?, upgrade_error = ?, updated_at = ?
+		 WHERE server_id = ? AND upgrade_target_version = ? AND upgrade_status = ?`,
+		AgentUpgradeFailed, message, s.now().UTC().Truncate(time.Second).Unix(),
+		serverID, targetVersion, AgentUpgradeUpgrading,
+	)
+	if err != nil {
+		return fmt.Errorf("mark Agent upgrade failed: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read failed Agent upgrade count: %w", err)
+	}
+	if count != 1 {
+		return ErrInvalidUpgrade
+	}
+	return nil
+}
+
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -796,6 +929,14 @@ func (s *Service) SetAgentOnline(ctx context.Context, serverID int64) error {
 }
 
 func (s *Service) SetAgentConnected(ctx context.Context, agentID, serverID int64) error {
+	return s.SetAgentConnectedVersion(ctx, agentID, serverID, "")
+}
+
+func (s *Service) SetAgentConnectedVersion(ctx context.Context, agentID, serverID int64, agentVersion string) error {
+	agentVersion = strings.TrimSpace(agentVersion)
+	if utf8.RuneCountInString(agentVersion) > 64 {
+		return ErrInvalidAgentVersion
+	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -804,8 +945,15 @@ func (s *Service) SetAgentConnected(ctx context.Context, agentID, serverID int64
 	defer tx.Rollback()
 
 	result, err := tx.ExecContext(ctx,
-		`UPDATE agents SET last_seen_at = ?, updated_at = ? WHERE id = ? AND server_id = ?`,
-		now, now, agentID, serverID,
+		`UPDATE agents SET last_seen_at = ?,
+		 version = CASE WHEN ? = '' THEN version ELSE ? END,
+		 upgrade_target_version = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_target_version END,
+		 upgrade_status = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_status END,
+		 upgrade_error = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_error END,
+		 updated_at = ? WHERE id = ? AND server_id = ?`,
+		now, agentVersion, agentVersion,
+		agentVersion, agentVersion, agentVersion, agentVersion, agentVersion, agentVersion,
+		now, agentID, serverID,
 	)
 	if err != nil {
 		return fmt.Errorf("update connected Agent: %w", err)
@@ -1187,6 +1335,7 @@ type rowScanner interface {
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
+	var storedAgentVersion, upgradeTarget, upgradeStatus, upgradeError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, publicIPv4, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
@@ -1197,7 +1346,7 @@ func scanServer(row rowScanner) (Server, error) {
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
-		&lastSeenAt,
+		&lastSeenAt, &storedAgentVersion, &upgradeTarget, &upgradeStatus, &upgradeError,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
@@ -1221,6 +1370,10 @@ func scanServer(row rowScanner) (Server, error) {
 		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()
 		value.LastSeenAt = &lastSeenTime
 	}
+	value.AgentVersion = storedAgentVersion.String
+	value.AgentUpgradeTarget = upgradeTarget.String
+	value.AgentUpgradeStatus = upgradeStatus.String
+	value.AgentUpgradeError = upgradeError.String
 	if reportedAt.Valid {
 		info := SystemInfo{
 			Hostname:     hostname.String,

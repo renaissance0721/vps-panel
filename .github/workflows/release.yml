@@ -103,6 +103,14 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate Agent checksums
+        working-directory: release-assets
+        run: |
+          sha256sum \
+            vps-panel-agent-linux-amd64 \
+            vps-panel-agent-linux-arm64 \
+            > SHA256SUMS
+
       - name: Create release and upload artifacts
         env:
           GH_TOKEN: ${{ github.token }}

@@ -65,11 +65,9 @@ func TestCreateRealityProxyGeneratesCompatibleSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create REALITY proxy: %v", err)
 	}
-	if value.Config.RealityPublicKey == "" || len(value.Config.RealityShortID) != 16 {
-		t.Fatalf("public REALITY config = %+v", value.Config)
-	}
 	_, config, err := getProxyForTest(service, value.ID)
-	if err != nil || config.Reality == nil || validateReality(config.Reality) != nil {
+	if err != nil || config.Reality == nil || config.Reality.PublicKey == "" ||
+		len(config.Reality.ShortID) != 16 || validateReality(config.Reality) != nil {
 		t.Fatalf("stored REALITY config = %+v, %v", config, err)
 	}
 	privateBytes, _ := base64.RawURLEncoding.DecodeString(config.Reality.PrivateKey)

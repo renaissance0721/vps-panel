@@ -69,6 +69,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/agent/config", s.getAgentConfig)
 	mux.HandleFunc("POST /api/agent/config/result", s.recordAgentConfigResult)
+	mux.HandleFunc("POST /api/agent/upgrade/result", s.recordAgentUpgradeResult)
 	mux.HandleFunc("POST /api/agent/traffic", s.recordAgentClientTraffic)
 	mux.HandleFunc("GET /api/agent/ws", s.agentWebSocket)
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
@@ -82,6 +83,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("PATCH /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.updateTrafficAdjustment))
 	mux.HandleFunc("DELETE /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.clearTrafficAdjustment))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))
+	mux.HandleFunc("POST /api/servers/{id}/agent-upgrade", s.requireAdmin(s.upgradeAgent))
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /api/proxies", s.requireAuthentication(s.listProxies))
 	mux.HandleFunc("POST /api/proxies", s.requireAuthentication(s.createProxy))
@@ -93,8 +95,10 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/clients/{id}", s.requireAuthentication(s.getProxyClient))
 	mux.HandleFunc("PATCH /api/clients/{id}", s.requireAuthentication(s.updateProxyClient))
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuthentication(s.deleteProxyClient))
+	mux.HandleFunc("POST /api/clients/{id}/traffic/reset", s.requireAuthentication(s.resetProxyClientTraffic))
 	mux.HandleFunc("GET /api/clients/{id}/share", s.requireAuthentication(s.getProxyClientShare))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
+	mux.HandleFunc("GET /upgrade-agent.sh", s.upgradeAgentInstaller)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
@@ -161,6 +165,10 @@ type serverResponse struct {
 	Metrics                  *metricsResponse    `json:"metrics"`
 	CreatedAt                time.Time           `json:"created_at"`
 	UpdatedAt                time.Time           `json:"updated_at"`
+	AgentVersion             string              `json:"agent_version"`
+	AgentUpgradeTarget       string              `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeStatus       string              `json:"agent_upgrade_status,omitempty"`
+	AgentUpgradeError        string              `json:"agent_upgrade_error,omitempty"`
 }
 
 type systemInfoResponse struct {
@@ -235,6 +243,17 @@ type agentConfigResultRequest struct {
 type agentConfigChangedMessage struct {
 	Type    string `json:"type"`
 	Version int64  `json:"version"`
+}
+
+type agentUpgradeMessage struct {
+	Type    string `json:"type"`
+	Version string `json:"version"`
+}
+
+type agentUpgradeResultRequest struct {
+	Version string `json:"version"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 type agentSystemInfoMessage struct {
@@ -407,6 +426,28 @@ func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request)
 	writeNoContent(w)
 }
 
+func (s *server) recordAgentUpgradeResult(w http.ResponseWriter, r *http.Request) {
+	agent, agentToken, ok := s.authenticateAgentRequest(w, r)
+	if !ok {
+		return
+	}
+	var request agentUpgradeResultRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.Status != "failed" || strings.Contains(request.Message, agentToken) {
+		writeError(w, http.StatusBadRequest, "Agent 升级结果无效")
+		return
+	}
+	if err := s.servers.RecordAgentUpgradeFailure(
+		r.Context(), agent.ID, agent.ServerID, request.Version, request.Message,
+	); err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
 func (s *server) authenticateAgentRequest(w http.ResponseWriter, r *http.Request) (serverstore.Agent, string, bool) {
 	authorization := strings.Fields(r.Header.Get("Authorization"))
 	if len(authorization) != 2 || !strings.EqualFold(authorization[0], "Bearer") {
@@ -444,7 +485,9 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = s.servers.SetAgentConnected(statusContext, agent.ID, agent.ServerID)
+	err = s.servers.SetAgentConnectedVersion(
+		statusContext, agent.ID, agent.ServerID, r.Header.Get("X-VPS-Panel-Agent-Version"),
+	)
 	cancel()
 	if err != nil {
 		s.untrackAgentConnection(agent.ServerID, currentConnection)
@@ -785,6 +828,39 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, _ auth
 	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
+func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	targetVersion := formalReleaseVersion(s.panelVersion)
+	if targetVersion == "" {
+		writeError(w, http.StatusConflict, "开发版本 Panel 不支持一键升级 Agent")
+		return
+	}
+	upgrade, err := s.servers.PrepareAgentUpgrade(r.Context(), id, targetVersion)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	if upgrade.AlreadyCurrent {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "already_current", "version": targetVersion,
+		})
+		return
+	}
+	if err := s.notifyAgentUpgrade(id, targetVersion); err != nil {
+		failureContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = s.servers.MarkAgentUpgradeFailed(failureContext, id, targetVersion, "无法向在线 Agent 发送升级指令")
+		cancel()
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status": "upgrading", "version": targetVersion,
+	})
+}
+
 func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
@@ -911,6 +987,10 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		LastSeenAt:               value.LastSeenAt,
 		CreatedAt:                value.CreatedAt,
 		UpdatedAt:                value.UpdatedAt,
+		AgentVersion:             value.AgentVersion,
+		AgentUpgradeTarget:       value.AgentUpgradeTarget,
+		AgentUpgradeStatus:       value.AgentUpgradeStatus,
+		AgentUpgradeError:        value.AgentUpgradeError,
 	}
 	if value.SystemInfo != nil {
 		response.SystemInfo = &systemInfoResponse{
@@ -979,6 +1059,28 @@ func releaseVersion(value string) string {
 			continue
 		}
 		return ""
+	}
+	return value
+}
+
+func formalReleaseVersion(value string) string {
+	value = releaseVersion(value)
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value[1:], ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	for _, part := range parts {
+		if part == "" {
+			return ""
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return ""
+			}
+		}
 	}
 	return value
 }
@@ -1080,6 +1182,30 @@ func (s *server) notifyConfigChanged(serverID, version int64) error {
 	return nil
 }
 
+func (s *server) notifyAgentUpgrade(serverID int64, version string) error {
+	s.connectionsMu.Lock()
+	connection := s.connections[serverID]
+	s.connectionsMu.Unlock()
+	if connection == nil {
+		return serverstore.ErrAgentOffline
+	}
+	payload, err := json.Marshal(agentUpgradeMessage{Type: "agent_upgrade", Version: version})
+	if err != nil {
+		return fmt.Errorf("encode Agent upgrade notification: %w", err)
+	}
+	connection.writeMu.Lock()
+	defer connection.writeMu.Unlock()
+	if !s.isCurrentAgentConnection(serverID, connection) {
+		return serverstore.ErrAgentOffline
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := connection.socket.Write(ctx, websocket.MessageText, payload); err != nil {
+		return fmt.Errorf("notify Agent upgrade: %w", err)
+	}
+	return nil
+}
+
 func (s *server) closeAgentConnections(serverID int64) {
 	s.connectionsMu.Lock()
 	connection := s.connections[serverID]
@@ -1105,6 +1231,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":   "ok",
 		"database": "ok",
+		"version":  s.panelVersion,
 	})
 }
 
@@ -1193,6 +1320,12 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "Agent 配置版本高于当前目标版本")
 	case errors.Is(err, serverstore.ErrInvalidAgentToken):
 		writeError(w, http.StatusUnauthorized, "Agent Token 无效")
+	case errors.Is(err, serverstore.ErrAgentOffline):
+		writeError(w, http.StatusConflict, "Agent 当前不在线")
+	case errors.Is(err, serverstore.ErrAgentNotRegistered):
+		writeError(w, http.StatusConflict, "服务器尚未注册 Agent")
+	case errors.Is(err, serverstore.ErrInvalidUpgrade):
+		writeError(w, http.StatusBadRequest, "Agent 升级请求无效")
 	default:
 		writeInternalError(w)
 	}

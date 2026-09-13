@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B 和 Phase 10A 已完成；Phase 7B 暂缓。下一阶段为 **Phase 10B Client 流量额度、周期与手动重置**。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10A 和 Phase 10B 已完成；Phase 7B 暂缓。Phase 10C 尚未开始。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -1900,6 +1900,14 @@ Server → offline
 5. 旧连接关闭不会把新连接误判 offline。
 6. Agent 不因普通网络波动退出。
 7. 原有测试通过。
+
+---
+
+## Agent 原地升级（已实现）
+
+正式版 Panel 可通过现有 Agent WebSocket 发送专用 `agent_upgrade` 消息，目标固定为 Panel 当前正式版本，不接受用户自定义版本。Agent 按 amd64 / arm64 下载该 tag 的 Release binary，校验 `SHA256SUMS` 和 `version` 输出后，原子替换 `/opt/vps-panel/agent/vps-panel-agent` 并重启。新 Agent 以原 `config.json` 自动重连，Panel 仅在重连版本等于目标时确认成功。
+
+旧 Agent 首次迁移使用独立 `/upgrade-agent.sh`；脚本不调用 register，不需要 Enrollment Token，并在失败时恢复原二进制和 systemd unit。升级与 Agent rebind 保持独立。
 
 ---
 
@@ -4225,7 +4233,7 @@ Server
 
 # 15. Phase 10：Client 流量、额度、周期与到期
 
-> 当前状态：Phase 10A 已完成。现有实现已覆盖 Xray per-client cumulative stats、Agent 独立 HTTP 上报、Panel baseline 增量累计与 Client 流量/最近活动展示；Phase 10 整体尚未完成。下一步是 Phase 10B：Client 流量额度、daily / weekly / monthly 周期和本周期流量手动重置。
+> 当前状态：Phase 10A 和 Phase 10B 已完成。现有实现已覆盖 Xray per-client cumulative stats、Agent 独立 HTTP 上报、Panel baseline 增量累计、Client 流量/最近活动展示、G/T 额度、never / daily / weekly / monthly 上海时区周期、下次重置时间和本周期手动重置。Phase 10C 的到期和超额自动失效尚未实现。
 
 > Client 基础管理已经提前并入 Phase 9A，不再保留单独的“Client 基础管理”子阶段。
 >
@@ -5556,7 +5564,7 @@ Agent：
 ```text
 GitHub Release binary
 ↓
-/usr/local/bin/vps-panel-agent
+/opt/vps-panel/agent/vps-panel-agent
 ↓
 systemd
 ```
@@ -5815,15 +5823,15 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B 和 Phase 10A 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10A 和 Phase 10B 已完成。
 
-Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路下一步为：
+Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路的下一阶段是 Phase 10C，当前未开始：
 
 ```text
-Phase 10B：Client 流量额度、daily / weekly / monthly 周期与本周期流量手动重置
+Phase 10C：Client 到期时间、流量耗尽与派生有效状态
 ```
 
-Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10A 已完成每 Client 累计流量基础链路。当前停止在 Phase 10A，不提前实现 Phase 10B。
+Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10A 已完成每 Client 累计流量基础链路；Phase 10B 已完成额度、周期和手动重置。当前停止在 Phase 10B，不提前实现 Phase 10C。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 

@@ -59,12 +59,16 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		},
 		"agents": {
 			"applied_config_version", "config_sync_status", "config_sync_error", "config_synced_at",
+			"upgrade_target_version", "upgrade_status", "upgrade_error",
 		},
 		"server_metrics": {
 			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "traffic_adjustment_bytes", "cycle_started_at",
 		},
 		"server_system_info": {"public_ipv4"},
 		"proxies":            {"entry_host_mode", "entry_host"},
+		"clients": {
+			"traffic_limit_bytes", "traffic_reset_mode", "traffic_reset_weekday", "traffic_reset_day", "traffic_reset_time",
+		},
 		"client_metrics": {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
 			"cycle_started_at", "last_activity_at", "updated_at",
@@ -586,18 +590,23 @@ func TestOpenMigratesAgentLastSeenWithoutLosingData(t *testing.T) {
 		t.Fatalf("last_seen_at column count = %d, want 1", columnCount)
 	}
 	var serverID, desiredVersion, appliedVersion int64
-	var tokenHash, syncStatus, syncError string
+	var tokenHash, syncStatus, syncError, upgradeTarget, upgradeStatus, upgradeError string
 	var lastSeenAt, syncedAt sql.NullInt64
 	if err := db.QueryRow(
 		`SELECT agents.server_id, agents.token_hash, agents.last_seen_at,
 		 servers.desired_state_version, agents.applied_config_version,
-		 agents.config_sync_status, agents.config_sync_error, agents.config_synced_at
+		 agents.config_sync_status, agents.config_sync_error, agents.config_synced_at,
+		 agents.upgrade_target_version, agents.upgrade_status, agents.upgrade_error
 		 FROM agents JOIN servers ON servers.id = agents.server_id WHERE agents.id = 9`,
-	).Scan(&serverID, &tokenHash, &lastSeenAt, &desiredVersion, &appliedVersion, &syncStatus, &syncError, &syncedAt); err != nil {
+	).Scan(
+		&serverID, &tokenHash, &lastSeenAt, &desiredVersion, &appliedVersion,
+		&syncStatus, &syncError, &syncedAt, &upgradeTarget, &upgradeStatus, &upgradeError,
+	); err != nil {
 		t.Fatalf("read migrated Agent: %v", err)
 	}
 	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid ||
-		desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid {
+		desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid ||
+		upgradeTarget != "" || upgradeStatus != "" || upgradeError != "" {
 		t.Fatalf("migrated Agent = (%d, %q, %v, %d, %d, %q, %q, %v)",
 			serverID, tokenHash, lastSeenAt.Valid, desiredVersion, appliedVersion, syncStatus, syncError, syncedAt.Valid)
 	}
@@ -868,8 +877,16 @@ func TestOpenMigratesProxyProtocolsWithoutLosingVLESSClients(t *testing.T) {
 			proxyID, serverID, name, protocol, port, mode, host, enabled, config, createdAt, updatedAt)
 	}
 	var clientProxyID int64
-	if err := db.QueryRow(`SELECT proxy_id FROM clients WHERE id = 43`).Scan(&clientProxyID); err != nil || clientProxyID != 42 {
-		t.Fatalf("preserved client proxy id = %d, %v", clientProxyID, err)
+	var trafficLimit sql.NullInt64
+	var resetMode, resetTime string
+	var resetWeekday, resetDay int
+	if err := db.QueryRow(`SELECT proxy_id, traffic_limit_bytes, traffic_reset_mode,
+		traffic_reset_weekday, traffic_reset_day, traffic_reset_time FROM clients WHERE id = 43`).Scan(
+		&clientProxyID, &trafficLimit, &resetMode, &resetWeekday, &resetDay, &resetTime,
+	); err != nil || clientProxyID != 42 || trafficLimit.Valid || resetMode != "never" ||
+		resetWeekday != 1 || resetDay != 1 || resetTime != "00:00" {
+		t.Fatalf("migrated client = proxy %d, limit %v, reset %q/%d/%d/%q, error %v",
+			clientProxyID, trafficLimit, resetMode, resetWeekday, resetDay, resetTime, err)
 	}
 	if _, err := db.Exec(`INSERT INTO proxies
 		(server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)

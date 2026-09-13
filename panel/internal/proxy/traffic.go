@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const clientStatsIdentifierPrefix = "vp-client-"
+
+var clientTrafficLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 var ErrInvalidClientTraffic = errors.New("invalid client traffic report")
 
@@ -65,17 +68,24 @@ func (s *Service) RecordClientTraffic(ctx context.Context, serverID int64, repor
 func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report ClientTrafficReport, now time.Time) error {
 	var previousUplink, previousDownlink, cycleUplink, cycleDownlink sql.NullInt64
 	var cycleStartedAt, lastActivityAt sql.NullInt64
+	var resetMode, resetTime string
+	var resetWeekday, resetDay int
 	err := tx.QueryRowContext(ctx,
 		`SELECT metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
-		 metrics.cycle_started_at, metrics.last_activity_at
+		 metrics.cycle_started_at, metrics.last_activity_at,
+		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
+		 clients.traffic_reset_day, clients.traffic_reset_time
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.id = ? AND proxies.server_id = ? AND servers.archived_at IS NULL`,
 		report.ClientID, serverID,
-	).Scan(&previousUplink, &previousDownlink, &cycleUplink, &cycleDownlink, &cycleStartedAt, &lastActivityAt)
+	).Scan(
+		&previousUplink, &previousDownlink, &cycleUplink, &cycleDownlink,
+		&cycleStartedAt, &lastActivityAt, &resetMode, &resetWeekday, &resetDay, &resetTime,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInvalidClientTraffic
 	}
@@ -84,15 +94,39 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 	}
 
 	if !previousUplink.Valid {
+		cycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
+		if err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO client_metrics
 			 (client_id, xray_uplink_bytes, xray_downlink_bytes,
 			  cycle_uplink_bytes, cycle_downlink_bytes, cycle_started_at, updated_at)
 			 VALUES (?, ?, ?, 0, 0, ?, ?)`,
-			report.ClientID, report.UplinkBytes, report.DownlinkBytes, now.Unix(), now.Unix(),
+			report.ClientID, report.UplinkBytes, report.DownlinkBytes, cycleStart.Unix(), now.Unix(),
 		)
 		if err != nil {
 			return fmt.Errorf("create client traffic baseline: %w", err)
+		}
+		return nil
+	}
+
+	cycleStart := time.Unix(cycleStartedAt.Int64, 0).UTC()
+	currentCycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
+	if err != nil {
+		return err
+	}
+	if resetMode != TrafficResetNever && cycleStart.Before(currentCycleStart) {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE client_metrics
+			 SET xray_uplink_bytes = ?, xray_downlink_bytes = ?,
+			     cycle_uplink_bytes = 0, cycle_downlink_bytes = 0,
+			     cycle_started_at = ?, updated_at = ?
+			 WHERE client_id = ?`,
+			report.UplinkBytes, report.DownlinkBytes, currentCycleStart.Unix(), now.Unix(), report.ClientID,
+		)
+		if err != nil {
+			return fmt.Errorf("reset client traffic cycle: %w", err)
 		}
 		return nil
 	}
@@ -123,6 +157,153 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 		return fmt.Errorf("update client traffic: %w", err)
 	}
 	return nil
+}
+
+func normalizeClientTrafficConfig(value ClientTrafficConfig) (ClientTrafficConfig, error) {
+	if value.ResetMode == "" {
+		value.ResetMode = TrafficResetNever
+	}
+	if value.Weekday == 0 {
+		value.Weekday = 1
+	}
+	if value.Day == 0 {
+		value.Day = 1
+	}
+	if value.ResetTime == "" {
+		value.ResetTime = "00:00"
+	}
+	if value.LimitBytes != nil && *value.LimitBytes <= 0 {
+		value.LimitBytes = nil
+	}
+	if value.Weekday < 1 || value.Weekday > 7 || value.Day < 1 || value.Day > 31 ||
+		!validClientResetTime(value.ResetTime) {
+		return ClientTrafficConfig{}, ErrInvalidClientTrafficConfig
+	}
+	switch value.ResetMode {
+	case TrafficResetNever, TrafficResetDaily, TrafficResetWeekly, TrafficResetMonthly:
+	default:
+		return ClientTrafficConfig{}, ErrInvalidClientTrafficConfig
+	}
+	return value, nil
+}
+
+func nullableTrafficLimit(value *int64) any {
+	if value == nil || *value <= 0 {
+		return nil
+	}
+	return *value
+}
+
+func validClientResetTime(value string) bool {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	return err == nil && parsed.Format("15:04") == value
+}
+
+func currentClientCycleStart(now time.Time, mode string, weekday, day int, resetTime string) (time.Time, error) {
+	config, err := normalizeClientTrafficConfig(ClientTrafficConfig{
+		ResetMode: mode, Weekday: weekday, Day: day, ResetTime: resetTime,
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	localNow := now.In(clientTrafficLocation)
+	parsed, _ := time.Parse("15:04", config.ResetTime)
+	hour, minute := parsed.Hour(), parsed.Minute()
+	var boundary time.Time
+	switch config.ResetMode {
+	case TrafficResetNever:
+		return now.UTC().Truncate(time.Second), nil
+	case TrafficResetDaily:
+		boundary = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), hour, minute, 0, 0, clientTrafficLocation)
+		if localNow.Before(boundary) {
+			boundary = boundary.AddDate(0, 0, -1)
+		}
+	case TrafficResetWeekly:
+		isoWeekday := int(localNow.Weekday())
+		if isoWeekday == 0 {
+			isoWeekday = 7
+		}
+		boundary = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), hour, minute, 0, 0, clientTrafficLocation).
+			AddDate(0, 0, -(isoWeekday-config.Weekday+7)%7)
+		if localNow.Before(boundary) {
+			boundary = boundary.AddDate(0, 0, -7)
+		}
+	case TrafficResetMonthly:
+		boundary = clientMonthlyBoundary(localNow.Year(), localNow.Month(), config.Day, hour, minute)
+		if localNow.Before(boundary) {
+			previous := time.Date(localNow.Year(), localNow.Month()-1, 1, 0, 0, 0, 0, clientTrafficLocation)
+			boundary = clientMonthlyBoundary(previous.Year(), previous.Month(), config.Day, hour, minute)
+		}
+	}
+	return boundary.UTC(), nil
+}
+
+func nextClientResetAt(now time.Time, mode string, weekday, day int, resetTime string) (*time.Time, error) {
+	config, err := normalizeClientTrafficConfig(ClientTrafficConfig{
+		ResetMode: mode, Weekday: weekday, Day: day, ResetTime: resetTime,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if config.ResetMode == TrafficResetNever {
+		return nil, nil
+	}
+	current, err := currentClientCycleStart(now, config.ResetMode, config.Weekday, config.Day, config.ResetTime)
+	if err != nil {
+		return nil, err
+	}
+	localCurrent := current.In(clientTrafficLocation)
+	var next time.Time
+	switch config.ResetMode {
+	case TrafficResetDaily:
+		next = localCurrent.AddDate(0, 0, 1)
+	case TrafficResetWeekly:
+		next = localCurrent.AddDate(0, 0, 7)
+	case TrafficResetMonthly:
+		month := time.Date(localCurrent.Year(), localCurrent.Month()+1, 1, 0, 0, 0, 0, clientTrafficLocation)
+		next = clientMonthlyBoundary(month.Year(), month.Month(), config.Day, localCurrent.Hour(), localCurrent.Minute())
+	}
+	result := next.UTC()
+	return &result, nil
+}
+
+func clientMonthlyBoundary(year int, month time.Month, day, hour, minute int) time.Time {
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, clientTrafficLocation).Day()
+	if day > lastDay {
+		day = lastDay
+	}
+	return time.Date(year, month, day, hour, minute, 0, 0, clientTrafficLocation)
+}
+
+func (value Client) NextResetAt(now time.Time) *time.Time {
+	next, _ := nextClientResetAt(
+		now, value.TrafficResetMode, value.TrafficResetWeekday,
+		value.TrafficResetDay, value.TrafficResetTime,
+	)
+	return next
+}
+
+func (s *Service) ResetClientTraffic(ctx context.Context, clientID int64) (Client, error) {
+	now := s.now().UTC().Truncate(time.Second)
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE client_metrics
+		 SET cycle_uplink_bytes = 0, cycle_downlink_bytes = 0,
+		     cycle_started_at = ?, updated_at = ?
+		 WHERE client_id = ?`, now.Unix(), now.Unix(), clientID,
+	)
+	if err != nil {
+		return Client{}, fmt.Errorf("reset client traffic: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Client{}, fmt.Errorf("read reset client traffic count: %w", err)
+	}
+	if count == 0 {
+		if _, err := s.GetClient(ctx, clientID); err != nil {
+			return Client{}, err
+		}
+	}
+	return s.GetClient(ctx, clientID)
 }
 
 func counterDelta(previous, current int64) int64 {

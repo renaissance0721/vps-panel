@@ -37,7 +37,7 @@ test('Shadowsocks 创建方法固定为支持的 SS2022 AES 方法', () => {
   ])
 })
 
-test('Shadowsocks 客户端不显示 VLESS UUID 与 UDP443 字段', () => {
+test('UDP/443 客户端字段仅用于 VLESS', () => {
   assert.equal(showsVLESSClientFields('vless'), true)
   assert.equal(showsVLESSClientFields('shadowsocks'), false)
 })
@@ -92,14 +92,21 @@ test('客户端生命周期状态、使用率和上海时区到期时间显示�
   assert.equal(formatClientExpirationInput('2026-12-31T16:00:00Z'), '2027-01-01T00:00')
 })
 
-test('Proxy 表单包含协议条件分支、只读方法和分享 URI 复制', async () => {
+test('Proxy 详情隐藏 Client UUID 并保留两种协议的分享 URI 复制', async () => {
   const source = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
   assert.match(source, /v-model="proxyProtocol"/)
   assert.match(source, /proxyProtocol === 'vless'/)
   assert.match(source, /:disabled="proxyFormMode === 'edit'"/)
   assert.match(source, /selectedShare\.protocol === 'vless'/)
-  assert.match(source, /copyValue\('uri', selectedShare\.uri\)/)
+	assert.match(source, /copyClientURI\(client\)/)
+	assert.match(source, /copyShareURI\(selectedShare\.uri\)/)
+	assert.match(source, /selectedShare\.protocol === 'vless' \? 'VLESS' : 'Shadowsocks'/)
   assert.match(source, /<th>已用 \/ 总量<\/th><th>周期<\/th><th>到期时间<\/th><th>最近活动<\/th>/)
+	assert.match(source, /showsVLESSClientFields\(selectedProxy\.protocol\).*UDP\/443/)
+	assert.doesNotMatch(source, /<th[^>]*>UUID<\/th>/)
+	assert.doesNotMatch(source, /uuid_summary/)
+	assert.doesNotMatch(source, /selectedShare\.client\.uuid/)
+	assert.doesNotMatch(source, /复制 UUID/)
   assert.match(source, /本周期上行/)
   assert.match(source, /本周期下行/)
   assert.match(source, /本周期已用/)
@@ -114,4 +121,11 @@ test('Proxy 表单包含协议条件分支、只读方法和分享 URI 复制', 
   assert.match(source, /expires_at: clientExpirationMode\.value/)
   assert.match(source, /last_activity_at \? formatTime/)
   assert.doesNotMatch(source, /Reality Public Key|REALITY Public Key|reality_public_key|reality_short_id/)
+})
+
+test('代理节点详情使用加宽卡片且表单宽度保持不变', async () => {
+	const source = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+	assert.match(source, /\.proxy-detail-card\s*{[^}]*width:\s*min\(1180px, calc\(100vw - 48px\)\)/s)
+	assert.match(source, /\.proxy-form-card\s*{[^}]*width:\s*min\(760px, calc\(100vw - 32px\)\)/s)
+	assert.match(source, /@media \(max-width: 720px\)[\s\S]*\.proxy-detail-card\s*{[^}]*width:\s*calc\(100vw - 24px\)/)
 })

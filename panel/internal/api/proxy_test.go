@@ -99,15 +99,27 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 	}
 
 	clientID := created.Proxy.Clients[0].ID
+	var credentialJSON string
+	if err := db.QueryRow(`SELECT credential_json FROM clients WHERE id = ?`, clientID).Scan(&credentialJSON); err != nil {
+		t.Fatal(err)
+	}
+	var storedClientCredential struct {
+		UUID string `json:"uuid"`
+	}
+	if err := json.Unmarshal([]byte(credentialJSON), &storedClientCredential); err != nil || storedClientCredential.UUID == "" {
+		t.Fatalf("stored Client credential = %q, %v", credentialJSON, err)
+	}
 	client := performRequest(t, handler, http.MethodGet, "/api/clients/"+strconv.FormatInt(clientID, 10), nil, cookie)
-	if client.Code != http.StatusOK || !strings.Contains(client.Body.String(), `"uuid"`) {
+	if client.Code != http.StatusOK || strings.Contains(client.Body.String(), `"uuid":`) ||
+		strings.Contains(client.Body.String(), `"uuid_summary":`) {
 		t.Fatalf("client detail = %d, %s", client.Code, client.Body.String())
 	}
-	var clientDetail struct {
-		Client clientResponse `json:"client"`
-	}
-	if err := json.Unmarshal(client.Body.Bytes(), &clientDetail); err != nil {
-		t.Fatal(err)
+	for name, response := range map[string]*httptest.ResponseRecorder{
+		"create proxy": creation, "list proxies": list, "proxy detail": detail, "client detail": client,
+	} {
+		if strings.Contains(response.Body.String(), `"uuid":`) || strings.Contains(response.Body.String(), `"uuid_summary":`) {
+			t.Fatalf("%s leaked Client UUID field: %s", name, response.Body.String())
+		}
 	}
 	if _, err := db.Exec(`UPDATE proxies SET entry_host_mode = 'manual', entry_host = 'node.example.com' WHERE id = ?`, created.Proxy.ID); err != nil {
 		t.Fatal(err)
@@ -120,7 +132,9 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 		t.Fatalf("client share = %d, %s", shareResponse.Code, shareResponse.Body.String())
 	}
 	parsedURI, err := url.Parse(share.Share.URI)
-	if err != nil || parsedURI.Query().Get("pbk") != publicKey ||
+	if err != nil || parsedURI.User.Username() != storedClientCredential.UUID || parsedURI.Query().Get("pbk") != publicKey ||
+		strings.Contains(shareResponse.Body.String(), `"uuid":`) ||
+		strings.Contains(shareResponse.Body.String(), `"uuid_summary":`) ||
 		strings.Contains(shareResponse.Body.String(), `"reality_public_key"`) ||
 		strings.Contains(shareResponse.Body.String(), `"reality_short_id"`) ||
 		strings.Contains(shareResponse.Body.String(), `"private_key"`) {
@@ -137,7 +151,7 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 	expiredConfigRequest.Header.Set("Authorization", "Bearer "+registered.AgentToken)
 	expiredConfig := httptest.NewRecorder()
 	handler.ServeHTTP(expiredConfig, expiredConfigRequest)
-	if expiredConfig.Code != http.StatusOK || strings.Contains(expiredConfig.Body.String(), clientDetail.Client.UUID) {
+	if expiredConfig.Code != http.StatusOK || strings.Contains(expiredConfig.Body.String(), storedClientCredential.UUID) {
 		t.Fatalf("expired client remained in polled desired state: %d, %s", expiredConfig.Code, expiredConfig.Body.String())
 	}
 	var versionAfterExpiry int64
@@ -313,7 +327,7 @@ func TestShadowsocksProxyAPIKeepsSecretsOutOfOrdinaryResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created.Proxy.Protocol != "shadowsocks" || created.Proxy.Config.Method != "2022-blake3-aes-256-gcm" ||
-		created.Proxy.Config.Network != "tcp,udp" || len(created.Proxy.Clients) != 1 || created.Proxy.Clients[0].UUIDSummary != "" {
+		created.Proxy.Config.Network != "tcp,udp" || len(created.Proxy.Clients) != 1 {
 		t.Fatalf("created Shadowsocks response = %+v", created.Proxy)
 	}
 	var configJSON, credentialJSON string

@@ -102,7 +102,6 @@ type ClientSummary struct {
 	ID                  int64
 	ProxyID             int64
 	Name                string
-	UUIDSummary         string
 	ClientUDP443        bool
 	Enabled             bool
 	ExpiresAt           *time.Time
@@ -1468,12 +1467,8 @@ func scanClient(row rowScanner) (Client, error) {
 }
 
 func summarizeClient(value Client) ClientSummary {
-	summary := ""
-	if value.UUID != "" {
-		summary = value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:]
-	}
 	return ClientSummary{
-		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: summary,
+		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,

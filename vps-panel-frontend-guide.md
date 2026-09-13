@@ -239,7 +239,7 @@ min-height: calc(100vh - 页面标题与边距)
 - 不使用大圆角卡片堆叠。
 - 文本以单行优先。
 - 过长内容使用省略号，并允许复制。
-- IP、端口、UUID 等技术字段使用容易识别的等宽或紧凑字体。
+- IP、端口等技术字段使用容易识别的等宽或紧凑字体。
 - 状态使用轻量 Tag。
 - 操作按钮使用小尺寸 icon / text button，不使用巨大主按钮。
 
@@ -556,7 +556,7 @@ Proxy
     └── Android
 ```
 
-因此 **UUID 不再作为 Proxy 详情字段展示**，而是在 Client 区域管理。
+因此 Client 凭据不作为 Proxy 详情字段展示；UI 只提供后端生成的最终分享 URI。
 
 建议 Proxy 详情按区块：
 
@@ -596,8 +596,8 @@ Shadowsocks（实现后）
 - REALITY public key / short ID 不在 Proxy 详情单独展示。
 - REALITY / TLS private key 不得由普通详情 API 返回，也不在浏览器返回数据结构中保留。
 - Client 分享链接可由后端内部使用 public key 生成，UI 只接收完整 URI。
-- Client UUID 只在 Client 区域 / Client Modal 中按需查看或复制。
-- 需要复制时使用明确的复制按钮。
+- Client UUID / Shadowsocks password 不在普通 Client API 或 UI 中单独展示。
+- 需要复制时使用明确的“复制链接”按钮复制最终 URI。
 - 不在 UI 到处重复 secret。
 
 ---
@@ -624,7 +624,7 @@ iPhone      流量预警   92.1G / 100G      每月       不限              �
 
 - Client 是 Proxy 详情的一部分，不新建独立 Client 主导航页。
 - 一个 Proxy 可以有多个 Client。
-- UUID 默认只显示摘要，不在表格完整裸露。
+- Client 表格不显示 UUID 或 UUID 摘要。
 - 高频操作优先紧凑。
 - `复制链接` 复制该 Client 的**直连 VLESS URI**。
 - `复制链接` 不需要先打开另一个页面。
@@ -642,7 +642,7 @@ iPhone      流量预警   92.1G / 100G      每月       不限              �
 暂无客户端    [+ 新增客户端]
 ```
 
-不要伪造 UUID。
+不要伪造客户端凭据。
 
 ---
 
@@ -655,8 +655,8 @@ Client 使用小型 Modal，不使用独立页面。
 ```text
 名称
 
-UUID
-自动生成 / 只读展示
+客户端凭据
+由系统自动生成，不显示原始值
 
 允许 UDP/443 / QUIC
 开 / 关
@@ -672,8 +672,8 @@ UUID
 
 要求：
 
-- 创建 Client 时 UUID 由 Panel 后端生成。
-- 第一版不需要在 UI 提供任意 UUID 生成器或高级凭据编辑器。
+- 创建 VLESS Client 时 UUID 仍由 Panel 后端生成，但不通过普通 API 或 UI 返回原始值。
+- UI 不提供 UUID 生成器、单独复制或凭据编辑器。
 - 编辑 Client 时不要把 Proxy 的 SNI、REALITY、端口等公共参数重复放进来。
 - `允许 UDP/443 / QUIC` 是 Client 级选项。
 - 关闭：
@@ -694,8 +694,8 @@ UUID
 名称
 用户启用状态
 实际可用状态 / 失效原因
-UUID
 客户端 Flow
+UDP/443（仅 VLESS）
 本周期上行 / 下行 / 已用
 总额度
 使用率 / 流量状态
@@ -712,7 +712,6 @@ SNI
 操作至少：
 
 ```text
-复制 UUID
 复制 VLESS 链接
 重置本周期流量
 ```
@@ -782,8 +781,8 @@ XTLS Vision    固定
 名称
 默认客户端        默认值，可修改
 
-UUID
-自动生成
+客户端凭据
+自动生成，不显示原始值
 
 允许 UDP/443 / QUIC
 开 / 关
@@ -1206,7 +1205,7 @@ Sidebar active 项使用项目自己的主色浅背景即可。
 15. Proxy 配置 `public_host` 后，列表仍保留入口 IP，并以次级信息显示节点域名。
 16. VLESS Proxy 详情包含 Client 区域。
 17. 一个 Proxy 的多个 Client 使用紧凑列表展示，不为每个 Client 创建独立主页面。
-18. Client UUID 在列表默认摘要显示，完整 UUID 只在 Client 查看 / 编辑流程中按需展示。
+18. Client UUID / Shadowsocks password 不在列表、详情或编辑流程中单独展示，凭据只通过最终分享 URI 使用。
 19. 每个 Client 都有明确的启用 / 禁用状态。
 20. `允许 UDP/443 / QUIC` 位于 Client UI，不位于 Proxy 公共配置。
 21. 每个有效 VLESS Client 都提供“复制 VLESS 链接”操作。
@@ -1243,7 +1242,7 @@ Proxy：
 Client：
 属于 Proxy。
 在 Proxy 详情 Modal 内用紧凑列表管理，
-每 Client 独立 UUID / enabled / UDP443，
+每 Client 独立凭据 / enabled / UDP443，
 并可复制直连 VLESS URI。
 不为 Client 新建独立主页面。
 

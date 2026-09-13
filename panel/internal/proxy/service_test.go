@@ -447,7 +447,7 @@ func TestShadowsocksCreatesMethodSizedSecretsAndDesiredState(t *testing.T) {
 			}
 			if value.Protocol != ProtocolShadowsocks || value.Config.Method != test.method ||
 				value.Config.Network != ShadowsocksNetwork || value.Config.Transport != "" ||
-				value.Config.Security != "" || len(value.Clients) != 1 || value.Clients[0].UUIDSummary != "" ||
+				value.Config.Security != "" || len(value.Clients) != 1 ||
 				mutation.Version != 2 {
 				t.Fatalf("created Shadowsocks proxy = %+v, mutation = %+v", value, mutation)
 			}

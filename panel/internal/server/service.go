@@ -842,6 +842,9 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	}
 	defer tx.Rollback()
 	var state DesiredState
+	if _, err := proxystore.ReconcileClientLifecycle(ctx, tx, serverID, s.now()); err != nil {
+		return DesiredState{}, err
+	}
 	err = tx.QueryRowContext(ctx,
 		`SELECT servers.desired_state_version
 		 FROM agents JOIN servers ON servers.id = agents.server_id

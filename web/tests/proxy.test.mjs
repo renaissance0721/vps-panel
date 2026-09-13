@@ -5,11 +5,16 @@ import test from 'node:test'
 import {
   CLIENT_GIBIBYTE,
   CLIENT_TEBIBYTE,
+  clientStatusLabel,
+  clientStatusTagType,
   clientTrafficCycleLabel,
+  clientTrafficUsagePercentLabel,
   clientTrafficUsageLabel,
   clientTrafficUsedBytes,
   formatClientTrafficLimitInput,
   formatClientTrafficBytes,
+  formatClientExpiration,
+  formatClientExpirationInput,
   parseClientTrafficLimit,
   proxyListProtocolFields,
   shadowsocksMethods,
@@ -71,6 +76,22 @@ test('客户端流量周期显示正确', () => {
   assert.equal(clientTrafficCycleLabel('monthly', 1, 31, '23:59'), '每月 31 日 23:59')
 })
 
+test('客户端生命周期状态、使用率和上海时区到期时间显示正确', () => {
+  assert.equal(clientStatusLabel('normal'), '正常')
+  assert.equal(clientStatusLabel('warning'), '流量预警')
+  assert.equal(clientStatusLabel('exhausted'), '流量已用完')
+  assert.equal(clientStatusLabel('expired'), '已到期')
+  assert.equal(clientStatusLabel('disabled'), '用户禁用')
+  assert.equal(clientStatusTagType('normal'), 'success')
+  assert.equal(clientStatusTagType('warning'), 'warning')
+  assert.equal(clientStatusTagType('exhausted'), 'error')
+  assert.equal(clientTrafficUsagePercentLabel({ used_bytes: 900 }, 1000), '90%')
+  assert.equal(clientTrafficUsagePercentLabel(null, null), '不限')
+  assert.equal(formatClientExpiration(null), '不限')
+  assert.equal(formatClientExpiration('2026-12-31T16:00:00Z'), '2027-01-01 00:00')
+  assert.equal(formatClientExpirationInput('2026-12-31T16:00:00Z'), '2027-01-01T00:00')
+})
+
 test('Proxy 表单包含协议条件分支、只读方法和分享 URI 复制', async () => {
   const source = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
   assert.match(source, /v-model="proxyProtocol"/)
@@ -78,13 +99,19 @@ test('Proxy 表单包含协议条件分支、只读方法和分享 URI 复制', 
   assert.match(source, /:disabled="proxyFormMode === 'edit'"/)
   assert.match(source, /selectedShare\.protocol === 'vless'/)
   assert.match(source, /copyValue\('uri', selectedShare\.uri\)/)
-  assert.match(source, /<th>已用 \/ 总量<\/th><th>周期<\/th><th>最近活动<\/th>/)
+  assert.match(source, /<th>已用 \/ 总量<\/th><th>周期<\/th><th>到期时间<\/th><th>最近活动<\/th>/)
   assert.match(source, /本周期上行/)
   assert.match(source, /本周期下行/)
   assert.match(source, /本周期已用/)
   assert.match(source, /clientTrafficResetMode === 'weekly'/)
   assert.match(source, /clientTrafficResetMode === 'monthly'/)
   assert.match(source, /resetClientTraffic/)
+  assert.match(source, /clientStatusLabel\(client\.status\)/)
+  assert.match(source, /用户启用/)
+  assert.match(source, /实际可用/)
+  assert.match(source, /clientExpirationMode === 'specified'/)
+  assert.match(source, /type="datetime-local"/)
+  assert.match(source, /expires_at: clientExpirationMode\.value/)
   assert.match(source, /last_activity_at \? formatTime/)
   assert.doesNotMatch(source, /Reality Public Key|REALITY Public Key|reality_public_key|reality_short_id/)
 })

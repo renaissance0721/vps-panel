@@ -165,6 +165,7 @@ func migrate(db *sql.DB) error {
 			credential_json TEXT NOT NULL,
 			client_udp443 INTEGER NOT NULL DEFAULT 0 CHECK (client_udp443 IN (0, 1)),
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			expires_at INTEGER,
 			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes >= 0),
 			traffic_reset_mode TEXT NOT NULL DEFAULT 'never'
 				CHECK (traffic_reset_mode IN ('never', 'daily', 'weekly', 'monthly')),
@@ -173,6 +174,7 @@ func migrate(db *sql.DB) error {
 			traffic_reset_day INTEGER NOT NULL DEFAULT 1
 				CHECK (traffic_reset_day BETWEEN 1 AND 31),
 			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
+			effective_enabled_snapshot INTEGER NOT NULL DEFAULT 1 CHECK (effective_enabled_snapshot IN (0, 1)),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -230,7 +232,35 @@ func migrate(db *sql.DB) error {
 	if err := migrateClientTrafficConfig(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateClientLifecycle(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateClientLifecycle(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"expires_at", "expires_at INTEGER"},
+		{"effective_enabled_snapshot", "effective_enabled_snapshot INTEGER NOT NULL DEFAULT 1 CHECK (effective_enabled_snapshot IN (0, 1))"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('clients') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect clients.%s column: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE clients ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add clients.%s column: %w", column.name, err)
+		}
+	}
 	return nil
 }
 

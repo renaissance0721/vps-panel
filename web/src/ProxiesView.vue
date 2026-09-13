@@ -2,9 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
 import {
-  clientTrafficUsedBytes,
   clientTrafficCycleLabel,
   clientTrafficUsageLabel,
+  clientTrafficUsagePercentLabel,
+  clientStatusLabel,
+  clientStatusTagType,
+  formatClientExpiration,
+  formatClientExpirationInput,
   formatClientTrafficLimitInput,
   formatClientTrafficBytes,
   parseClientTrafficLimit,
@@ -16,6 +20,7 @@ import {
   type ClientMetrics,
   type ClientTrafficLimitUnit,
   type ClientTrafficResetMode,
+  type ClientStatus,
 } from './proxy'
 
 type ServerOption = {
@@ -43,6 +48,11 @@ type ClientSummary = {
   uuid_summary: string
   client_udp443: boolean
   enabled: boolean
+  expires_at: string | null
+  expired: boolean
+  quota_exhausted: boolean
+  effective_enabled: boolean
+  status: ClientStatus
   traffic_limit_bytes: number | null
   traffic_reset_mode: ClientTrafficResetMode
   traffic_reset_weekday: number
@@ -61,6 +71,11 @@ type ClientRecord = {
 	uuid?: string
   client_udp443: boolean
   enabled: boolean
+  expires_at: string | null
+  expired: boolean
+  quota_exhausted: boolean
+  effective_enabled: boolean
+  status: ClientStatus
   traffic_limit_bytes: number | null
   traffic_reset_mode: ClientTrafficResetMode
   traffic_reset_weekday: number
@@ -149,6 +164,8 @@ const clientTrafficResetMode = ref<ClientTrafficResetMode>('never')
 const clientTrafficResetWeekday = ref(1)
 const clientTrafficResetDay = ref(1)
 const clientTrafficResetTime = ref('00:00')
+const clientExpirationMode = ref<'unlimited' | 'specified'>('unlimited')
+const clientExpiresAt = ref('')
 
 const clientDetailOpen = ref(false)
 const selectedShare = ref<ClientShare | null>(null)
@@ -360,6 +377,8 @@ function openCreateClient() {
   clientTrafficResetWeekday.value = 1
   clientTrafficResetDay.value = 1
   clientTrafficResetTime.value = '00:00'
+  clientExpirationMode.value = 'unlimited'
+  clientExpiresAt.value = ''
   clientFormOpen.value = true
 }
 
@@ -378,6 +397,8 @@ async function openEditClient(client: ClientSummary) {
     clientTrafficResetWeekday.value = response.client.traffic_reset_weekday
     clientTrafficResetDay.value = response.client.traffic_reset_day
     clientTrafficResetTime.value = response.client.traffic_reset_time
+    clientExpirationMode.value = response.client.expires_at ? 'specified' : 'unlimited'
+    clientExpiresAt.value = formatClientExpirationInput(response.client.expires_at)
     clientFormOpen.value = true
   })
 }
@@ -405,6 +426,10 @@ async function saveClient() {
     error.value = '流量重置时间格式无效'
     return
   }
+  if (clientExpirationMode.value === 'specified' && !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(clientExpiresAt.value)) {
+    error.value = '请选择有效的客户端到期时间'
+    return
+  }
   await run(async () => {
     const body = JSON.stringify({
       name: clientName.value,
@@ -416,6 +441,7 @@ async function saveClient() {
       traffic_reset_weekday: clientTrafficResetWeekday.value,
       traffic_reset_day: clientTrafficResetDay.value,
       traffic_reset_time: clientTrafficResetTime.value,
+      expires_at: clientExpirationMode.value === 'specified' ? clientExpiresAt.value : null,
     })
     if (clientFormMode.value === 'create') {
 		await api(`/api/proxies/${proxy.id}/clients`, { method: 'POST', body })
@@ -639,8 +665,8 @@ onMounted(async () => {
       <div class="section-heading"><h3>客户端</h3><n-button size="small" type="primary" @click="openCreateClient">新增客户端</n-button></div>
       <n-empty v-if="!selectedProxy.clients?.length" size="small" description="暂无客户端" />
       <div v-else class="server-table-wrap">
-		<table class="server-table client-table"><thead><tr><th>名称</th><th>状态</th><th>已用 / 总量</th><th>周期</th><th>最近活动</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UUID</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UDP/443</th><th>操作</th></tr></thead>
-			<tbody><tr v-for="client in selectedProxy.clients" :key="client.id"><td>{{ client.name }}</td><td><div class="server-status-tags"><span>{{ client.enabled ? '启用' : '禁用' }}</span><n-tag v-if="client.traffic_limit_bytes && clientTrafficUsedBytes(client.metrics) >= client.traffic_limit_bytes" type="warning" size="small">达到额度</n-tag></div></td><td>{{ clientTrafficUsageLabel(client.metrics, client.traffic_limit_bytes) }}</td><td>{{ clientTrafficCycleLabel(client.traffic_reset_mode, client.traffic_reset_weekday, client.traffic_reset_day, client.traffic_reset_time) }}</td><td>{{ client.metrics?.last_activity_at ? formatTime(client.metrics.last_activity_at) : '—' }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.uuid_summary }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.client_udp443 ? '开启' : '关闭' }}</td><td class="server-actions"><n-button size="tiny" secondary @click="copyClientURI(client)">{{ copiedClientID === client.id ? '已复制' : '复制链接' }}</n-button><n-button size="tiny" secondary @click="showClient(client)">查看</n-button><n-button size="tiny" secondary @click="openEditClient(client)">编辑</n-button><n-button size="tiny" secondary @click="toggleClient(client)">{{ client.enabled ? '禁用' : '启用' }}</n-button><n-button size="tiny" type="error" secondary @click="removeClient(client)">删除</n-button></td></tr></tbody>
+		<table class="server-table client-table"><thead><tr><th>名称</th><th>状态</th><th>已用 / 总量</th><th>周期</th><th>到期时间</th><th>最近活动</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UUID</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UDP/443</th><th>操作</th></tr></thead>
+			<tbody><tr v-for="client in selectedProxy.clients" :key="client.id"><td>{{ client.name }}</td><td><n-tag :type="clientStatusTagType(client.status)" size="small">{{ clientStatusLabel(client.status) }}</n-tag></td><td>{{ clientTrafficUsageLabel(client.metrics, client.traffic_limit_bytes) }}</td><td>{{ clientTrafficCycleLabel(client.traffic_reset_mode, client.traffic_reset_weekday, client.traffic_reset_day, client.traffic_reset_time) }}</td><td>{{ formatClientExpiration(client.expires_at) }}</td><td>{{ client.metrics?.last_activity_at ? formatTime(client.metrics.last_activity_at) : '—' }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.uuid_summary }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.client_udp443 ? '开启' : '关闭' }}</td><td class="server-actions"><n-button size="tiny" secondary @click="copyClientURI(client)">{{ copiedClientID === client.id ? '已复制' : '复制链接' }}</n-button><n-button size="tiny" secondary @click="showClient(client)">查看</n-button><n-button size="tiny" secondary @click="openEditClient(client)">编辑</n-button><n-button size="tiny" secondary @click="toggleClient(client)">{{ client.enabled ? '禁用' : '启用' }}</n-button><n-button size="tiny" type="error" secondary @click="removeClient(client)">删除</n-button></td></tr></tbody>
         </table>
       </div>
       <div class="modal-actions"><n-button secondary @click="openEditProxy(selectedProxy)">编辑节点</n-button><n-button @click="proxyDetailOpen = false">关闭</n-button></div>
@@ -658,6 +684,8 @@ onMounted(async () => {
         <label v-if="clientTrafficResetMode === 'weekly'"><span>星期</span><select v-model.number="clientTrafficResetWeekday" class="settings-input"><option :value="1">周一</option><option :value="2">周二</option><option :value="3">周三</option><option :value="4">周四</option><option :value="5">周五</option><option :value="6">周六</option><option :value="7">周日</option></select></label>
         <label v-if="clientTrafficResetMode === 'monthly'"><span>日期</span><input v-model.number="clientTrafficResetDay" class="settings-input" type="number" min="1" max="31" /></label>
         <label v-if="clientTrafficResetMode !== 'never'"><span>重置时间（上海时区）</span><input v-model="clientTrafficResetTime" class="settings-input" type="time" /></label>
+        <label><span>到期时间</span><select v-model="clientExpirationMode" class="settings-input"><option value="unlimited">不限</option><option value="specified">指定日期时间</option></select></label>
+        <label v-if="clientExpirationMode === 'specified'"><span>到期日期时间（上海时区）</span><input v-model="clientExpiresAt" class="settings-input" type="datetime-local" /></label>
         <label class="checkbox-row"><input v-model="clientEnabled" type="checkbox" /><span>启用客户端</span></label>
         <div class="modal-actions"><n-button @click="clientFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
       </form>
@@ -667,10 +695,14 @@ onMounted(async () => {
   <n-modal v-if="selectedShare" v-model:show="clientDetailOpen">
     <n-card class="client-detail-card" title="客户端详情" :bordered="false" closable @close="clientDetailOpen = false">
       <dl class="server-details">
-        <div><dt>名称</dt><dd>{{ selectedShare.client.name }}</dd></div><div><dt>状态</dt><dd>{{ selectedShare.client.enabled ? '启用' : '禁用' }}</dd></div>
+		<div><dt>名称</dt><dd>{{ selectedShare.client.name }}</dd></div><div><dt>状态</dt><dd>{{ clientStatusLabel(selectedShare.client.status) }}</dd></div>
+		<div><dt>用户启用</dt><dd>{{ selectedShare.client.enabled ? '是' : '否' }}</dd></div><div><dt>实际可用</dt><dd>{{ selectedShare.client.effective_enabled ? '是' : '否' }}</dd></div>
+		<div><dt>失效原因</dt><dd>{{ selectedShare.client.effective_enabled ? '—' : clientStatusLabel(selectedShare.client.status) }}</dd></div>
 		<div><dt>本周期上行</dt><dd>{{ formatClientTrafficBytes(selectedShare.client.metrics?.cycle_uplink_bytes ?? 0) }}</dd></div><div><dt>本周期下行</dt><dd>{{ formatClientTrafficBytes(selectedShare.client.metrics?.cycle_downlink_bytes ?? 0) }}</dd></div>
-		<div><dt>本周期已用</dt><dd>{{ formatClientTrafficBytes(clientTrafficUsedBytes(selectedShare.client.metrics)) }}</dd></div><div><dt>总额度</dt><dd>{{ selectedShare.client.traffic_limit_bytes ? formatClientTrafficBytes(selectedShare.client.traffic_limit_bytes) : '不限' }}</dd></div>
+		<div><dt>本周期已用 / 总量</dt><dd>{{ clientTrafficUsageLabel(selectedShare.client.metrics, selectedShare.client.traffic_limit_bytes) }}</dd></div><div><dt>使用率</dt><dd>{{ clientTrafficUsagePercentLabel(selectedShare.client.metrics, selectedShare.client.traffic_limit_bytes) }}</dd></div>
+		<div><dt>流量状态</dt><dd>{{ selectedShare.client.quota_exhausted ? '流量已用完' : (selectedShare.client.status === 'warning' ? '流量预警' : '正常') }}</dd></div>
 		<div><dt>流量周期</dt><dd>{{ clientTrafficCycleLabel(selectedShare.client.traffic_reset_mode, selectedShare.client.traffic_reset_weekday, selectedShare.client.traffic_reset_day, selectedShare.client.traffic_reset_time) }}</dd></div><div><dt>下次重置</dt><dd>{{ selectedShare.client.next_reset_at ? formatTime(selectedShare.client.next_reset_at) : '不重置' }}</dd></div>
+		<div><dt>到期时间</dt><dd>{{ formatClientExpiration(selectedShare.client.expires_at) }}</dd></div>
 		<div><dt>最近活动</dt><dd>{{ selectedShare.client.metrics?.last_activity_at ? formatTime(selectedShare.client.metrics.last_activity_at) : '—' }}</dd></div>
 		<template v-if="selectedShare.protocol === 'vless'"><div><dt>UUID</dt><dd>{{ selectedShare.client.uuid }}</dd></div><div><dt>客户端 Flow</dt><dd>{{ selectedShare.flow }}</dd></div></template>
 		<div><dt>连接地址</dt><dd>{{ selectedShare.address }}</dd></div><div><dt>端口</dt><dd>{{ selectedShare.port }}</dd></div>

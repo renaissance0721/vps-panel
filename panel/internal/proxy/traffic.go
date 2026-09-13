@@ -13,6 +13,14 @@ import (
 
 const clientStatsIdentifierPrefix = "vp-client-"
 
+const (
+	ClientStatusDisabled  = "disabled"
+	ClientStatusNormal    = "normal"
+	ClientStatusWarning   = "warning"
+	ClientStatusExhausted = "exhausted"
+	ClientStatusExpired   = "expired"
+)
+
 var clientTrafficLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 var ErrInvalidClientTraffic = errors.New("invalid client traffic report")
@@ -27,53 +35,111 @@ type ClientMetrics struct {
 	UpdatedAt          time.Time
 }
 
+type ClientLifecycle struct {
+	Expired          bool
+	QuotaExhausted   bool
+	EffectiveEnabled bool
+	Status           string
+}
+
 type ClientTrafficReport struct {
 	ClientID      int64
 	UplinkBytes   int64
 	DownlinkBytes int64
 }
 
+func ClientUsedBytes(metrics *ClientMetrics) int64 {
+	if metrics == nil {
+		return 0
+	}
+	if metrics.CycleUplinkBytes > math.MaxInt64-metrics.CycleDownlinkBytes {
+		return math.MaxInt64
+	}
+	return metrics.CycleUplinkBytes + metrics.CycleDownlinkBytes
+}
+
+func (value Client) LifecycleAt(now time.Time) ClientLifecycle {
+	used := ClientUsedBytes(value.Metrics)
+	expired := value.ExpiresAt != nil && !now.UTC().Before(value.ExpiresAt.UTC())
+	quotaExhausted := value.TrafficLimitBytes != nil && *value.TrafficLimitBytes > 0 && used >= *value.TrafficLimitBytes
+	lifecycle := ClientLifecycle{
+		Expired: expired, QuotaExhausted: quotaExhausted,
+		EffectiveEnabled: value.Enabled && !expired && !quotaExhausted,
+		Status:           ClientStatusNormal,
+	}
+	switch {
+	case !value.Enabled:
+		lifecycle.Status = ClientStatusDisabled
+	case expired:
+		lifecycle.Status = ClientStatusExpired
+	case quotaExhausted:
+		lifecycle.Status = ClientStatusExhausted
+	case value.TrafficLimitBytes != nil && *value.TrafficLimitBytes > 0 &&
+		used >= *value.TrafficLimitBytes-*value.TrafficLimitBytes/10:
+		lifecycle.Status = ClientStatusWarning
+	}
+	return lifecycle
+}
+
 func (s *Service) RecordClientTraffic(ctx context.Context, serverID int64, reports []ClientTrafficReport) error {
+	_, err := s.RecordClientTrafficWithMutation(ctx, serverID, reports)
+	return err
+}
+
+func (s *Service) RecordClientTrafficWithMutation(ctx context.Context, serverID int64, reports []ClientTrafficReport) (Mutation, error) {
 	if serverID <= 0 {
-		return ErrInvalidClientTraffic
+		return Mutation{}, ErrInvalidClientTraffic
 	}
 	seen := make(map[int64]struct{}, len(reports))
 	for _, report := range reports {
 		if report.ClientID <= 0 || report.UplinkBytes < 0 || report.DownlinkBytes < 0 {
-			return ErrInvalidClientTraffic
+			return Mutation{}, ErrInvalidClientTraffic
 		}
 		if _, exists := seen[report.ClientID]; exists {
-			return ErrInvalidClientTraffic
+			return Mutation{}, ErrInvalidClientTraffic
 		}
 		seen[report.ClientID] = struct{}{}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin client traffic report: %w", err)
+		return Mutation{}, fmt.Errorf("begin client traffic report: %w", err)
 	}
 	defer tx.Rollback()
 	now := s.now().UTC().Truncate(time.Second)
+	lifecycleChanged := false
 	for _, report := range reports {
-		if err := recordClientTraffic(ctx, tx, serverID, report, now); err != nil {
-			return err
+		changed, err := recordClientTraffic(ctx, tx, serverID, report, now)
+		if err != nil {
+			return Mutation{}, err
 		}
+		lifecycleChanged = lifecycleChanged || changed
+	}
+	var mutation Mutation
+	if lifecycleChanged {
+		version, err := bumpVersion(ctx, tx, serverID, now)
+		if err != nil {
+			return Mutation{}, err
+		}
+		mutation = Mutation{ServerID: serverID, Version: version}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit client traffic report: %w", err)
+		return Mutation{}, fmt.Errorf("commit client traffic report: %w", err)
 	}
-	return nil
+	return mutation, nil
 }
 
-func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report ClientTrafficReport, now time.Time) error {
+func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report ClientTrafficReport, now time.Time) (bool, error) {
 	var previousUplink, previousDownlink, cycleUplink, cycleDownlink sql.NullInt64
 	var cycleStartedAt, lastActivityAt sql.NullInt64
+	var expiresAt, trafficLimit sql.NullInt64
 	var resetMode, resetTime string
-	var resetWeekday, resetDay int
+	var resetWeekday, resetDay, enabled, effectiveEnabled int
 	err := tx.QueryRowContext(ctx,
 		`SELECT metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at,
+		 clients.enabled, clients.expires_at, clients.traffic_limit_bytes, clients.effective_enabled_snapshot,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time
 		 FROM clients
@@ -84,19 +150,38 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 		report.ClientID, serverID,
 	).Scan(
 		&previousUplink, &previousDownlink, &cycleUplink, &cycleDownlink,
-		&cycleStartedAt, &lastActivityAt, &resetMode, &resetWeekday, &resetDay, &resetTime,
+		&cycleStartedAt, &lastActivityAt, &enabled, &expiresAt, &trafficLimit, &effectiveEnabled,
+		&resetMode, &resetWeekday, &resetDay, &resetTime,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidClientTraffic
+		return false, ErrInvalidClientTraffic
 	}
 	if err != nil {
-		return fmt.Errorf("read client traffic baseline: %w", err)
+		return false, fmt.Errorf("read client traffic baseline: %w", err)
+	}
+	client := Client{Enabled: enabled != 0, ExpiresAt: nullableTimeValue(expiresAt)}
+	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
+		limit := trafficLimit.Int64
+		client.TrafficLimitBytes = &limit
+	}
+	updateLifecycle := func(uplink, downlink int64) (bool, error) {
+		client.Metrics = &ClientMetrics{CycleUplinkBytes: uplink, CycleDownlinkBytes: downlink}
+		next := client.LifecycleAt(now).EffectiveEnabled
+		if next == (effectiveEnabled != 0) {
+			return false, nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE clients SET effective_enabled_snapshot = ? WHERE id = ?`, next, report.ClientID,
+		); err != nil {
+			return false, fmt.Errorf("update client effective state: %w", err)
+		}
+		return true, nil
 	}
 
 	if !previousUplink.Valid {
 		cycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
 		if err != nil {
-			return err
+			return false, err
 		}
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO client_metrics
@@ -106,15 +191,15 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 			report.ClientID, report.UplinkBytes, report.DownlinkBytes, cycleStart.Unix(), now.Unix(),
 		)
 		if err != nil {
-			return fmt.Errorf("create client traffic baseline: %w", err)
+			return false, fmt.Errorf("create client traffic baseline: %w", err)
 		}
-		return nil
+		return updateLifecycle(0, 0)
 	}
 
 	cycleStart := time.Unix(cycleStartedAt.Int64, 0).UTC()
 	currentCycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if resetMode != TrafficResetNever && cycleStart.Before(currentCycleStart) {
 		_, err = tx.ExecContext(ctx,
@@ -126,20 +211,20 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 			report.UplinkBytes, report.DownlinkBytes, currentCycleStart.Unix(), now.Unix(), report.ClientID,
 		)
 		if err != nil {
-			return fmt.Errorf("reset client traffic cycle: %w", err)
+			return false, fmt.Errorf("reset client traffic cycle: %w", err)
 		}
-		return nil
+		return updateLifecycle(0, 0)
 	}
 
 	deltaUplink := counterDelta(previousUplink.Int64, report.UplinkBytes)
 	deltaDownlink := counterDelta(previousDownlink.Int64, report.DownlinkBytes)
 	if cycleUplink.Int64 > math.MaxInt64-deltaUplink || cycleDownlink.Int64 > math.MaxInt64-deltaDownlink {
-		return ErrInvalidClientTraffic
+		return false, ErrInvalidClientTraffic
 	}
 	newCycleUplink := cycleUplink.Int64 + deltaUplink
 	newCycleDownlink := cycleDownlink.Int64 + deltaDownlink
 	if newCycleUplink > math.MaxInt64-newCycleDownlink {
-		return ErrInvalidClientTraffic
+		return false, ErrInvalidClientTraffic
 	}
 	if deltaUplink > 0 || deltaDownlink > 0 {
 		lastActivityAt = sql.NullInt64{Int64: now.Unix(), Valid: true}
@@ -154,9 +239,9 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 		nullableUnix(lastActivityAt), now.Unix(), report.ClientID,
 	)
 	if err != nil {
-		return fmt.Errorf("update client traffic: %w", err)
+		return false, fmt.Errorf("update client traffic: %w", err)
 	}
-	return nil
+	return updateLifecycle(newCycleUplink, newCycleDownlink)
 }
 
 func normalizeClientTrafficConfig(value ClientTrafficConfig) (ClientTrafficConfig, error) {
@@ -284,26 +369,155 @@ func (value Client) NextResetAt(now time.Time) *time.Time {
 }
 
 func (s *Service) ResetClientTraffic(ctx context.Context, clientID int64) (Client, error) {
+	value, _, err := s.ResetClientTrafficWithMutation(ctx, clientID)
+	return value, err
+}
+
+func (s *Service) ResetClientTrafficWithMutation(ctx context.Context, clientID int64) (Client, Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("begin client traffic reset: %w", err)
+	}
+	defer tx.Rollback()
+	value, serverID, err := getClientForMutation(ctx, tx, clientID)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE client_metrics
 		 SET cycle_uplink_bytes = 0, cycle_downlink_bytes = 0,
 		     cycle_started_at = ?, updated_at = ?
 		 WHERE client_id = ?`, now.Unix(), now.Unix(), clientID,
-	)
-	if err != nil {
-		return Client{}, fmt.Errorf("reset client traffic: %w", err)
+	); err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("reset client traffic: %w", err)
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return Client{}, fmt.Errorf("read reset client traffic count: %w", err)
-	}
-	if count == 0 {
-		if _, err := s.GetClient(ctx, clientID); err != nil {
-			return Client{}, err
+	value.Metrics = &ClientMetrics{}
+	nextEffective := value.LifecycleAt(now).EffectiveEnabled
+	lifecycleChanged := nextEffective != value.effectiveEnabled
+	if lifecycleChanged {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE clients SET effective_enabled_snapshot = ? WHERE id = ?`, nextEffective, clientID,
+		); err != nil {
+			return Client{}, Mutation{}, fmt.Errorf("update reset client effective state: %w", err)
 		}
 	}
-	return s.GetClient(ctx, clientID)
+	var mutation Mutation
+	if lifecycleChanged {
+		version, err := bumpVersion(ctx, tx, serverID, now)
+		if err != nil {
+			return Client{}, Mutation{}, err
+		}
+		mutation = Mutation{ServerID: serverID, Version: version}
+	}
+	if err := tx.Commit(); err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("commit client traffic reset: %w", err)
+	}
+	updated, err := s.GetClient(ctx, clientID)
+	return updated, mutation, err
+}
+
+func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) (Mutation, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT clients.id, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
+		 clients.effective_enabled_snapshot, clients.traffic_reset_mode, clients.traffic_reset_weekday,
+		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 metrics.cycle_started_at,
+		 COALESCE(metrics.cycle_uplink_bytes, 0), COALESCE(metrics.cycle_downlink_bytes, 0)
+		 FROM clients
+		 JOIN proxies ON proxies.id = clients.proxy_id
+		 JOIN servers ON servers.id = proxies.server_id
+		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
+		 WHERE proxies.server_id = ? AND servers.archived_at IS NULL`, serverID,
+	)
+	if err != nil {
+		return Mutation{}, fmt.Errorf("list client lifecycle state: %w", err)
+	}
+	type lifecycleUpdate struct {
+		id               int64
+		effective        bool
+		effectiveChanged bool
+		cycleStart       *time.Time
+	}
+	updates := make([]lifecycleUpdate, 0)
+	for rows.Next() {
+		var id, usedUplink, usedDownlink int64
+		var enabled, effectiveEnabled int
+		var resetMode, resetTime string
+		var resetWeekday, resetDay int
+		var expiresAt, trafficLimit, cycleStartedAt sql.NullInt64
+		if err := rows.Scan(
+			&id, &enabled, &expiresAt, &trafficLimit, &effectiveEnabled,
+			&resetMode, &resetWeekday, &resetDay, &resetTime, &cycleStartedAt,
+			&usedUplink, &usedDownlink,
+		); err != nil {
+			rows.Close()
+			return Mutation{}, fmt.Errorf("scan client lifecycle state: %w", err)
+		}
+		value := Client{
+			Enabled: enabled != 0, ExpiresAt: nullableTimeValue(expiresAt),
+			Metrics: &ClientMetrics{CycleUplinkBytes: usedUplink, CycleDownlinkBytes: usedDownlink},
+		}
+		if trafficLimit.Valid && trafficLimit.Int64 > 0 {
+			limit := trafficLimit.Int64
+			value.TrafficLimitBytes = &limit
+		}
+		var resetAt *time.Time
+		if cycleStartedAt.Valid && resetMode != TrafficResetNever {
+			currentCycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
+			if err != nil {
+				rows.Close()
+				return Mutation{}, err
+			}
+			if time.Unix(cycleStartedAt.Int64, 0).UTC().Before(currentCycleStart) {
+				usedUplink, usedDownlink = 0, 0
+				resetAt = &currentCycleStart
+				value.Metrics = &ClientMetrics{}
+			}
+		}
+		effective := value.LifecycleAt(now).EffectiveEnabled
+		changed := effective != (effectiveEnabled != 0)
+		if changed || resetAt != nil {
+			updates = append(updates, lifecycleUpdate{
+				id: id, effective: effective, effectiveChanged: changed, cycleStart: resetAt,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return Mutation{}, fmt.Errorf("iterate client lifecycle state: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return Mutation{}, fmt.Errorf("close client lifecycle state: %w", err)
+	}
+	effectiveChanged := false
+	for _, update := range updates {
+		if update.cycleStart != nil {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE client_metrics SET cycle_uplink_bytes = 0, cycle_downlink_bytes = 0,
+				 cycle_started_at = ?, updated_at = ? WHERE client_id = ?`,
+				update.cycleStart.Unix(), now.Unix(), update.id,
+			); err != nil {
+				return Mutation{}, fmt.Errorf("reconcile client traffic cycle: %w", err)
+			}
+		}
+		if update.effectiveChanged {
+			effectiveChanged = true
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE clients SET effective_enabled_snapshot = ? WHERE id = ?`, update.effective, update.id,
+			); err != nil {
+				return Mutation{}, fmt.Errorf("reconcile client effective state: %w", err)
+			}
+		}
+	}
+	if !effectiveChanged {
+		return Mutation{}, nil
+	}
+	version, err := bumpVersion(ctx, tx, serverID, now.UTC().Truncate(time.Second))
+	if err != nil {
+		return Mutation{}, err
+	}
+	return Mutation{ServerID: serverID, Version: version}, nil
 }
 
 func counterDelta(previous, current int64) int64 {

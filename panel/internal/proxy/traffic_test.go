@@ -407,6 +407,227 @@ func TestUpdatingClientTrafficConfigDoesNotClearMetrics(t *testing.T) {
 	}
 }
 
+func TestClientLifecycleStates(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	limit := int64(1000)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Second)
+	tests := []struct {
+		name      string
+		client    Client
+		status    string
+		effective bool
+		expired   bool
+		exhausted bool
+	}{
+		{"unlimited", Client{Enabled: true}, ClientStatusNormal, true, false, false},
+		{"disabled", Client{Enabled: false}, ClientStatusDisabled, false, false, false},
+		{"future expiry", Client{Enabled: true, ExpiresAt: &future}, ClientStatusNormal, true, false, false},
+		{"expired", Client{Enabled: true, ExpiresAt: &past}, ClientStatusExpired, false, true, false},
+		{"warning 90 percent", Client{Enabled: true, TrafficLimitBytes: &limit, Metrics: &ClientMetrics{CycleUplinkBytes: 900}}, ClientStatusWarning, true, false, false},
+		{"warning 99.9 percent", Client{Enabled: true, TrafficLimitBytes: &limit, Metrics: &ClientMetrics{CycleUplinkBytes: 999}}, ClientStatusWarning, true, false, false},
+		{"exhausted", Client{Enabled: true, TrafficLimitBytes: &limit, Metrics: &ClientMetrics{CycleUplinkBytes: 1000}}, ClientStatusExhausted, false, false, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := test.client.LifecycleAt(now)
+			if state.Status != test.status || state.EffectiveEnabled != test.effective ||
+				state.Expired != test.expired || state.QuotaExhausted != test.exhausted {
+				t.Fatalf("lifecycle = %+v", state)
+			}
+		})
+	}
+}
+
+func TestClientQuotaTransitionsOnlyBumpDesiredStateOnce(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	proxyValue := createRealityProxy(t, service, serverID, 443, "Quota transitions")
+	clientID := proxyValue.Clients[0].ID
+	limit := int64(100)
+	traffic := ClientTrafficConfig{LimitBytes: &limit, ResetMode: TrafficResetNever, Weekday: 1, Day: 1, ResetTime: "00:00"}
+	if _, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic}); err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC) }
+	if _, err := service.RecordClientTrafficWithMutation(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID}}); err != nil {
+		t.Fatal(err)
+	}
+	if mutation, err := service.RecordClientTrafficWithMutation(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 90}}); err != nil || mutation.Version != 0 {
+		t.Fatalf("warning transition = %+v, %v", mutation, err)
+	}
+	if state := mustClient(t, service, clientID).LifecycleAt(service.now()); state.Status != ClientStatusWarning || !state.EffectiveEnabled {
+		t.Fatalf("warning lifecycle = %+v", state)
+	}
+	before := desiredVersion(t, db, serverID)
+	mutation, err := service.RecordClientTrafficWithMutation(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 100}})
+	if err != nil || mutation.Version != before+1 {
+		t.Fatalf("quota exhaustion mutation = %+v, %v", mutation, err)
+	}
+	if desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatal("quota-exhausted VLESS client remained in desired state")
+	}
+	after := desiredVersion(t, db, serverID)
+	mutation, err = service.RecordClientTrafficWithMutation(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, UplinkBytes: 120}})
+	if err != nil || mutation.Version != 0 || desiredVersion(t, db, serverID) != after {
+		t.Fatalf("repeated exhausted report = %+v, %v", mutation, err)
+	}
+
+	higher := int64(200)
+	traffic.LimitBytes = &higher
+	recovered, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic})
+	if err != nil || !recovered.LifecycleAt(service.now()).EffectiveEnabled || !desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatalf("client did not recover after raising quota: %+v, %v", recovered, err)
+	}
+	lower := int64(50)
+	traffic.LimitBytes = &lower
+	blocked, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic})
+	if err != nil || blocked.LifecycleAt(service.now()).EffectiveEnabled || desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatalf("client did not stop after lowering quota: %+v, %v", blocked, err)
+	}
+	reset, resetMutation, err := service.ResetClientTrafficWithMutation(t.Context(), clientID)
+	if err != nil || resetMutation.Version == 0 || !reset.LifecycleAt(service.now()).EffectiveEnabled ||
+		!desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatalf("manual reset recovery = %+v, mutation %+v, %v", reset, resetMutation, err)
+	}
+}
+
+func TestAutomaticCycleResetAndExpiryReconciliationRestoreDesiredState(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	proxyValue := createRealityProxy(t, service, serverID, 443, "Lifecycle reconcile")
+	clientID := proxyValue.Clients[0].ID
+	limit := int64(100)
+	traffic := ClientTrafficConfig{LimitBytes: &limit, ResetMode: TrafficResetDaily, Weekday: 1, Day: 1, ResetTime: "00:00"}
+	if _, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{Traffic: &traffic}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 12, 15, 50, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	if err := service.RecordClientTraffic(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	if mutation, err := service.RecordClientTrafficWithMutation(t.Context(), serverID, []ClientTrafficReport{{ClientID: clientID, DownlinkBytes: 100}}); err != nil || mutation.Version == 0 {
+		t.Fatalf("exhaust quota = %+v, %v", mutation, err)
+	}
+	if desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatal("exhausted client remained effective")
+	}
+	now = time.Date(2026, 9, 12, 16, 5, 0, 0, time.UTC)
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := ReconcileClientLifecycle(t.Context(), tx, serverID, now)
+	if err != nil || mutation.Version == 0 || tx.Commit() != nil {
+		t.Fatalf("automatic reset reconciliation = %+v, %v", mutation, err)
+	}
+	if metrics := readClientMetrics(t, service, clientID); metrics.CycleUplinkBytes != 0 || metrics.CycleDownlinkBytes != 0 {
+		t.Fatalf("automatic reset metrics = %+v", metrics)
+	}
+	if !desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatal("automatically reset client did not recover")
+	}
+
+	expiresAt := now.Add(time.Minute)
+	if _, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{ExpiresAtSet: true, ExpiresAt: &expiresAt}); err != nil {
+		t.Fatal(err)
+	}
+	tx, _ = db.BeginTx(t.Context(), nil)
+	mutation, err = ReconcileClientLifecycle(t.Context(), tx, serverID, expiresAt)
+	if err != nil || mutation.Version == 0 || tx.Commit() != nil || desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatalf("expiry reconciliation = %+v, %v", mutation, err)
+	}
+	tx, _ = db.BeginTx(t.Context(), nil)
+	repeated, err := ReconcileClientLifecycle(t.Context(), tx, serverID, expiresAt.Add(time.Minute))
+	if err != nil || repeated.Version != 0 || tx.Commit() != nil {
+		t.Fatalf("repeated expiry reconciliation = %+v, %v", repeated, err)
+	}
+	extended := expiresAt.Add(time.Hour)
+	recovered, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{ExpiresAtSet: true, ExpiresAt: &extended})
+	if err != nil || !recovered.LifecycleAt(expiresAt).EffectiveEnabled || !desiredContainsClient(t, db, serverID, clientID) {
+		t.Fatalf("expiry extension recovery = %+v, %v", recovered, err)
+	}
+	cleared, _, err := service.UpdateClient(t.Context(), clientID, ClientUpdateInput{ExpiresAtSet: true})
+	if err != nil || cleared.ExpiresAt != nil || !cleared.LifecycleAt(expiresAt).EffectiveEnabled {
+		t.Fatalf("expiry clear recovery = %+v, %v", cleared, err)
+	}
+}
+
+func TestDisabledClientsStayDisabledAndIneffectiveClientsAreFiltered(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	vless := createRealityProxy(t, service, serverID, 443, "VLESS lifecycle")
+	vlessID := vless.Clients[0].ID
+	disabled := false
+	if _, _, err := service.UpdateClient(t.Context(), vlessID, ClientUpdateInput{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if reset, _, err := service.ResetClientTrafficWithMutation(t.Context(), vlessID); err != nil || reset.Enabled || reset.LifecycleAt(time.Now()).EffectiveEnabled {
+		t.Fatalf("disabled reset client = %+v, %v", reset, err)
+	}
+	if cleared, _, err := service.UpdateClient(t.Context(), vlessID, ClientUpdateInput{ExpiresAtSet: true}); err != nil || cleared.Enabled || cleared.LifecycleAt(time.Now()).EffectiveEnabled {
+		t.Fatalf("disabled expiry-clear client = %+v, %v", cleared, err)
+	}
+	if desiredContainsClient(t, db, serverID, vlessID) {
+		t.Fatal("disabled VLESS client entered desired state")
+	}
+
+	ss, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "SS lifecycle", Protocol: ProtocolShadowsocks,
+		Method: ShadowsocksMethodAES128GCM, ListenPort: 8388, EntryHostMode: EntryHostAuto,
+		Enabled: true, FirstClientName: "SS client",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if _, _, err := service.UpdateClient(t.Context(), ss.Clients[0].ID, ClientUpdateInput{ExpiresAtSet: true, ExpiresAt: &past}); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := ListDesired(t.Context(), db, serverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range desired {
+		if value.ID == ss.ID {
+			t.Fatal("zero-effective-client Shadowsocks inbound was rendered")
+		}
+	}
+}
+
+func mustClient(t *testing.T, service *Service, clientID int64) Client {
+	t.Helper()
+	value, err := service.GetClient(t.Context(), clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func desiredVersion(t *testing.T, db *sql.DB, serverID int64) int64 {
+	t.Helper()
+	var version int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, serverID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
+func desiredContainsClient(t *testing.T, db *sql.DB, serverID, clientID int64) bool {
+	t.Helper()
+	values, err := ListDesired(t.Context(), db, serverID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proxyValue := range values {
+		for _, client := range proxyValue.Clients {
+			if client.ID == clientID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func desiredClientStatsID(t *testing.T, db *sql.DB, serverID, clientID int64) string {
 	t.Helper()
 	values, err := ListDesired(t.Context(), db, serverID)

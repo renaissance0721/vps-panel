@@ -32,13 +32,17 @@ func (s *server) recordAgentClientTraffic(w http.ResponseWriter, r *http.Request
 			ClientID: item.ClientID, UplinkBytes: item.UplinkBytes, DownlinkBytes: item.DownlinkBytes,
 		})
 	}
-	if err := s.proxies.RecordClientTraffic(r.Context(), agent.ServerID, reports); err != nil {
+	mutation, err := s.proxies.RecordClientTrafficWithMutation(r.Context(), agent.ServerID, reports)
+	if err != nil {
 		if errors.Is(err, proxystore.ErrInvalidClientTraffic) {
 			writeError(w, http.StatusBadRequest, "客户端流量数据无效")
 			return
 		}
 		writeInternalError(w)
 		return
+	}
+	if mutation.Version > 0 {
+		s.notifyProxyMutation(mutation)
 	}
 	writeNoContent(w)
 }

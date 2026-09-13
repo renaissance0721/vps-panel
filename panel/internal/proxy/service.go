@@ -63,6 +63,7 @@ var (
 	ErrLastClient                   = errors.New("a proxy must keep at least one client")
 	ErrConnectionAddressUnavailable = errors.New("connection address unavailable")
 	ErrInvalidClientTrafficConfig   = errors.New("invalid client traffic configuration")
+	ErrInvalidClientExpiration      = errors.New("invalid client expiration")
 )
 
 type Proxy struct {
@@ -104,6 +105,7 @@ type ClientSummary struct {
 	UUIDSummary         string
 	ClientUDP443        bool
 	Enabled             bool
+	ExpiresAt           *time.Time
 	TrafficLimitBytes   *int64
 	TrafficResetMode    string
 	TrafficResetWeekday int
@@ -123,6 +125,7 @@ type Client struct {
 	Protocol            string
 	ClientUDP443        bool
 	Enabled             bool
+	ExpiresAt           *time.Time
 	TrafficLimitBytes   *int64
 	TrafficResetMode    string
 	TrafficResetWeekday int
@@ -131,6 +134,7 @@ type Client struct {
 	Metrics             *ClientMetrics
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	effectiveEnabled    bool
 }
 
 type ClientShare struct {
@@ -187,6 +191,7 @@ type ClientCreateInput struct {
 	Name         string
 	ClientUDP443 bool
 	Enabled      bool
+	ExpiresAt    *time.Time
 	Traffic      ClientTrafficConfig
 }
 
@@ -194,6 +199,8 @@ type ClientUpdateInput struct {
 	Name         *string
 	ClientUDP443 *bool
 	Enabled      *bool
+	ExpiresAtSet bool
+	ExpiresAt    *time.Time
 	Traffic      *ClientTrafficConfig
 }
 
@@ -582,9 +589,10 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.traffic_limit_bytes,
+		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
 		 proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
@@ -619,6 +627,8 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 		return Client{}, Mutation{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := normalizeClientExpiration(input.ExpiresAt)
+	effectiveEnabled := Client{Enabled: input.Enabled, ExpiresAt: expiresAt}.LifecycleAt(now).EffectiveEnabled
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("begin client creation: %w", err)
@@ -641,13 +651,14 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO clients
-		 (proxy_id, name, credential_json, client_udp443, enabled, traffic_limit_bytes,
+		 (proxy_id, name, credential_json, client_udp443, enabled, expires_at, traffic_limit_bytes,
 		  traffic_reset_mode, traffic_reset_weekday, traffic_reset_day, traffic_reset_time,
-		  created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  effective_enabled_snapshot, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		proxyID, name, string(credentialJSON), input.ClientUDP443, input.Enabled,
+		nullableTime(expiresAt),
 		nullableTrafficLimit(traffic.LimitBytes), traffic.ResetMode, traffic.Weekday, traffic.Day,
-		traffic.ResetTime, now.Unix(), now.Unix(),
+		traffic.ResetTime, effectiveEnabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("create client: %w", err)
@@ -670,9 +681,10 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 	value, err := scanClient(s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.traffic_limit_bytes,
+		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
 		 proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
@@ -719,6 +731,9 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
 	}
+	if input.ExpiresAtSet {
+		value.ExpiresAt = normalizeClientExpiration(input.ExpiresAt)
+	}
 	if input.Traffic != nil {
 		traffic, normalizeErr := normalizeClientTrafficConfig(*input.Traffic)
 		if normalizeErr != nil {
@@ -730,13 +745,14 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 		value.TrafficResetDay = traffic.Day
 		value.TrafficResetTime = traffic.ResetTime
 	}
+	effectiveEnabled := value.LifecycleAt(now).EffectiveEnabled
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE clients SET name = ?, client_udp443 = ?, enabled = ?, traffic_limit_bytes = ?,
+		`UPDATE clients SET name = ?, client_udp443 = ?, enabled = ?, expires_at = ?, traffic_limit_bytes = ?,
 		 traffic_reset_mode = ?, traffic_reset_weekday = ?, traffic_reset_day = ?,
-		 traffic_reset_time = ?, updated_at = ? WHERE id = ?`,
-		value.Name, value.ClientUDP443, value.Enabled, nullableTrafficLimit(value.TrafficLimitBytes),
+		 traffic_reset_time = ?, effective_enabled_snapshot = ?, updated_at = ? WHERE id = ?`,
+		value.Name, value.ClientUDP443, value.Enabled, nullableTime(value.ExpiresAt), nullableTrafficLimit(value.TrafficLimitBytes),
 		value.TrafficResetMode, value.TrafficResetWeekday, value.TrafficResetDay,
-		value.TrafficResetTime, now.Unix(), id,
+		value.TrafficResetTime, effectiveEnabled, now.Unix(), id,
 	); err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("update client: %w", err)
 	}
@@ -787,14 +803,15 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	var credentialJSON, configJSON string
 	var proxyName, protocol, entryHostMode, entryHost, publicIPv4 string
 	var listenPort int
-	var clientUDP443, enabled int
-	var trafficLimit sql.NullInt64
+	var clientUDP443, enabled, effectiveEnabled int
+	var expiresAt, trafficLimit sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.traffic_limit_bytes,
+		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.protocol, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.config_json, COALESCE(system_info.public_ipv4, '')
@@ -805,9 +822,9 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &clientUDP443, &enabled,
-		&trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
+		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
+		&effectiveEnabled, &createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClientShare{}, ErrClientNotFound
@@ -831,6 +848,8 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	value.Protocol = protocol
 	value.ClientUDP443 = clientUDP443 != 0
 	value.Enabled = enabled != 0
+	value.ExpiresAt = nullableTimeValue(expiresAt)
+	value.effectiveEnabled = effectiveEnabled != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -926,7 +945,7 @@ func ListDesired(ctx context.Context, query interface {
 			value.Reality = &DesiredReality{Target: config.Reality.Target, PrivateKey: config.Reality.PrivateKey, ShortID: config.Reality.ShortID}
 		}
 		clientRows, err := query.QueryContext(ctx,
-			`SELECT id, credential_json FROM clients WHERE proxy_id = ? AND enabled = 1 ORDER BY id`, value.ID,
+			`SELECT id, credential_json FROM clients WHERE proxy_id = ? AND effective_enabled_snapshot = 1 ORDER BY id`, value.ID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("list desired clients: %w", err)
@@ -1401,16 +1420,16 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 func scanClient(row rowScanner) (Client, error) {
 	var value Client
 	var credentialJSON, configJSON string
-	var udp443, enabled int
-	var trafficLimit sql.NullInt64
+	var udp443, enabled, effectiveEnabled int
+	var expiresAt, trafficLimit sql.NullInt64
 	var createdAt, updatedAt int64
 	var xrayUplink, xrayDownlink, cycleUplink, cycleDownlink sql.NullInt64
 	var cycleStartedAt, lastActivityAt, metricsUpdatedAt sql.NullInt64
 	if err := row.Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
-		&trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
+		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&createdAt, &updatedAt, &value.Protocol, &configJSON,
+		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON,
 		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
 		&cycleStartedAt, &lastActivityAt, &metricsUpdatedAt,
 	); err != nil {
@@ -1431,6 +1450,8 @@ func scanClient(row rowScanner) (Client, error) {
 	value.Password = credential.Password
 	value.ClientUDP443 = udp443 != 0
 	value.Enabled = enabled != 0
+	value.ExpiresAt = nullableTimeValue(expiresAt)
+	value.effectiveEnabled = effectiveEnabled != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -1453,7 +1474,7 @@ func summarizeClient(value Client) ClientSummary {
 	}
 	return ClientSummary{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: summary,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
@@ -1484,24 +1505,29 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 	var serverID int64
 	var value Client
 	var credentialJSON, configJSON string
-	var udp443, enabled int
-	var trafficLimit sql.NullInt64
+	var udp443, enabled, effectiveEnabled int
+	var expiresAt, trafficLimit sql.NullInt64
+	var cycleUplink, cycleDownlink int64
 	var createdAt, updatedAt int64
 	err := tx.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.traffic_limit_bytes,
+		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json, proxies.server_id
+		 proxies.protocol, proxies.config_json, proxies.server_id,
+		 COALESCE(metrics.cycle_uplink_bytes, 0), COALESCE(metrics.cycle_downlink_bytes, 0)
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
+		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
-		&trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
+		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID,
+		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID,
+		&cycleUplink, &cycleDownlink,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, 0, ErrClientNotFound
@@ -1521,10 +1547,13 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		return Client{}, 0, ErrInvalidShadowsocksCredential
 	}
 	value.UUID, value.Password, value.ClientUDP443, value.Enabled = credential.UUID, credential.Password, udp443 != 0, enabled != 0
+	value.ExpiresAt = nullableTimeValue(expiresAt)
+	value.effectiveEnabled = effectiveEnabled != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
 	}
+	value.Metrics = &ClientMetrics{CycleUplinkBytes: cycleUplink, CycleDownlinkBytes: cycleDownlink}
 	value.CreatedAt, value.UpdatedAt = time.Unix(createdAt, 0).UTC(), time.Unix(updatedAt, 0).UTC()
 	return value, serverID, nil
 }
@@ -1565,6 +1594,29 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 		return 0, fmt.Errorf("read desired state version: %w", err)
 	}
 	return version, nil
+}
+
+func normalizeClientExpiration(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	normalized := value.UTC().Truncate(time.Second)
+	return &normalized
+}
+
+func nullableTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.Unix()
+}
+
+func nullableTimeValue(value sql.NullInt64) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	result := time.Unix(value.Int64, 0).UTC()
+	return &result
 }
 
 func resolveEntryAddress(mode, entryHost, publicIPv4 string) (string, error) {

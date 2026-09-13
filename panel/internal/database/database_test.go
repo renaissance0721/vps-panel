@@ -67,7 +67,8 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"server_system_info": {"public_ipv4"},
 		"proxies":            {"entry_host_mode", "entry_host"},
 		"clients": {
-			"traffic_limit_bytes", "traffic_reset_mode", "traffic_reset_weekday", "traffic_reset_day", "traffic_reset_time",
+			"expires_at", "effective_enabled_snapshot", "traffic_limit_bytes", "traffic_reset_mode",
+			"traffic_reset_weekday", "traffic_reset_day", "traffic_reset_time",
 		},
 		"client_metrics": {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
@@ -877,16 +878,19 @@ func TestOpenMigratesProxyProtocolsWithoutLosingVLESSClients(t *testing.T) {
 			proxyID, serverID, name, protocol, port, mode, host, enabled, config, createdAt, updatedAt)
 	}
 	var clientProxyID int64
-	var trafficLimit sql.NullInt64
+	var expiresAt, trafficLimit sql.NullInt64
+	var effectiveEnabled int
 	var resetMode, resetTime string
 	var resetWeekday, resetDay int
-	if err := db.QueryRow(`SELECT proxy_id, traffic_limit_bytes, traffic_reset_mode,
-		traffic_reset_weekday, traffic_reset_day, traffic_reset_time FROM clients WHERE id = 43`).Scan(
-		&clientProxyID, &trafficLimit, &resetMode, &resetWeekday, &resetDay, &resetTime,
-	); err != nil || clientProxyID != 42 || trafficLimit.Valid || resetMode != "never" ||
-		resetWeekday != 1 || resetDay != 1 || resetTime != "00:00" {
-		t.Fatalf("migrated client = proxy %d, limit %v, reset %q/%d/%d/%q, error %v",
-			clientProxyID, trafficLimit, resetMode, resetWeekday, resetDay, resetTime, err)
+	if err := db.QueryRow(`SELECT proxy_id, expires_at, effective_enabled_snapshot, traffic_limit_bytes,
+		traffic_reset_mode, traffic_reset_weekday, traffic_reset_day, traffic_reset_time
+		FROM clients WHERE id = 43`).Scan(
+		&clientProxyID, &expiresAt, &effectiveEnabled, &trafficLimit,
+		&resetMode, &resetWeekday, &resetDay, &resetTime,
+	); err != nil || clientProxyID != 42 || expiresAt.Valid || effectiveEnabled != 1 || trafficLimit.Valid ||
+		resetMode != "never" || resetWeekday != 1 || resetDay != 1 || resetTime != "00:00" {
+		t.Fatalf("migrated client = proxy %d, expires %v, effective %d, limit %v, reset %q/%d/%d/%q, error %v",
+			clientProxyID, expiresAt, effectiveEnabled, trafficLimit, resetMode, resetWeekday, resetDay, resetTime, err)
 	}
 	if _, err := db.Exec(`INSERT INTO proxies
 		(server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)

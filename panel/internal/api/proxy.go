@@ -49,16 +49,18 @@ type updateProxyRequest struct {
 }
 
 type createClientRequest struct {
-	Name         string `json:"name"`
-	ClientUDP443 bool   `json:"client_udp443"`
-	Enabled      *bool  `json:"enabled"`
+	Name         string          `json:"name"`
+	ClientUDP443 bool            `json:"client_udp443"`
+	Enabled      *bool           `json:"enabled"`
+	ExpiresAt    json.RawMessage `json:"expires_at"`
 	clientTrafficRequest
 }
 
 type updateClientRequest struct {
-	Name         *string `json:"name"`
-	ClientUDP443 *bool   `json:"client_udp443"`
-	Enabled      *bool   `json:"enabled"`
+	Name         *string         `json:"name"`
+	ClientUDP443 *bool           `json:"client_udp443"`
+	Enabled      *bool           `json:"enabled"`
+	ExpiresAt    json.RawMessage `json:"expires_at"`
 	clientTrafficRequest
 }
 
@@ -110,6 +112,11 @@ type clientSummaryResponse struct {
 	UUIDSummary         string                `json:"uuid_summary"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
+	ExpiresAt           *time.Time            `json:"expires_at"`
+	Expired             bool                  `json:"expired"`
+	QuotaExhausted      bool                  `json:"quota_exhausted"`
+	EffectiveEnabled    bool                  `json:"effective_enabled"`
+	Status              string                `json:"status"`
 	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
 	TrafficResetMode    string                `json:"traffic_reset_mode"`
 	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
@@ -128,6 +135,11 @@ type clientResponse struct {
 	UUID                string                `json:"uuid,omitempty"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
+	ExpiresAt           *time.Time            `json:"expires_at"`
+	Expired             bool                  `json:"expired"`
+	QuotaExhausted      bool                  `json:"quota_exhausted"`
+	EffectiveEnabled    bool                  `json:"effective_enabled"`
+	Status              string                `json:"status"`
 	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
 	TrafficResetMode    string                `json:"traffic_reset_mode"`
 	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
@@ -271,7 +283,10 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, _ auth
 		response = append(response, toClientSummaryResponse(proxystore.ClientSummary{
 			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 			UUIDSummary:  clientUUIDSummary(value.UUID),
-			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: value.Metrics,
+			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+			TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
+			TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
+			TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
 			CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		}))
 	}
@@ -303,8 +318,14 @@ func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 		writeProxyError(w, err)
 		return
 	}
+	expiresAt, _, err := parseClientExpiration(request.ExpiresAt)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
 	value, mutation, err := s.proxies.CreateClient(r.Context(), id, proxystore.ClientCreateInput{
-		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: enabled, Traffic: traffic,
+		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: enabled,
+		ExpiresAt: expiresAt, Traffic: traffic,
 	})
 	if err != nil {
 		writeProxyError(w, err)
@@ -336,6 +357,11 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	expiresAt, expiresAtSet, err := parseClientExpiration(request.ExpiresAt)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
 	var traffic *proxystore.ClientTrafficConfig
 	if hasClientTrafficRequest(request.clientTrafficRequest) {
 		current, err := s.proxies.GetClient(r.Context(), id)
@@ -355,7 +381,8 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 		traffic = &parsed
 	}
 	value, mutation, err := s.proxies.UpdateClient(r.Context(), id, proxystore.ClientUpdateInput{
-		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled, Traffic: traffic,
+		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled,
+		ExpiresAtSet: expiresAtSet, ExpiresAt: expiresAt, Traffic: traffic,
 	})
 	if err != nil {
 		writeProxyError(w, err)
@@ -370,10 +397,13 @@ func (s *server) resetProxyClientTraffic(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
-	value, err := s.proxies.ResetClientTraffic(r.Context(), id)
+	value, mutation, err := s.proxies.ResetClientTrafficWithMutation(r.Context(), id)
 	if err != nil {
 		writeProxyError(w, err)
 		return
+	}
+	if mutation.Version > 0 {
+		s.notifyProxyMutation(mutation)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
@@ -442,12 +472,16 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 
 func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryResponse {
 	client := proxystore.Client{
+		Enabled: value.Enabled, ExpiresAt: value.ExpiresAt, TrafficLimitBytes: value.TrafficLimitBytes,
 		TrafficResetMode: value.TrafficResetMode, TrafficResetWeekday: value.TrafficResetWeekday,
-		TrafficResetDay: value.TrafficResetDay, TrafficResetTime: value.TrafficResetTime,
+		TrafficResetDay: value.TrafficResetDay, TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
 	}
+	lifecycle := client.LifecycleAt(time.Now())
 	return clientSummaryResponse{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUIDSummary,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
+		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: client.NextResetAt(time.Now()),
@@ -456,9 +490,12 @@ func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryRespon
 }
 
 func toClientResponse(value proxystore.Client) clientResponse {
+	lifecycle := value.LifecycleAt(time.Now())
 	return clientResponse{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUID: value.UUID,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
+		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: value.NextResetAt(time.Now()),
@@ -473,12 +510,40 @@ func toClientMetricsResponse(value *proxystore.ClientMetrics) clientMetricsRespo
 	cycleStartedAt, updatedAt := value.CycleStartedAt, value.UpdatedAt
 	return clientMetricsResponse{
 		CycleUplinkBytes: value.CycleUplinkBytes, CycleDownlinkBytes: value.CycleDownlinkBytes,
-		UsedBytes:      value.CycleUplinkBytes + value.CycleDownlinkBytes,
+		UsedBytes:      proxystore.ClientUsedBytes(value),
 		CycleStartedAt: &cycleStartedAt, LastActivityAt: value.LastActivityAt, UpdatedAt: &updatedAt,
 	}
 }
 
 var clientTrafficAmountPattern = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+
+func parseClientExpiration(raw json.RawMessage) (*time.Time, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(string(raw)) == "null" {
+		return nil, true, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || strings.TrimSpace(value) == "" {
+		return nil, true, proxystore.ErrInvalidClientExpiration
+	}
+	value = strings.TrimSpace(value)
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		for _, layout := range []string{"2006-01-02T15:04", "2006-01-02T15:04:05"} {
+			parsed, err = time.ParseInLocation(layout, value, shanghaiLocation)
+			if err == nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		return nil, true, proxystore.ErrInvalidClientExpiration
+	}
+	result := parsed.UTC().Truncate(time.Second)
+	return &result, true, nil
+}
 
 func hasClientTrafficRequest(request clientTrafficRequest) bool {
 	return len(request.TrafficLimit) != 0 || request.LimitUnit != nil || request.TrafficResetMode != nil ||
@@ -604,6 +669,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "连接地址不可用，请手动填写入口地址或等待服务器上报公网 IPv4")
 	case errors.Is(err, proxystore.ErrInvalidClientTrafficConfig):
 		writeError(w, http.StatusBadRequest, "客户端流量设置无效")
+	case errors.Is(err, proxystore.ErrInvalidClientExpiration):
+		writeError(w, http.StatusBadRequest, "客户端到期时间无效")
 	default:
 		writeInternalError(w)
 	}

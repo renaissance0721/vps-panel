@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,22 +21,27 @@ type renderedXrayLog struct {
 }
 
 type renderedXrayInbound struct {
-	Tag            string                     `json:"tag"`
-	Listen         string                     `json:"listen"`
-	Port           int                        `json:"port"`
-	Protocol       string                     `json:"protocol"`
-	Settings       renderedVLESSSettings      `json:"settings"`
-	StreamSettings renderedXrayStreamSettings `json:"streamSettings"`
+	Tag            string                      `json:"tag"`
+	Listen         string                      `json:"listen"`
+	Port           int                         `json:"port"`
+	Protocol       string                      `json:"protocol"`
+	Settings       renderedInboundSettings     `json:"settings"`
+	StreamSettings *renderedXrayStreamSettings `json:"streamSettings,omitempty"`
 }
 
-type renderedVLESSSettings struct {
-	Clients    []renderedVLESSClient `json:"clients"`
-	Decryption string                `json:"decryption"`
+type renderedInboundSettings struct {
+	Clients    []renderedInboundClient `json:"clients"`
+	Decryption string                  `json:"decryption,omitempty"`
+	Method     string                  `json:"method,omitempty"`
+	Password   string                  `json:"password,omitempty"`
+	Network    string                  `json:"network,omitempty"`
 }
 
-type renderedVLESSClient struct {
-	ID   string `json:"id"`
-	Flow string `json:"flow"`
+type renderedInboundClient struct {
+	ID       string `json:"id,omitempty"`
+	Flow     string `json:"flow,omitempty"`
+	Password string `json:"password,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type renderedXrayStreamSettings struct {
@@ -77,39 +83,28 @@ func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
 	}
 	ports := make(map[int]struct{}, len(proxies))
 	for _, proxy := range proxies {
-		if err := validateDesiredProxy(proxy); err != nil {
+		var inbound renderedXrayInbound
+		var include bool
+		var err error
+		switch proxy.Protocol {
+		case "vless":
+			inbound, err = renderVLESSInbound(proxy)
+			include = true
+		case "shadowsocks":
+			inbound, include, err = renderShadowsocksInbound(proxy)
+		default:
+			err = errUnsupportedManagedConfig
+		}
+		if err != nil {
 			return nil, err
+		}
+		if !include {
+			continue
 		}
 		if _, exists := ports[proxy.Port]; exists {
 			return nil, errUnsupportedManagedConfig
 		}
 		ports[proxy.Port] = struct{}{}
-		inbound := renderedXrayInbound{
-			Tag: "proxy-" + strconv.FormatInt(proxy.ID, 10), Listen: proxy.Listen, Port: proxy.Port,
-			Protocol: "vless", Settings: renderedVLESSSettings{Decryption: "none", Clients: make([]renderedVLESSClient, 0, len(proxy.Clients))},
-			StreamSettings: renderedXrayStreamSettings{Network: "tcp", Security: proxy.Security},
-		}
-		for _, client := range proxy.Clients {
-			if !validDesiredUUID(client.UUID) {
-				return nil, errUnsupportedManagedConfig
-			}
-			inbound.Settings.Clients = append(inbound.Settings.Clients, renderedVLESSClient{ID: client.UUID, Flow: "xtls-rprx-vision"})
-		}
-		if proxy.Security == "tls" {
-			inbound.StreamSettings.TLSSettings = &renderedTLSSettings{
-				ServerName: proxy.ServerName,
-				Certificates: []renderedTLSCertificate{{
-					Certificate: pemLines(proxy.TLS.Certificate), Key: pemLines(proxy.TLS.PrivateKey),
-				}},
-			}
-		} else {
-			inbound.StreamSettings.Network = "raw"
-			inbound.StreamSettings.RealitySettings = &renderedRealitySettings{
-				Show: false, Target: proxy.Reality.Target, Xver: 0,
-				ServerNames: []string{proxy.ServerName}, PrivateKey: proxy.Reality.PrivateKey,
-				ShortIDs: []string{proxy.Reality.ShortID},
-			}
-		}
 		config.Inbounds = append(config.Inbounds, inbound)
 	}
 	value, err := json.MarshalIndent(config, "", "  ")
@@ -119,10 +114,71 @@ func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
 	return append(value, '\n'), nil
 }
 
-func validateDesiredProxy(proxy desiredProxy) error {
+func renderVLESSInbound(proxy desiredProxy) (renderedXrayInbound, error) {
+	if err := validateDesiredVLESSProxy(proxy); err != nil {
+		return renderedXrayInbound{}, err
+	}
+	inbound := renderedXrayInbound{
+		Tag: "proxy-" + strconv.FormatInt(proxy.ID, 10), Listen: proxy.Listen, Port: proxy.Port,
+		Protocol: "vless", Settings: renderedInboundSettings{Decryption: "none", Clients: make([]renderedInboundClient, 0, len(proxy.Clients))},
+		StreamSettings: &renderedXrayStreamSettings{Network: "tcp", Security: proxy.Security},
+	}
+	for _, client := range proxy.Clients {
+		if !validDesiredUUID(client.UUID) || client.Password != "" {
+			return renderedXrayInbound{}, errUnsupportedManagedConfig
+		}
+		inbound.Settings.Clients = append(inbound.Settings.Clients, renderedInboundClient{ID: client.UUID, Flow: "xtls-rprx-vision"})
+	}
+	if proxy.Security == "tls" {
+		inbound.StreamSettings.TLSSettings = &renderedTLSSettings{
+			ServerName: proxy.ServerName,
+			Certificates: []renderedTLSCertificate{{
+				Certificate: pemLines(proxy.TLS.Certificate), Key: pemLines(proxy.TLS.PrivateKey),
+			}},
+		}
+	} else {
+		inbound.StreamSettings.Network = "raw"
+		inbound.StreamSettings.RealitySettings = &renderedRealitySettings{
+			Show: false, Target: proxy.Reality.Target, Xver: 0,
+			ServerNames: []string{proxy.ServerName}, PrivateKey: proxy.Reality.PrivateKey,
+			ShortIDs: []string{proxy.Reality.ShortID},
+		}
+	}
+	return inbound, nil
+}
+
+func renderShadowsocksInbound(proxy desiredProxy) (renderedXrayInbound, bool, error) {
+	if proxy.ID <= 0 || proxy.Listen != "0.0.0.0" || proxy.Port < 1 || proxy.Port > 65535 ||
+		proxy.Protocol != "shadowsocks" || proxy.Shadowsocks == nil || proxy.Transport != "" ||
+		proxy.Security != "" || proxy.ServerFlow != "" || proxy.ServerName != "" || proxy.TLS != nil || proxy.Reality != nil ||
+		proxy.Shadowsocks.Network != "tcp,udp" || !validShadowsocksDesiredKey(proxy.Shadowsocks.Password, proxy.Shadowsocks.Method) {
+		return renderedXrayInbound{}, false, errUnsupportedManagedConfig
+	}
+	if len(proxy.Clients) == 0 {
+		return renderedXrayInbound{}, false, nil
+	}
+	clients := make([]renderedInboundClient, 0, len(proxy.Clients))
+	for _, client := range proxy.Clients {
+		if client.UUID != "" || !validShadowsocksDesiredKey(client.Password, proxy.Shadowsocks.Method) {
+			return renderedXrayInbound{}, false, errUnsupportedManagedConfig
+		}
+		clients = append(clients, renderedInboundClient{
+			Password: client.Password, Email: "client-" + strconv.FormatInt(client.ID, 10),
+		})
+	}
+	return renderedXrayInbound{
+		Tag: "proxy-" + strconv.FormatInt(proxy.ID, 10), Listen: proxy.Listen, Port: proxy.Port,
+		Protocol: "shadowsocks", Settings: renderedInboundSettings{
+			Method: proxy.Shadowsocks.Method, Password: proxy.Shadowsocks.Password,
+			Network: proxy.Shadowsocks.Network, Clients: clients,
+		},
+	}, true, nil
+}
+
+func validateDesiredVLESSProxy(proxy desiredProxy) error {
 	if proxy.ID <= 0 || proxy.Listen != "0.0.0.0" || proxy.Port < 1 || proxy.Port > 65535 ||
 		proxy.Protocol != "vless" || proxy.Transport != "tcp" || proxy.ServerFlow != "xtls-rprx-vision" ||
-		strings.TrimSpace(proxy.ServerName) == "" {
+		strings.TrimSpace(proxy.ServerName) == "" || proxy.Shadowsocks != nil {
 		return errUnsupportedManagedConfig
 	}
 	switch proxy.Security {
@@ -139,6 +195,20 @@ func validateDesiredProxy(proxy desiredProxy) error {
 		return errUnsupportedManagedConfig
 	}
 	return nil
+}
+
+func validShadowsocksDesiredKey(value, method string) bool {
+	length := 0
+	switch method {
+	case "2022-blake3-aes-128-gcm":
+		length = 16
+	case "2022-blake3-aes-256-gcm":
+		length = 32
+	default:
+		return false
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	return err == nil && len(decoded) == length
 }
 
 func validDesiredUUID(value string) bool {

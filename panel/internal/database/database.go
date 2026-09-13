@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -140,7 +142,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
-			protocol TEXT NOT NULL CHECK (protocol IN ('vless')),
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
 			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
 				CHECK (entry_host_mode IN ('auto', 'manual')),
@@ -197,8 +199,83 @@ func migrate(db *sql.DB) error {
 	if err := migrateProxyEntryHost(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateProxyProtocols(ctx, db); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func migrateProxyProtocols(ctx context.Context, db *sql.DB) error {
+	var tableSQL string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proxies'`,
+	).Scan(&tableSQL); err != nil {
+		return fmt.Errorf("inspect proxies table: %w", err)
+	}
+	if strings.Contains(strings.ToLower(tableSQL), "'shadowsocks'") {
+		return nil
+	}
+
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open proxy protocol migration connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for proxy protocol migration: %w", err)
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin proxy protocol migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE proxies_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
+			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
+				CHECK (entry_host_mode IN ('auto', 'manual')),
+			entry_host TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			config_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE (server_id, listen_port)
+		)`,
+		`INSERT INTO proxies_new
+			(id, server_id, name, protocol, listen_port, entry_host_mode, entry_host,
+			 enabled, config_json, created_at, updated_at)
+		 SELECT id, server_id, name, protocol, listen_port, entry_host_mode, entry_host,
+			 enabled, config_json, created_at, updated_at FROM proxies`,
+		`DROP TABLE proxies`,
+		`ALTER TABLE proxies_new RENAME TO proxies`,
+		`CREATE INDEX idx_proxies_server_id ON proxies(server_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate proxy protocols: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit proxy protocol migration: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after proxy protocol migration: %w", err)
+	}
+	rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check proxy protocol foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("proxy protocol migration left invalid foreign keys")
+	}
+	return rows.Err()
 }
 
 func migrateServerPublicIPv4(ctx context.Context, db *sql.DB) error {

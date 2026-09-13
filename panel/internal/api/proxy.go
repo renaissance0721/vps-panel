@@ -24,6 +24,8 @@ type createProxyRequest struct {
 	RealityTarget     string `json:"reality_target"`
 	FirstClientName   string `json:"first_client_name"`
 	FirstClientUDP443 bool   `json:"first_client_udp443"`
+	Protocol          string `json:"protocol"`
+	Method            string `json:"method"`
 }
 
 type updateProxyRequest struct {
@@ -37,6 +39,8 @@ type updateProxyRequest struct {
 	Certificate   *string `json:"certificate"`
 	PrivateKey    *string `json:"private_key"`
 	RealityTarget *string `json:"reality_target"`
+	Protocol      *string `json:"protocol"`
+	Method        *string `json:"method"`
 }
 
 type createClientRequest struct {
@@ -72,15 +76,17 @@ type proxyResponse struct {
 }
 
 type proxyConfigResponse struct {
-	Transport                string `json:"transport"`
-	Security                 string `json:"security"`
-	ServerFlow               string `json:"server_flow"`
-	ServerName               string `json:"server_name"`
-	Fingerprint              string `json:"fingerprint"`
+	Transport                string `json:"transport,omitempty"`
+	Security                 string `json:"security,omitempty"`
+	ServerFlow               string `json:"server_flow,omitempty"`
+	ServerName               string `json:"server_name,omitempty"`
+	Fingerprint              string `json:"fingerprint,omitempty"`
 	TLSCertificateConfigured bool   `json:"tls_certificate_configured"`
 	RealityTarget            string `json:"reality_target,omitempty"`
 	RealityPublicKey         string `json:"reality_public_key,omitempty"`
 	RealityShortID           string `json:"reality_short_id,omitempty"`
+	Method                   string `json:"method,omitempty"`
+	Network                  string `json:"network,omitempty"`
 }
 
 type clientSummaryResponse struct {
@@ -98,7 +104,7 @@ type clientResponse struct {
 	ID           int64     `json:"id"`
 	ProxyID      int64     `json:"proxy_id"`
 	Name         string    `json:"name"`
-	UUID         string    `json:"uuid"`
+	UUID         string    `json:"uuid,omitempty"`
 	ClientUDP443 bool      `json:"client_udp443"`
 	Enabled      bool      `json:"enabled"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -110,10 +116,13 @@ type clientShareResponse struct {
 	ProxyName        string         `json:"proxy_name"`
 	Address          string         `json:"address"`
 	Port             int            `json:"port"`
-	Security         string         `json:"security"`
-	ServerName       string         `json:"server_name"`
-	Fingerprint      string         `json:"fingerprint"`
-	Flow             string         `json:"flow"`
+	Protocol         string         `json:"protocol"`
+	Method           string         `json:"method,omitempty"`
+	Network          string         `json:"network,omitempty"`
+	Security         string         `json:"security,omitempty"`
+	ServerName       string         `json:"server_name,omitempty"`
+	Fingerprint      string         `json:"fingerprint,omitempty"`
+	Flow             string         `json:"flow,omitempty"`
 	RealityPublicKey string         `json:"reality_public_key,omitempty"`
 	RealityShortID   string         `json:"reality_short_id,omitempty"`
 	URI              string         `json:"uri"`
@@ -152,7 +161,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
-		FirstClientUDP443: request.FirstClientUDP443,
+		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Method: request.Method,
 	})
 	if err != nil {
 		writeProxyError(w, err)
@@ -188,6 +197,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
+		Protocol: request.Protocol, Method: request.Method,
 	})
 	if err != nil {
 		writeProxyError(w, err)
@@ -223,9 +233,13 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, _ auth
 	}
 	response := make([]clientSummaryResponse, 0, len(values))
 	for _, value := range values {
+		uuidSummary := ""
+		if value.UUID != "" {
+			uuidSummary = value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:]
+		}
 		response = append(response, clientSummaryResponse{
 			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-			UUIDSummary:  value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:],
+			UUIDSummary:  uuidSummary,
 			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
 			CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		})
@@ -312,7 +326,8 @@ func (s *server) getProxyClientShare(w http.ResponseWriter, r *http.Request, _ a
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"share": clientShareResponse{
 		Client: toClientResponse(value.Client), ProxyName: value.ProxyName, Address: value.Address,
-		Port: value.Port, Security: value.Security, ServerName: value.ServerName,
+		Port: value.Port, Protocol: value.Protocol, Method: value.Method, Network: value.Network,
+		Security: value.Security, ServerName: value.ServerName,
 		Fingerprint: value.Fingerprint, Flow: value.Flow, RealityPublicKey: value.RealityPublicKey,
 		RealityShortID: value.RealityShortID, URI: value.URI,
 	}})
@@ -337,7 +352,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 			Fingerprint:              value.Config.Fingerprint,
 			TLSCertificateConfigured: value.Config.TLSCertificateConfigured,
 			RealityTarget:            value.Config.RealityTarget, RealityPublicKey: value.Config.RealityPublicKey,
-			RealityShortID: value.Config.RealityShortID,
+			RealityShortID: value.Config.RealityShortID, Method: value.Config.Method, Network: value.Config.Network,
 		},
 	}
 	if value.Clients != nil {
@@ -383,6 +398,18 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "TLS 证书和私钥不能为空且必须匹配")
 	case errors.Is(err, proxystore.ErrInvalidReality):
 		writeError(w, http.StatusBadRequest, "REALITY SNI 或目标地址无效")
+	case errors.Is(err, proxystore.ErrInvalidProtocol):
+		writeError(w, http.StatusBadRequest, "协议仅支持 VLESS 或 Shadowsocks")
+	case errors.Is(err, proxystore.ErrInvalidShadowsocksMethod):
+		writeError(w, http.StatusBadRequest, "Shadowsocks 加密方法无效")
+	case errors.Is(err, proxystore.ErrImmutableProtocol):
+		writeError(w, http.StatusConflict, "代理协议创建后不能修改")
+	case errors.Is(err, proxystore.ErrImmutableShadowsocksMethod):
+		writeError(w, http.StatusConflict, "Shadowsocks 加密方法创建后不能修改")
+	case errors.Is(err, proxystore.ErrShadowsocksClientUDP443):
+		writeError(w, http.StatusBadRequest, "Shadowsocks 客户端不支持 UDP 443 流控选项")
+	case errors.Is(err, proxystore.ErrInvalidShadowsocksUpdate):
+		writeError(w, http.StatusBadRequest, "Shadowsocks 不支持 TLS 或 REALITY 配置")
 	case errors.Is(err, proxystore.ErrLastClient):
 		writeError(w, http.StatusConflict, "代理节点必须至少保留一个客户端")
 	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):

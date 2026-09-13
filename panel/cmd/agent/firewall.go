@@ -11,11 +11,18 @@ import (
 	"strings"
 )
 
-const managedProxyFirewallComment = "vps-panel-proxy-tcp"
-
-const managedProxyFirewallOutputMax = 64 << 10
+const (
+	managedProxyFirewallTCPComment = "vps-panel-proxy-tcp"
+	managedProxyFirewallUDPComment = "vps-panel-proxy-udp"
+	managedProxyFirewallOutputMax  = 64 << 10
+)
 
 var errManagedProxyFirewall = errors.New("managed proxy firewall synchronization failed")
+
+type firewallRule struct {
+	port     int
+	protocol string
+}
 
 type proxyFirewall struct {
 	lookPath   func(string) (string, error)
@@ -36,7 +43,15 @@ func runFirewallCommand(ctx context.Context, name string, arguments ...string) (
 }
 
 func (f *proxyFirewall) reconcile(ctx context.Context, desiredPorts []int) error {
-	desired, err := normalizeFirewallPorts(desiredPorts)
+	rules := make([]firewallRule, 0, len(desiredPorts))
+	for _, port := range desiredPorts {
+		rules = append(rules, firewallRule{port: port, protocol: "tcp"})
+	}
+	return f.reconcileRules(ctx, rules)
+}
+
+func (f *proxyFirewall) reconcileRules(ctx context.Context, desiredRules []firewallRule) error {
+	desired, err := normalizeFirewallRules(desiredRules)
 	if err != nil {
 		return err
 	}
@@ -66,20 +81,20 @@ func (f *proxyFirewall) activeCommand(ctx context.Context, name string, argument
 	return command, err == nil && strings.Contains(strings.ToLower(string(output)), activeText)
 }
 
-func (f *proxyFirewall) reconcileUFW(ctx context.Context, command string, desired map[int]struct{}) error {
+func (f *proxyFirewall) reconcileUFW(ctx context.Context, command string, desired map[firewallRule]struct{}) error {
 	output, err := f.runCommand(ctx, command, "status", "numbered")
 	if err != nil {
 		return firewallError("read ufw rules", err)
 	}
 	existing, numbered := parseUFWManagedRules(string(output))
-	for _, port := range missingFirewallPorts(desired, existing) {
-		if _, err := f.runCommand(ctx, command, "allow", strconv.Itoa(port)+"/tcp", "comment", managedProxyFirewallComment); err != nil {
+	for _, rule := range missingFirewallRules(desired, existing) {
+		if _, err := f.runCommand(ctx, command, "allow", strconv.Itoa(rule.port)+"/"+rule.protocol, "comment", firewallComment(rule.protocol)); err != nil {
 			return firewallError("add ufw rule", err)
 		}
 	}
 	numbers := make([]int, 0)
 	for _, rule := range numbered {
-		if _, keep := desired[rule.port]; !keep {
+		if _, keep := desired[rule.rule]; !keep {
 			numbers = append(numbers, rule.number)
 		}
 	}
@@ -92,20 +107,20 @@ func (f *proxyFirewall) reconcileUFW(ctx context.Context, command string, desire
 	return nil
 }
 
-func (f *proxyFirewall) reconcileFirewalld(ctx context.Context, command string, desired map[int]struct{}) error {
+func (f *proxyFirewall) reconcileFirewalld(ctx context.Context, command string, desired map[firewallRule]struct{}) error {
 	output, err := f.runCommand(ctx, command, "--direct", "--get-rules", "ipv4", "filter", "INPUT")
 	if err != nil {
 		return firewallError("read firewalld rules", err)
 	}
-	existing := parseManagedRulePorts(string(output))
-	for _, port := range missingFirewallPorts(desired, existing) {
-		arguments := append([]string{"--direct", "--add-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(port)...)
+	existing := parseManagedFirewallRules(string(output))
+	for _, rule := range missingFirewallRules(desired, existing) {
+		arguments := append([]string{"--direct", "--add-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("add firewalld rule", err)
 		}
 	}
-	for _, port := range staleFirewallPorts(desired, existing) {
-		arguments := append([]string{"--direct", "--remove-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(port)...)
+	for _, rule := range staleFirewallRules(desired, existing) {
+		arguments := append([]string{"--direct", "--remove-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("remove stale firewalld rule", err)
 		}
@@ -113,16 +128,16 @@ func (f *proxyFirewall) reconcileFirewalld(ctx context.Context, command string, 
 	return nil
 }
 
-func (f *proxyFirewall) reconcileIPTables(ctx context.Context, command string, desired map[int]struct{}, rules string) error {
-	existing := parseManagedRulePorts(rules)
-	for _, port := range missingFirewallPorts(desired, existing) {
-		arguments := append([]string{"-I", "INPUT", "1"}, managedIPTablesRule(port)...)
+func (f *proxyFirewall) reconcileIPTables(ctx context.Context, command string, desired map[firewallRule]struct{}, rules string) error {
+	existing := parseManagedFirewallRules(rules)
+	for _, rule := range missingFirewallRules(desired, existing) {
+		arguments := append([]string{"-I", "INPUT", "1"}, managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("add iptables rule", err)
 		}
 	}
-	for _, port := range staleFirewallPorts(desired, existing) {
-		arguments := append([]string{"-D", "INPUT"}, managedIPTablesRule(port)...)
+	for _, rule := range staleFirewallRules(desired, existing) {
+		arguments := append([]string{"-D", "INPUT"}, managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("remove stale iptables rule", err)
 		}
@@ -130,51 +145,59 @@ func (f *proxyFirewall) reconcileIPTables(ctx context.Context, command string, d
 	return nil
 }
 
-func normalizeFirewallPorts(ports []int) (map[int]struct{}, error) {
-	result := make(map[int]struct{}, len(ports))
-	for _, port := range ports {
-		if port < 1 || port > 65535 {
-			return nil, firewallError("invalid TCP port", nil)
+func normalizeFirewallRules(rules []firewallRule) (map[firewallRule]struct{}, error) {
+	result := make(map[firewallRule]struct{}, len(rules))
+	for _, rule := range rules {
+		if rule.port < 1 || rule.port > 65535 || (rule.protocol != "tcp" && rule.protocol != "udp") {
+			return nil, firewallError("invalid proxy firewall rule", nil)
 		}
-		result[port] = struct{}{}
+		result[rule] = struct{}{}
 	}
 	return result, nil
 }
 
-func managedIPTablesRule(port int) []string {
-	return []string{"-p", "tcp", "--dport", strconv.Itoa(port), "-m", "comment", "--comment", managedProxyFirewallComment, "-j", "ACCEPT"}
+func firewallComment(protocol string) string {
+	if protocol == "udp" {
+		return managedProxyFirewallUDPComment
+	}
+	return managedProxyFirewallTCPComment
 }
 
-func parseManagedRulePorts(value string) map[int]struct{} {
-	ports := make(map[int]struct{})
+func managedIPTablesRule(rule firewallRule) []string {
+	return []string{"-p", rule.protocol, "--dport", strconv.Itoa(rule.port), "-m", "comment", "--comment", firewallComment(rule.protocol), "-j", "ACCEPT"}
+}
+
+func parseManagedFirewallRules(value string) map[firewallRule]struct{} {
+	rules := make(map[firewallRule]struct{})
 	scanner := bufio.NewScanner(strings.NewReader(value))
 	for scanner.Scan() {
 		fields := strings.Fields(strings.ReplaceAll(scanner.Text(), `"`, ""))
-		if !containsFields(fields, "-p", "tcp") || !containsFields(fields, "--comment", managedProxyFirewallComment) || !containsFields(fields, "-j", "ACCEPT") {
+		protocol, protocolOK := fieldAfter(fields, "-p")
+		comment, commentOK := fieldAfter(fields, "--comment")
+		if !protocolOK || !commentOK || comment != firewallComment(protocol) || !containsFields(fields, "-j", "ACCEPT") {
 			continue
 		}
-		if port, ok := fieldAfter(fields, "--dport"); ok {
-			value, err := strconv.Atoi(port)
-			if err == nil && value >= 1 && value <= 65535 {
-				ports[value] = struct{}{}
-			}
+		portValue, ok := fieldAfter(fields, "--dport")
+		port, err := strconv.Atoi(portValue)
+		if ok && err == nil && port >= 1 && port <= 65535 {
+			rules[firewallRule{port: port, protocol: protocol}] = struct{}{}
 		}
 	}
-	return ports
+	return rules
 }
 
 type numberedFirewallRule struct {
 	number int
-	port   int
+	rule   firewallRule
 }
 
-func parseUFWManagedRules(value string) (map[int]struct{}, []numberedFirewallRule) {
-	ports := make(map[int]struct{})
-	rules := make([]numberedFirewallRule, 0)
+func parseUFWManagedRules(value string) (map[firewallRule]struct{}, []numberedFirewallRule) {
+	rules := make(map[firewallRule]struct{})
+	numbered := make([]numberedFirewallRule, 0)
 	scanner := bufio.NewScanner(strings.NewReader(value))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if !strings.Contains(line, "# "+managedProxyFirewallComment) || !strings.HasPrefix(line, "[") {
+		if !strings.HasPrefix(line, "[") {
 			continue
 		}
 		closing := strings.IndexByte(line, ']')
@@ -183,17 +206,22 @@ func parseUFWManagedRules(value string) (map[int]struct{}, []numberedFirewallRul
 		}
 		number, numberErr := strconv.Atoi(strings.TrimSpace(line[1:closing]))
 		fields := strings.Fields(strings.TrimSpace(line[closing+1:]))
-		if numberErr != nil || len(fields) == 0 || !strings.HasSuffix(fields[0], "/tcp") {
+		if numberErr != nil || len(fields) == 0 {
 			continue
 		}
-		port, portErr := strconv.Atoi(strings.TrimSuffix(fields[0], "/tcp"))
-		if portErr != nil || port < 1 || port > 65535 {
+		portProtocol := strings.Split(fields[0], "/")
+		if len(portProtocol) != 2 {
 			continue
 		}
-		ports[port] = struct{}{}
-		rules = append(rules, numberedFirewallRule{number: number, port: port})
+		port, portErr := strconv.Atoi(portProtocol[0])
+		rule := firewallRule{port: port, protocol: portProtocol[1]}
+		if portErr != nil || port < 1 || port > 65535 || !strings.Contains(line, "# "+firewallComment(rule.protocol)) {
+			continue
+		}
+		rules[rule] = struct{}{}
+		numbered = append(numbered, numberedFirewallRule{number: number, rule: rule})
 	}
-	return ports, rules
+	return rules, numbered
 }
 
 func iptablesIsActive(value string) bool {
@@ -206,26 +234,35 @@ func iptablesIsActive(value string) bool {
 	return false
 }
 
-func missingFirewallPorts(desired, existing map[int]struct{}) []int {
-	ports := make([]int, 0)
-	for port := range desired {
-		if _, exists := existing[port]; !exists {
-			ports = append(ports, port)
+func missingFirewallRules(desired, existing map[firewallRule]struct{}) []firewallRule {
+	rules := make([]firewallRule, 0)
+	for rule := range desired {
+		if _, exists := existing[rule]; !exists {
+			rules = append(rules, rule)
 		}
 	}
-	sort.Ints(ports)
-	return ports
+	sortFirewallRules(rules)
+	return rules
 }
 
-func staleFirewallPorts(desired, existing map[int]struct{}) []int {
-	ports := make([]int, 0)
-	for port := range existing {
-		if _, desired := desired[port]; !desired {
-			ports = append(ports, port)
+func staleFirewallRules(desired, existing map[firewallRule]struct{}) []firewallRule {
+	rules := make([]firewallRule, 0)
+	for rule := range existing {
+		if _, desired := desired[rule]; !desired {
+			rules = append(rules, rule)
 		}
 	}
-	sort.Ints(ports)
-	return ports
+	sortFirewallRules(rules)
+	return rules
+}
+
+func sortFirewallRules(rules []firewallRule) {
+	sort.Slice(rules, func(left, right int) bool {
+		if rules[left].port == rules[right].port {
+			return rules[left].protocol < rules[right].protocol
+		}
+		return rules[left].port < rules[right].port
+	})
 }
 
 func containsFields(fields []string, key, value string) bool {

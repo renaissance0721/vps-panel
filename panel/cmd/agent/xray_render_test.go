@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/rsa"
@@ -80,6 +81,67 @@ func TestRenderManagedXrayRejectsInvalidSemantics(t *testing.T) {
 	}
 }
 
+func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
+	ss128 := testDesiredShadowsocksProxy(3, 8388, "2022-blake3-aes-128-gcm", 16)
+	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
+	empty := testDesiredShadowsocksProxy(5, 8390, "2022-blake3-aes-128-gcm", 16)
+	empty.Clients = nil
+	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), ss128, ss256, empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config renderedXrayConfig
+	if err := json.Unmarshal(value, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Inbounds) != 3 {
+		t.Fatalf("rendered inbound count = %d, config = %s", len(config.Inbounds), value)
+	}
+	for index, expected := range []desiredProxy{ss128, ss256} {
+		inbound := config.Inbounds[index+1]
+		if inbound.Protocol != "shadowsocks" || inbound.StreamSettings != nil ||
+			inbound.Settings.Method != expected.Shadowsocks.Method || inbound.Settings.Password != expected.Shadowsocks.Password ||
+			inbound.Settings.Network != "tcp,udp" || inbound.Settings.Decryption != "" || len(inbound.Settings.Clients) != 1 ||
+			inbound.Settings.Clients[0].Password != expected.Clients[0].Password || inbound.Settings.Clients[0].Email != "client-1" ||
+			inbound.Settings.Clients[0].ID != "" || inbound.Settings.Clients[0].Flow != "" {
+			t.Fatalf("rendered Shadowsocks inbound = %+v", inbound)
+		}
+	}
+	if strings.Contains(string(value), "8390") {
+		t.Fatal("zero-client Shadowsocks inbound was rendered")
+	}
+}
+
+func TestRenderManagedXrayRejectsInvalidShadowsocksSecrets(t *testing.T) {
+	tests := []desiredProxy{
+		func() desiredProxy {
+			value := testDesiredShadowsocksProxy(1, 8388, "2022-blake3-aes-128-gcm", 16)
+			value.Shadowsocks.Method = "aes-128-gcm"
+			return value
+		}(),
+		func() desiredProxy {
+			value := testDesiredShadowsocksProxy(1, 8388, "2022-blake3-aes-128-gcm", 16)
+			value.Shadowsocks.Network = "tcp"
+			return value
+		}(),
+		func() desiredProxy {
+			value := testDesiredShadowsocksProxy(1, 8388, "2022-blake3-aes-128-gcm", 16)
+			value.Shadowsocks.Password = "bad"
+			return value
+		}(),
+		func() desiredProxy {
+			value := testDesiredShadowsocksProxy(1, 8388, "2022-blake3-aes-128-gcm", 16)
+			value.Clients[0].Password = base64.StdEncoding.EncodeToString(make([]byte, 32))
+			return value
+		}(),
+	}
+	for _, value := range tests {
+		if _, err := renderManagedXrayConfig([]desiredProxy{value}); !errors.Is(err, errUnsupportedManagedConfig) {
+			t.Fatalf("invalid Shadowsocks desired state error = %v for %+v", err, value)
+		}
+	}
+}
+
 func TestRenderedConfigAcceptedByPinnedXrayWhenAvailable(t *testing.T) {
 	binary := os.Getenv("XRAY_TEST_BINARY")
 	if binary == "" {
@@ -102,22 +164,48 @@ func TestRenderedConfigAcceptedByPinnedXrayWhenAvailable(t *testing.T) {
 		},
 		Clients: []desiredClient{{ID: 2, UUID: "123e4567-e89b-42d3-a456-426614174002"}},
 	}
-	value, err := renderManagedXrayConfig([]desiredProxy{tlsProxy, reality})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, value, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	output, err := exec.Command(binary, "run", "-test", "-config", path).CombinedOutput()
-	if err != nil {
-		t.Fatalf("pinned Xray rejected rendered config: %v: %s", err, output)
+	ss128 := testDesiredShadowsocksProxy(3, 8388, "2022-blake3-aes-128-gcm", 16)
+	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
+	for _, candidate := range []struct {
+		name    string
+		proxies []desiredProxy
+	}{
+		{"vless-regression", []desiredProxy{tlsProxy, reality}},
+		{"shadowsocks-128", []desiredProxy{ss128}},
+		{"shadowsocks-256", []desiredProxy{ss256}},
+	} {
+		t.Run(candidate.name, func(t *testing.T) {
+			value, err := renderManagedXrayConfig(candidate.proxies)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, value, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.Command(binary, "run", "-test", "-config", path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("pinned Xray rejected rendered config: %v: %s", err, output)
+			}
+		})
 	}
 }
 
 func testDesiredTLSProxy() desiredProxy {
 	return desiredProxy{ID: 1, Listen: "0.0.0.0", Port: 443, Protocol: "vless", Transport: "tcp", Security: "tls", ServerFlow: "xtls-rprx-vision", ServerName: "example.com", TLS: &desiredTLS{Certificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----", PrivateKey: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"}, Clients: []desiredClient{{ID: 1, UUID: "123e4567-e89b-42d3-a456-426614174000"}}}
+}
+
+func testDesiredShadowsocksProxy(id int64, port int, method string, keyLength int) desiredProxy {
+	return desiredProxy{
+		ID: id, Listen: "0.0.0.0", Port: port, Protocol: "shadowsocks",
+		Shadowsocks: &desiredShadowsocks{
+			Method: method, Network: "tcp,udp",
+			Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(id)}, keyLength)),
+		},
+		Clients: []desiredClient{{
+			ID: 1, Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(id + 1)}, keyLength)),
+		}},
+	}
 }
 
 func renderTestCertificate(t *testing.T) (string, string) {

@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B 和 Phase 9A 的主体功能已完成；Phase 7B 暂缓。当前先完成 **Phase 9A 可用性修正（Xray/REALITY 搭建、入口地址、删除清理）**，验收通过后再进入 Phase 9B Shadowsocks Proxy。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A 和 Phase 9B 已完成；Phase 7B 暂缓。下一阶段为 **Phase 10 Client 流量、额度、周期与到期**。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -4181,6 +4181,8 @@ Panel 数据库删除成功 ≠ VPS 已完成远端清理。
 
 # 14. Phase 9B：Shadowsocks Proxy
 
+> 当前状态：已完成。
+
 > Shadowsocks 与 VLESS 共用同一套 Proxy 页面骨架。
 >
 > UI 继续参考 `vps-panel-frontend-guide.md` 的 Proxy 列表与 Modal 规范。
@@ -4188,7 +4190,7 @@ Panel 数据库删除成功 ≠ VPS 已完成远端清理。
 > 对 Shadowsocks 不适用的“传输 / 安全层 / 流控”列统一显示 `--`，不要为了填满表格制造虚假概念。
 
 
-在第一版 VLESS（TLS / REALITY + XTLS Vision）和 Client 基础管理稳定后，同一套 `proxies` 表增加：
+在第一版 VLESS（TLS / REALITY + XTLS Vision）和 Client 基础管理稳定后，同一套 `proxies` 表已增加：
 
 > `clients` 已在 Phase 9A 建立。Shadowsocks 是否以及如何映射一条 Proxy 下多个独立 Client，必须以当前 Xray 官方 Shadowsocks 能力为准；不要为了统一模型伪造协议不支持的行为。
 
@@ -4196,7 +4198,16 @@ Panel 数据库删除成功 ≠ VPS 已完成远端清理。
 protocol = shadowsocks
 ```
 
-第一版只支持明确选定的 Shadowsocks 方法。
+第一版只支持：
+
+```text
+2022-blake3-aes-128-gcm
+2022-blake3-aes-256-gcm
+```
+
+网络固定为 `tcp,udp`。Proxy 保存独立 master password，每个 Client 保存独立 user password；两者均使用 `crypto/rand` 生成并按 method 使用 16 / 32 字节 Base64 密钥。Agent 按 Xray `v26.3.27` 的 multi-user 格式渲染，Client 分享使用 `master:user` 组合密码的 SS2022 SIP002 URI。
+
+没有 enabled Client 时不渲染该 Shadowsocks inbound，也不开放对应防火墙规则，避免 master password 单独成为有效凭据。
 
 仍然由同一个 Xray 承载：
 
@@ -5802,15 +5813,15 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A 和 Phase 8B 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A 和 Phase 9B 已完成。
 
 Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路下一步为：
 
 ```text
-Phase 9A：VLESS Proxy + Client 基础管理 + 每 Client 直连 VLESS URI
+Phase 10：Client 流量、额度、周期与到期
 ```
 
-Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 主体功能也已建立 Proxy → Client → Xray → 直连 URI 链路。当前仍需先完成 Phase 9A 的真机可用性修正（13.11）与删除清理语义（13.12），验收通过后再进入 Phase 9B。
+Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI。当前停止在 Phase 9B，不提前实现 Phase 10。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
@@ -6062,7 +6073,7 @@ Server
 - [ ] Phase 6 系统信息最终表结构。
 - [ ] Metrics 是否保留历史以及保留周期。
 - [ ] VLESS TLS / REALITY 第一版除已固定的 TCP / XTLS Vision 和安全层二选一外，哪些高级 TLS / REALITY 参数需要开放给 UI。
-- [ ] Shadowsocks 第一版支持哪些 method。
+- [x] Shadowsocks 第一版固定支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`。
 - [ ] Realm 配置采用单进程多规则还是其他最小实现。
 - [ ] Subscription 输出格式与权限机制。
 - [ ] 是否以及何时需要第二个代理后端（sing-box / Mihomo）；有真实需求再决定。

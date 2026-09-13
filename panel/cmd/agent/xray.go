@@ -77,7 +77,7 @@ type xrayManager struct {
 	client            *http.Client
 	runCommand        func(context.Context, string, ...string) ([]byte, error)
 	probeListener     func(context.Context, int) error
-	reconcileFirewall func(context.Context, []int) error
+	reconcileFirewall func(context.Context, []firewallRule) error
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
@@ -102,7 +102,7 @@ func newXrayManager() *xrayManager {
 		client:            &http.Client{Timeout: 60 * time.Second},
 		runCommand:        runXrayCommand,
 		probeListener:     probeXrayListener,
-		reconcileFirewall: firewall.reconcile,
+		reconcileFirewall: firewall.reconcileRules,
 		wait:              waitForXray,
 		healthAttempts:    6,
 		healthCheckDelay:  500 * time.Millisecond,
@@ -149,6 +149,7 @@ func (m *xrayManager) disable(ctx context.Context) error {
 
 func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error {
 	expectedPorts := expectedProxyPorts(proxies)
+	expectedRules := expectedProxyFirewallRules(proxies)
 	candidate, err := renderManagedXrayConfig(proxies)
 	if err != nil {
 		return err
@@ -195,7 +196,7 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 			return err
 		}
 		if active && m.listenersHealthy(ctx, expectedPorts) {
-			return m.reconcileFirewall(ctx, expectedPorts)
+			return m.reconcileFirewall(ctx, expectedRules)
 		}
 		action := "start"
 		if active {
@@ -207,10 +208,10 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
 			return err
 		}
-		return m.reconcileFirewall(ctx, expectedPorts)
+		return m.reconcileFirewall(ctx, expectedRules)
 	}
 
-	previousPorts, previousPortsKnown := renderedConfigPorts(current)
+	previousPorts, previousRules, previousStateKnown := renderedConfigState(current)
 	if exists {
 		if err := writeFileAtomically(m.previousPath, current, 0o600); err != nil {
 			return fmt.Errorf("save previous managed Xray config: %w", err)
@@ -221,18 +222,18 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 	}
 
 	if _, err := m.runCommand(ctx, "systemctl", "restart", m.serviceName); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
 	}
 	if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, err)
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, err)
 	}
-	if err := m.reconcileFirewall(ctx, expectedPorts); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousPortsKnown, err)
+	if err := m.reconcileFirewall(ctx, expectedRules); err != nil {
+		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, err)
 	}
 	return nil
 }
 
-func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, previousPorts []int, previousPortsKnown bool, applyErr error) error {
+func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, previousPorts []int, previousRules []firewallRule, previousStateKnown bool, applyErr error) error {
 	log.Printf("new config apply failed: %v", applyErr)
 	rollbackContext, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), managedXrayRollbackTimeout)
 	defer cancelRollback()
@@ -266,8 +267,8 @@ func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool,
 	if err := m.waitUntilHealthy(rollbackContext, previousPorts); err != nil {
 		log.Printf("rollback failed: %v", err)
 	}
-	if previousPortsKnown {
-		if err := m.reconcileFirewall(rollbackContext, previousPorts); err != nil {
+	if previousStateKnown {
+		if err := m.reconcileFirewall(rollbackContext, previousRules); err != nil {
 			log.Printf("rollback failed: restore managed firewall rules: %v", err)
 		}
 	}
@@ -610,6 +611,9 @@ func expectedProxyPorts(proxies []desiredProxy) []int {
 	ports := make([]int, 0, len(proxies))
 	seen := make(map[int]struct{}, len(proxies))
 	for _, proxy := range proxies {
+		if proxy.Protocol == "shadowsocks" && len(proxy.Clients) == 0 {
+			continue
+		}
 		if _, exists := seen[proxy.Port]; exists {
 			continue
 		}
@@ -620,16 +624,40 @@ func expectedProxyPorts(proxies []desiredProxy) []int {
 	return ports
 }
 
+func expectedProxyFirewallRules(proxies []desiredProxy) []firewallRule {
+	rules := make([]firewallRule, 0, len(proxies)*2)
+	for _, proxy := range proxies {
+		if proxy.Protocol == "shadowsocks" && len(proxy.Clients) == 0 {
+			continue
+		}
+		rules = append(rules, firewallRule{port: proxy.Port, protocol: "tcp"})
+		if proxy.Protocol == "shadowsocks" {
+			rules = append(rules, firewallRule{port: proxy.Port, protocol: "udp"})
+		}
+	}
+	return rules
+}
+
 func renderedConfigPorts(value []byte) ([]int, bool) {
+	ports, _, ok := renderedConfigState(value)
+	return ports, ok
+}
+
+func renderedConfigState(value []byte) ([]int, []firewallRule, bool) {
 	var config renderedXrayConfig
 	if len(value) == 0 || json.Unmarshal(value, &config) != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	ports := make([]int, 0, len(config.Inbounds))
+	rules := make([]firewallRule, 0, len(config.Inbounds)*2)
 	for _, inbound := range config.Inbounds {
 		ports = append(ports, inbound.Port)
+		rules = append(rules, firewallRule{port: inbound.Port, protocol: "tcp"})
+		if inbound.Protocol == "shadowsocks" {
+			rules = append(rules, firewallRule{port: inbound.Port, protocol: "udp"})
+		}
 	}
-	return ports, true
+	return ports, rules, true
 }
 
 func renderManagedXrayBaseConfig() []byte {

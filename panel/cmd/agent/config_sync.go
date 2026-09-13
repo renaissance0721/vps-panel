@@ -34,17 +34,24 @@ type desiredXrayState struct {
 }
 
 type desiredProxy struct {
-	ID         int64           `json:"id"`
-	Listen     string          `json:"listen"`
-	Port       int             `json:"port"`
-	Protocol   string          `json:"protocol"`
-	Transport  string          `json:"transport"`
-	Security   string          `json:"security"`
-	ServerFlow string          `json:"server_flow"`
-	ServerName string          `json:"server_name"`
-	TLS        *desiredTLS     `json:"tls,omitempty"`
-	Reality    *desiredReality `json:"reality,omitempty"`
-	Clients    []desiredClient `json:"clients"`
+	ID          int64               `json:"id"`
+	Listen      string              `json:"listen"`
+	Port        int                 `json:"port"`
+	Protocol    string              `json:"protocol"`
+	Transport   string              `json:"transport,omitempty"`
+	Security    string              `json:"security,omitempty"`
+	ServerFlow  string              `json:"server_flow,omitempty"`
+	ServerName  string              `json:"server_name,omitempty"`
+	TLS         *desiredTLS         `json:"tls,omitempty"`
+	Reality     *desiredReality     `json:"reality,omitempty"`
+	Shadowsocks *desiredShadowsocks `json:"shadowsocks,omitempty"`
+	Clients     []desiredClient     `json:"clients"`
+}
+
+type desiredShadowsocks struct {
+	Method   string `json:"method"`
+	Network  string `json:"network"`
+	Password string `json:"password"`
 }
 
 type desiredTLS struct {
@@ -59,8 +66,9 @@ type desiredReality struct {
 }
 
 type desiredClient struct {
-	ID   int64  `json:"id"`
-	UUID string `json:"uuid"`
+	ID       int64  `json:"id"`
+	UUID     string `json:"uuid,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 type desiredRealmState struct {

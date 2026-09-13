@@ -334,8 +334,8 @@ func TestManagedXrayRemovedProxyAppliesOnlyRemainingPort(t *testing.T) {
 		probed = append(probed, port)
 		return nil
 	}
-	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
-		firewallPorts = append([]int(nil), ports...)
+	manager.reconcileFirewall = func(_ context.Context, rules []firewallRule) error {
+		firewallPorts = firewallRulePorts(rules)
 		return nil
 	}
 
@@ -398,9 +398,9 @@ func TestManagedXrayFirewallFailureRollsBackNewConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, manager.configPath, old, 0o600)
-	var firewallCalls [][]int
-	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
-		firewallCalls = append(firewallCalls, append([]int(nil), ports...))
+	var firewallCalls [][]firewallRule
+	manager.reconcileFirewall = func(_ context.Context, rules []firewallRule) error {
+		firewallCalls = append(firewallCalls, append([]firewallRule(nil), rules...))
 		if len(firewallCalls) == 1 {
 			return errManagedProxyFirewall
 		}
@@ -415,8 +415,8 @@ func TestManagedXrayFirewallFailureRollsBackNewConfig(t *testing.T) {
 	if !commands.active || commands.count("systemctl", "restart") != 2 {
 		t.Fatalf("rollback systemd state = %v, calls %v", commands.active, commands.calls)
 	}
-	if len(firewallCalls) != 2 || len(firewallCalls[0]) != 1 || firewallCalls[0][0] != 443 ||
-		len(firewallCalls[1]) != 1 || firewallCalls[1][0] != oldProxy.Port {
+	if len(firewallCalls) != 2 || len(firewallCalls[0]) != 1 || firewallCalls[0][0].port != 443 ||
+		len(firewallCalls[1]) != 1 || firewallCalls[1][0].port != oldProxy.Port {
 		t.Fatalf("firewall rollback calls = %v", firewallCalls)
 	}
 }
@@ -475,9 +475,9 @@ func TestManagedXrayDisableCleansRuntimeFilesAndReenableAvoidsDownload(t *testin
 	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
 	writeTestFile(t, manager.unitPath, []byte("unit\n"), 0o644)
 	commands.active = true
-	var firewallCalls [][]int
-	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
-		firewallCalls = append(firewallCalls, append([]int(nil), ports...))
+	var firewallCalls [][]firewallRule
+	manager.reconcileFirewall = func(_ context.Context, rules []firewallRule) error {
+		firewallCalls = append(firewallCalls, append([]firewallRule(nil), rules...))
 		return nil
 	}
 
@@ -519,7 +519,7 @@ func TestManagedXrayDisableWithoutUnitStillCleansRuntimeState(t *testing.T) {
 	writeTestFile(t, manager.configPath, []byte("current\n"), 0o600)
 	writeTestFile(t, manager.previousPath, []byte("previous\n"), 0o600)
 	var firewallCalls int
-	manager.reconcileFirewall = func(_ context.Context, ports []int) error {
+	manager.reconcileFirewall = func(_ context.Context, ports []firewallRule) error {
 		firewallCalls++
 		if len(ports) != 0 {
 			t.Fatalf("disable firewall ports = %v", ports)
@@ -557,7 +557,7 @@ func TestManagedXrayDisableFailureKeepsRuntimeFiles(t *testing.T) {
 	commands.active = true
 	commands.failDisable = true
 	firewallCalled := false
-	manager.reconcileFirewall = func(context.Context, []int) error {
+	manager.reconcileFirewall = func(context.Context, []firewallRule) error {
 		firewallCalled = true
 		return nil
 	}
@@ -612,12 +612,20 @@ func newTestXrayManager(t *testing.T) (*xrayManager, *xrayCommandRecorder) {
 		client:            &http.Client{Timeout: time.Second},
 		runCommand:        commands.run,
 		probeListener:     func(context.Context, int) error { return nil },
-		reconcileFirewall: func(context.Context, []int) error { return nil },
+		reconcileFirewall: func(context.Context, []firewallRule) error { return nil },
 		wait:              func(context.Context, time.Duration) error { return nil },
 		healthAttempts:    2,
 		healthCheckDelay:  0,
 	}
 	return manager, commands
+}
+
+func firewallRulePorts(rules []firewallRule) []int {
+	ports := make([]int, 0, len(rules))
+	for _, rule := range rules {
+		ports = append(ports, rule.port)
+	}
+	return ports
 }
 
 type xrayCommandRecorder struct {

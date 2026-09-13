@@ -32,13 +32,13 @@ func TestProxyFirewallIPTablesReconcileIsOwnedAndIdempotent(t *testing.T) {
 				}
 				sort.Ints(ports)
 				for _, port := range ports {
-					lines = append(lines, "-A INPUT "+strings.Join(managedIPTablesRule(port), " "))
+					lines = append(lines, "-A INPUT "+strings.Join(managedIPTablesRule(firewallRule{port: port, protocol: "tcp"}), " "))
 				}
 				return []byte(strings.Join(lines, "\n")), nil
 			}
 			mutations = append(mutations, append([]string(nil), arguments...))
 			portValue, ok := fieldAfter(arguments, "--dport")
-			if !ok || !containsFields(arguments, "--comment", managedProxyFirewallComment) {
+			if !ok || !containsFields(arguments, "--comment", managedProxyFirewallTCPComment) {
 				return nil, errors.New("attempted to change an unowned rule")
 			}
 			port, _ := strconv.Atoi(portValue)
@@ -141,17 +141,22 @@ func TestProxyFirewallParsesOwnedUFWAndFirewalldRules(t *testing.T) {
 	ufwPorts, ufwRules := parseUFWManagedRules(`Status: active
 [ 1] 22/tcp ALLOW IN Anywhere
 [ 2] 443/tcp ALLOW IN Anywhere # vps-panel-proxy-tcp
-[ 3] 8443/tcp (v6) ALLOW IN Anywhere (v6) # vps-panel-proxy-tcp`)
-	if len(ufwPorts) != 2 || len(ufwRules) != 2 {
+[ 3] 8443/tcp (v6) ALLOW IN Anywhere (v6) # vps-panel-proxy-tcp
+[ 4] 8388/udp ALLOW IN Anywhere # vps-panel-proxy-udp`)
+	if len(ufwPorts) != 3 || len(ufwRules) != 3 {
 		t.Fatalf("UFW managed rules = %v, %+v", ufwPorts, ufwRules)
 	}
-	firewalldPorts := parseManagedRulePorts(`0 -p tcp --dport 22 -j ACCEPT
-0 -p tcp --dport 443 -m comment --comment "vps-panel-proxy-tcp" -j ACCEPT`)
-	if len(firewalldPorts) != 1 {
+	firewalldPorts := parseManagedFirewallRules(`0 -p tcp --dport 22 -j ACCEPT
+0 -p tcp --dport 443 -m comment --comment "vps-panel-proxy-tcp" -j ACCEPT
+0 -p udp --dport 8388 -m comment --comment "vps-panel-proxy-udp" -j ACCEPT`)
+	if len(firewalldPorts) != 2 {
 		t.Fatalf("firewalld managed rules = %v", firewalldPorts)
 	}
-	if _, exists := firewalldPorts[443]; !exists {
+	if _, exists := firewalldPorts[firewallRule{port: 443, protocol: "tcp"}]; !exists {
 		t.Fatal("managed firewalld port was not recognized")
+	}
+	if _, exists := firewalldPorts[firewallRule{port: 8388, protocol: "udp"}]; !exists {
+		t.Fatal("managed firewalld UDP port was not recognized")
 	}
 }
 
@@ -214,5 +219,80 @@ func TestProxyFirewallReconcilesActiveFirewalld(t *testing.T) {
 	if len(mutations) != 2 || !strings.Contains(mutations[0], "--add-rule") || !strings.Contains(mutations[0], "--dport 443") ||
 		!strings.Contains(mutations[1], "--remove-rule") || !strings.Contains(mutations[1], "--dport 80") {
 		t.Fatalf("firewalld mutations = %v", mutations)
+	}
+}
+
+func TestProxyFirewallShadowsocksReconcilesTCPAndUDPWithoutTouchingUserRules(t *testing.T) {
+	managed := map[firewallRule]struct{}{
+		{port: 8388, protocol: "tcp"}: {},
+		{port: 8388, protocol: "udp"}: {},
+	}
+	mutations := make([][]string, 0)
+	firewall := &proxyFirewall{
+		lookPath: func(name string) (string, error) {
+			if name == "iptables" {
+				return name, nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			if arguments[0] == "-S" {
+				lines := []string{"-P INPUT DROP", "-A INPUT -p udp --dport 5353 -j ACCEPT"}
+				for rule := range managed {
+					lines = append(lines, "-A INPUT "+strings.Join(managedIPTablesRule(rule), " "))
+				}
+				return []byte(strings.Join(lines, "\n")), nil
+			}
+			mutations = append(mutations, append([]string(nil), arguments...))
+			portValue, _ := fieldAfter(arguments, "--dport")
+			port, _ := strconv.Atoi(portValue)
+			protocol, _ := fieldAfter(arguments, "-p")
+			rule := firewallRule{port: port, protocol: protocol}
+			if !containsFields(arguments, "--comment", firewallComment(protocol)) {
+				return nil, errors.New("attempted to change an unowned rule")
+			}
+			if arguments[0] == "-I" {
+				managed[rule] = struct{}{}
+			} else {
+				delete(managed, rule)
+			}
+			return nil, nil
+		},
+	}
+	desired := []firewallRule{{port: 443, protocol: "tcp"}, {port: 8389, protocol: "tcp"}, {port: 8389, protocol: "udp"}}
+	if err := firewall.reconcileRules(t.Context(), desired); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range desired {
+		if _, exists := managed[rule]; !exists {
+			t.Fatalf("missing desired rule %+v; managed = %+v", rule, managed)
+		}
+	}
+	if _, exists := managed[firewallRule{port: 8388, protocol: "tcp"}]; exists {
+		t.Fatal("stale Shadowsocks TCP rule was not removed")
+	}
+	if _, exists := managed[firewallRule{port: 8388, protocol: "udp"}]; exists {
+		t.Fatal("stale Shadowsocks UDP rule was not removed")
+	}
+	if len(mutations) != 5 {
+		t.Fatalf("mixed firewall mutations = %v", mutations)
+	}
+	if err := firewall.reconcileRules(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(managed) != 0 {
+		t.Fatalf("disable/delete retained managed rules: %+v", managed)
+	}
+}
+
+func TestExpectedProxyFirewallRulesAreProtocolSpecific(t *testing.T) {
+	vless := testDesiredTLSProxy()
+	shadowsocks := testDesiredShadowsocksProxy(2, 8388, "2022-blake3-aes-128-gcm", 16)
+	empty := testDesiredShadowsocksProxy(3, 8389, "2022-blake3-aes-128-gcm", 16)
+	empty.Clients = nil
+	rules := expectedProxyFirewallRules([]desiredProxy{vless, shadowsocks, empty})
+	want := []firewallRule{{port: 443, protocol: "tcp"}, {port: 8388, protocol: "tcp"}, {port: 8388, protocol: "udp"}}
+	if fmt.Sprint(rules) != fmt.Sprint(want) {
+		t.Fatalf("expected firewall rules = %+v, want %+v", rules, want)
 	}
 }

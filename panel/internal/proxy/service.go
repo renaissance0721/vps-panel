@@ -21,15 +21,19 @@ import (
 )
 
 const (
-	ProtocolVLESS   = "vless"
-	TransportTCP    = "tcp"
-	SecurityTLS     = "tls"
-	SecurityReality = "reality"
-	EntryHostAuto   = "auto"
-	EntryHostManual = "manual"
-	ServerFlow      = "xtls-rprx-vision"
-	Fingerprint     = "chrome"
-	maxNameLength   = 100
+	ProtocolVLESS              = "vless"
+	ProtocolShadowsocks        = "shadowsocks"
+	TransportTCP               = "tcp"
+	ShadowsocksNetwork         = "tcp,udp"
+	ShadowsocksMethodAES128GCM = "2022-blake3-aes-128-gcm"
+	ShadowsocksMethodAES256GCM = "2022-blake3-aes-256-gcm"
+	SecurityTLS                = "tls"
+	SecurityReality            = "reality"
+	EntryHostAuto              = "auto"
+	EntryHostManual            = "manual"
+	ServerFlow                 = "xtls-rprx-vision"
+	Fingerprint                = "chrome"
+	maxNameLength              = 100
 )
 
 var (
@@ -45,6 +49,13 @@ var (
 	ErrInvalidServerName            = errors.New("server name must be a hostname or IP address")
 	ErrInvalidTLS                   = errors.New("TLS certificate and private key are required and must match")
 	ErrInvalidReality               = errors.New("REALITY server name or target is invalid")
+	ErrInvalidProtocol              = errors.New("protocol must be vless or shadowsocks")
+	ErrInvalidShadowsocksMethod     = errors.New("unsupported Shadowsocks method")
+	ErrImmutableProtocol            = errors.New("proxy protocol cannot be changed")
+	ErrImmutableShadowsocksMethod   = errors.New("Shadowsocks method cannot be changed")
+	ErrShadowsocksClientUDP443      = errors.New("client_udp443 is not supported for Shadowsocks")
+	ErrInvalidShadowsocksCredential = errors.New("invalid stored Shadowsocks credential")
+	ErrInvalidShadowsocksUpdate     = errors.New("TLS and REALITY fields are not supported for Shadowsocks")
 	ErrLastClient                   = errors.New("a proxy must keep at least one client")
 	ErrConnectionAddressUnavailable = errors.New("connection address unavailable")
 )
@@ -79,6 +90,8 @@ type PublicConfig struct {
 	RealityTarget            string
 	RealityPublicKey         string
 	RealityShortID           string
+	Method                   string
+	Network                  string
 }
 
 type ClientSummary struct {
@@ -97,6 +110,8 @@ type Client struct {
 	ProxyID      int64
 	Name         string
 	UUID         string
+	Password     string
+	Protocol     string
 	ClientUDP443 bool
 	Enabled      bool
 	CreatedAt    time.Time
@@ -114,6 +129,9 @@ type ClientShare struct {
 	Flow             string
 	RealityPublicKey string
 	RealityShortID   string
+	Protocol         string
+	Method           string
+	Network          string
 	URI              string
 }
 
@@ -131,6 +149,8 @@ type CreateInput struct {
 	RealityTarget     string
 	FirstClientName   string
 	FirstClientUDP443 bool
+	Protocol          string
+	Method            string
 }
 
 type UpdateInput struct {
@@ -144,6 +164,8 @@ type UpdateInput struct {
 	Certificate   *string
 	PrivateKey    *string
 	RealityTarget *string
+	Protocol      *string
+	Method        *string
 }
 
 type ClientCreateInput struct {
@@ -164,17 +186,24 @@ type Mutation struct {
 }
 
 type DesiredProxy struct {
-	ID         int64           `json:"id"`
-	Listen     string          `json:"listen"`
-	Port       int             `json:"port"`
-	Protocol   string          `json:"protocol"`
-	Transport  string          `json:"transport"`
-	Security   string          `json:"security"`
-	ServerFlow string          `json:"server_flow"`
-	ServerName string          `json:"server_name"`
-	TLS        *DesiredTLS     `json:"tls,omitempty"`
-	Reality    *DesiredReality `json:"reality,omitempty"`
-	Clients    []DesiredClient `json:"clients"`
+	ID          int64               `json:"id"`
+	Listen      string              `json:"listen"`
+	Port        int                 `json:"port"`
+	Protocol    string              `json:"protocol"`
+	Transport   string              `json:"transport,omitempty"`
+	Security    string              `json:"security,omitempty"`
+	ServerFlow  string              `json:"server_flow,omitempty"`
+	ServerName  string              `json:"server_name,omitempty"`
+	TLS         *DesiredTLS         `json:"tls,omitempty"`
+	Reality     *DesiredReality     `json:"reality,omitempty"`
+	Shadowsocks *DesiredShadowsocks `json:"shadowsocks,omitempty"`
+	Clients     []DesiredClient     `json:"clients"`
+}
+
+type DesiredShadowsocks struct {
+	Method   string `json:"method"`
+	Network  string `json:"network"`
+	Password string `json:"password"`
 }
 
 type DesiredTLS struct {
@@ -189,18 +218,26 @@ type DesiredReality struct {
 }
 
 type DesiredClient struct {
-	ID   int64  `json:"id"`
-	UUID string `json:"uuid"`
+	ID       int64  `json:"id"`
+	UUID     string `json:"uuid,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 type storedConfig struct {
-	Transport   string         `json:"transport"`
-	Security    string         `json:"security"`
-	ServerFlow  string         `json:"server_flow"`
-	ServerName  string         `json:"server_name"`
-	Fingerprint string         `json:"fingerprint"`
-	TLS         *storedTLS     `json:"tls,omitempty"`
-	Reality     *storedReality `json:"reality,omitempty"`
+	Transport   string             `json:"transport,omitempty"`
+	Security    string             `json:"security,omitempty"`
+	ServerFlow  string             `json:"server_flow,omitempty"`
+	ServerName  string             `json:"server_name,omitempty"`
+	Fingerprint string             `json:"fingerprint,omitempty"`
+	TLS         *storedTLS         `json:"tls,omitempty"`
+	Reality     *storedReality     `json:"reality,omitempty"`
+	Shadowsocks *storedShadowsocks `json:"shadowsocks,omitempty"`
+}
+
+type storedShadowsocks struct {
+	Method   string `json:"method"`
+	Network  string `json:"network"`
+	Password string `json:"password"`
 }
 
 type storedTLS struct {
@@ -216,7 +253,8 @@ type storedReality struct {
 }
 
 type storedCredential struct {
-	UUID string `json:"uuid"`
+	UUID     string `json:"uuid,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 type Service struct {
@@ -229,6 +267,10 @@ func NewService(db *sql.DB) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutation, error) {
+	protocol, err := normalizeProtocol(input.Protocol)
+	if err != nil {
+		return Proxy{}, Mutation{}, err
+	}
 	name, err := validateName(input.Name)
 	if err != nil {
 		return Proxy{}, Mutation{}, err
@@ -247,17 +289,26 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	if err != nil {
 		return Proxy{}, Mutation{}, err
 	}
-	config, err := newStoredConfig(input.Security, input.ServerName, input.Certificate, input.PrivateKey, input.RealityTarget)
+	var config storedConfig
+	var credential storedCredential
+	switch protocol {
+	case ProtocolVLESS:
+		config, err = newStoredConfig(input.Security, input.ServerName, input.Certificate, input.PrivateKey, input.RealityTarget)
+		if err == nil {
+			credential, err = newVLESSCredential()
+		}
+	case ProtocolShadowsocks:
+		if input.FirstClientUDP443 {
+			return Proxy{}, Mutation{}, ErrShadowsocksClientUDP443
+		}
+		config, credential, err = newShadowsocksConfigAndCredential(input.Method)
+	}
 	if err != nil {
 		return Proxy{}, Mutation{}, err
 	}
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
-	}
-	credential, err := newCredential()
-	if err != nil {
-		return Proxy{}, Mutation{}, err
 	}
 	credentialJSON, err := json.Marshal(credential)
 	if err != nil {
@@ -277,7 +328,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		`INSERT INTO proxies
 		 (server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.ServerID, name, ProtocolVLESS, input.ListenPort, entryHostMode, entryHost, input.Enabled,
+		input.ServerID, name, protocol, input.ListenPort, entryHostMode, entryHost, input.Enabled,
 		string(configJSON), now.Unix(), now.Unix(),
 	)
 	if isUniqueConstraint(err) {
@@ -381,6 +432,15 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	if err != nil {
 		return Proxy{}, Mutation{}, err
 	}
+	if input.Protocol != nil {
+		protocol, protocolErr := normalizeProtocol(*input.Protocol)
+		if protocolErr != nil {
+			return Proxy{}, Mutation{}, protocolErr
+		}
+		if protocol != value.Protocol {
+			return Proxy{}, Mutation{}, ErrImmutableProtocol
+		}
+	}
 	if input.Name != nil {
 		value.Name, err = validateName(*input.Name)
 		if err != nil {
@@ -407,8 +467,32 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
 	}
-	if err := updateStoredConfig(&config, input); err != nil {
-		return Proxy{}, Mutation{}, err
+	switch value.Protocol {
+	case ProtocolVLESS:
+		if input.Method != nil {
+			return Proxy{}, Mutation{}, ErrInvalidShadowsocksMethod
+		}
+		if err := updateStoredConfig(&config, input); err != nil {
+			return Proxy{}, Mutation{}, err
+		}
+	case ProtocolShadowsocks:
+		if config.Shadowsocks == nil {
+			return Proxy{}, Mutation{}, errors.New("invalid stored Shadowsocks proxy config")
+		}
+		if input.Method != nil {
+			method, methodErr := normalizeShadowsocksMethod(*input.Method)
+			if methodErr != nil {
+				return Proxy{}, Mutation{}, methodErr
+			}
+			if method != config.Shadowsocks.Method {
+				return Proxy{}, Mutation{}, ErrImmutableShadowsocksMethod
+			}
+		}
+		if input.Security != nil || input.ServerName != nil || input.Certificate != nil || input.PrivateKey != nil || input.RealityTarget != nil {
+			return Proxy{}, Mutation{}, ErrInvalidShadowsocksUpdate
+		}
+	default:
+		return Proxy{}, Mutation{}, ErrInvalidProtocol
 	}
 	configJSON, err := json.Marshal(config)
 	if err != nil {
@@ -471,8 +555,11 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 		return nil, fmt.Errorf("read proxy for client list: %w", err)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, proxy_id, name, credential_json, client_udp443, enabled, created_at, updated_at
-		 FROM clients WHERE proxy_id = ? ORDER BY created_at, id`, proxyID,
+		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
+		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
+		 proxies.protocol, proxies.config_json
+		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
+		 WHERE clients.proxy_id = ? ORDER BY clients.created_at, clients.id`, proxyID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list clients: %w", err)
@@ -494,20 +581,26 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 	if err != nil {
 		return Client{}, Mutation{}, err
 	}
-	credential, err := newCredential()
-	if err != nil {
-		return Client{}, Mutation{}, err
-	}
-	credentialJSON, _ := json.Marshal(credential)
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("begin client creation: %w", err)
 	}
 	defer tx.Rollback()
-	proxyValue, _, err := getProxyForMutation(ctx, tx, proxyID)
+	proxyValue, config, err := getProxyForMutation(ctx, tx, proxyID)
 	if err != nil {
 		return Client{}, Mutation{}, err
+	}
+	if proxyValue.Protocol == ProtocolShadowsocks && input.ClientUDP443 {
+		return Client{}, Mutation{}, ErrShadowsocksClientUDP443
+	}
+	credential, err := newCredentialForProxy(proxyValue.Protocol, config)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	credentialJSON, err := json.Marshal(credential)
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("encode client credential: %w", err)
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO clients (proxy_id, name, credential_json, client_udp443, enabled, created_at, updated_at)
@@ -535,7 +628,8 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 	value, err := scanClient(s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at
+		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
+		 proxies.protocol, proxies.config_json
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
@@ -568,6 +662,9 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 		}
 	}
 	if input.ClientUDP443 != nil {
+		if value.Protocol == ProtocolShadowsocks && *input.ClientUDP443 {
+			return Client{}, Mutation{}, ErrShadowsocksClientUDP443
+		}
 		value.ClientUDP443 = *input.ClientUDP443
 	}
 	if input.Enabled != nil {
@@ -624,14 +721,14 @@ func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) 
 func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, error) {
 	var value Client
 	var credentialJSON, configJSON string
-	var proxyName, entryHostMode, entryHost, publicIPv4 string
+	var proxyName, protocol, entryHostMode, entryHost, publicIPv4 string
 	var listenPort int
 	var clientUDP443, enabled int
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
-		 proxies.name, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.name, proxies.protocol, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.config_json, COALESCE(system_info.public_ipv4, '')
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
@@ -640,7 +737,7 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &clientUDP443, &enabled,
-		&createdAt, &updatedAt, &proxyName, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
+		&createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClientShare{}, ErrClientNotFound
@@ -648,15 +745,20 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	if err != nil {
 		return ClientShare{}, fmt.Errorf("get client share: %w", err)
 	}
-	credential, err := decodeCredential(credentialJSON)
+	credential, err := decodeCredential(protocol, credentialJSON)
 	if err != nil {
 		return ClientShare{}, err
 	}
-	config, err := decodeConfig(configJSON)
+	config, err := decodeConfig(protocol, configJSON)
 	if err != nil {
 		return ClientShare{}, err
+	}
+	if protocol == ProtocolShadowsocks && !validShadowsocksKey(credential.Password, config.Shadowsocks.Method) {
+		return ClientShare{}, ErrInvalidShadowsocksCredential
 	}
 	value.UUID = credential.UUID
+	value.Password = credential.Password
+	value.Protocol = protocol
 	value.ClientUDP443 = clientUDP443 != 0
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -672,13 +774,22 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	share := ClientShare{
 		Client: value, ProxyName: proxyName, Address: address, Port: listenPort,
 		Security: config.Security, ServerName: config.ServerName, Fingerprint: config.Fingerprint,
-		Flow: flow,
+		Flow: flow, Protocol: protocol,
 	}
 	if config.Reality != nil {
 		share.RealityPublicKey = config.Reality.PublicKey
 		share.RealityShortID = config.Reality.ShortID
 	}
-	share.URI = buildVLESSURI(share)
+	switch protocol {
+	case ProtocolVLESS:
+		share.URI = buildVLESSURI(share)
+	case ProtocolShadowsocks:
+		share.Method = config.Shadowsocks.Method
+		share.Network = config.Shadowsocks.Network
+		share.URI = buildShadowsocksURI(share, config.Shadowsocks.Password)
+	default:
+		return ClientShare{}, ErrInvalidProtocol
+	}
 	return share, nil
 }
 
@@ -703,15 +814,21 @@ func ListDesired(ctx context.Context, query interface {
 		if err := rows.Scan(&value.ID, &value.Port, &value.Protocol, &configJSON); err != nil {
 			return nil, fmt.Errorf("scan desired proxy: %w", err)
 		}
-		config, err := decodeConfig(configJSON)
+		config, err := decodeConfig(value.Protocol, configJSON)
 		if err != nil {
 			return nil, err
 		}
 		value.Listen = "0.0.0.0"
-		value.Transport = config.Transport
-		value.Security = config.Security
-		value.ServerFlow = config.ServerFlow
-		value.ServerName = config.ServerName
+		if value.Protocol == ProtocolVLESS {
+			value.Transport = config.Transport
+			value.Security = config.Security
+			value.ServerFlow = config.ServerFlow
+			value.ServerName = config.ServerName
+		} else {
+			value.Shadowsocks = &DesiredShadowsocks{
+				Method: config.Shadowsocks.Method, Network: config.Shadowsocks.Network, Password: config.Shadowsocks.Password,
+			}
+		}
 		records = append(records, desiredRecord{value: value, config: config})
 	}
 	if err := rows.Err(); err != nil {
@@ -744,16 +861,24 @@ func ListDesired(ctx context.Context, query interface {
 				clientRows.Close()
 				return nil, fmt.Errorf("scan desired client: %w", err)
 			}
-			credential, err := decodeCredential(credentialJSON)
+			credential, err := decodeCredential(value.Protocol, credentialJSON)
 			if err != nil {
 				clientRows.Close()
 				return nil, err
 			}
 			client.UUID = credential.UUID
+			client.Password = credential.Password
+			if value.Protocol == ProtocolShadowsocks && !validShadowsocksKey(client.Password, config.Shadowsocks.Method) {
+				clientRows.Close()
+				return nil, ErrInvalidShadowsocksCredential
+			}
 			value.Clients = append(value.Clients, client)
 		}
 		if err := clientRows.Close(); err != nil {
 			return nil, fmt.Errorf("close desired clients: %w", err)
+		}
+		if value.Protocol == ProtocolShadowsocks && len(value.Clients) == 0 {
+			continue
 		}
 		values = append(values, value)
 	}
@@ -878,7 +1003,7 @@ func newRealitySecrets() (string, string, string, error) {
 		base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()), hex.EncodeToString(shortID), nil
 }
 
-func newCredential() (storedCredential, error) {
+func newVLESSCredential() (storedCredential, error) {
 	value := make([]byte, 16)
 	if _, err := rand.Read(value); err != nil {
 		return storedCredential{}, fmt.Errorf("generate client UUID: %w", err)
@@ -887,6 +1012,93 @@ func newCredential() (storedCredential, error) {
 	value[8] = (value[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(value)
 	return storedCredential{UUID: encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]}, nil
+}
+
+func newShadowsocksConfigAndCredential(method string) (storedConfig, storedCredential, error) {
+	method, err := normalizeShadowsocksMethod(method)
+	if err != nil {
+		return storedConfig{}, storedCredential{}, err
+	}
+	masterPassword, err := newShadowsocksKey(method)
+	if err != nil {
+		return storedConfig{}, storedCredential{}, err
+	}
+	clientPassword, err := newShadowsocksKey(method)
+	if err != nil {
+		return storedConfig{}, storedCredential{}, err
+	}
+	return storedConfig{Shadowsocks: &storedShadowsocks{
+		Method: method, Network: ShadowsocksNetwork, Password: masterPassword,
+	}}, storedCredential{Password: clientPassword}, nil
+}
+
+func newCredentialForProxy(protocol string, config storedConfig) (storedCredential, error) {
+	switch protocol {
+	case ProtocolVLESS:
+		return newVLESSCredential()
+	case ProtocolShadowsocks:
+		if config.Shadowsocks == nil {
+			return storedCredential{}, errors.New("invalid stored Shadowsocks proxy config")
+		}
+		password, err := newShadowsocksKey(config.Shadowsocks.Method)
+		return storedCredential{Password: password}, err
+	default:
+		return storedCredential{}, ErrInvalidProtocol
+	}
+}
+
+func newShadowsocksKey(method string) (string, error) {
+	length, err := shadowsocksKeyLength(method)
+	if err != nil {
+		return "", err
+	}
+	value := make([]byte, length)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate Shadowsocks key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(value), nil
+}
+
+func normalizeProtocol(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ProtocolVLESS, nil
+	}
+	if value != ProtocolVLESS && value != ProtocolShadowsocks {
+		return "", ErrInvalidProtocol
+	}
+	return value, nil
+}
+
+func normalizeShadowsocksMethod(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ShadowsocksMethodAES128GCM, nil
+	}
+	if _, err := shadowsocksKeyLength(value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func shadowsocksKeyLength(method string) (int, error) {
+	switch method {
+	case ShadowsocksMethodAES128GCM:
+		return 16, nil
+	case ShadowsocksMethodAES256GCM:
+		return 32, nil
+	default:
+		return 0, ErrInvalidShadowsocksMethod
+	}
+}
+
+func validShadowsocksKey(value, method string) bool {
+	expected, err := shadowsocksKeyLength(method)
+	if err != nil {
+		return false
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	return err == nil && len(decoded) == expected
 }
 
 func validUUID(value string) bool {
@@ -976,10 +1188,22 @@ func normalizeTarget(value string) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
 
-func decodeConfig(value string) (storedConfig, error) {
+func decodeConfig(protocol, value string) (storedConfig, error) {
 	var config storedConfig
 	if err := decodeStrict(value, &config); err != nil {
 		return storedConfig{}, fmt.Errorf("decode proxy config: %w", err)
+	}
+	if protocol == ProtocolShadowsocks {
+		if config.Shadowsocks == nil || config.Transport != "" || config.Security != "" || config.ServerFlow != "" ||
+			config.ServerName != "" || config.Fingerprint != "" || config.TLS != nil || config.Reality != nil ||
+			config.Shadowsocks.Network != ShadowsocksNetwork ||
+			!validShadowsocksKey(config.Shadowsocks.Password, config.Shadowsocks.Method) {
+			return storedConfig{}, errors.New("invalid stored Shadowsocks proxy config")
+		}
+		return config, nil
+	}
+	if protocol != ProtocolVLESS || config.Shadowsocks != nil {
+		return storedConfig{}, errors.New("invalid stored proxy protocol config")
 	}
 	if config.Transport != TransportTCP || config.ServerFlow != ServerFlow || config.Fingerprint != Fingerprint {
 		return storedConfig{}, errors.New("invalid stored proxy config")
@@ -1003,10 +1227,26 @@ func decodeConfig(value string) (storedConfig, error) {
 	return config, nil
 }
 
-func decodeCredential(value string) (storedCredential, error) {
+func decodeCredential(protocol, value string) (storedCredential, error) {
 	var credential storedCredential
-	if err := decodeStrict(value, &credential); err != nil || !validUUID(credential.UUID) {
+	if err := decodeStrict(value, &credential); err != nil {
 		return storedCredential{}, errors.New("invalid stored client credential")
+	}
+	switch protocol {
+	case ProtocolVLESS:
+		if credential.Password != "" || !validUUID(credential.UUID) {
+			return storedCredential{}, errors.New("invalid stored client credential")
+		}
+	case ProtocolShadowsocks:
+		if credential.UUID != "" {
+			return storedCredential{}, ErrInvalidShadowsocksCredential
+		}
+		decoded, err := base64.StdEncoding.Strict().DecodeString(credential.Password)
+		if err != nil || (len(decoded) != 16 && len(decoded) != 32) {
+			return storedCredential{}, ErrInvalidShadowsocksCredential
+		}
+	default:
+		return storedCredential{}, ErrInvalidProtocol
 	}
 	return credential, nil
 }
@@ -1025,6 +1265,10 @@ func decodeStrict(value string, destination any) error {
 
 func publicConfig(config storedConfig) PublicConfig {
 	value := PublicConfig{Transport: config.Transport, Security: config.Security, ServerFlow: config.ServerFlow, ServerName: config.ServerName, Fingerprint: config.Fingerprint}
+	if config.Shadowsocks != nil {
+		value.Method = config.Shadowsocks.Method
+		value.Network = config.Shadowsocks.Network
+	}
 	if config.TLS != nil {
 		value.TLSCertificateConfigured = config.TLS.Certificate != "" && config.TLS.PrivateKey != ""
 	}
@@ -1053,7 +1297,7 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
 		return Proxy{}, storedConfig{}, errors.New("invalid stored proxy entry host")
 	}
-	config, err := decodeConfig(configJSON)
+	config, err := decodeConfig(value.Protocol, configJSON)
 	if err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
@@ -1079,17 +1323,25 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 
 func scanClient(row rowScanner) (Client, error) {
 	var value Client
-	var credentialJSON string
+	var credentialJSON, configJSON string
 	var udp443, enabled int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt, &value.Protocol, &configJSON); err != nil {
 		return Client{}, err
 	}
-	credential, err := decodeCredential(credentialJSON)
+	credential, err := decodeCredential(value.Protocol, credentialJSON)
 	if err != nil {
 		return Client{}, err
 	}
+	config, err := decodeConfig(value.Protocol, configJSON)
+	if err != nil {
+		return Client{}, err
+	}
+	if value.Protocol == ProtocolShadowsocks && !validShadowsocksKey(credential.Password, config.Shadowsocks.Method) {
+		return Client{}, ErrInvalidShadowsocksCredential
+	}
 	value.UUID = credential.UUID
+	value.Password = credential.Password
 	value.ClientUDP443 = udp443 != 0
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -1098,7 +1350,11 @@ func scanClient(row rowScanner) (Client, error) {
 }
 
 func summarizeClient(value Client) ClientSummary {
-	return ClientSummary{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:], ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	summary := ""
+	if value.UUID != "" {
+		summary = value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:]
+	}
+	return ClientSummary{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: summary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func getProxyForMutation(ctx context.Context, tx *sql.Tx, id int64) (Proxy, storedConfig, error) {
@@ -1123,27 +1379,35 @@ func getProxyForMutation(ctx context.Context, tx *sql.Tx, id int64) (Proxy, stor
 func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, int64, error) {
 	var serverID int64
 	var value Client
-	var credentialJSON string
+	var credentialJSON, configJSON string
 	var udp443, enabled int
 	var createdAt, updatedAt int64
 	err := tx.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
-		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at, proxies.server_id
+		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
+		 proxies.protocol, proxies.config_json, proxies.server_id
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
-	).Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt, &serverID)
+	).Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, 0, ErrClientNotFound
 	}
 	if err != nil {
 		return Client{}, 0, fmt.Errorf("read client: %w", err)
 	}
-	credential, err := decodeCredential(credentialJSON)
+	credential, err := decodeCredential(value.Protocol, credentialJSON)
 	if err != nil {
 		return Client{}, 0, err
 	}
-	value.UUID, value.ClientUDP443, value.Enabled = credential.UUID, udp443 != 0, enabled != 0
+	config, err := decodeConfig(value.Protocol, configJSON)
+	if err != nil {
+		return Client{}, 0, err
+	}
+	if value.Protocol == ProtocolShadowsocks && !validShadowsocksKey(credential.Password, config.Shadowsocks.Method) {
+		return Client{}, 0, ErrInvalidShadowsocksCredential
+	}
+	value.UUID, value.Password, value.ClientUDP443, value.Enabled = credential.UUID, credential.Password, udp443 != 0, enabled != 0
 	value.CreatedAt, value.UpdatedAt = time.Unix(createdAt, 0).UTC(), time.Unix(updatedAt, 0).UTC()
 	return value, serverID, nil
 }
@@ -1218,6 +1482,15 @@ func buildVLESSURI(share ClientShare) string {
 	return (&url.URL{
 		Scheme: "vless", User: url.User(share.UUID), Host: net.JoinHostPort(share.Address, strconv.Itoa(share.Port)),
 		RawQuery: query.Encode(), Fragment: share.ProxyName + " - " + share.Name,
+	}).String()
+}
+
+func buildShadowsocksURI(share ClientShare, masterPassword string) string {
+	return (&url.URL{
+		Scheme:   "ss",
+		User:     url.UserPassword(share.Method, masterPassword+":"+share.Password),
+		Host:     net.JoinHostPort(share.Address, strconv.Itoa(share.Port)),
+		Fragment: share.ProxyName + " - " + share.Name,
 	}).String()
 }
 

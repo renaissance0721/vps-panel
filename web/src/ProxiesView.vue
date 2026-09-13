@@ -2,11 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
 import {
+  clientTrafficUsedBytes,
+  formatClientTrafficBytes,
   proxyListProtocolFields,
   shadowsocksMethods,
   showsVLESSClientFields,
   type ProxyProtocol,
   type ShadowsocksMethod,
+  type ClientMetrics,
 } from './proxy'
 
 type ServerOption = {
@@ -36,6 +39,7 @@ type ClientSummary = {
   uuid_summary: string
   client_udp443: boolean
   enabled: boolean
+  metrics: ClientMetrics
   created_at: string
   updated_at: string
 }
@@ -47,6 +51,7 @@ type ClientRecord = {
 	uuid?: string
   client_udp443: boolean
   enabled: boolean
+  metrics: ClientMetrics
   created_at: string
   updated_at: string
 }
@@ -567,8 +572,8 @@ onMounted(async () => {
       <div class="section-heading"><h3>客户端</h3><n-button size="small" type="primary" @click="openCreateClient">新增客户端</n-button></div>
       <n-empty v-if="!selectedProxy.clients?.length" size="small" description="暂无客户端" />
       <div v-else class="server-table-wrap">
-		<table class="server-table client-table"><thead><tr><th>名称</th><th>状态</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UUID</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UDP/443</th><th>操作</th></tr></thead>
-			<tbody><tr v-for="client in selectedProxy.clients" :key="client.id"><td>{{ client.name }}</td><td>{{ client.enabled ? '启用' : '禁用' }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.uuid_summary }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.client_udp443 ? '开启' : '关闭' }}</td><td class="server-actions"><n-button size="tiny" secondary @click="copyClientURI(client)">{{ copiedClientID === client.id ? '已复制' : '复制链接' }}</n-button><n-button size="tiny" secondary @click="showClient(client)">查看</n-button><n-button size="tiny" secondary @click="openEditClient(client)">编辑</n-button><n-button size="tiny" secondary @click="toggleClient(client)">{{ client.enabled ? '禁用' : '启用' }}</n-button><n-button size="tiny" type="error" secondary @click="removeClient(client)">删除</n-button></td></tr></tbody>
+		<table class="server-table client-table"><thead><tr><th>名称</th><th>状态</th><th>已用流量</th><th>最近活动</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UUID</th><th v-if="showsVLESSClientFields(selectedProxy.protocol)">UDP/443</th><th>操作</th></tr></thead>
+			<tbody><tr v-for="client in selectedProxy.clients" :key="client.id"><td>{{ client.name }}</td><td>{{ client.enabled ? '启用' : '禁用' }}</td><td>{{ formatClientTrafficBytes(clientTrafficUsedBytes(client.metrics)) }}</td><td>{{ client.metrics?.last_activity_at ? formatTime(client.metrics.last_activity_at) : '—' }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.uuid_summary }}</td><td v-if="showsVLESSClientFields(selectedProxy.protocol)">{{ client.client_udp443 ? '开启' : '关闭' }}</td><td class="server-actions"><n-button size="tiny" secondary @click="copyClientURI(client)">{{ copiedClientID === client.id ? '已复制' : '复制链接' }}</n-button><n-button size="tiny" secondary @click="showClient(client)">查看</n-button><n-button size="tiny" secondary @click="openEditClient(client)">编辑</n-button><n-button size="tiny" secondary @click="toggleClient(client)">{{ client.enabled ? '禁用' : '启用' }}</n-button><n-button size="tiny" type="error" secondary @click="removeClient(client)">删除</n-button></td></tr></tbody>
         </table>
       </div>
       <div class="modal-actions"><n-button secondary @click="openEditProxy(selectedProxy)">编辑节点</n-button><n-button @click="proxyDetailOpen = false">关闭</n-button></div>
@@ -591,6 +596,8 @@ onMounted(async () => {
     <n-card class="client-detail-card" title="客户端详情" :bordered="false" closable @close="clientDetailOpen = false">
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedShare.client.name }}</dd></div><div><dt>状态</dt><dd>{{ selectedShare.client.enabled ? '启用' : '禁用' }}</dd></div>
+		<div><dt>本周期上行</dt><dd>{{ formatClientTrafficBytes(selectedShare.client.metrics?.cycle_uplink_bytes ?? 0) }}</dd></div><div><dt>本周期下行</dt><dd>{{ formatClientTrafficBytes(selectedShare.client.metrics?.cycle_downlink_bytes ?? 0) }}</dd></div>
+		<div><dt>本周期已用</dt><dd>{{ formatClientTrafficBytes(clientTrafficUsedBytes(selectedShare.client.metrics)) }}</dd></div><div><dt>最近活动</dt><dd>{{ selectedShare.client.metrics?.last_activity_at ? formatTime(selectedShare.client.metrics.last_activity_at) : '—' }}</dd></div>
 		<template v-if="selectedShare.protocol === 'vless'"><div><dt>UUID</dt><dd>{{ selectedShare.client.uuid }}</dd></div><div><dt>客户端 Flow</dt><dd>{{ selectedShare.flow }}</dd></div></template>
 		<div><dt>连接地址</dt><dd>{{ selectedShare.address }}</dd></div><div><dt>端口</dt><dd>{{ selectedShare.port }}</dd></div>
 		<template v-if="selectedShare.protocol === 'vless'"><div><dt>安全层</dt><dd>{{ selectedShare.security === 'tls' ? 'TLS' : 'REALITY' }}</dd></div><div><dt>SNI</dt><dd>{{ selectedShare.server_name }}</dd></div>

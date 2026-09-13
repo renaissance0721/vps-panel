@@ -69,6 +69,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/agent/config", s.getAgentConfig)
 	mux.HandleFunc("POST /api/agent/config/result", s.recordAgentConfigResult)
+	mux.HandleFunc("POST /api/agent/traffic", s.recordAgentClientTraffic)
 	mux.HandleFunc("GET /api/agent/ws", s.agentWebSocket)
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))

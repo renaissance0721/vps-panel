@@ -26,15 +26,16 @@ const defaultConfigPath = "/etc/vps-panel-agent/config.json"
 var agentVersion = "dev"
 
 var (
-	agentHeartbeatInterval    = 10 * time.Second
-	agentMetricsInterval      = 5 * time.Second
-	agentConfigPollInterval   = 30 * time.Second
-	publicIPv4RefreshInterval = 45 * time.Minute
-	dialAgentWebSocket        = websocket.Dial
-	writeAgentHeartbeat       = sendHeartbeat
-	writeAgentMetrics         = sendMetrics
-	newAgentMetrics           = newMetricsCollector
-	collectAgentMetrics       = func(collector *metricsCollector) (metricsMessage, bool) {
+	agentHeartbeatInterval     = 10 * time.Second
+	agentMetricsInterval       = 5 * time.Second
+	agentConfigPollInterval    = 30 * time.Second
+	agentClientTrafficInterval = 15 * time.Second
+	publicIPv4RefreshInterval  = 45 * time.Minute
+	dialAgentWebSocket         = websocket.Dial
+	writeAgentHeartbeat        = sendHeartbeat
+	writeAgentMetrics          = sendMetrics
+	newAgentMetrics            = newMetricsCollector
+	collectAgentMetrics        = func(collector *metricsCollector) (metricsMessage, bool) {
 		return collector.collect()
 	}
 	waitAgentReconnect = waitForReconnect
@@ -344,6 +345,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 		return true, false
 	}
 	metricsCollector := newAgentMetrics()
+	trafficReporter := newClientTrafficReporter(value, &http.Client{Timeout: 10 * time.Second})
 	connectionContext, cancelConnection := context.WithCancel(ctx)
 	defer cancelConnection()
 	configChanged := make(chan struct{}, 1)
@@ -358,6 +360,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	defer metricsTicker.Stop()
 	configTicker := time.NewTicker(agentConfigPollInterval)
 	defer configTicker.Stop()
+	clientTrafficTicker := time.NewTicker(agentClientTrafficInterval)
+	defer clientTrafficTicker.Stop()
 	publicIPv4Ticker := time.NewTicker(publicIPv4RefreshInterval)
 	defer publicIPv4Ticker.Stop()
 	for {
@@ -371,6 +375,13 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			attemptConfigSync(ctx, configSync)
 		case <-configTicker.C:
 			attemptConfigSync(ctx, configSync)
+		case <-clientTrafficTicker.C:
+			trafficContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := trafficReporter.report(trafficContext)
+			cancel()
+			if err != nil {
+				log.Printf("report client traffic: %v", err)
+			}
 		case <-publicIPv4Ticker.C:
 			message := collectSystemInfo()
 			detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)

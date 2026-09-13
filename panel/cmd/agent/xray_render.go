@@ -12,6 +12,9 @@ import (
 
 type renderedXrayConfig struct {
 	Log       renderedXrayLog        `json:"log"`
+	API       renderedXrayAPI        `json:"api"`
+	Policy    renderedXrayPolicy     `json:"policy"`
+	Stats     renderedXrayStats      `json:"stats"`
 	Inbounds  []renderedXrayInbound  `json:"inbounds"`
 	Outbounds []renderedXrayOutbound `json:"outbounds"`
 }
@@ -19,6 +22,23 @@ type renderedXrayConfig struct {
 type renderedXrayLog struct {
 	LogLevel string `json:"loglevel"`
 }
+
+type renderedXrayAPI struct {
+	Tag      string   `json:"tag"`
+	Listen   string   `json:"listen"`
+	Services []string `json:"services"`
+}
+
+type renderedXrayPolicy struct {
+	Levels map[string]renderedXrayLevelPolicy `json:"levels"`
+}
+
+type renderedXrayLevelPolicy struct {
+	StatsUserUplink   bool `json:"statsUserUplink"`
+	StatsUserDownlink bool `json:"statsUserDownlink"`
+}
+
+type renderedXrayStats struct{}
 
 type renderedXrayInbound struct {
 	Tag            string                      `json:"tag"`
@@ -77,7 +97,12 @@ type renderedXrayOutbound struct {
 
 func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
 	config := renderedXrayConfig{
-		Log:       renderedXrayLog{LogLevel: "warning"},
+		Log: renderedXrayLog{LogLevel: "warning"},
+		API: renderedXrayAPI{Tag: "api", Listen: managedXrayStatsAPIAddress, Services: []string{"StatsService"}},
+		Policy: renderedXrayPolicy{Levels: map[string]renderedXrayLevelPolicy{
+			"0": {StatsUserUplink: true, StatsUserDownlink: true},
+		}},
+		Stats:     renderedXrayStats{},
 		Inbounds:  make([]renderedXrayInbound, 0, len(proxies)),
 		Outbounds: []renderedXrayOutbound{{Protocol: "freedom", Tag: "direct"}},
 	}
@@ -124,10 +149,12 @@ func renderVLESSInbound(proxy desiredProxy) (renderedXrayInbound, error) {
 		StreamSettings: &renderedXrayStreamSettings{Network: "tcp", Security: proxy.Security},
 	}
 	for _, client := range proxy.Clients {
-		if !validDesiredUUID(client.UUID) || client.Password != "" {
+		if !validDesiredUUID(client.UUID) || client.Password != "" || !validClientStatsIdentifier(client.ID, client.StatsID) {
 			return renderedXrayInbound{}, errUnsupportedManagedConfig
 		}
-		inbound.Settings.Clients = append(inbound.Settings.Clients, renderedInboundClient{ID: client.UUID, Flow: "xtls-rprx-vision"})
+		inbound.Settings.Clients = append(inbound.Settings.Clients, renderedInboundClient{
+			ID: client.UUID, Flow: "xtls-rprx-vision", Email: client.StatsID,
+		})
 	}
 	if proxy.Security == "tls" {
 		inbound.StreamSettings.TLSSettings = &renderedTLSSettings{
@@ -159,11 +186,12 @@ func renderShadowsocksInbound(proxy desiredProxy) (renderedXrayInbound, bool, er
 	}
 	clients := make([]renderedInboundClient, 0, len(proxy.Clients))
 	for _, client := range proxy.Clients {
-		if client.UUID != "" || !validShadowsocksDesiredKey(client.Password, proxy.Shadowsocks.Method) {
+		if client.UUID != "" || !validShadowsocksDesiredKey(client.Password, proxy.Shadowsocks.Method) ||
+			!validClientStatsIdentifier(client.ID, client.StatsID) {
 			return renderedXrayInbound{}, false, errUnsupportedManagedConfig
 		}
 		clients = append(clients, renderedInboundClient{
-			Password: client.Password, Email: "client-" + strconv.FormatInt(client.ID, 10),
+			Password: client.Password, Email: client.StatsID,
 		})
 	}
 	return renderedXrayInbound{
@@ -217,6 +245,10 @@ func validDesiredUUID(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
 	return err == nil
+}
+
+func validClientStatsIdentifier(clientID int64, value string) bool {
+	return clientID > 0 && value == "vp-client-"+strconv.FormatInt(clientID, 10)
 }
 
 func validRealityTarget(value string) bool {

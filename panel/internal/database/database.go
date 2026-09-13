@@ -165,6 +165,16 @@ func migrate(db *sql.DB) error {
 			updated_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_clients_proxy_id ON clients(proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS client_metrics (
+			client_id INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+			xray_uplink_bytes INTEGER NOT NULL CHECK (xray_uplink_bytes >= 0),
+			xray_downlink_bytes INTEGER NOT NULL CHECK (xray_downlink_bytes >= 0),
+			cycle_uplink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (cycle_uplink_bytes >= 0),
+			cycle_downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (cycle_downlink_bytes >= 0),
+			cycle_started_at INTEGER NOT NULL,
+			last_activity_at INTEGER,
+			updated_at INTEGER NOT NULL
+		)`,
 	}
 
 	for _, statement := range statements {

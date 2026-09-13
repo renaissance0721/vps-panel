@@ -242,7 +242,8 @@ func TestDesiredStateFiltersDisabledRecordsAndClientUDPDoesNotChangeIt(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(desired) != 1 || desired[0].ID != first.ID || len(desired[0].Clients) != 1 || desired[0].Clients[0].ID != client.ID {
+	if len(desired) != 1 || desired[0].ID != first.ID || len(desired[0].Clients) != 1 ||
+		desired[0].Clients[0].ID != client.ID || desired[0].Clients[0].StatsID != clientStatsIdentifier(client.ID) {
 		t.Fatalf("desired proxies = %+v", desired)
 	}
 	if desired[0].Reality == nil || desired[0].Reality.PrivateKey == "" {
@@ -473,7 +474,8 @@ func TestShadowsocksCreatesMethodSizedSecretsAndDesiredState(t *testing.T) {
 			desired, err := ListDesired(t.Context(), db, serverID)
 			if err != nil || len(desired) != 1 || desired[0].Shadowsocks == nil ||
 				desired[0].Shadowsocks.Method != test.method || desired[0].Shadowsocks.Network != ShadowsocksNetwork ||
-				len(desired[0].Clients) != 1 || desired[0].Clients[0].Password != client.Password || desired[0].Clients[0].UUID != "" {
+				len(desired[0].Clients) != 1 || desired[0].Clients[0].Password != client.Password || desired[0].Clients[0].UUID != "" ||
+				desired[0].Clients[0].StatsID != clientStatsIdentifier(client.ID) {
 				t.Fatalf("Shadowsocks desired state = %+v, %v", desired, err)
 			}
 		})

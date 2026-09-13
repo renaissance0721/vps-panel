@@ -90,25 +90,36 @@ type proxyConfigResponse struct {
 }
 
 type clientSummaryResponse struct {
-	ID           int64     `json:"id"`
-	ProxyID      int64     `json:"proxy_id"`
-	Name         string    `json:"name"`
-	UUIDSummary  string    `json:"uuid_summary"`
-	ClientUDP443 bool      `json:"client_udp443"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64                 `json:"id"`
+	ProxyID      int64                 `json:"proxy_id"`
+	Name         string                `json:"name"`
+	UUIDSummary  string                `json:"uuid_summary"`
+	ClientUDP443 bool                  `json:"client_udp443"`
+	Enabled      bool                  `json:"enabled"`
+	Metrics      clientMetricsResponse `json:"metrics"`
+	CreatedAt    time.Time             `json:"created_at"`
+	UpdatedAt    time.Time             `json:"updated_at"`
 }
 
 type clientResponse struct {
-	ID           int64     `json:"id"`
-	ProxyID      int64     `json:"proxy_id"`
-	Name         string    `json:"name"`
-	UUID         string    `json:"uuid,omitempty"`
-	ClientUDP443 bool      `json:"client_udp443"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64                 `json:"id"`
+	ProxyID      int64                 `json:"proxy_id"`
+	Name         string                `json:"name"`
+	UUID         string                `json:"uuid,omitempty"`
+	ClientUDP443 bool                  `json:"client_udp443"`
+	Enabled      bool                  `json:"enabled"`
+	Metrics      clientMetricsResponse `json:"metrics"`
+	CreatedAt    time.Time             `json:"created_at"`
+	UpdatedAt    time.Time             `json:"updated_at"`
+}
+
+type clientMetricsResponse struct {
+	CycleUplinkBytes   int64      `json:"cycle_uplink_bytes"`
+	CycleDownlinkBytes int64      `json:"cycle_downlink_bytes"`
+	UsedBytes          int64      `json:"used_bytes"`
+	CycleStartedAt     *time.Time `json:"cycle_started_at"`
+	LastActivityAt     *time.Time `json:"last_activity_at"`
+	UpdatedAt          *time.Time `json:"updated_at"`
 }
 
 type clientShareResponse struct {
@@ -233,18 +244,21 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, _ auth
 	}
 	response := make([]clientSummaryResponse, 0, len(values))
 	for _, value := range values {
-		uuidSummary := ""
-		if value.UUID != "" {
-			uuidSummary = value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:]
-		}
-		response = append(response, clientSummaryResponse{
+		response = append(response, toClientSummaryResponse(proxystore.ClientSummary{
 			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-			UUIDSummary:  uuidSummary,
-			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled,
+			UUIDSummary:  clientUUIDSummary(value.UUID),
+			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: value.Metrics,
 			CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
-		})
+		}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
+}
+
+func clientUUIDSummary(value string) string {
+	if value == "" {
+		return ""
+	}
+	return value[:4] + "…" + value[len(value)-4:]
 }
 
 func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -365,11 +379,23 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 }
 
 func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryResponse {
-	return clientSummaryResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUIDSummary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return clientSummaryResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: value.UUIDSummary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func toClientResponse(value proxystore.Client) clientResponse {
-	return clientResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUID: value.UUID, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return clientResponse{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUID: value.UUID, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+}
+
+func toClientMetricsResponse(value *proxystore.ClientMetrics) clientMetricsResponse {
+	if value == nil {
+		return clientMetricsResponse{}
+	}
+	cycleStartedAt, updatedAt := value.CycleStartedAt, value.UpdatedAt
+	return clientMetricsResponse{
+		CycleUplinkBytes: value.CycleUplinkBytes, CycleDownlinkBytes: value.CycleDownlinkBytes,
+		UsedBytes:      value.CycleUplinkBytes + value.CycleDownlinkBytes,
+		CycleStartedAt: &cycleStartedAt, LastActivityAt: value.LastActivityAt, UpdatedAt: &updatedAt,
+	}
 }
 
 func writeProxyError(w http.ResponseWriter, err error) {

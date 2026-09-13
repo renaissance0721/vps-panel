@@ -27,6 +27,9 @@ const (
 	managedXrayVersion          = "v26.3.27"
 	managedXrayReleaseBaseURL   = "https://github.com/XTLS/Xray-core/releases/download"
 	managedXrayServiceName      = "vps-panel-xray.service"
+	managedXrayBinaryPath       = "/opt/vps-panel/xray/xray"
+	managedXrayConfigPath       = "/etc/vps-panel/xray/config.json"
+	managedXrayStatsAPIAddress  = "127.0.0.1:10085"
 	managedXrayMaxDownloadBytes = 128 << 20
 	managedXrayMaxBinaryBytes   = 128 << 20
 	managedXrayCommandOutputMax = 4 << 10
@@ -87,10 +90,10 @@ func newXrayManager() *xrayManager {
 	firewall := newProxyFirewall()
 	return &xrayManager{
 		installDir:        "/opt/vps-panel/xray",
-		binaryPath:        "/opt/vps-panel/xray/xray",
+		binaryPath:        managedXrayBinaryPath,
 		markerPath:        "/opt/vps-panel/xray/.managed-by-vps-panel",
 		configDir:         "/etc/vps-panel/xray",
-		configPath:        "/etc/vps-panel/xray/config.json",
+		configPath:        managedXrayConfigPath,
 		previousPath:      "/etc/vps-panel/xray/config.previous.json",
 		unitPath:          "/etc/systemd/system/vps-panel-xray.service",
 		serviceName:       managedXrayServiceName,

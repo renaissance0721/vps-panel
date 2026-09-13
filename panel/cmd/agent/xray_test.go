@@ -323,6 +323,7 @@ func TestManagedXrayRemovedProxyAppliesOnlyRemainingPort(t *testing.T) {
 	remaining.ID = 2
 	remaining.Port = 8443
 	remaining.Clients[0].ID = 2
+	remaining.Clients[0].StatsID = "vp-client-2"
 	remaining.Clients[0].UUID = "123e4567-e89b-42d3-a456-426614174001"
 	oldConfig, err := renderManagedXrayConfig([]desiredProxy{removed, remaining})
 	if err != nil {

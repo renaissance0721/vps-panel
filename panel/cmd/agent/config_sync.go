@@ -67,6 +67,7 @@ type desiredReality struct {
 
 type desiredClient struct {
 	ID       int64  `json:"id"`
+	StatsID  string `json:"stats_id"`
 	UUID     string `json:"uuid,omitempty"`
 	Password string `json:"password,omitempty"`
 }

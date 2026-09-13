@@ -22,7 +22,7 @@ import (
 
 func TestRenderManagedXrayTLSWithMultipleClients(t *testing.T) {
 	proxy := testDesiredTLSProxy()
-	proxy.Clients = append(proxy.Clients, desiredClient{ID: 2, UUID: "123e4567-e89b-42d3-a456-426614174001"})
+	proxy.Clients = append(proxy.Clients, desiredClient{ID: 2, StatsID: "vp-client-2", UUID: "123e4567-e89b-42d3-a456-426614174001"})
 	value, err := renderManagedXrayConfig([]desiredProxy{proxy})
 	if err != nil {
 		t.Fatal(err)
@@ -38,13 +38,20 @@ func TestRenderManagedXrayTLSWithMultipleClients(t *testing.T) {
 		config.Inbounds[0].StreamSettings.RealitySettings != nil {
 		t.Fatalf("rendered TLS config = %+v", config)
 	}
+	if config.Inbounds[0].Settings.Clients[0].Email != "vp-client-1" ||
+		config.Inbounds[0].Settings.Clients[1].Email != "vp-client-2" ||
+		config.API.Listen != managedXrayStatsAPIAddress || len(config.API.Services) != 1 ||
+		config.API.Services[0] != "StatsService" || !config.Policy.Levels["0"].StatsUserUplink ||
+		!config.Policy.Levels["0"].StatsUserDownlink || !strings.Contains(string(value), `"stats": {}`) {
+		t.Fatalf("rendered client stats config = %+v", config)
+	}
 	if strings.Contains(string(value), "udp443") {
 		t.Fatal("server-side config contains client UDP/443 flow")
 	}
 }
 
 func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
-	reality := desiredProxy{ID: 2, Listen: "0.0.0.0", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
+	reality := desiredProxy{ID: 2, Listen: "0.0.0.0", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, StatsID: "vp-client-3", UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
 	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), reality})
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +79,11 @@ func TestRenderManagedXrayRejectsInvalidSemantics(t *testing.T) {
 			value.Clients[0].UUID = "not-a-uuid"
 			return value
 		}(),
+		func() desiredProxy {
+			value := testDesiredTLSProxy()
+			value.Clients[0].StatsID = "client-secret"
+			return value
+		}(),
 		func() desiredProxy { value := testDesiredTLSProxy(); value.TLS = nil; return value }(),
 	}
 	for _, value := range tests {
@@ -83,6 +95,9 @@ func TestRenderManagedXrayRejectsInvalidSemantics(t *testing.T) {
 
 func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
 	ss128 := testDesiredShadowsocksProxy(3, 8388, "2022-blake3-aes-128-gcm", 16)
+	ss128.Clients = append(ss128.Clients, desiredClient{
+		ID: 2, StatsID: "vp-client-2", Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 16)),
+	})
 	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
 	empty := testDesiredShadowsocksProxy(5, 8390, "2022-blake3-aes-128-gcm", 16)
 	empty.Clients = nil
@@ -101,10 +116,14 @@ func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
 		inbound := config.Inbounds[index+1]
 		if inbound.Protocol != "shadowsocks" || inbound.StreamSettings != nil ||
 			inbound.Settings.Method != expected.Shadowsocks.Method || inbound.Settings.Password != expected.Shadowsocks.Password ||
-			inbound.Settings.Network != "tcp,udp" || inbound.Settings.Decryption != "" || len(inbound.Settings.Clients) != 1 ||
-			inbound.Settings.Clients[0].Password != expected.Clients[0].Password || inbound.Settings.Clients[0].Email != "client-1" ||
+			inbound.Settings.Network != "tcp,udp" || inbound.Settings.Decryption != "" || len(inbound.Settings.Clients) != len(expected.Clients) ||
+			inbound.Settings.Clients[0].Password != expected.Clients[0].Password || inbound.Settings.Clients[0].Email != "vp-client-1" ||
 			inbound.Settings.Clients[0].ID != "" || inbound.Settings.Clients[0].Flow != "" {
 			t.Fatalf("rendered Shadowsocks inbound = %+v", inbound)
+		}
+		if len(expected.Clients) == 2 && (inbound.Settings.Clients[1].Email != "vp-client-2" ||
+			inbound.Settings.Clients[1].Email == inbound.Settings.Clients[1].Password) {
+			t.Fatalf("second Shadowsocks client stats identifier = %+v", inbound.Settings.Clients[1])
 		}
 	}
 	if strings.Contains(string(value), "8390") {
@@ -162,9 +181,12 @@ func TestRenderedConfigAcceptedByPinnedXrayWhenAvailable(t *testing.T) {
 			PrivateKey: base64.RawURLEncoding.EncodeToString(realityPrivate.Bytes()),
 			ShortID:    "0123456789abcdef",
 		},
-		Clients: []desiredClient{{ID: 2, UUID: "123e4567-e89b-42d3-a456-426614174002"}},
+		Clients: []desiredClient{{ID: 2, StatsID: "vp-client-2", UUID: "123e4567-e89b-42d3-a456-426614174002"}},
 	}
 	ss128 := testDesiredShadowsocksProxy(3, 8388, "2022-blake3-aes-128-gcm", 16)
+	ss128.Clients = append(ss128.Clients, desiredClient{
+		ID: 5, StatsID: "vp-client-5", Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{10}, 16)),
+	})
 	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
 	for _, candidate := range []struct {
 		name    string
@@ -192,7 +214,7 @@ func TestRenderedConfigAcceptedByPinnedXrayWhenAvailable(t *testing.T) {
 }
 
 func testDesiredTLSProxy() desiredProxy {
-	return desiredProxy{ID: 1, Listen: "0.0.0.0", Port: 443, Protocol: "vless", Transport: "tcp", Security: "tls", ServerFlow: "xtls-rprx-vision", ServerName: "example.com", TLS: &desiredTLS{Certificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----", PrivateKey: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"}, Clients: []desiredClient{{ID: 1, UUID: "123e4567-e89b-42d3-a456-426614174000"}}}
+	return desiredProxy{ID: 1, Listen: "0.0.0.0", Port: 443, Protocol: "vless", Transport: "tcp", Security: "tls", ServerFlow: "xtls-rprx-vision", ServerName: "example.com", TLS: &desiredTLS{Certificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----", PrivateKey: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----"}, Clients: []desiredClient{{ID: 1, StatsID: "vp-client-1", UUID: "123e4567-e89b-42d3-a456-426614174000"}}}
 }
 
 func testDesiredShadowsocksProxy(id int64, port int, method string, keyLength int) desiredProxy {
@@ -203,7 +225,7 @@ func testDesiredShadowsocksProxy(id int64, port int, method string, keyLength in
 			Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(id)}, keyLength)),
 		},
 		Clients: []desiredClient{{
-			ID: 1, Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(id + 1)}, keyLength)),
+			ID: 1, StatsID: "vp-client-1", Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(id + 1)}, keyLength)),
 		}},
 	}
 }

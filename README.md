@@ -1,12 +1,14 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A 和 Phase 9B**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray 安全托管与 VLESS、Shadowsocks 节点管理。
+多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B 和 Phase 10A**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray 安全托管与 VLESS、Shadowsocks 节点管理。
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
 
 Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。Phase 8B 已完成 Agent 侧固定官方 Xray `v26.3.27` 的 SHA256 校验安装、独立受管路径、基础配置校验与原子替换、systemd 启停、健康检查和失败回滚。
 
-Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。下一阶段为 Phase 10 Client 流量、额度、周期与到期。
+Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。
+
+Phase 10A 已实现 VLESS 与 Shadowsocks Client 独立流量统计基础链路：Xray 使用稳定的非敏感 Client 统计标识维护累计上行/下行计数，Agent 约每 15 秒通过独立认证 HTTP 接口上报，Panel 持久化 baseline、本周期累计和最近活动时间，并在 Proxy 详情的 Client 列表与详情中展示。下一步为 Phase 10B：Client 流量额度、daily / weekly / monthly 周期及本周期流量手动重置。
 
 ## VPS 部署
 

@@ -101,6 +101,7 @@ type ClientSummary struct {
 	UUIDSummary  string
 	ClientUDP443 bool
 	Enabled      bool
+	Metrics      *ClientMetrics
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -114,6 +115,7 @@ type Client struct {
 	Protocol     string
 	ClientUDP443 bool
 	Enabled      bool
+	Metrics      *ClientMetrics
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -219,6 +221,7 @@ type DesiredReality struct {
 
 type DesiredClient struct {
 	ID       int64  `json:"id"`
+	StatsID  string `json:"stats_id"`
 	UUID     string `json:"uuid,omitempty"`
 	Password string `json:"password,omitempty"`
 }
@@ -557,8 +560,12 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json
+		 proxies.protocol, proxies.config_json,
+		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
+		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
+		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
+		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.proxy_id = ? ORDER BY clients.created_at, clients.id`, proxyID,
 	)
 	if err != nil {
@@ -629,10 +636,14 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 	value, err := scanClient(s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json
+		 proxies.protocol, proxies.config_json,
+		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
+		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
+		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
+		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -763,6 +774,10 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	value.Metrics, err = s.getClientMetrics(ctx, id)
+	if err != nil {
+		return ClientShare{}, err
+	}
 	address, err := resolveEntryAddress(entryHostMode, entryHost, publicIPv4)
 	if err != nil {
 		return ClientShare{}, err
@@ -868,6 +883,7 @@ func ListDesired(ctx context.Context, query interface {
 			}
 			client.UUID = credential.UUID
 			client.Password = credential.Password
+			client.StatsID = clientStatsIdentifier(client.ID)
 			if value.Protocol == ProtocolShadowsocks && !validShadowsocksKey(client.Password, config.Shadowsocks.Method) {
 				clientRows.Close()
 				return nil, ErrInvalidShadowsocksCredential
@@ -1326,7 +1342,14 @@ func scanClient(row rowScanner) (Client, error) {
 	var credentialJSON, configJSON string
 	var udp443, enabled int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt, &value.Protocol, &configJSON); err != nil {
+	var xrayUplink, xrayDownlink, cycleUplink, cycleDownlink sql.NullInt64
+	var cycleStartedAt, lastActivityAt, metricsUpdatedAt sql.NullInt64
+	if err := row.Scan(
+		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
+		&createdAt, &updatedAt, &value.Protocol, &configJSON,
+		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
+		&cycleStartedAt, &lastActivityAt, &metricsUpdatedAt,
+	); err != nil {
 		return Client{}, err
 	}
 	credential, err := decodeCredential(value.Protocol, credentialJSON)
@@ -1346,6 +1369,12 @@ func scanClient(row rowScanner) (Client, error) {
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	if metricsUpdatedAt.Valid {
+		value.Metrics = clientMetricsFromDatabase(
+			xrayUplink.Int64, xrayDownlink.Int64, cycleUplink.Int64, cycleDownlink.Int64,
+			cycleStartedAt.Int64, lastActivityAt, metricsUpdatedAt.Int64,
+		)
+	}
 	return value, nil
 }
 
@@ -1354,7 +1383,7 @@ func summarizeClient(value Client) ClientSummary {
 	if value.UUID != "" {
 		summary = value.UUID[:4] + "…" + value.UUID[len(value.UUID)-4:]
 	}
-	return ClientSummary{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: summary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return ClientSummary{ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, UUIDSummary: summary, ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, Metrics: value.Metrics, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func getProxyForMutation(ctx context.Context, tx *sql.Tx, id int64) (Proxy, storedConfig, error) {
@@ -1389,7 +1418,10 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
-	).Scan(&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID)
+	).Scan(
+		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
+		&createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, 0, ErrClientNotFound
 	}

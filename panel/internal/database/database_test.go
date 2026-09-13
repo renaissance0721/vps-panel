@@ -34,6 +34,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"server_metrics",
 		"proxies",
 		"clients",
+		"client_metrics",
 	} {
 		var name string
 		if err := db.QueryRow(
@@ -64,6 +65,10 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		},
 		"server_system_info": {"public_ipv4"},
 		"proxies":            {"entry_host_mode", "entry_host"},
+		"client_metrics": {
+			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
+			"cycle_started_at", "last_activity_at", "updated_at",
+		},
 	} {
 		for _, column := range columns {
 			var count int
@@ -127,6 +132,36 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	if desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid {
 		t.Fatalf("config sync defaults = (%d, %d, %q, %q, %v)",
 			desiredVersion, appliedVersion, syncStatus, syncError, syncedAt.Valid)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO proxies
+		 (id, server_id, name, protocol, listen_port, config_json, created_at, updated_at)
+		 VALUES (1, 1, 'proxy', 'vless', 443, '{}', 1, 1)`,
+	); err != nil {
+		t.Fatalf("insert proxy for client metrics: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO clients (id, proxy_id, name, credential_json, created_at, updated_at)
+		 VALUES (1, 1, 'client', '{}', 1, 1)`,
+	); err != nil {
+		t.Fatalf("insert client for metrics: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO client_metrics
+		 (client_id, xray_uplink_bytes, xray_downlink_bytes, cycle_started_at, updated_at)
+		 VALUES (1, 10, 20, 1, 1)`,
+	); err != nil {
+		t.Fatalf("insert client metrics with defaults: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM clients WHERE id = 1`); err != nil {
+		t.Fatalf("delete client with metrics: %v", err)
+	}
+	var clientMetricCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM client_metrics`).Scan(&clientMetricCount); err != nil {
+		t.Fatalf("count cascaded client metrics: %v", err)
+	}
+	if clientMetricCount != 0 {
+		t.Fatalf("client deletion left %d metrics rows", clientMetricCount)
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("second migration error = %v", err)

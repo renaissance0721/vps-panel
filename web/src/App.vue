@@ -180,7 +180,7 @@ const panelReleaseVersion = computed(() => {
 })
 const bootstrapUpgradeCommand = computed(() =>
   panelReleaseVersion.value
-    ? `curl -fsSL ${window.location.origin}/upgrade-agent.sh | bash`
+    ? `curl -fsSL ${window.location.origin}/upgrade-agent.sh | sh`
     : '',
 )
 

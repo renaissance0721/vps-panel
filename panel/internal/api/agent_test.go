@@ -320,6 +320,7 @@ func TestInstallAgentScript(t *testing.T) {
 		t.Fatalf("installer content type = %q", contentType)
 	}
 	for _, required := range []string{
+		"#!/bin/sh",
 		"--server",
 		"--token",
 		"--version",
@@ -327,12 +328,18 @@ func TestInstallAgentScript(t *testing.T) {
 		"${RELEASES_BASE}/download/${agent_version}",
 		"${RELEASES_BASE}/latest/download",
 		"/opt/vps-panel/agent",
-		"/etc/systemd/system/vps-panel-agent.service",
+		`service_file="/etc/systemd/system/${SERVICE_NAME}.service"`,
+		"/etc/init.d/${SERVICE_NAME}",
+		`supervisor="supervise-daemon"`,
+		"rc-update add",
+		"rc-service",
+		"apk add --no-cache curl ca-certificates",
+		"apk add --no-cache coreutils",
 		"Restart=on-failure",
 		"RestartSec=3",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system",
+		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system",
 		"systemctl enable",
 		"systemctl restart",
 	} {
@@ -343,6 +350,11 @@ func TestInstallAgentScript(t *testing.T) {
 	for _, removed := range []string{"--force", "already registered", "CONFIG_FILE"} {
 		if strings.Contains(response.Body.String(), removed) {
 			t.Fatalf("installer still contains removed behavior %q", removed)
+		}
+	}
+	for _, bashism := range []string{"#!/usr/bin/env bash", "\n[[", "${EUID}", "set -E", "pipefail"} {
+		if strings.Contains(response.Body.String(), bashism) {
+			t.Fatalf("installer is not POSIX sh: contains %q", bashism)
 		}
 	}
 	if strings.Contains(response.Body.String(), "Restart=always") {
@@ -960,6 +972,15 @@ func TestBootstrapAgentUpgradeScriptPreservesRegistrationAndDoesNotRegister(t *t
 		!strings.Contains(body, `AGENT_DIR="/opt/vps-panel/agent"`) ||
 		!strings.Contains(body, `BINARY_PATH="${AGENT_DIR}/vps-panel-agent"`) ||
 		!strings.Contains(body, "SHA256SUMS") ||
+		!strings.Contains(body, "#!/bin/sh") ||
+		!strings.Contains(body, "/etc/init.d/${SERVICE_NAME}") ||
+		!strings.Contains(body, `supervisor="supervise-daemon"`) ||
+		!strings.Contains(body, `rc-update add "$SERVICE_NAME" default`) ||
+		!strings.Contains(body, `rc-service "$SERVICE_NAME" restart`) ||
+		!strings.Contains(body, "apk add --no-cache curl ca-certificates") ||
+		!strings.Contains(body, "apk add --no-cache coreutils") ||
+		!strings.Contains(body, "/opt/vps-panel/realm /etc/vps-panel/realm") ||
+		strings.Contains(body, "#!/usr/bin/env bash") || strings.Contains(body, "\n[[") ||
 		strings.Contains(body, "/api/agent/register") || strings.Contains(body, "--token") ||
 		strings.Contains(body, " register --server") {
 		t.Fatalf("bootstrap upgrade script = %d, %s", response.Code, body)

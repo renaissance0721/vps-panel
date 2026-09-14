@@ -26,7 +26,7 @@ import (
 const (
 	managedXrayVersion          = "v26.3.27"
 	managedXrayReleaseBaseURL   = "https://github.com/XTLS/Xray-core/releases/download"
-	managedXrayServiceName      = "vps-panel-xray.service"
+	managedXrayServiceName      = "vps-panel-xray"
 	managedXrayBinaryPath       = "/opt/vps-panel/xray/xray"
 	managedXrayConfigPath       = "/etc/vps-panel/xray/config.json"
 	managedXrayStatsAPIAddress  = "127.0.0.1:10085"
@@ -71,7 +71,7 @@ type xrayManager struct {
 	configPath        string
 	previousPath      string
 	unitPath          string
-	serviceName       string
+	service           serviceManager
 	unmanagedUnits    []string
 	goos              string
 	goarch            string
@@ -88,6 +88,7 @@ type xrayManager struct {
 
 func newXrayManager() *xrayManager {
 	firewall := newProxyFirewall()
+	service := newHostServiceManager(xrayServiceDefinition(), runXrayCommand)
 	return &xrayManager{
 		installDir:        "/opt/vps-panel/xray",
 		binaryPath:        managedXrayBinaryPath,
@@ -95,9 +96,9 @@ func newXrayManager() *xrayManager {
 		configDir:         "/etc/vps-panel/xray",
 		configPath:        managedXrayConfigPath,
 		previousPath:      "/etc/vps-panel/xray/config.previous.json",
-		unitPath:          "/etc/systemd/system/vps-panel-xray.service",
-		serviceName:       managedXrayServiceName,
-		unmanagedUnits:    []string{"/etc/systemd/system/xray.service", "/lib/systemd/system/xray.service", "/usr/lib/systemd/system/xray.service"},
+		unitPath:          service.Path(),
+		service:           service,
+		unmanagedUnits:    []string{"/etc/systemd/system/xray.service", "/lib/systemd/system/xray.service", "/usr/lib/systemd/system/xray.service", "/etc/init.d/xray"},
 		goos:              runtime.GOOS,
 		goarch:            runtime.GOARCH,
 		releaseBaseURL:    managedXrayReleaseBaseURL,
@@ -132,10 +133,13 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	}
 	unitExists, err := pathExists(m.unitPath)
 	if err != nil {
-		return fmt.Errorf("inspect managed Xray systemd unit: %w", err)
+		return fmt.Errorf("inspect managed Xray service: %w", err)
 	}
 	if unitExists {
-		if _, err := m.runCommand(ctx, "systemctl", "disable", "--now", m.serviceName); err != nil {
+		if err := m.serviceManager().Stop(ctx); err != nil {
+			return fmt.Errorf("%w: %v", errManagedXrayStop, err)
+		}
+		if err := m.serviceManager().Disable(ctx); err != nil {
 			return fmt.Errorf("%w: %v", errManagedXrayStop, err)
 		}
 	}
@@ -178,11 +182,11 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		return err
 	}
 	if unitChanged {
-		if _, err := m.runCommand(ctx, "systemctl", "daemon-reload"); err != nil {
-			return fmt.Errorf("install managed Xray systemd unit: %w", err)
+		if err := m.serviceManager().DaemonReload(ctx); err != nil {
+			return fmt.Errorf("install managed Xray service: %w", err)
 		}
 	}
-	if _, err := m.runCommand(ctx, "systemctl", "enable", m.serviceName); err != nil {
+	if err := m.serviceManager().Enable(ctx); err != nil {
 		return fmt.Errorf("%w: %v", errManagedXrayStart, err)
 	}
 
@@ -201,12 +205,14 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		if active && m.listenersHealthy(ctx, expectedPorts) {
 			return m.reconcileFirewall(ctx, expectedRules)
 		}
-		action := "start"
+		var startErr error
 		if active {
-			action = "restart"
+			startErr = m.serviceManager().Restart(ctx)
+		} else {
+			startErr = m.serviceManager().Start(ctx)
 		}
-		if _, err := m.runCommand(ctx, "systemctl", action, m.serviceName); err != nil {
-			return fmt.Errorf("%w: %v", errManagedXrayStart, err)
+		if startErr != nil {
+			return fmt.Errorf("%w: %v", errManagedXrayStart, startErr)
 		}
 		if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
 			return err
@@ -224,7 +230,7 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 		return fmt.Errorf("install managed Xray config: %w", err)
 	}
 
-	if _, err := m.runCommand(ctx, "systemctl", "restart", m.serviceName); err != nil {
+	if err := m.serviceManager().Restart(ctx); err != nil {
 		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
 	}
 	if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
@@ -241,8 +247,11 @@ func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool,
 	rollbackContext, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), managedXrayRollbackTimeout)
 	defer cancelRollback()
 	if !hasPrevious {
-		if _, err := m.runCommand(rollbackContext, "systemctl", "disable", "--now", m.serviceName); err != nil {
+		if err := m.serviceManager().Stop(rollbackContext); err != nil {
 			log.Printf("rollback failed: stop managed Xray service: %v", err)
+		}
+		if err := m.serviceManager().Disable(rollbackContext); err != nil {
+			log.Printf("rollback failed: disable managed Xray service: %v", err)
 		}
 		if err := os.Remove(m.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("remove failed managed Xray config: %v", err)
@@ -263,7 +272,7 @@ func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool,
 		log.Printf("rollback failed: restore previous managed Xray config: %v", err)
 		return applyErr
 	}
-	if _, err := m.runCommand(rollbackContext, "systemctl", "restart", m.serviceName); err != nil {
+	if err := m.serviceManager().Restart(rollbackContext); err != nil {
 		log.Printf("rollback failed: restart previous managed Xray config: %v", err)
 		return applyErr
 	}
@@ -361,6 +370,9 @@ func (m *xrayManager) checkConflicts() error {
 		}
 	}
 	for _, managedPath := range []string{m.binaryPath, m.configPath, m.previousPath, m.unitPath} {
+		if managedPath == "" {
+			continue
+		}
 		exists, err := pathExists(managedPath)
 		if err != nil {
 			return fmt.Errorf("inspect managed Xray path: %w", err)
@@ -515,47 +527,35 @@ func (m *xrayManager) validateConfig(ctx context.Context, candidatePath string) 
 }
 
 func (m *xrayManager) ensureUnit() (bool, error) {
-	unit := []byte(`[Unit]
-Description=VPS Panel Managed Xray
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/opt/vps-panel/xray/xray run -config /etc/vps-panel/xray/config.json
-Restart=on-failure
-RestartSec=3
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-`)
-	existing, exists, err := readOptionalFile(m.unitPath)
+	changed, err := m.serviceManager().Install()
 	if err != nil {
-		return false, fmt.Errorf("read managed Xray systemd unit: %w", err)
+		return false, fmt.Errorf("write managed Xray service: %w", err)
 	}
-	if exists && bytes.Equal(existing, unit) {
-		if err := os.Chmod(m.unitPath, 0o644); err != nil {
-			return false, fmt.Errorf("secure managed Xray systemd unit: %w", err)
-		}
-		return false, nil
-	}
-	if err := writeFileAtomically(m.unitPath, unit, 0o644); err != nil {
-		return false, fmt.Errorf("write managed Xray systemd unit: %w", err)
-	}
-	return true, nil
+	return changed, nil
 }
 
 func (m *xrayManager) isActive(ctx context.Context) (bool, error) {
-	_, err := m.runCommand(ctx, "systemctl", "is-active", "--quiet", m.serviceName)
-	if err != nil {
-		return false, nil
+	return m.serviceManager().IsActive(ctx)
+}
+
+func xrayServiceDefinition() serviceDefinition {
+	return serviceDefinition{
+		Name:        managedXrayServiceName,
+		Description: "VPS Panel Managed Xray",
+		Command:     managedXrayBinaryPath,
+		Arguments:   []string{"run", "-config", managedXrayConfigPath},
 	}
-	return true, nil
+}
+
+func (m *xrayManager) serviceManager() serviceManager {
+	if m.service != nil {
+		return m.service
+	}
+	return &systemdServiceManager{
+		definition: xrayServiceDefinition(),
+		path:       m.unitPath,
+		runCommand: m.runCommand,
+	}
 }
 
 func (m *xrayManager) waitUntilHealthy(ctx context.Context, ports []int) error {

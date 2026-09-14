@@ -195,6 +195,7 @@ func (s *configSynchronizer) report(ctx context.Context, result configResult) er
 
 func desiredStateErrorMessage(err error) string {
 	for _, publicError := range []error{
+		errUnsupportedInitSystem,
 		errUnsupportedManagedConfig,
 		errManagedXrayDownload,
 		errManagedXrayChecksum,

@@ -108,6 +108,118 @@ func TestProxyFirewallNoActiveFirewallDoesNothing(t *testing.T) {
 	}
 }
 
+func TestNFTablesReconcileUsesOwnedTableCommentsAndProtocols(t *testing.T) {
+	mutations := make([]string, 0)
+	firewall := &proxyFirewall{
+		owner: "realm",
+		lookPath: func(name string) (string, error) {
+			if name == "nft" {
+				return "/sbin/nft", nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			command := strings.Join(arguments, " ")
+			switch command {
+			case "list ruleset":
+				return []byte("table inet filter {\n}\n"), nil
+			case "-a list chain inet vps_panel_realm input":
+				return []byte(`counter comment "vps-panel-realm-owner" # handle 1
+tcp dport 9502 accept comment "vps-panel-realm-tcp" # handle 7
+udp dport 9502 accept comment "vps-panel-realm-udp" # handle 8
+tcp dport 443 accept comment "vps-panel-proxy-tcp" # handle 9
+tcp dport 22 accept # handle 10`), nil
+			default:
+				mutations = append(mutations, command)
+				return nil, nil
+			}
+		},
+	}
+	desired := []firewallRule{{port: 9600, protocol: "tcp"}, {port: 9600, protocol: "udp"}}
+	if err := firewall.reconcileRules(t.Context(), desired); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"add rule inet vps_panel_realm input tcp dport 9600 accept comment vps-panel-realm-tcp",
+		"add rule inet vps_panel_realm input udp dport 9600 accept comment vps-panel-realm-udp",
+		"delete rule inet vps_panel_realm input handle 7",
+		"delete rule inet vps_panel_realm input handle 8",
+	}
+	if strings.Join(mutations, "|") != strings.Join(want, "|") {
+		t.Fatalf("nftables mutations = %v, want %v", mutations, want)
+	}
+}
+
+func TestNFTablesCreatesOnlyItsDedicatedTableAndChain(t *testing.T) {
+	mutations := make([]string, 0)
+	firewall := &proxyFirewall{
+		owner: "proxy",
+		lookPath: func(name string) (string, error) {
+			if name == "nft" {
+				return "nft", nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			command := strings.Join(arguments, " ")
+			switch command {
+			case "list ruleset":
+				return []byte("table inet user_firewall {\n}\n"), nil
+			case "-a list chain inet vps_panel_proxy input", "list table inet vps_panel_proxy":
+				return nil, errors.New("not found")
+			default:
+				mutations = append(mutations, command)
+				return nil, nil
+			}
+		},
+	}
+	if err := firewall.reconcileRules(t.Context(), []firewallRule{{port: 443, protocol: "tcp"}}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(mutations, "|")
+	for _, expected := range []string{
+		"add table inet vps_panel_proxy",
+		"add chain inet vps_panel_proxy input { type filter hook input priority -10 ; policy accept ; }",
+		"add rule inet vps_panel_proxy input counter comment vps-panel-proxy-owner",
+		"add rule inet vps_panel_proxy input tcp dport 443 accept comment vps-panel-proxy-tcp",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("nftables setup missing %q: %v", expected, mutations)
+		}
+	}
+	if strings.Contains(joined, "user_firewall") {
+		t.Fatalf("nftables setup changed a user table: %v", mutations)
+	}
+}
+
+func TestNFTablesRefusesUnmanagedDedicatedTable(t *testing.T) {
+	mutated := false
+	firewall := &proxyFirewall{
+		owner: "proxy",
+		lookPath: func(name string) (string, error) {
+			if name == "nft" {
+				return "nft", nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			switch strings.Join(arguments, " ") {
+			case "list ruleset":
+				return []byte("table inet vps_panel_proxy {\n}\n"), nil
+			case "-a list chain inet vps_panel_proxy input":
+				return []byte(`tcp dport 22 accept comment "user-rule" # handle 9`), nil
+			default:
+				mutated = true
+				return nil, nil
+			}
+		},
+	}
+	err := firewall.reconcileRules(t.Context(), []firewallRule{{port: 443, protocol: "tcp"}})
+	if !errors.Is(err, errManagedProxyFirewall) || mutated {
+		t.Fatalf("unmanaged nftables table = %v, mutated = %v", err, mutated)
+	}
+}
+
 func TestProxyFirewallAddFailureDoesNotRemoveStaleManagedRules(t *testing.T) {
 	removed := false
 	firewall := &proxyFirewall{

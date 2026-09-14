@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	agentServiceName = "vps-panel-agent.service"
+	agentServiceName = "vps-panel-agent"
 )
 
 var (
@@ -29,7 +29,15 @@ var (
 	runUpgradeCommand = func(ctx context.Context, name string, arguments ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, name, arguments...).CombinedOutput()
 	}
-	launchAgentUpgrade = launchUpgradeHelper
+	runUpgradeLauncher = func(name string, arguments ...string) ([]byte, error) {
+		return exec.Command(name, arguments...).CombinedOutput()
+	}
+	runAgentServiceCommand = func(ctx context.Context, name string, arguments ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, name, arguments...).CombinedOutput()
+	}
+	detectUpgradeHostEnvironment = detectHostEnvironment
+	startOpenRCUpgradeProcess    = startDetachedUpgradeProcess
+	launchAgentUpgrade           = launchUpgradeHelper
 )
 
 type agentUpgradeResult struct {
@@ -209,12 +217,24 @@ func launchUpgradeHelper(stagedPath, targetVersion string) error {
 	if err != nil {
 		return fmt.Errorf("locate current Agent binary: %w", err)
 	}
+	environment, err := detectUpgradeHostEnvironment()
+	if err != nil {
+		return err
+	}
+	arguments := []string{"_apply-upgrade", "--staged", stagedPath, "--target", targetVersion}
+	if environment.InitSystem == initSystemOpenRC {
+		if err := startOpenRCUpgradeProcess(executable, arguments...); err != nil {
+			return fmt.Errorf("start detached OpenRC Agent upgrade helper: %w", err)
+		}
+		return nil
+	}
+	if environment.InitSystem != initSystemSystemd {
+		return errUnsupportedInitSystem
+	}
 	unit := fmt.Sprintf("vps-panel-agent-upgrade-%d", time.Now().UnixNano())
-	command := exec.Command(
-		"systemd-run", "--quiet", "--collect", "--unit="+unit,
-		executable, "_apply-upgrade", "--staged", stagedPath, "--target", targetVersion,
-	)
-	if output, err := command.CombinedOutput(); err != nil {
+	launcherArguments := append([]string{"--quiet", "--collect", "--unit=" + unit, executable}, arguments...)
+	output, err := runUpgradeLauncher("systemd-run", launcherArguments...)
+	if err != nil {
 		return fmt.Errorf("start Agent upgrade helper: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return nil
@@ -282,20 +302,37 @@ func rollbackAgentBinary(rollback string, upgradeErr error) error {
 	if err := os.Rename(rollback, agentManagedPath); err != nil {
 		return fmt.Errorf("%v; restore previous Agent: %w", upgradeErr, err)
 	}
-	if _, err := exec.Command("systemctl", "restart", agentServiceName).CombinedOutput(); err != nil {
+	if err := restartAgentService(); err != nil {
 		return fmt.Errorf("%v; restart restored Agent: %w", upgradeErr, err)
 	}
 	return upgradeErr
 }
 
 func restartAgentService() error {
-	if output, err := exec.Command("systemctl", "restart", agentServiceName).CombinedOutput(); err != nil {
-		return fmt.Errorf("restart Agent service: %s: %w", strings.TrimSpace(string(output)), err)
+	environment, err := detectUpgradeHostEnvironment()
+	if err != nil {
+		return err
 	}
-	if output, err := exec.Command("systemctl", "is-active", "--quiet", agentServiceName).CombinedOutput(); err != nil {
-		return fmt.Errorf("verify Agent service: %s: %w", strings.TrimSpace(string(output)), err)
+	manager := newServiceManager(environment.InitSystem, agentServiceDefinition(), "", runAgentServiceCommand)
+	if err := manager.Restart(context.Background()); err != nil {
+		return fmt.Errorf("restart Agent service: %w", err)
+	}
+	active, err := manager.IsActive(context.Background())
+	if err != nil {
+		return fmt.Errorf("verify Agent service: %w", err)
+	}
+	if !active {
+		return errors.New("verify Agent service: service is not active")
 	}
 	return nil
+}
+
+func agentServiceDefinition() serviceDefinition {
+	return serviceDefinition{
+		Name:        agentServiceName,
+		Description: "VPS Panel Agent",
+		Command:     agentManagedPath,
+	}
 }
 
 func reportAgentUpgradeFailure(ctx context.Context, client *http.Client, value config, version string, upgradeErr error) {

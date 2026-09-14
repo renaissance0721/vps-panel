@@ -68,6 +68,9 @@ func (f *proxyFirewall) reconcileRules(ctx context.Context, desiredRules []firew
 	if command, ok := f.activeCommand(ctx, "firewall-cmd", []string{"--state"}, "running"); ok {
 		return f.reconcileFirewalld(ctx, command, desired)
 	}
+	if command, ok := f.activeNFT(ctx); ok {
+		return f.reconcileNFT(ctx, command, desired)
+	}
 	command, err := f.lookPath("iptables")
 	if err != nil {
 		return nil
@@ -77,6 +80,107 @@ func (f *proxyFirewall) reconcileRules(ctx context.Context, desiredRules []firew
 		return nil
 	}
 	return f.reconcileIPTables(ctx, command, desired, string(output))
+}
+
+func (f *proxyFirewall) activeNFT(ctx context.Context) (string, bool) {
+	command, err := f.lookPath("nft")
+	if err != nil {
+		return "", false
+	}
+	output, err := f.runCommand(ctx, command, "list", "ruleset")
+	return command, err == nil && strings.Contains(strings.ToLower(string(output)), "table ")
+}
+
+func (f *proxyFirewall) reconcileNFT(ctx context.Context, command string, desired map[firewallRule]struct{}) error {
+	table := "vps_panel_" + f.owner
+	output, err := f.runCommand(ctx, command, "-a", "list", "chain", "inet", table, "input")
+	if err != nil {
+		if len(desired) == 0 {
+			return nil
+		}
+		if _, tableErr := f.runCommand(ctx, command, "list", "table", "inet", table); tableErr == nil {
+			return firewallError("refuse unmanaged nftables table "+table, nil)
+		}
+		if _, err := f.runCommand(ctx, command, "add", "table", "inet", table); err != nil {
+			return firewallError("create nftables table", err)
+		}
+		if _, err := f.runCommand(ctx, command, "add", "chain", "inet", table, "input", "{", "type", "filter", "hook", "input", "priority", "-10", ";", "policy", "accept", ";", "}"); err != nil {
+			_, _ = f.runCommand(ctx, command, "delete", "table", "inet", table)
+			return firewallError("create nftables chain", err)
+		}
+		if _, err := f.runCommand(ctx, command, "add", "rule", "inet", table, "input", "counter", "comment", f.nftOwnerComment()); err != nil {
+			_, _ = f.runCommand(ctx, command, "delete", "table", "inet", table)
+			return firewallError("mark nftables ownership", err)
+		}
+		output = []byte("counter comment \"" + f.nftOwnerComment() + "\" # handle 1")
+	}
+	if !f.hasNFTOwnership(string(output)) {
+		return firewallError("refuse unmanaged nftables chain "+table+" input", nil)
+	}
+	existing := f.parseNFTManagedRules(string(output))
+	for _, rule := range missingFirewallRules(desired, nftRuleSet(existing)) {
+		if _, err := f.runCommand(ctx, command, "add", "rule", "inet", table, "input", rule.protocol, "dport", strconv.Itoa(rule.port), "accept", "comment", f.firewallComment(rule.protocol)); err != nil {
+			return firewallError("add nftables rule", err)
+		}
+	}
+	for _, rule := range staleFirewallRules(desired, nftRuleSet(existing)) {
+		if _, err := f.runCommand(ctx, command, "delete", "rule", "inet", table, "input", "handle", strconv.FormatUint(existing[rule], 10)); err != nil {
+			return firewallError("remove stale nftables rule", err)
+		}
+	}
+	return nil
+}
+
+func (f *proxyFirewall) nftOwnerComment() string {
+	return "vps-panel-" + f.owner + "-owner"
+}
+
+func (f *proxyFirewall) hasNFTOwnership(value string) bool {
+	for _, line := range strings.Split(value, "\n") {
+		fields := strings.Fields(strings.ReplaceAll(line, `"`, ""))
+		comment, ok := fieldAfter(fields, "comment")
+		if ok && comment == f.nftOwnerComment() {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *proxyFirewall) parseNFTManagedRules(value string) map[firewallRule]uint64 {
+	rules := make(map[firewallRule]uint64)
+	scanner := bufio.NewScanner(strings.NewReader(value))
+	for scanner.Scan() {
+		fields := strings.Fields(strings.ReplaceAll(scanner.Text(), `"`, ""))
+		comment, commentOK := fieldAfter(fields, "comment")
+		handleValue, handleOK := fieldAfter(fields, "handle")
+		if !commentOK || !handleOK {
+			continue
+		}
+		handle, err := strconv.ParseUint(handleValue, 10, 64)
+		if err != nil {
+			continue
+		}
+		for index := 0; index+2 < len(fields); index++ {
+			protocol := fields[index]
+			if (protocol != "tcp" && protocol != "udp") || fields[index+1] != "dport" || comment != f.firewallComment(protocol) {
+				continue
+			}
+			port, err := strconv.Atoi(fields[index+2])
+			if err == nil && port >= 1 && port <= 65535 {
+				rules[firewallRule{port: port, protocol: protocol}] = handle
+			}
+			break
+		}
+	}
+	return rules
+}
+
+func nftRuleSet(rules map[firewallRule]uint64) map[firewallRule]struct{} {
+	result := make(map[firewallRule]struct{}, len(rules))
+	for rule := range rules {
+		result[rule] = struct{}{}
+	}
+	return result
 }
 
 func (f *proxyFirewall) activeCommand(ctx context.Context, name string, arguments []string, activeText string) (string, bool) {

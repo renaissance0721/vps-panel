@@ -25,7 +25,7 @@ import (
 const (
 	managedRealmVersion          = "v2.9.4"
 	managedRealmReleaseBaseURL   = "https://github.com/zhboner/realm/releases/download"
-	managedRealmServiceName      = "vps-panel-realm.service"
+	managedRealmServiceName      = "vps-panel-realm"
 	managedRealmBinaryPath       = "/opt/vps-panel/realm/realm"
 	managedRealmConfigPath       = "/etc/vps-panel/realm/config.toml"
 	managedRealmMaxDownloadBytes = 32 << 20
@@ -50,14 +50,28 @@ type managedRealmAsset struct {
 	sha256 string
 }
 
-var managedRealmAssets = map[string]managedRealmAsset{
-	"amd64": {
+type realmRuntimeTarget struct {
+	goos   string
+	goarch string
+	libc   libcKind
+}
+
+var managedRealmAssets = map[realmRuntimeTarget]managedRealmAsset{
+	{goos: "linux", goarch: "amd64", libc: libcGlibc}: {
 		name:   "realm-x86_64-unknown-linux-gnu.tar.gz",
 		sha256: "9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd",
 	},
-	"arm64": {
+	{goos: "linux", goarch: "arm64", libc: libcGlibc}: {
 		name:   "realm-aarch64-unknown-linux-gnu.tar.gz",
 		sha256: "1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99",
+	},
+	{goos: "linux", goarch: "amd64", libc: libcMusl}: {
+		name:   "realm-x86_64-unknown-linux-musl.tar.gz",
+		sha256: "a19b86c4ae4642d5864821b41d23633c0c91df279a88496c05834dc584169175",
+	},
+	{goos: "linux", goarch: "arm64", libc: libcMusl}: {
+		name:   "realm-aarch64-unknown-linux-musl.tar.gz",
+		sha256: "0195e77ca99713166e25ff85fefe042049c79fdaddf500e8ffd9ba77494a029c",
 	},
 }
 
@@ -76,12 +90,13 @@ type realmManager struct {
 	configPath        string
 	previousPath      string
 	unitPath          string
-	serviceName       string
+	service           serviceManager
 	unmanagedUnits    []string
 	goos              string
 	goarch            string
+	libc              libcKind
 	releaseBaseURL    string
-	assets            map[string]managedRealmAsset
+	assets            map[realmRuntimeTarget]managedRealmAsset
 	client            *http.Client
 	runCommand        func(context.Context, string, ...string) ([]byte, error)
 	validateConfig    func(context.Context, string, string) error
@@ -95,6 +110,15 @@ type realmManager struct {
 
 func newRealmManager() *realmManager {
 	firewall := newRealmFirewall()
+	environment, environmentErr := detectHostEnvironment()
+	var service serviceManager
+	libc := libcGlibc
+	if environmentErr != nil {
+		service = &unsupportedServiceManager{err: environmentErr}
+	} else {
+		service = newServiceManager(environment.InitSystem, realmServiceDefinition(), "", runXrayCommand)
+		libc = environment.Libc
+	}
 	return &realmManager{
 		installDir:     "/opt/vps-panel/realm",
 		binaryPath:     managedRealmBinaryPath,
@@ -102,11 +126,12 @@ func newRealmManager() *realmManager {
 		configDir:      "/etc/vps-panel/realm",
 		configPath:     managedRealmConfigPath,
 		previousPath:   "/etc/vps-panel/realm/config.previous.toml",
-		unitPath:       "/etc/systemd/system/vps-panel-realm.service",
-		serviceName:    managedRealmServiceName,
-		unmanagedUnits: []string{"/etc/systemd/system/realm.service", "/lib/systemd/system/realm.service", "/usr/lib/systemd/system/realm.service"},
+		unitPath:       service.Path(),
+		service:        service,
+		unmanagedUnits: []string{"/etc/systemd/system/realm.service", "/lib/systemd/system/realm.service", "/usr/lib/systemd/system/realm.service", "/etc/init.d/realm"},
 		goos:           runtime.GOOS,
 		goarch:         runtime.GOARCH,
+		libc:           libc,
 		releaseBaseURL: managedRealmReleaseBaseURL,
 		assets:         managedRealmAssets,
 		client:         &http.Client{Timeout: 60 * time.Second},
@@ -146,10 +171,13 @@ func (m *realmManager) disable(ctx context.Context) error {
 	}
 	unitExists, err := pathExists(m.unitPath)
 	if err != nil {
-		return fmt.Errorf("inspect managed Realm systemd unit: %w", err)
+		return fmt.Errorf("inspect managed Realm service: %w", err)
 	}
 	if unitExists {
-		if _, err := m.runCommand(ctx, "systemctl", "disable", "--now", m.serviceName); err != nil {
+		if err := m.serviceManager().Stop(ctx); err != nil {
+			return fmt.Errorf("%w: %v", errManagedRealmStop, err)
+		}
+		if err := m.serviceManager().Disable(ctx); err != nil {
 			return fmt.Errorf("%w: %v", errManagedRealmStop, err)
 		}
 	}
@@ -196,11 +224,11 @@ func (m *realmManager) enable(ctx context.Context, relays []desiredRelay) error 
 		return err
 	}
 	if unitChanged {
-		if _, err := m.runCommand(ctx, "systemctl", "daemon-reload"); err != nil {
-			return fmt.Errorf("install managed Realm systemd unit: %w", err)
+		if err := m.serviceManager().DaemonReload(ctx); err != nil {
+			return fmt.Errorf("install managed Realm service: %w", err)
 		}
 	}
-	if _, err := m.runCommand(ctx, "systemctl", "enable", m.serviceName); err != nil {
+	if err := m.serviceManager().Enable(ctx); err != nil {
 		return fmt.Errorf("%w: %v", errManagedRealmStart, err)
 	}
 	current, exists, err := readOptionalFile(m.configPath)
@@ -218,12 +246,14 @@ func (m *realmManager) enable(ctx context.Context, relays []desiredRelay) error 
 		if active && m.listenersHealthy(ctx, listeners) {
 			return m.reconcileFirewall(ctx, rules)
 		}
-		action := "start"
+		var startErr error
 		if active {
-			action = "restart"
+			startErr = m.serviceManager().Restart(ctx)
+		} else {
+			startErr = m.serviceManager().Start(ctx)
 		}
-		if _, err := m.runCommand(ctx, "systemctl", action, m.serviceName); err != nil {
-			return fmt.Errorf("%w: %v", errManagedRealmStart, err)
+		if startErr != nil {
+			return fmt.Errorf("%w: %v", errManagedRealmStart, startErr)
 		}
 		if err := m.waitUntilHealthy(ctx, listeners); err != nil {
 			return err
@@ -239,7 +269,7 @@ func (m *realmManager) enable(ctx context.Context, relays []desiredRelay) error 
 	if err := replaceFile(candidatePath, m.configPath, 0o600); err != nil {
 		return fmt.Errorf("install managed Realm config: %w", err)
 	}
-	if _, err := m.runCommand(ctx, "systemctl", "restart", m.serviceName); err != nil {
+	if err := m.serviceManager().Restart(ctx); err != nil {
 		return m.rollbackFailedApply(ctx, exists, previousListeners, previousRules, previousKnown, fmt.Errorf("%w: %v", errManagedRealmStart, err))
 	}
 	if err := m.waitUntilHealthy(ctx, listeners); err != nil {
@@ -256,8 +286,11 @@ func (m *realmManager) rollbackFailedApply(ctx context.Context, hasPrevious bool
 	rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), managedRealmRollbackTimeout)
 	defer cancel()
 	if !hasPrevious {
-		if _, err := m.runCommand(rollbackContext, "systemctl", "disable", "--now", m.serviceName); err != nil {
+		if err := m.serviceManager().Stop(rollbackContext); err != nil {
 			log.Printf("Realm rollback failed: stop service: %v", err)
+		}
+		if err := m.serviceManager().Disable(rollbackContext); err != nil {
+			log.Printf("Realm rollback failed: disable service: %v", err)
 		}
 		if err := os.Remove(m.configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("Realm rollback failed: remove config: %v", err)
@@ -276,7 +309,7 @@ func (m *realmManager) rollbackFailedApply(ctx context.Context, hasPrevious bool
 		log.Printf("Realm rollback failed: restore config: %v", err)
 		return applyErr
 	}
-	if _, err := m.runCommand(rollbackContext, "systemctl", "restart", m.serviceName); err != nil {
+	if err := m.serviceManager().Restart(rollbackContext); err != nil {
 		log.Printf("Realm rollback failed: restart previous config: %v", err)
 		return applyErr
 	}
@@ -295,9 +328,9 @@ func (m *realmManager) ensureManagedRealm(ctx context.Context) error {
 	if m.goos != "linux" {
 		return fmt.Errorf("%w: %s/%s", errManagedRealmArch, m.goos, m.goarch)
 	}
-	asset, ok := m.assets[m.goarch]
+	asset, ok := m.assets[realmRuntimeTarget{goos: m.goos, goarch: m.goarch, libc: m.libc}]
 	if !ok {
-		return fmt.Errorf("%w: %s/%s", errManagedRealmArch, m.goos, m.goarch)
+		return fmt.Errorf("%w: %s/%s/%s", errManagedRealmArch, m.goos, m.goarch, m.libc)
 	}
 	if err := m.checkConflicts(); err != nil {
 		return err
@@ -367,6 +400,9 @@ func (m *realmManager) checkConflicts() error {
 		}
 	}
 	for _, path := range []string{m.binaryPath, m.configPath, m.previousPath, m.unitPath} {
+		if path == "" {
+			continue
+		}
 		exists, err := pathExists(path)
 		if err != nil {
 			return fmt.Errorf("inspect managed Realm path: %w", err)
@@ -521,42 +557,36 @@ func validateRealmConfig(ctx context.Context, binaryPath, candidatePath string) 
 }
 
 func (m *realmManager) ensureUnit() (bool, error) {
-	unit := []byte(`[Unit]
-Description=VPS Panel Managed Realm
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/opt/vps-panel/realm/realm --config /etc/vps-panel/realm/config.toml
-Restart=on-failure
-RestartSec=3
-TimeoutStopSec=10
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-`)
-	existing, exists, err := readOptionalFile(m.unitPath)
+	changed, err := m.serviceManager().Install()
 	if err != nil {
-		return false, fmt.Errorf("read managed Realm systemd unit: %w", err)
+		return false, fmt.Errorf("write managed Realm service: %w", err)
 	}
-	if exists && bytes.Equal(existing, unit) {
-		return false, os.Chmod(m.unitPath, 0o644)
-	}
-	if err := writeFileAtomically(m.unitPath, unit, 0o644); err != nil {
-		return false, fmt.Errorf("write managed Realm systemd unit: %w", err)
-	}
-	return true, nil
+	return changed, nil
 }
 
 func (m *realmManager) isActive(ctx context.Context) (bool, error) {
-	_, err := m.runCommand(ctx, "systemctl", "is-active", "--quiet", m.serviceName)
-	return err == nil, nil
+	return m.serviceManager().IsActive(ctx)
+}
+
+func realmServiceDefinition() serviceDefinition {
+	return serviceDefinition{
+		Name:               managedRealmServiceName,
+		Description:        "VPS Panel Managed Realm",
+		Command:            managedRealmBinaryPath,
+		Arguments:          []string{"--config", managedRealmConfigPath},
+		TimeoutStopSeconds: 10,
+	}
+}
+
+func (m *realmManager) serviceManager() serviceManager {
+	if m.service != nil {
+		return m.service
+	}
+	return &systemdServiceManager{
+		definition: realmServiceDefinition(),
+		path:       m.unitPath,
+		runCommand: m.runCommand,
+	}
 }
 
 func (m *realmManager) waitUntilHealthy(ctx context.Context, listeners []realmListener) error {

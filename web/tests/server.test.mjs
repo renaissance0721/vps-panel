@@ -19,5 +19,7 @@ test('服务器详情展示 Agent 原地升级状态和 bootstrap 命令', async
   assert.match(source, /升级状态/)
   assert.match(source, /\/api\/servers\/\$\{value\.id\}\/agent-upgrade/)
   assert.match(source, /\/upgrade-agent\.sh/)
+  assert.match(source, /\/upgrade-agent\.sh \| sh/)
+  assert.doesNotMatch(source, /\/upgrade-agent\.sh \| bash/)
   assert.match(source, /state\.user\?\.role === 'admin'/)
 })

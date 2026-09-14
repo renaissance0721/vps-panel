@@ -1047,7 +1047,7 @@ func (s *server) toCreatedServerResponse(
 	baseURL string,
 ) createdServerResponse {
 	command := fmt.Sprintf(
-		"curl -fsSL %s/install-agent.sh | bash -s -- \\\n  --server %s \\\n  --token %s",
+		"curl -fsSL %s/install-agent.sh | sh -s -- \\\n  --server %s \\\n  --token %s",
 		baseURL,
 		baseURL,
 		created.EnrollmentToken,

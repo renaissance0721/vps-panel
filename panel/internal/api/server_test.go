@@ -315,6 +315,8 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 	if !strings.Contains(created.AgentInstallationCommand, "https://panel.example.com") ||
 		!strings.Contains(created.AgentInstallationCommand, created.EnrollmentToken) ||
+		!strings.Contains(created.AgentInstallationCommand, "| sh -s --") ||
+		strings.Contains(created.AgentInstallationCommand, "| bash") ||
 		strings.Contains(created.AgentInstallationCommand, "--force") ||
 		strings.Contains(created.AgentInstallationCommand, "--version") {
 		t.Fatalf("agent command = %q, want panel URL and enrollment token", created.AgentInstallationCommand)

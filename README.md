@@ -4,13 +4,13 @@
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
 
-Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。Phase 8B 已完成 Agent 侧固定官方 Xray `v26.3.27` 的 SHA256 校验安装、独立受管路径、基础配置校验与原子替换、systemd 启停、健康检查和失败回滚。
+Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。Phase 8B 已完成 Agent 侧固定官方 Xray `v26.3.27` 的 SHA256 校验安装、独立受管路径、基础配置校验与原子替换、服务启停、健康检查和失败回滚。
 
 Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。
 
 Phase 10 已完成。Xray 使用稳定的非敏感 Client 统计标识维护累计上行/下行计数，Agent 约每 15 秒通过独立认证 HTTP 接口上报，Panel 持久化 baseline、本周期累计和最近活动时间。Client 支持 G/T 流量额度、never / daily / weekly / monthly 上海时区周期、下次重置时间、本周期手动重置和到期时间。实际可用状态实时按 `effective_enabled = enabled && !expired && !quota_exhausted` 派生；达到 90% 显示预警，到期或额度耗尽时从 Xray desired state 失效，周期重置、手动重置或调整配置解除阻塞后自动恢复，同时保留原 Client 凭据和分享 URI。
 
-Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、systemd 重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。
+Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 和 glibc / musl 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、服务重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。
 
 Realm 受管路径：
 
@@ -19,7 +19,8 @@ Realm 受管路径：
 /opt/vps-panel/realm/.managed-by-vps-panel
 /etc/vps-panel/realm/config.toml
 /etc/vps-panel/realm/config.previous.toml
-/etc/systemd/system/vps-panel-realm.service
+/etc/systemd/system/vps-panel-realm.service   # Debian / Ubuntu
+/etc/init.d/vps-panel-realm                   # Alpine Linux
 ```
 
 如果检测到第三方 `realm.service`，或上述 Panel 专用路径在没有受管标记时已被占用，Agent 会拒绝接管。禁用最后一条 Relay 时会停止服务、清理当前配置和 Realm 自有防火墙规则，但保留受管二进制、标记和 unit 供再次启用。
@@ -91,17 +92,26 @@ systemctl status vps-panel
 
 ## Agent 安装
 
-在 Panel 的“服务器”页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 Debian/Ubuntu VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载对应 Agent 二进制、完成一次性注册并启用 `vps-panel-agent.service`。正式 Release 生成的命令会固定下载与当前 Panel 相同版本的 Agent；开发版本未指定版本时才回退到最新 Release。
+在 Panel 的“服务器”页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载同一份静态 Agent 二进制、完成一次性注册并启用系统对应的 Agent 服务。正式 Release 生成的命令会固定下载与当前 Panel 相同版本的 Agent；开发版本未指定版本时才回退到最新 Release。
+
+支持的 Agent 系统：
+
+- Debian / Ubuntu + systemd
+- Alpine Linux + OpenRC
+- amd64 / arm64
+
+Panel 本体仍只支持 Debian / Ubuntu + systemd，不支持安装到 Alpine。Alpine Agent 会使用 OpenRC `supervise-daemon` 保持服务运行，Realm 自动选择官方 musl binary；页面生成的一次性安装命令可直接使用，无需手工拼接 Token。若 Alpine 缺少下载依赖，安装脚本只安装最小的 `curl` 和 `ca-certificates`；仅在系统没有 `install` 命令时补装 `coreutils`。
 
 Agent 安装位置：
 
 ```text
 /opt/vps-panel/agent/vps-panel-agent
 /etc/vps-panel-agent/config.json
-/etc/systemd/system/vps-panel-agent.service
+/etc/systemd/system/vps-panel-agent.service   # Debian / Ubuntu
+/etc/init.d/vps-panel-agent                   # Alpine Linux
 ```
 
-注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每次连接成功后上报一次静态系统信息，每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 会在 3 秒后兜底重启。服务器详情会显示最后通信时间和最近一次静态系统信息，并约每 5 秒刷新状态和动态指标。
+注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每次连接成功后上报一次静态系统信息，每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 或 OpenRC `supervise-daemon` 会在 3 秒后兜底重启。服务器详情会显示最后通信时间和最近一次静态系统信息，并约每 5 秒刷新状态和动态指标。
 
 普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在正常或已移除 Server 的详情弹窗中统一使用“重新生成 Agent 安装令牌”；新建 Server 自动生成的首个令牌用于首次安装，管理员主动重新生成的令牌始终用于重新绑定。重新绑定成功后，Agent 才会原子替换旧配置；只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
 
@@ -112,10 +122,10 @@ Agent 安装位置：
 首次迁移不识别升级指令的旧 Agent 时，可在 Agent VPS 上执行：
 
 ```bash
-curl -fsSL https://PANEL_HOST/upgrade-agent.sh | sudo bash
+curl -fsSL https://PANEL_HOST/upgrade-agent.sh | sudo sh
 ```
 
-该 bootstrap 脚本只升级二进制和 systemd unit，不调用注册接口，并保留原凭据。
+该 bootstrap 脚本只升级二进制和当前系统的 systemd unit / OpenRC init script，不调用注册接口，并保留原凭据。
 
 ### `vp` 管理命令
 

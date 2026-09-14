@@ -22,13 +22,15 @@ func TestManagedRealmPinnedOfficialAssets(t *testing.T) {
 	if managedRealmVersion != "v2.9.4" {
 		t.Fatalf("Realm version = %q", managedRealmVersion)
 	}
-	want := map[string]managedRealmAsset{
-		"amd64": {"realm-x86_64-unknown-linux-gnu.tar.gz", "9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd"},
-		"arm64": {"realm-aarch64-unknown-linux-gnu.tar.gz", "1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99"},
+	want := map[realmRuntimeTarget]managedRealmAsset{
+		{goos: "linux", goarch: "amd64", libc: libcGlibc}: {"realm-x86_64-unknown-linux-gnu.tar.gz", "9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd"},
+		{goos: "linux", goarch: "arm64", libc: libcGlibc}: {"realm-aarch64-unknown-linux-gnu.tar.gz", "1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99"},
+		{goos: "linux", goarch: "amd64", libc: libcMusl}:  {"realm-x86_64-unknown-linux-musl.tar.gz", "a19b86c4ae4642d5864821b41d23633c0c91df279a88496c05834dc584169175"},
+		{goos: "linux", goarch: "arm64", libc: libcMusl}:  {"realm-aarch64-unknown-linux-musl.tar.gz", "0195e77ca99713166e25ff85fefe042049c79fdaddf500e8ffd9ba77494a029c"},
 	}
-	for arch, expected := range want {
-		if managedRealmAssets[arch] != expected {
-			t.Fatalf("Realm asset %s = %+v", arch, managedRealmAssets[arch])
+	for target, expected := range want {
+		if managedRealmAssets[target] != expected {
+			t.Fatalf("Realm asset %+v = %+v", target, managedRealmAssets[target])
 		}
 	}
 }
@@ -46,7 +48,7 @@ func TestManagedRealmInstallsValidatesStartsAndUsesProtocolFirewall(t *testing.T
 	defer server.Close()
 	manager.releaseBaseURL = server.URL
 	manager.client = server.Client()
-	manager.assets = map[string]managedRealmAsset{"amd64": {"realm-x86_64-unknown-linux-gnu.tar.gz", realmChecksum(archive)}}
+	manager.assets = map[realmRuntimeTarget]managedRealmAsset{{goos: "linux", goarch: "amd64", libc: libcGlibc}: {"realm-x86_64-unknown-linux-gnu.tar.gz", realmChecksum(archive)}}
 	validated := ""
 	manager.validateConfig = func(_ context.Context, _, path string) error {
 		validated = path
@@ -78,6 +80,39 @@ func TestManagedRealmInstallsValidatesStartsAndUsesProtocolFirewall(t *testing.T
 	}
 }
 
+func TestManagedRealmUsesMuslAssetAndOpenRCService(t *testing.T) {
+	manager, commands := newTestRealmManager(t)
+	root := filepath.Dir(filepath.Dir(filepath.Dir(manager.installDir)))
+	manager.libc = libcMusl
+	manager.service = newServiceManager(initSystemOpenRC, realmServiceDefinition(), root, commands.run)
+	manager.unitPath = manager.service.Path()
+	archive := makeRealmArchive(t, []byte("test Realm musl binary"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/"+managedRealmVersion+"/realm-x86_64-unknown-linux-musl.tar.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	manager.client = server.Client()
+	manager.assets = map[realmRuntimeTarget]managedRealmAsset{
+		{goos: "linux", goarch: "amd64", libc: libcMusl}: {"realm-x86_64-unknown-linux-musl.tar.gz", realmChecksum(archive)},
+	}
+	if err := manager.apply(t.Context(), testRealmState(9502, "tcp,udp")); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(manager.unitPath)
+	if err != nil || !strings.Contains(string(script), `supervisor="supervise-daemon"`) ||
+		!strings.Contains(string(script), `command_args="--config /etc/vps-panel/realm/config.toml"`) {
+		t.Fatalf("Realm OpenRC service = %q, %v", script, err)
+	}
+	if commands.count("rc-update", "add") != 1 || commands.count("rc-service", managedRealmServiceName) < 2 || !commands.active {
+		t.Fatalf("Realm OpenRC calls = %v, active = %v", commands.calls, commands.active)
+	}
+}
+
 func TestManagedRealmRefusesUnmanagedUnitAndBadChecksum(t *testing.T) {
 	manager, commands := newTestRealmManager(t)
 	writeTestFile(t, manager.unmanagedUnits[0], []byte("user unit"), 0o644)
@@ -101,7 +136,7 @@ func TestManagedRealmRefusesUnmanagedUnitAndBadChecksum(t *testing.T) {
 	defer server.Close()
 	manager.releaseBaseURL = server.URL
 	manager.client = server.Client()
-	manager.assets = map[string]managedRealmAsset{"amd64": {"realm.tar.gz", strings.Repeat("0", 64)}}
+	manager.assets = map[realmRuntimeTarget]managedRealmAsset{{goos: "linux", goarch: "amd64", libc: libcGlibc}: {"realm.tar.gz", strings.Repeat("0", 64)}}
 	if err := manager.ensureManagedRealm(t.Context()); !errors.Is(err, errManagedRealmChecksum) {
 		t.Fatalf("checksum error = %v", err)
 	}
@@ -234,9 +269,8 @@ func newTestRealmManager(t *testing.T) (*realmManager, *realmCommandRecorder) {
 		configPath:     filepath.Join(root, "etc", "vps-panel", "realm", "config.toml"),
 		previousPath:   filepath.Join(root, "etc", "vps-panel", "realm", "config.previous.toml"),
 		unitPath:       filepath.Join(root, "etc", "systemd", "system", "vps-panel-realm.service"),
-		serviceName:    managedRealmServiceName,
 		unmanagedUnits: []string{filepath.Join(root, "etc", "systemd", "system", "realm.service")},
-		goos:           "linux", goarch: "amd64", releaseBaseURL: "http://127.0.0.1:1",
+		goos:           "linux", goarch: "amd64", libc: libcGlibc, releaseBaseURL: "http://127.0.0.1:1",
 		assets: managedRealmAssets, client: &http.Client{Timeout: time.Second}, runCommand: commands.run,
 		validateConfig:    func(context.Context, string, string) error { return nil },
 		probeTCP:          func(context.Context, string, int) error { return nil },
@@ -267,6 +301,18 @@ func (r *realmCommandRecorder) run(_ context.Context, name string, arguments ...
 		case "disable", "stop":
 			r.active = false
 		case "is-active":
+			if !r.active {
+				return nil, errors.New("inactive")
+			}
+		}
+	}
+	if name == "rc-service" && len(arguments) >= 2 {
+		switch arguments[1] {
+		case "start", "restart":
+			r.active = true
+		case "stop":
+			r.active = false
+		case "status":
 			if !r.active {
 				return nil, errors.New("inactive")
 			}

@@ -91,6 +91,34 @@ func TestManagedXrayInstallsVerifiedArchiveAndStarts(t *testing.T) {
 	}
 }
 
+func TestManagedXrayUsesOpenRCServiceLifecycle(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	root := filepath.Dir(filepath.Dir(filepath.Dir(manager.installDir)))
+	manager.service = newServiceManager(initSystemOpenRC, xrayServiceDefinition(), root, commands.run)
+	manager.unitPath = manager.service.Path()
+	archive := makeXrayArchive(t, []byte("test xray binary"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	manager.client = server.Client()
+	manager.assets = map[string]managedXrayAsset{
+		"amd64": {name: "Xray-linux-64.zip", sha256: checksum(archive)},
+	}
+	if err := manager.apply(t.Context(), enabledXrayState()); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(manager.unitPath)
+	if err != nil || !strings.Contains(string(script), `supervisor="supervise-daemon"`) ||
+		!strings.Contains(string(script), `command_args="run -config /etc/vps-panel/xray/config.json"`) {
+		t.Fatalf("Xray OpenRC service = %q, %v", script, err)
+	}
+	if commands.count("rc-update", "add") != 1 || commands.count("rc-service", managedXrayServiceName) < 2 || !commands.active {
+		t.Fatalf("Xray OpenRC calls = %v, active = %v", commands.calls, commands.active)
+	}
+}
+
 func TestManagedXrayRejectsBadChecksumBeforeExecution(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	archive := makeXrayArchive(t, []byte("must not execute"))
@@ -602,7 +630,6 @@ func newTestXrayManager(t *testing.T) (*xrayManager, *xrayCommandRecorder) {
 		configPath:        filepath.Join(root, "etc", "vps-panel", "xray", "config.json"),
 		previousPath:      filepath.Join(root, "etc", "vps-panel", "xray", "config.previous.json"),
 		unitPath:          filepath.Join(root, "etc", "systemd", "system", "vps-panel-xray.service"),
-		serviceName:       managedXrayServiceName,
 		unmanagedUnits:    []string{filepath.Join(root, "etc", "systemd", "system", "xray.service")},
 		goos:              "linux",
 		goarch:            "amd64",
@@ -646,6 +673,22 @@ func (r *xrayCommandRecorder) run(_ context.Context, name string, arguments ...s
 		return []byte(r.versionOutput), nil
 	}
 	if name != "systemctl" {
+		if name == "rc-service" && len(arguments) >= 2 {
+			switch arguments[1] {
+			case "start", "restart":
+				r.active = true
+			case "stop":
+				r.active = false
+			case "status":
+				if !r.active {
+					return []byte("stopped"), errors.New("stopped")
+				}
+			}
+			return nil, nil
+		}
+		if name == "rc-update" {
+			return nil, nil
+		}
 		if r.failValidation {
 			return []byte("invalid candidate"), errors.New("config test failed")
 		}

@@ -27,6 +27,11 @@ VERSION_ID='12'
 	if name != "Ubuntu" || version != "24.04 LTS" {
 		t.Fatalf("fallback parseOSRelease() = (%q, %q)", name, version)
 	}
+
+	name, version = parseOSRelease([]byte("NAME=\"Alpine Linux\"\nVERSION_ID=3.22.1\n"))
+	if name != "Alpine Linux" || version != "3.22.1" {
+		t.Fatalf("Alpine parseOSRelease() = (%q, %q)", name, version)
+	}
 }
 
 func TestDetectPublicIPv4(t *testing.T) {

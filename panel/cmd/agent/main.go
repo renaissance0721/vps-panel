@@ -90,8 +90,18 @@ func run(arguments []string) error {
 	if len(arguments) > 0 && arguments[0] == "_apply-upgrade" {
 		return runApplyUpgrade(arguments[1:])
 	}
+	if len(arguments) > 0 && arguments[0] == agentSystemdMigrationRestartCommand {
+		return runAgentSystemdMigrationRestart(arguments[1:])
+	}
 	if len(arguments) != 0 {
 		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
+	}
+	migrated, err := migrateAgentSystemdSandbox()
+	if err != nil {
+		log.Printf("Agent systemd sandbox migration failed: %v", err)
+	} else if migrated {
+		log.Print("Agent systemd sandbox migration installed; restart scheduled")
+		return nil
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -16,9 +16,14 @@ export function relayTargetLabel(value: {
 }) {
   if (value.target_type === 'proxy') {
     return value.target_address_ready
-      ? `${value.target_proxy_name} · ${value.target_host}:${value.target_port}`
+      ? `${value.target_proxy_name} · ${relayEndpointLabel(value.target_host, value.target_port)}`
       : `${value.target_proxy_name} · 目标地址不可用`
   }
-  const host = value.target_host.includes(':') ? `[${value.target_host}]` : value.target_host
-  return `${host}:${value.target_port}`
+  return relayEndpointLabel(value.target_host, value.target_port)
+}
+
+export function relayEndpointLabel(host: string, port: number) {
+  if (!host) return '入口地址不可用'
+  const displayHost = host.includes(':') ? `[${host}]` : host
+  return `${displayHost}:${port}`
 }

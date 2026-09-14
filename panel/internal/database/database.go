@@ -164,6 +164,9 @@ func migrate(db *sql.DB) error {
 			name TEXT NOT NULL,
 			listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
+				CHECK (entry_host_mode IN ('auto', 'manual')),
+			entry_host TEXT NOT NULL DEFAULT '',
 			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'manual')),
 			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
 			target_host TEXT NOT NULL DEFAULT '',
@@ -246,6 +249,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateProxyEntryHost(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateRelayEntryHost(ctx, db); err != nil {
 		return err
 	}
 	if err := migrateProxyProtocols(ctx, db); err != nil {
@@ -465,6 +471,31 @@ func migrateProxyEntryHost(ctx context.Context, db *sql.DB) error {
 			     entry_host = trim(public_host)`,
 		); err != nil {
 			return fmt.Errorf("migrate proxies.public_host: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateRelayEntryHost(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"entry_host_mode", "entry_host_mode TEXT NOT NULL DEFAULT 'auto' CHECK (entry_host_mode IN ('auto', 'manual'))"},
+		{"entry_host", "entry_host TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('relays') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect relays.%s: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE relays ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add relays.%s: %w", column.name, err)
 		}
 	}
 	return nil

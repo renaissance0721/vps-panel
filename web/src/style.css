@@ -288,7 +288,8 @@ h1 {
 
 .expiration-form p,
 .traffic-form p,
-.proxy-form p {
+.proxy-form p,
+.relay-form p {
   margin: 4px 0 10px;
   color: #65717e;
   font-size: 13px;
@@ -348,9 +349,14 @@ h1 {
   overflow-y: auto;
 }
 
-.relay-form-card,
-.relay-detail-card {
+.relay-form-card {
   width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.relay-detail-card {
+  width: min(960px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
@@ -429,6 +435,31 @@ h1 {
 .proxy-detail-card h3 {
   margin: 20px 0 12px;
   font-size: 16px;
+}
+
+.relay-detail-card h3 {
+  margin: 20px 0 12px;
+  font-size: 16px;
+}
+
+.relay-client-list {
+  display: grid;
+  gap: 14px;
+}
+
+.relay-client-share {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e3e8ee;
+  border-radius: 6px;
+}
+
+.relay-client-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 .proxy-detail-card h3:first-child {
@@ -693,6 +724,11 @@ h1 {
   }
 
   .proxy-detail-card {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .relay-detail-card {
     width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
   }

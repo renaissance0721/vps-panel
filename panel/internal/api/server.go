@@ -103,6 +103,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/relays", s.requireAuthentication(s.listRelays))
 	mux.HandleFunc("POST /api/relays", s.requireAuthentication(s.createRelay))
 	mux.HandleFunc("GET /api/relays/{id}", s.requireAuthentication(s.getRelay))
+	mux.HandleFunc("GET /api/relays/{id}/clients", s.requireAuthentication(s.getRelayClients))
 	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAuthentication(s.updateRelay))
 	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAuthentication(s.deleteRelay))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)

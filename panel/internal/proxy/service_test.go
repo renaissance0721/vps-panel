@@ -14,6 +14,7 @@ import (
 	"errors"
 	"math/big"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -336,6 +337,61 @@ func TestVLESSShareAutoUsesOnlyPublicIPv4AndManualOverridesIt(t *testing.T) {
 	if err != nil || udpURI.Query().Get("flow") != ServerFlow+"-udp443" || udpURI.Query().Get("pbk") != share.RealityPublicKey ||
 		udpURI.Query().Get("alpn") != "h2,http/1.1" || udpURI.Query().Get("headerType") != "none" {
 		t.Fatalf("REALITY UDP/443 share = %s, %v", udpShare.URI, err)
+	}
+}
+
+func TestClientShareEndpointOverridePreservesCredentialsAndProtocolParameters(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	reality := createRealityProxy(t, service, serverID, 443, "REALITY")
+	direct, err := service.GetClientShareAtEndpoint(t.Context(), reality.Clients[0].ID, ShareEndpoint{
+		Address: "target.example.com", Port: 443,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayed, err := service.GetClientShareAtEndpoint(t.Context(), reality.Clients[0].ID, ShareEndpoint{
+		Address: "2001:db8::10", Port: 35152,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directURI, _ := url.Parse(direct.URI)
+	relayedURI, _ := url.Parse(relayed.URI)
+	if directURI.Host != "target.example.com:443" || relayedURI.Host != "[2001:db8::10]:35152" ||
+		directURI.User.String() != relayedURI.User.String() || directURI.RawQuery != relayedURI.RawQuery ||
+		directURI.Fragment != relayedURI.Fragment || direct.UUID != relayed.UUID ||
+		directURI.Query().Get("sni") != relayedURI.Query().Get("sni") ||
+		directURI.Query().Get("pbk") != relayedURI.Query().Get("pbk") ||
+		directURI.Query().Get("sid") != relayedURI.Query().Get("sid") ||
+		directURI.Query().Get("fp") != relayedURI.Query().Get("fp") {
+		t.Fatalf("VLESS endpoint override changed protocol material: direct %q, Relay %q", direct.URI, relayed.URI)
+	}
+
+	for index, method := range []string{ShadowsocksMethodAES128GCM, ShadowsocksMethodAES256GCM} {
+		port := 8388 + index
+		value, _, err := service.Create(t.Context(), CreateInput{
+			ServerID: serverID, Name: "SS", Protocol: ProtocolShadowsocks, Method: method,
+			ListenPort: port, EntryHostMode: EntryHostManual, EntryHost: "target.example.com",
+			Enabled: true, FirstClientName: "Client",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		direct, err := service.GetClientShareAtEndpoint(t.Context(), value.Clients[0].ID, ShareEndpoint{Address: "target.example.com", Port: port})
+		if err != nil {
+			t.Fatal(err)
+		}
+		relayed, err := service.GetClientShareAtEndpoint(t.Context(), value.Clients[0].ID, ShareEndpoint{Address: "relay.example.com", Port: 9502 + index})
+		if err != nil {
+			t.Fatal(err)
+		}
+		directURI, _ := url.Parse(direct.URI)
+		relayedURI, _ := url.Parse(relayed.URI)
+		if relayedURI.Host != "relay.example.com:"+strconv.Itoa(9502+index) ||
+			directURI.User.String() != relayedURI.User.String() || directURI.Fragment != relayedURI.Fragment ||
+			direct.Method != method || relayed.Method != method || direct.Password != relayed.Password {
+			t.Fatalf("Shadowsocks endpoint override changed credentials for %s: direct %q, Relay %q", method, direct.URI, relayed.URI)
+		}
 	}
 }
 

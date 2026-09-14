@@ -156,6 +156,11 @@ type ClientShare struct {
 	URI              string
 }
 
+type ShareEndpoint struct {
+	Address string
+	Port    int
+}
+
 type CreateInput struct {
 	ServerID          int64
 	Name              string
@@ -820,6 +825,14 @@ func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) 
 }
 
 func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, error) {
+	return s.getClientShare(ctx, id, nil)
+}
+
+func (s *Service) GetClientShareAtEndpoint(ctx context.Context, id int64, endpoint ShareEndpoint) (ClientShare, error) {
+	return s.getClientShare(ctx, id, &endpoint)
+}
+
+func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareEndpoint) (ClientShare, error) {
 	var value Client
 	var credentialJSON, configJSON string
 	var proxyName, protocol, entryHostMode, entryHost, publicIPv4 string
@@ -881,16 +894,25 @@ func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, er
 	if err != nil {
 		return ClientShare{}, err
 	}
-	address, err := resolveEntryAddress(entryHostMode, entryHost, publicIPv4)
-	if err != nil {
-		return ClientShare{}, err
+	address, port := "", listenPort
+	if endpoint == nil {
+		address, err = resolveEntryAddress(entryHostMode, entryHost, publicIPv4)
+		if err != nil {
+			return ClientShare{}, err
+		}
+	} else {
+		address, err = normalizeHost(endpoint.Address, false)
+		if err != nil || validatePort(endpoint.Port) != nil {
+			return ClientShare{}, ErrConnectionAddressUnavailable
+		}
+		port = endpoint.Port
 	}
 	flow := ServerFlow
 	if value.ClientUDP443 {
 		flow += "-udp443"
 	}
 	share := ClientShare{
-		Client: value, ProxyName: proxyName, Address: address, Port: listenPort,
+		Client: value, ProxyName: proxyName, Address: address, Port: port,
 		Security: config.Security, ServerName: config.ServerName, Fingerprint: config.Fingerprint,
 		Flow: flow, Protocol: protocol,
 	}

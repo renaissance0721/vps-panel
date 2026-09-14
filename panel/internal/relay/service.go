@@ -13,25 +13,30 @@ import (
 )
 
 const (
-	TargetProxy  = "proxy"
-	TargetManual = "manual"
-	NetworkTCP   = "tcp"
-	NetworkUDP   = "udp"
-	NetworkBoth  = "tcp,udp"
-	maxNameRunes = 100
+	TargetProxy     = "proxy"
+	TargetManual    = "manual"
+	EntryHostAuto   = "auto"
+	EntryHostManual = "manual"
+	NetworkTCP      = "tcp"
+	NetworkUDP      = "udp"
+	NetworkBoth     = "tcp,udp"
+	maxNameRunes    = 100
 )
 
 var (
-	ErrNotFound          = errors.New("relay not found")
-	ErrServerNotFound    = errors.New("server not found")
-	ErrProxyNotFound     = errors.New("target proxy not found")
-	ErrInvalidName       = errors.New("relay name must be 1-100 characters")
-	ErrInvalidListenIP   = errors.New("listen address must be an IP address")
-	ErrInvalidPort       = errors.New("port must be 1-65535")
-	ErrInvalidTarget     = errors.New("relay target is invalid")
-	ErrInvalidNetwork    = errors.New("relay network must be tcp, udp, or tcp,udp")
-	ErrPortConflict      = errors.New("relay listen port conflicts with an existing listener")
-	ErrTargetUnavailable = errors.New("relay target address is unavailable")
+	ErrNotFound             = errors.New("relay not found")
+	ErrServerNotFound       = errors.New("server not found")
+	ErrProxyNotFound        = errors.New("target proxy not found")
+	ErrInvalidName          = errors.New("relay name must be 1-100 characters")
+	ErrInvalidListenIP      = errors.New("listen address must be an IP address")
+	ErrInvalidPort          = errors.New("port must be 1-65535")
+	ErrInvalidEntryHostMode = errors.New("entry host mode must be auto or manual")
+	ErrInvalidEntryHost     = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
+	ErrEntryUnavailable     = errors.New("relay entry address is unavailable")
+	ErrInvalidTarget        = errors.New("relay target is invalid")
+	ErrInvalidNetwork       = errors.New("relay network must be tcp, udp, or tcp,udp")
+	ErrPortConflict         = errors.New("relay listen port conflicts with an existing listener")
+	ErrTargetUnavailable    = errors.New("relay target address is unavailable")
 )
 
 type Relay struct {
@@ -42,6 +47,9 @@ type Relay struct {
 	Name               string
 	ListenAddress      string
 	ListenPort         int
+	EntryHostMode      string
+	EntryHost          string
+	EntryAddress       string
 	TargetType         string
 	TargetProxyID      *int64
 	TargetProxyName    string
@@ -68,6 +76,8 @@ type CreateInput struct {
 	Name          string
 	ListenAddress string
 	ListenPort    int
+	EntryHostMode string
+	EntryHost     string
 	TargetType    string
 	TargetProxyID *int64
 	TargetHost    string
@@ -80,6 +90,8 @@ type UpdateInput struct {
 	Name          *string
 	ListenAddress *string
 	ListenPort    *int
+	EntryHostMode *string
+	EntryHost     *string
 	TargetType    *string
 	TargetProxyID *int64
 	TargetHost    *string
@@ -139,10 +151,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO relays
-		 (server_id, name, listen_address, listen_port, target_type, target_proxy_id,
-		  target_host, target_port, network, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		value.ServerID, value.Name, value.ListenAddress, value.ListenPort, value.TargetType,
+		 (server_id, name, listen_address, listen_port, entry_host_mode, entry_host,
+		  target_type, target_proxy_id, target_host, target_port, network, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		value.ServerID, value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
 		nullableID(value.TargetProxyID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), now.Unix(),
 	)
@@ -184,6 +196,12 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	if input.ListenPort != nil {
 		value.ListenPort = *input.ListenPort
 	}
+	if input.EntryHostMode != nil {
+		value.EntryHostMode = *input.EntryHostMode
+	}
+	if input.EntryHost != nil {
+		value.EntryHost = *input.EntryHost
+	}
 	if input.TargetType != nil {
 		value.TargetType = *input.TargetType
 	}
@@ -214,10 +232,10 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 		return Relay{}, Mutation{}, err
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE relays SET name = ?, listen_address = ?, listen_port = ?, target_type = ?,
-		 target_proxy_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
+		`UPDATE relays SET name = ?, listen_address = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?,
+		 target_type = ?, target_proxy_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
 		 WHERE id = ?`,
-		value.Name, value.ListenAddress, value.ListenPort, value.TargetType,
+		value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
 		nullableID(value.TargetProxyID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), id,
 	)
@@ -342,7 +360,8 @@ func normalizeCreate(input CreateInput) (Relay, error) {
 	}
 	return normalizeRelay(Relay{
 		ServerID: input.ServerID, Name: input.Name, ListenAddress: listenAddress,
-		ListenPort: input.ListenPort, TargetType: input.TargetType,
+		ListenPort: input.ListenPort, EntryHostMode: input.EntryHostMode, EntryHost: input.EntryHost,
+		TargetType:    input.TargetType,
 		TargetProxyID: input.TargetProxyID, TargetHost: input.TargetHost,
 		TargetPort: input.TargetPort, Network: input.Network, Enabled: input.Enabled,
 	})
@@ -361,6 +380,11 @@ func normalizeRelay(value Relay) (Relay, error) {
 	if !validPort(value.ListenPort) {
 		return Relay{}, ErrInvalidPort
 	}
+	entryHostMode, entryHost, err := normalizeRelayEntryHost(value.EntryHostMode, value.EntryHost)
+	if err != nil {
+		return Relay{}, err
+	}
+	value.EntryHostMode, value.EntryHost = entryHostMode, entryHost
 	value.TargetType = strings.ToLower(strings.TrimSpace(value.TargetType))
 	value.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value.Network), " ", ""))
 	if value.Network != NetworkTCP && value.Network != NetworkUDP && value.Network != NetworkBoth {
@@ -496,7 +520,7 @@ func list(ctx context.Context, query interface {
 }, condition string, arguments ...any) ([]Relay, error) {
 	rows, err := query.QueryContext(ctx,
 		`SELECT relays.id, relays.server_id, source.name, COALESCE(source_info.public_ipv4, ''),
-		 relays.name, relays.listen_address, relays.listen_port, relays.target_type,
+		 relays.name, relays.listen_address, relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type,
 		 relays.target_proxy_id, relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
 		 target_proxy.name, target_proxy.listen_port, target_proxy.entry_host_mode,
@@ -517,19 +541,28 @@ func list(ctx context.Context, query interface {
 	for rows.Next() {
 		var value Relay
 		var targetProxyID, storedTargetPort, proxyPort, targetArchived sql.NullInt64
-		var targetProxyName, entryMode, entryHost, targetPublicIPv4 sql.NullString
+		var targetProxyName, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.ServerID, &value.ServerName, &value.ServerPublicIPv4,
-			&value.Name, &value.ListenAddress, &value.ListenPort, &value.TargetType,
+			&value.Name, &value.ListenAddress, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType,
 			&targetProxyID, &value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
-			&targetProxyName, &proxyPort, &entryMode, &entryHost, &targetPublicIPv4, &targetArchived,
+			&targetProxyName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
 		); err != nil {
 			return nil, fmt.Errorf("scan relay: %w", err)
 		}
 		value.Enabled = enabled != 0
+		entryHostMode, entryHost, err := normalizeRelayEntryHost(value.EntryHostMode, value.EntryHost)
+		if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
+			return nil, errors.New("invalid stored Relay entry host")
+		}
+		if value.EntryHostMode == EntryHostManual {
+			value.EntryAddress = value.EntryHost
+		} else {
+			value.EntryAddress = value.ServerPublicIPv4
+		}
 		value.CreatedAt = time.Unix(createdAt, 0).UTC()
 		value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		if targetProxyID.Valid {
@@ -542,8 +575,8 @@ func list(ctx context.Context, query interface {
 		} else if targetProxyID.Valid && proxyPort.Valid && !targetArchived.Valid {
 			value.TargetProxyName = targetProxyName.String
 			value.TargetPort = int(proxyPort.Int64)
-			if entryMode.String == "manual" {
-				value.TargetHost = entryHost.String
+			if targetEntryMode.String == "manual" {
+				value.TargetHost = targetEntryHost.String
 			} else {
 				value.TargetHost = targetPublicIPv4.String
 			}
@@ -565,12 +598,12 @@ func getForMutation(ctx context.Context, query interface {
 	var enabled int
 	err := query.QueryRowContext(ctx,
 		`SELECT relays.id, relays.server_id, relays.name, relays.listen_address,
-		 relays.listen_port, relays.target_type, relays.target_proxy_id,
+		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id,
 		 relays.target_host, relays.target_port, relays.network, relays.enabled
 		 FROM relays JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(&value.ID, &value.ServerID, &value.Name, &value.ListenAddress,
-		&value.ListenPort, &value.TargetType, &targetProxyID,
+		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID,
 		&value.TargetHost, &targetPort, &value.Network, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Relay{}, ErrNotFound
@@ -661,6 +694,21 @@ func normalizeHost(value string) (string, error) {
 		}
 	}
 	return strings.ToLower(value), nil
+}
+
+func normalizeRelayEntryHost(mode, host string) (string, string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" || mode == EntryHostAuto {
+		return EntryHostAuto, "", nil
+	}
+	if mode != EntryHostManual {
+		return "", "", ErrInvalidEntryHostMode
+	}
+	host, err := normalizeHost(host)
+	if err != nil {
+		return "", "", ErrInvalidEntryHost
+	}
+	return EntryHostManual, host, nil
 }
 
 func validPort(value int) bool { return value >= 1 && value <= 65535 }

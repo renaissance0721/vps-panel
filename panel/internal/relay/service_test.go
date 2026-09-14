@@ -24,7 +24,8 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID <= 0 || created.ListenAddress != "0.0.0.0" || mutation.ServerID != 1 || mutation.Version != 2 {
+	if created.ID <= 0 || created.ListenAddress != "0.0.0.0" || created.EntryHostMode != EntryHostAuto ||
+		created.EntryHost != "" || created.EntryAddress != "203.0.113.10" || mutation.ServerID != 1 || mutation.Version != 2 {
 		t.Fatalf("created relay = %+v, mutation = %+v", created, mutation)
 	}
 	desired, err := service.ListDesired(t.Context(), db, 1)
@@ -47,6 +48,94 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 	if _, err := service.Get(t.Context(), created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted relay error = %v", err)
 	}
+}
+
+func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	insertRelayTestServer(t, db, 1, "Source", "198.51.100.10")
+	insertRelayTestServer(t, db, 2, "Target", "203.0.113.20")
+	if _, err := db.Exec(`INSERT INTO proxies
+		(id, server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		VALUES (10, 2, 'Target Proxy', 'vless', 443, 'auto', '', 1, '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	targetID := int64(10)
+	service := NewService(db)
+	created, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "Proxy relay", ListenPort: 35152,
+		TargetType: TargetProxy, TargetProxyID: &targetID, Network: NetworkTCP, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.EntryHostMode != EntryHostAuto || created.EntryAddress != "198.51.100.10" {
+		t.Fatalf("auto Relay entry = %+v", created)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+
+	mode, host := EntryHostManual, "core.example.com"
+	updated, _, err := service.Update(t.Context(), created.ID, UpdateInput{EntryHostMode: &mode, EntryHost: &host})
+	if err != nil || updated.EntryAddress != host || updated.TargetHost != "203.0.113.20" {
+		t.Fatalf("manual Relay entry update = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+
+	host = "198.51.100.12"
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{EntryHost: &host})
+	if err != nil || updated.EntryAddress != host {
+		t.Fatalf("IPv4 Relay entry update = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+
+	host = "core.example.com"
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{EntryHost: &host})
+	if err != nil || updated.EntryAddress != host {
+		t.Fatalf("hostname Relay entry update = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+
+	host = "[2001:db8::1]"
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{EntryHost: &host})
+	if err != nil || updated.EntryAddress != "2001:db8::1" {
+		t.Fatalf("IPv6 Relay entry update = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+
+	mode = EntryHostAuto
+	if _, _, err := service.Update(t.Context(), created.ID, UpdateInput{EntryHostMode: &mode}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = '198.51.100.11' WHERE server_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = service.Get(t.Context(), created.ID)
+	if err != nil || updated.EntryAddress != "198.51.100.11" || updated.EntryHost != "" {
+		t.Fatalf("dynamic auto Relay entry = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+}
+
+func TestRelayAutoEntryCanBeUnavailableWithoutAffectingDesiredState(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	insertRelayTestServer(t, db, 1, "Source", "")
+	service := NewService(db)
+	created, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "Manual target", ListenPort: 9502,
+		TargetType: TargetManual, TargetHost: "target.example.com", TargetPort: 443,
+		Network: NetworkTCP, Enabled: true,
+	})
+	if err != nil || created.EntryAddress != "" || !created.TargetAddressReady {
+		t.Fatalf("Relay with unavailable auto entry = %+v, %v", created, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "target.example.com", 443)
 }
 
 func TestRelayProxyTargetResolutionAndDependencies(t *testing.T) {
@@ -154,6 +243,8 @@ func TestRelayValidationRejectsUnsafeValues(t *testing.T) {
 		{CreateInput{ServerID: 1, Name: "", ListenPort: 1, TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: NetworkTCP}, ErrInvalidName},
 		{CreateInput{ServerID: 1, Name: "x", ListenAddress: "$(bad)", ListenPort: 1, TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: NetworkTCP}, ErrInvalidListenIP},
 		{CreateInput{ServerID: 1, Name: "x", ListenPort: 0, TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: NetworkTCP}, ErrInvalidPort},
+		{CreateInput{ServerID: 1, Name: "x", ListenPort: 1, EntryHostMode: "guess", TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: NetworkTCP}, ErrInvalidEntryHostMode},
+		{CreateInput{ServerID: 1, Name: "x", ListenPort: 1, EntryHostMode: EntryHostManual, EntryHost: "https://bad", TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: NetworkTCP}, ErrInvalidEntryHost},
 		{CreateInput{ServerID: 1, Name: "x", ListenPort: 1, TargetType: TargetManual, TargetHost: "https://bad", TargetPort: 1, Network: NetworkTCP}, ErrInvalidTarget},
 		{CreateInput{ServerID: 1, Name: "x", ListenPort: 1, TargetType: TargetManual, TargetHost: "a.com", TargetPort: 1, Network: "icmp"}, ErrInvalidNetwork},
 	}
@@ -161,6 +252,14 @@ func TestRelayValidationRejectsUnsafeValues(t *testing.T) {
 		if _, _, err := service.Create(t.Context(), test.input); !errors.Is(err, test.want) {
 			t.Fatalf("Create(%+v) error = %v, want %v", test.input, err, test.want)
 		}
+	}
+}
+
+func assertRelayDesiredTarget(t *testing.T, service *Service, db *sql.DB, host string, port int) {
+	t.Helper()
+	desired, err := service.ListDesired(t.Context(), db, 1)
+	if err != nil || len(desired) != 1 || desired[0].TargetHost != host || desired[0].TargetPort != port {
+		t.Fatalf("desired Relay target = %+v, %v; want %s:%d", desired, err, host, port)
 	}
 }
 

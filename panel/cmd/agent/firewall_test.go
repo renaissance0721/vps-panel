@@ -296,3 +296,61 @@ func TestExpectedProxyFirewallRulesAreProtocolSpecific(t *testing.T) {
 		t.Fatalf("expected firewall rules = %+v, want %+v", rules, want)
 	}
 }
+
+func TestRealmFirewallPortChangeAndCleanupDoNotTouchProxyOrUserRules(t *testing.T) {
+	managed := map[firewallRule]struct{}{
+		{port: 9502, protocol: "tcp"}: {},
+		{port: 9502, protocol: "udp"}: {},
+	}
+	proxyRule := "-A INPUT -p tcp --dport 443 -m comment --comment vps-panel-proxy-tcp -j ACCEPT"
+	userRule := "-A INPUT -p tcp --dport 22 -j ACCEPT"
+	firewall := &proxyFirewall{
+		owner: "realm",
+		lookPath: func(name string) (string, error) {
+			if name == "iptables" {
+				return name, nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			if arguments[0] == "-S" {
+				lines := []string{"-P INPUT DROP", proxyRule, userRule}
+				for rule := range managed {
+					lines = append(lines, "-A INPUT "+strings.Join((&proxyFirewall{owner: "realm"}).managedIPTablesRule(rule), " "))
+				}
+				return []byte(strings.Join(lines, "\n")), nil
+			}
+			portValue, _ := fieldAfter(arguments, "--dport")
+			port, _ := strconv.Atoi(portValue)
+			protocol, _ := fieldAfter(arguments, "-p")
+			rule := firewallRule{port: port, protocol: protocol}
+			if !containsFields(arguments, "--comment", (&proxyFirewall{owner: "realm"}).firewallComment(protocol)) {
+				return nil, errors.New("attempted to change another owner's rule")
+			}
+			if arguments[0] == "-I" {
+				managed[rule] = struct{}{}
+			} else {
+				delete(managed, rule)
+			}
+			return nil, nil
+		},
+	}
+	desired := []firewallRule{{port: 9600, protocol: "tcp"}, {port: 9600, protocol: "udp"}}
+	if err := firewall.reconcileRules(t.Context(), desired); err != nil {
+		t.Fatal(err)
+	}
+	if len(managed) != 2 {
+		t.Fatalf("Realm port change = %+v", managed)
+	}
+	for _, rule := range desired {
+		if _, ok := managed[rule]; !ok {
+			t.Fatalf("Realm rule missing after port change: %+v", rule)
+		}
+	}
+	if err := firewall.reconcileRules(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(managed) != 0 {
+		t.Fatalf("Realm disable/delete retained rules: %+v", managed)
+	}
+}

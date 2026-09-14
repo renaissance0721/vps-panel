@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
@@ -197,6 +198,7 @@ type AgentUpgrade struct {
 type DesiredState struct {
 	Version int64
 	Proxies []proxystore.DesiredProxy
+	Relays  []relaystore.DesiredRelay
 }
 
 type ConfigResult struct {
@@ -861,6 +863,10 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	if err != nil {
 		return DesiredState{}, err
 	}
+	state.Relays, err = relaystore.NewService(s.db).ListDesired(ctx, tx, serverID)
+	if err != nil {
+		return DesiredState{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return DesiredState{}, fmt.Errorf("commit desired state read: %w", err)
 	}
@@ -1008,7 +1014,7 @@ func (s *Service) TouchAgent(ctx context.Context, agentID, serverID int64) error
 	return nil
 }
 
-func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64, report SystemInfoReport) error {
+func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64, report SystemInfoReport) (bool, error) {
 	report.Hostname = strings.TrimSpace(report.Hostname)
 	report.OSName = strings.TrimSpace(report.OSName)
 	report.OSVersion = strings.TrimSpace(report.OSVersion)
@@ -1020,22 +1026,22 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		utf8.RuneCountInString(report.OSVersion) > 128 ||
 		utf8.RuneCountInString(report.Kernel) > 128 ||
 		utf8.RuneCountInString(report.Arch) > 32 {
-		return ErrInvalidSystemInfo
+		return false, ErrInvalidSystemInfo
 	}
 
 	var err error
 	report.IPv4, err = normalizeIPAddresses(report.IPv4, true)
 	if err != nil {
-		return err
+		return false, err
 	}
 	report.IPv6, err = normalizeIPAddresses(report.IPv6, false)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if report.PublicIPv4 != "" {
 		ip := net.ParseIP(report.PublicIPv4)
 		if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
-			return ErrInvalidSystemInfo
+			return false, ErrInvalidSystemInfo
 		}
 		report.PublicIPv4 = ip.To4().String()
 	}
@@ -1044,7 +1050,7 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin system information report: %w", err)
+		return false, fmt.Errorf("begin system information report: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -1053,10 +1059,17 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		`SELECT version FROM agents WHERE id = ? AND server_id = ?`, agentID, serverID,
 	).Scan(&agentVersion)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrInvalidAgentToken
+		return false, ErrInvalidAgentToken
 	}
 	if err != nil {
-		return fmt.Errorf("read reporting Agent: %w", err)
+		return false, fmt.Errorf("read reporting Agent: %w", err)
+	}
+	var previousPublicIPv4 string
+	err = tx.QueryRowContext(ctx,
+		`SELECT public_ipv4 FROM server_system_info WHERE server_id = ?`, serverID,
+	).Scan(&previousPublicIPv4)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read previous public IPv4: %w", err)
 	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	if _, err := tx.ExecContext(ctx,
@@ -1077,12 +1090,12 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		serverID, report.Hostname, report.OSName, report.OSVersion, report.Kernel, report.Arch,
 		string(ipv4JSON), string(ipv6JSON), report.PublicIPv4, agentVersion, now,
 	); err != nil {
-		return fmt.Errorf("save system information: %w", err)
+		return false, fmt.Errorf("save system information: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit system information report: %w", err)
+		return false, fmt.Errorf("commit system information report: %w", err)
 	}
-	return nil
+	return previousPublicIPv4 != report.PublicIPv4, nil
 }
 
 func (s *Service) ReportMetrics(ctx context.Context, agentID, serverID int64, report MetricsReport) error {

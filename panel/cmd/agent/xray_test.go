@@ -578,8 +578,6 @@ func TestManagedXrayRejectsUnsupportedDesiredStates(t *testing.T) {
 	manager, _ := newTestXrayManager(t)
 	tests := []desiredState{
 		{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{{Protocol: "unsupported"}}}},
-		{Realm: desiredRealmState{Enabled: true}},
-		{Realm: desiredRealmState{Relays: []json.RawMessage{[]byte(`{}`)}}},
 	}
 	for index, state := range tests {
 		if err := manager.apply(t.Context(), state); err == nil || err.Error() != unsupportedManagedConfigMessage {

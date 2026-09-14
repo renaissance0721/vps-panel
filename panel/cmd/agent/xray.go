@@ -113,7 +113,7 @@ func newXrayManager() *xrayManager {
 }
 
 func (m *xrayManager) apply(ctx context.Context, state desiredState) error {
-	if state.Realm.Enabled || len(state.Realm.Relays) != 0 || (!state.Xray.Enabled && len(state.Xray.Proxies) != 0) {
+	if !state.Xray.Enabled && len(state.Xray.Proxies) != 0 {
 		return errUnsupportedManagedConfig
 	}
 	if !state.Xray.Enabled {

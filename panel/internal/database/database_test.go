@@ -33,6 +33,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"server_system_info",
 		"server_metrics",
 		"proxies",
+		"relays",
 		"clients",
 		"client_metrics",
 	} {

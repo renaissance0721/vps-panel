@@ -758,8 +758,16 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		IPv6:       []string{"2001:db8::10"},
 		PublicIPv4: "198.51.100.20",
 	}
-	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, report); err != nil {
+	publicIPv4Changed, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, report)
+	if err != nil {
 		t.Fatalf("ReportSystemInfo() error = %v", err)
+	}
+	if !publicIPv4Changed {
+		t.Fatal("first public IPv4 report was not marked changed")
+	}
+	publicIPv4Changed, err = service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, report)
+	if err != nil || publicIPv4Changed {
+		t.Fatalf("unchanged public IPv4 report = (%v, %v), want false", publicIPv4Changed, err)
 	}
 	value, err := service.Get(context.Background(), created.ID)
 	if err != nil || value.SystemInfo == nil {
@@ -776,10 +784,14 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 	}
 
 	service.now = func() time.Time { return reportedAt.Add(time.Minute) }
-	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+	publicIPv4Changed, err = service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		Hostname: "jp-02", Arch: "arm64", IPv4: []string{}, IPv6: []string{},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("second ReportSystemInfo() error = %v", err)
+	}
+	if !publicIPv4Changed {
+		t.Fatal("cleared public IPv4 was not marked changed")
 	}
 	var rowCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM server_system_info WHERE server_id = ?`, created.ID).Scan(&rowCount); err != nil {
@@ -791,17 +803,17 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		t.Fatalf("updated system information = (%+v, rows %d, %v)", updated.SystemInfo, rowCount, err)
 	}
 
-	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		IPv4: []string{"not-an-ip"},
 	}); !errors.Is(err, ErrInvalidSystemInfo) {
 		t.Fatalf("invalid IP error = %v, want ErrInvalidSystemInfo", err)
 	}
-	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		PublicIPv4: "172.26.1.10",
 	}); !errors.Is(err, ErrInvalidSystemInfo) {
 		t.Fatalf("private public IPv4 error = %v, want ErrInvalidSystemInfo", err)
 	}
-	if err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		Hostname: strings.Repeat("a", 256),
 	}); !errors.Is(err, ErrInvalidSystemInfo) {
 		t.Fatalf("oversized hostname error = %v, want ErrInvalidSystemInfo", err)
@@ -818,7 +830,7 @@ func TestSystemInfoSurvivesAgentReplacementAndArchiveThenCascadesOnDelete(t *tes
 	if err != nil {
 		t.Fatalf("RegisterAgent() error = %v", err)
 	}
-	if err := service.ReportSystemInfo(context.Background(), firstAgent.ID, firstAgent.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), firstAgent.ID, firstAgent.ServerID, SystemInfoReport{
 		Hostname: "old-host", Arch: "amd64", IPv4: []string{}, IPv6: []string{},
 	}); err != nil {
 		t.Fatalf("initial ReportSystemInfo() error = %v", err)
@@ -832,7 +844,7 @@ func TestSystemInfoSurvivesAgentReplacementAndArchiveThenCascadesOnDelete(t *tes
 	if err != nil || preserved.SystemInfo == nil || preserved.SystemInfo.Hostname != "old-host" {
 		t.Fatalf("system information after rebind = (%+v, %v)", preserved.SystemInfo, err)
 	}
-	if err := service.ReportSystemInfo(context.Background(), firstAgent.ID, firstAgent.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), firstAgent.ID, firstAgent.ServerID, SystemInfoReport{
 		Hostname: "stale-host", IPv4: []string{}, IPv6: []string{},
 	}); !errors.Is(err, ErrInvalidAgentToken) {
 		t.Fatalf("old Agent report error = %v, want ErrInvalidAgentToken", err)
@@ -845,7 +857,7 @@ func TestSystemInfoSurvivesAgentReplacementAndArchiveThenCascadesOnDelete(t *tes
 	if err != nil || stillPreserved.SystemInfo == nil || stillPreserved.SystemInfo.Hostname != "old-host" {
 		t.Fatalf("system information after Agent registration = (%+v, %v)", stillPreserved.SystemInfo, err)
 	}
-	if err := service.ReportSystemInfo(context.Background(), secondAgent.ID, secondAgent.ServerID, SystemInfoReport{
+	if _, err := service.ReportSystemInfo(context.Background(), secondAgent.ID, secondAgent.ServerID, SystemInfoReport{
 		Hostname: "new-host", Arch: "arm64", IPv4: []string{}, IPv6: []string{},
 	}); err != nil {
 		t.Fatalf("replacement ReportSystemInfo() error = %v", err)

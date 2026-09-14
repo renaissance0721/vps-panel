@@ -158,6 +158,28 @@ func migrate(db *sql.DB) error {
 			UNIQUE (server_id, listen_port)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_proxies_server_id ON proxies(server_id)`,
+		`CREATE TABLE IF NOT EXISTS relays (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
+			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'manual')),
+			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			target_host TEXT NOT NULL DEFAULT '',
+			target_port INTEGER CHECK (target_port BETWEEN 1 AND 65535),
+			network TEXT NOT NULL CHECK (network IN ('tcp', 'udp', 'tcp,udp')),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK (
+				(target_type = 'proxy' AND target_proxy_id IS NOT NULL AND target_host = '' AND target_port IS NULL)
+				OR
+				(target_type = 'manual' AND target_proxy_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
+			)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_relays_target_proxy_id ON relays(target_proxy_id)`,
 		`CREATE TABLE IF NOT EXISTS clients (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,

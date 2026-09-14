@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -34,6 +35,7 @@ type server struct {
 	authService   *auth.Service
 	servers       *serverstore.Service
 	proxies       *proxystore.Service
+	relays        *relaystore.Service
 	webRoot       string
 	panelVersion  string
 	connectionsMu sync.Mutex
@@ -55,6 +57,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 		authService:  auth.NewService(db),
 		servers:      serverstore.NewService(db),
 		proxies:      proxystore.NewService(db),
+		relays:       relaystore.NewService(db),
 		webRoot:      webRoot,
 		panelVersion: panelVersion,
 		connections:  make(map[int64]*agentConnection),
@@ -97,6 +100,11 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuthentication(s.deleteProxyClient))
 	mux.HandleFunc("POST /api/clients/{id}/traffic/reset", s.requireAuthentication(s.resetProxyClientTraffic))
 	mux.HandleFunc("GET /api/clients/{id}/share", s.requireAuthentication(s.getProxyClientShare))
+	mux.HandleFunc("GET /api/relays", s.requireAuthentication(s.listRelays))
+	mux.HandleFunc("POST /api/relays", s.requireAuthentication(s.createRelay))
+	mux.HandleFunc("GET /api/relays/{id}", s.requireAuthentication(s.getRelay))
+	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAuthentication(s.updateRelay))
+	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAuthentication(s.deleteRelay))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)
 	mux.HandleFunc("GET /upgrade-agent.sh", s.upgradeAgentInstaller)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -230,8 +238,8 @@ type agentDesiredXrayState struct {
 }
 
 type agentDesiredRealmState struct {
-	Enabled bool  `json:"enabled"`
-	Relays  []any `json:"relays"`
+	Enabled bool                      `json:"enabled"`
+	Relays  []relaystore.DesiredRelay `json:"relays"`
 }
 
 type agentConfigResultRequest struct {
@@ -397,7 +405,8 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 			Proxies: state.Proxies,
 		},
 		Realm: agentDesiredRealmState{
-			Relays: make([]any, 0),
+			Enabled: len(state.Relays) > 0,
+			Relays:  state.Relays,
 		},
 	})
 }
@@ -534,7 +543,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				validMessage = false
 				break
 			}
-			current, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, currentConnection, serverstore.SystemInfoReport{
+			current, publicIPv4Changed, reportErr := s.reportCurrentSystemInfo(agent.ServerID, agent.ID, currentConnection, serverstore.SystemInfoReport{
 				Hostname:   systemInfo.Hostname,
 				OSName:     systemInfo.OSName,
 				OSVersion:  systemInfo.OSVersion,
@@ -546,6 +555,14 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			if !current {
 				return
+			}
+			if reportErr == nil && publicIPv4Changed {
+				mutations, dependencyErr := s.relays.BumpForAutoTargetServer(r.Context(), agent.ServerID)
+				if dependencyErr != nil {
+					log.Printf("update Relay dependencies for server %d public IPv4: %v", agent.ServerID, dependencyErr)
+				} else {
+					s.notifyRelayMutations(mutations)
+				}
 			}
 			if reportErr != nil {
 				if !errors.Is(reportErr, serverstore.ErrInvalidAgentToken) &&
@@ -1125,15 +1142,16 @@ func (s *server) reportCurrentSystemInfo(
 	serverID, agentID int64,
 	connection *agentConnection,
 	report serverstore.SystemInfoReport,
-) (bool, error) {
+) (bool, bool, error) {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()
 	if s.connections[serverID] != connection {
-		return false, nil
+		return false, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return true, s.servers.ReportSystemInfo(ctx, agentID, serverID, report)
+	changed, err := s.servers.ReportSystemInfo(ctx, agentID, serverID, report)
+	return true, changed, err
 }
 
 func (s *server) reportCurrentMetrics(
@@ -1326,6 +1344,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "服务器尚未注册 Agent")
 	case errors.Is(err, serverstore.ErrInvalidUpgrade):
 		writeError(w, http.StatusBadRequest, "Agent 升级请求无效")
+	case errors.Is(err, relaystore.ErrTargetUnavailable):
+		writeError(w, http.StatusConflict, "中转目标地址不可用，请设置目标 Proxy 的手动入口地址或等待目标服务器上报公网 IPv4")
 	default:
 		writeInternalError(w)
 	}

@@ -19,6 +19,7 @@ import {
   useTrafficForm,
 } from './traffic'
 import ProxiesView from './ProxiesView.vue'
+import RelaysView from './RelaysView.vue'
 import { formatExpirationDate, formatServerExpiration } from './server'
 
 type User = {
@@ -118,7 +119,7 @@ const expirationModalOpen = ref(false)
 const trafficAdjustmentModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
-const currentPage = ref<'overview' | 'servers' | 'proxies'>('overview')
+const currentPage = ref<'overview' | 'servers' | 'proxies' | 'relays'>('overview')
 const serverListMode = ref<'active' | 'archived'>('active')
 const loading = ref(true)
 const submitting = ref(false)
@@ -623,7 +624,7 @@ function clearCredentials() {
   confirmPassword.value = ''
 }
 
-function selectPage(page: 'overview' | 'servers' | 'proxies') {
+function selectPage(page: 'overview' | 'servers' | 'proxies' | 'relays') {
   currentPage.value = page
   sidebarOpen.value = false
 }
@@ -862,6 +863,13 @@ onUnmounted(stopServerPolling)
             >
               代理节点
             </button>
+            <button
+              type="button"
+              :class="{ active: currentPage === 'relays' }"
+              @click="selectPage('relays')"
+            >
+              中转
+            </button>
           </nav>
           <div class="sidebar-account">
             <span>{{ state.user?.username }}</span>
@@ -883,7 +891,7 @@ onUnmounted(stopServerPolling)
           </header>
           <div class="admin-page">
             <header class="page-heading">
-              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : '代理节点' }}</h1>
+              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : '中转' }}</h1>
             </header>
 
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
@@ -1081,6 +1089,7 @@ onUnmounted(stopServerPolling)
         </template>
 
         <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" />
+        <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
 
         <n-modal
           v-if="selectedServer"

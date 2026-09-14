@@ -207,7 +207,8 @@ h1 {
   margin-bottom: 20px;
 }
 
-.proxy-toolbar {
+.proxy-toolbar,
+.relay-toolbar {
   display: grid;
   grid-template-columns: minmax(240px, 420px) auto;
   justify-content: end;
@@ -347,6 +348,13 @@ h1 {
   overflow-y: auto;
 }
 
+.relay-form-card,
+.relay-detail-card {
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
 .client-form-card,
 .client-detail-card {
   width: min(560px, calc(100vw - 32px));
@@ -355,26 +363,35 @@ h1 {
 }
 
 .proxy-form,
-.proxy-form label {
+.proxy-form label,
+.relay-form,
+.relay-form label {
   display: grid;
   gap: 8px;
 }
 
-.proxy-form {
+.proxy-form,
+.relay-form {
   gap: 16px;
 }
 
 .proxy-form label > span,
+.relay-form label > span,
 .share-field strong {
   color: #47525d;
   font-size: 14px;
   font-weight: 600;
 }
 
-.proxy-form .checkbox-row {
+.proxy-form .checkbox-row,
+.relay-form .checkbox-row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.relay-table {
+  min-width: 1040px;
 }
 
 .fixed-fields {
@@ -647,7 +664,8 @@ h1 {
     margin-left: 0;
   }
 
-  .proxy-toolbar {
+  .proxy-toolbar,
+  .relay-toolbar {
     grid-template-columns: 1fr;
   }
 

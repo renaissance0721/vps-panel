@@ -109,7 +109,7 @@ func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
 		{fmt.Errorf("%w: systemctl details", errManagedXrayStart), errManagedXrayStart.Error()},
 		{fmt.Errorf("%w: missing port", errManagedXrayHealth), errManagedXrayHealth.Error()},
 		{fmt.Errorf("%w: iptables details", errManagedProxyFirewall), errManagedProxyFirewall.Error()},
-		{errors.New("internal path detail"), "managed Xray apply failed"},
+		{errors.New("internal path detail"), "managed runtime apply failed"},
 	}
 	for _, test := range tests {
 		if got := desiredStateErrorMessage(test.err); got != test.want {

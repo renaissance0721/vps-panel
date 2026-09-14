@@ -149,6 +149,47 @@ func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
 	}
 }
 
+func TestAgentConfigIncludesOnlyEnabledTypedRelays(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Realm Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.11.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO relays
+		(server_id, name, listen_address, listen_port, target_type, target_host, target_port, network, enabled, created_at, updated_at)
+		VALUES (?, 'Enabled', '0.0.0.0', 9502, 'manual', 'relay.example.com', 443, 'tcp,udp', 1, 1, 1),
+		       (?, 'Disabled', '0.0.0.0', 9503, 'manual', 'disabled.example.com', 443, 'tcp', 0, 2, 2)`,
+		created.ID, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, registered.Token)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET config = %d, %s", response.Code, response.Body.String())
+	}
+	var state agentDesiredStateResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Realm.Enabled || len(state.Realm.Relays) != 1 {
+		t.Fatalf("Realm desired state = %+v", state.Realm)
+	}
+	relay := state.Realm.Relays[0]
+	if relay.ListenAddress != "0.0.0.0" || relay.ListenPort != 9502 || relay.TargetHost != "relay.example.com" ||
+		relay.TargetPort != 443 || relay.Network != "tcp,udp" {
+		t.Fatalf("typed Relay = %+v", relay)
+	}
+}
+
 func TestAgentConfigResultAPIValidationAndPersistence(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
@@ -594,13 +635,13 @@ func TestOldConnectionCannotOverwriteSystemInfo(t *testing.T) {
 	}
 	oldTrackedConnection := &agentConnection{socket: oldConnection}
 	currentTrackedConnection := handler.connections[created.ID]
-	current, err := handler.reportCurrentSystemInfo(created.ID, registered.ID, oldTrackedConnection, serverstore.SystemInfoReport{
+	current, _, err := handler.reportCurrentSystemInfo(created.ID, registered.ID, oldTrackedConnection, serverstore.SystemInfoReport{
 		Hostname: "stale-host", IPv4: []string{}, IPv6: []string{},
 	})
 	if err != nil || current {
 		t.Fatalf("old connection report = (current %v, error %v), want ignored", current, err)
 	}
-	current, err = handler.reportCurrentSystemInfo(created.ID, registered.ID, currentTrackedConnection, serverstore.SystemInfoReport{
+	current, _, err = handler.reportCurrentSystemInfo(created.ID, registered.ID, currentTrackedConnection, serverstore.SystemInfoReport{
 		Hostname: "current-host", IPv4: []string{}, IPv6: []string{},
 	})
 	if err != nil || !current {

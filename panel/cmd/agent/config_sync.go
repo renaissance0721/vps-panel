@@ -73,8 +73,17 @@ type desiredClient struct {
 }
 
 type desiredRealmState struct {
-	Enabled bool              `json:"enabled"`
-	Relays  []json.RawMessage `json:"relays"`
+	Enabled bool           `json:"enabled"`
+	Relays  []desiredRelay `json:"relays"`
+}
+
+type desiredRelay struct {
+	ID            int64  `json:"id"`
+	ListenAddress string `json:"listen_address"`
+	ListenPort    int    `json:"listen_port"`
+	TargetHost    string `json:"target_host"`
+	TargetPort    int    `json:"target_port"`
+	Network       string `json:"network"`
 }
 
 type configResult struct {
@@ -92,8 +101,13 @@ type configSynchronizer struct {
 }
 
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
-	manager := newXrayManager()
-	return &configSynchronizer{config: value, client: client, applyState: manager.apply}
+	xray := newXrayManager()
+	realm := newRealmManager()
+	return &configSynchronizer{config: value, client: client, applyState: func(ctx context.Context, state desiredState) error {
+		xrayErr := xray.apply(ctx, state)
+		realmErr := realm.apply(ctx, state.Realm)
+		return errors.Join(xrayErr, realmErr)
+	}}
 }
 
 func (s *configSynchronizer) sync(ctx context.Context) error {
@@ -191,12 +205,21 @@ func desiredStateErrorMessage(err error) string {
 		errManagedXrayConflict,
 		errManagedXrayArch,
 		errManagedProxyFirewall,
+		errManagedRealmDownload,
+		errManagedRealmChecksum,
+		errManagedRealmValidation,
+		errManagedRealmStart,
+		errManagedRealmHealth,
+		errManagedRealmStop,
+		errManagedRealmConflict,
+		errManagedRealmArch,
+		errManagedRealmFirewall,
 	} {
 		if err.Error() == publicError.Error() || errors.Is(err, publicError) {
 			return publicError.Error()
 		}
 	}
-	return "managed Xray apply failed"
+	return "managed runtime apply failed"
 }
 
 func attemptConfigSync(ctx context.Context, synchronizer *configSynchronizer) {

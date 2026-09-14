@@ -238,6 +238,15 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	var previous proxystore.Proxy
+	if request.ListenPort != nil || request.EntryHostMode != nil || request.EntryHost != nil {
+		var err error
+		previous, err = s.proxies.Get(r.Context(), id)
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+	}
 	value, mutation, err := s.proxies.Update(r.Context(), id, proxystore.UpdateInput{
 		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
@@ -249,6 +258,14 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	if previous.ID != 0 && (previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost) {
+		mutations, err := s.relays.BumpForProxyTarget(r.Context(), value.ID, value.ServerID)
+		if err != nil {
+			writeInternalError(w)
+			return
+		}
+		s.notifyRelayMutations(mutations)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
 }
 
@@ -661,6 +678,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "客户端流量设置无效")
 	case errors.Is(err, proxystore.ErrInvalidClientExpiration):
 		writeError(w, http.StatusBadRequest, "客户端到期时间无效")
+	case errors.Is(err, proxystore.ErrReferencedByRelay):
+		writeError(w, http.StatusConflict, "代理节点正在被中转规则使用，请先修改或删除相关中转规则")
 	default:
 		writeInternalError(w)
 	}

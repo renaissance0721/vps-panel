@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 const (
@@ -64,6 +66,7 @@ var (
 	ErrConnectionAddressUnavailable = errors.New("connection address unavailable")
 	ErrInvalidClientTrafficConfig   = errors.New("invalid client traffic configuration")
 	ErrInvalidClientExpiration      = errors.New("invalid client expiration")
+	ErrReferencedByRelay            = errors.New("proxy is referenced by a relay")
 )
 
 type Proxy struct {
@@ -356,6 +359,12 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	if err := ensureActiveServer(ctx, tx, input.ServerID); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
+	if err := relaystore.ProxyPortAvailable(ctx, tx, input.ServerID, input.ListenPort, protocol); err != nil {
+		if errors.Is(err, relaystore.ErrPortConflict) {
+			return Proxy{}, Mutation{}, ErrPortConflict
+		}
+		return Proxy{}, Mutation{}, err
+	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
 		 (server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
@@ -530,6 +539,12 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	if err != nil {
 		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
 	}
+	if err := relaystore.ProxyPortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Protocol); err != nil {
+		if errors.Is(err, relaystore.ErrPortConflict) {
+			return Proxy{}, Mutation{}, ErrPortConflict
+		}
+		return Proxy{}, Mutation{}, err
+	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE proxies SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
 		 WHERE id = ?`,
@@ -562,6 +577,13 @@ func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
 	value, _, err := getProxyForMutation(ctx, tx, id)
 	if err != nil {
 		return Mutation{}, err
+	}
+	referenced, err := relaystore.IsProxyReferenced(ctx, tx, id)
+	if err != nil {
+		return Mutation{}, err
+	}
+	if referenced {
+		return Mutation{}, ErrReferencedByRelay
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM proxies WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete proxy: %w", err)

@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B 和 Phase 10 已完成；Phase 7B 暂缓。下一阶段 Phase 11 Realm / Relay 尚未开始。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10 和 Phase 11 已完成；Phase 7B 暂缓。下一阶段为 Phase 12：分享与订阅。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -4766,6 +4766,8 @@ Android  已到期      9.0G / 不限    不重置 2026-09-01   3 天前
 
 # 16. Phase 11：Realm 与 Relay
 
+> 当前状态：已完成。Agent 固定使用 Realm 官方 `v2.9.4`，以单进程多 endpoint 应用当前 Server 的完整 enabled Relay 集合；Panel Relay CRUD、Proxy/manual 目标解析、typed desired state、依赖版本递增、配置校验、原子替换、systemd、listener 健康检查、独立防火墙和失败回滚已接通。
+
 > Realm / Relay 的业务模型、desired state 和 Agent 应用流程以本文为准。
 >
 > Realm 列表、入口 IP、监听端口、目标 Host / IP、目标端口、Network、状态、操作列，以及详情 / 新增 / 编辑 Modal，统一参考：
@@ -4794,9 +4796,24 @@ Server
 建议受管位置：
 
 ```text
+/opt/vps-panel/realm/realm
+/opt/vps-panel/realm/.managed-by-vps-panel
 /etc/vps-panel/realm/config.toml
-vps-panel-realm.service
+/etc/vps-panel/realm/config.previous.toml
+/etc/systemd/system/vps-panel-realm.service
 ```
+
+固定 Realm Release：
+
+```text
+v2.9.4
+amd64: realm-x86_64-unknown-linux-gnu.tar.gz
+SHA256: 9dec109386b8abc828b452d0d1cecde35b7a2f8cfa93eae757fe9c248ad07ddd
+arm64: realm-aarch64-unknown-linux-gnu.tar.gz
+SHA256: 1f7f06e82fe0ea798b5c8e8e32906ee212a7085629a1c5cef9957ca270fcad99
+```
+
+Agent 下载后必须先校验固定 SHA256 和 `realm --version`。没有 managed marker 时，如果检测到第三方 `realm.service` 或 Panel 专用 Realm 路径已被占用，则拒绝接管。
 
 数据库增加最小：
 
@@ -4834,6 +4851,16 @@ restart / reload
 不创建独立 Realm Agent。
 
 不创建 AccessEndpoint 表。
+
+当前实现固定语义：
+
+- `target_type=proxy` 只持久化 `target_proxy_id`；desired state 构建时按 Proxy 的 manual `entry_host` 或目标 Server 的 `public_ipv4` 实时解析地址，并复用 Proxy 当前监听端口。
+- 目标 Proxy 的入口地址/端口变化，或 auto 目标 Server 的公网 IPv4 变化，会递增所有引用 Relay 的 source Server desired-state version 并通知对应 Agent。
+- `target_type=manual` 只保存并校验 Host/IP 与端口，不参与 Proxy 依赖通知。
+- `network=tcp/udp/tcp,udp` 分别渲染为 Realm endpoint 的 TCP、UDP、TCP+UDP network 选项；多个 Relay 按 ID 稳定排序写入同一份 TOML。
+- Realm apply 与 Xray apply 相互独立。Realm 失败只恢复 Realm previous 配置和 Realm-owned 防火墙规则，不修改 Xray 配置、服务或 Proxy Client 数据。
+- TCP 健康检查连接实际 listener；UDP 健康检查确认本机 UDP socket 已绑定。Agent 只增删带 Realm 独立 owner 标记的防火墙规则。
+- `realm.enabled=false` 时停止并 disable 受管服务，删除 current/previous 配置并清理 Realm-owned 防火墙；保留二进制、managed marker 和 unit。
 
 ---
 
@@ -5823,15 +5850,15 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B 和 Phase 10 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10 和 Phase 11 已完成。
 
-Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路的下一阶段是 Phase 11 Realm / Relay，当前未开始：
+Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路的下一阶段是 Phase 12：分享与订阅，当前未开始：
 
 ```text
-Phase 11：Realm / Relay
+Phase 12：分享与订阅
 ```
 
-Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10 已完成每 Client 流量、额度、周期、到期与派生有效状态。当前停止在 Phase 10C，不提前实现 Phase 11。
+Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10 已完成每 Client 流量、额度、周期、到期与派生有效状态；Phase 11 已接通 Relay → desired state → Agent → Realm 的 TCP/UDP 中转链路。当前停止在 Phase 11，不提前实现 Phase 12。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
@@ -6084,7 +6111,7 @@ Server
 - [ ] Metrics 是否保留历史以及保留周期。
 - [ ] VLESS TLS / REALITY 第一版除已固定的 TCP / XTLS Vision 和安全层二选一外，哪些高级 TLS / REALITY 参数需要开放给 UI。
 - [x] Shadowsocks 第一版固定支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`。
-- [ ] Realm 配置采用单进程多规则还是其他最小实现。
+- [x] Realm 配置采用一个受管 Realm 进程和多个 endpoint。
 - [ ] Subscription 输出格式与权限机制。
 - [ ] 是否以及何时需要第二个代理后端（sing-box / Mihomo）；有真实需求再决定。
 - [ ] 是否以及何时需要多跳模型；有真实需求再决定。

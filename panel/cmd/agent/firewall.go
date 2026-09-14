@@ -14,6 +14,8 @@ import (
 const (
 	managedProxyFirewallTCPComment = "vps-panel-proxy-tcp"
 	managedProxyFirewallUDPComment = "vps-panel-proxy-udp"
+	managedRealmFirewallTCPComment = "vps-panel-realm-tcp"
+	managedRealmFirewallUDPComment = "vps-panel-realm-udp"
 	managedProxyFirewallOutputMax  = 64 << 10
 )
 
@@ -25,12 +27,17 @@ type firewallRule struct {
 }
 
 type proxyFirewall struct {
+	owner      string
 	lookPath   func(string) (string, error)
 	runCommand func(context.Context, string, ...string) ([]byte, error)
 }
 
 func newProxyFirewall() *proxyFirewall {
-	return &proxyFirewall{lookPath: exec.LookPath, runCommand: runFirewallCommand}
+	return &proxyFirewall{owner: "proxy", lookPath: exec.LookPath, runCommand: runFirewallCommand}
+}
+
+func newRealmFirewall() *proxyFirewall {
+	return &proxyFirewall{owner: "realm", lookPath: exec.LookPath, runCommand: runFirewallCommand}
 }
 
 func runFirewallCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
@@ -86,9 +93,9 @@ func (f *proxyFirewall) reconcileUFW(ctx context.Context, command string, desire
 	if err != nil {
 		return firewallError("read ufw rules", err)
 	}
-	existing, numbered := parseUFWManagedRules(string(output))
+	existing, numbered := f.parseUFWManagedRules(string(output))
 	for _, rule := range missingFirewallRules(desired, existing) {
-		if _, err := f.runCommand(ctx, command, "allow", strconv.Itoa(rule.port)+"/"+rule.protocol, "comment", firewallComment(rule.protocol)); err != nil {
+		if _, err := f.runCommand(ctx, command, "allow", strconv.Itoa(rule.port)+"/"+rule.protocol, "comment", f.firewallComment(rule.protocol)); err != nil {
 			return firewallError("add ufw rule", err)
 		}
 	}
@@ -112,15 +119,15 @@ func (f *proxyFirewall) reconcileFirewalld(ctx context.Context, command string, 
 	if err != nil {
 		return firewallError("read firewalld rules", err)
 	}
-	existing := parseManagedFirewallRules(string(output))
+	existing := f.parseManagedFirewallRules(string(output))
 	for _, rule := range missingFirewallRules(desired, existing) {
-		arguments := append([]string{"--direct", "--add-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(rule)...)
+		arguments := append([]string{"--direct", "--add-rule", "ipv4", "filter", "INPUT", "0"}, f.managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("add firewalld rule", err)
 		}
 	}
 	for _, rule := range staleFirewallRules(desired, existing) {
-		arguments := append([]string{"--direct", "--remove-rule", "ipv4", "filter", "INPUT", "0"}, managedIPTablesRule(rule)...)
+		arguments := append([]string{"--direct", "--remove-rule", "ipv4", "filter", "INPUT", "0"}, f.managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("remove stale firewalld rule", err)
 		}
@@ -129,15 +136,15 @@ func (f *proxyFirewall) reconcileFirewalld(ctx context.Context, command string, 
 }
 
 func (f *proxyFirewall) reconcileIPTables(ctx context.Context, command string, desired map[firewallRule]struct{}, rules string) error {
-	existing := parseManagedFirewallRules(rules)
+	existing := f.parseManagedFirewallRules(rules)
 	for _, rule := range missingFirewallRules(desired, existing) {
-		arguments := append([]string{"-I", "INPUT", "1"}, managedIPTablesRule(rule)...)
+		arguments := append([]string{"-I", "INPUT", "1"}, f.managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("add iptables rule", err)
 		}
 	}
 	for _, rule := range staleFirewallRules(desired, existing) {
-		arguments := append([]string{"-D", "INPUT"}, managedIPTablesRule(rule)...)
+		arguments := append([]string{"-D", "INPUT"}, f.managedIPTablesRule(rule)...)
 		if _, err := f.runCommand(ctx, command, arguments...); err != nil {
 			return firewallError("remove stale iptables rule", err)
 		}
@@ -163,18 +170,36 @@ func firewallComment(protocol string) string {
 	return managedProxyFirewallTCPComment
 }
 
+func (f *proxyFirewall) firewallComment(protocol string) string {
+	if f.owner == "realm" {
+		if protocol == "udp" {
+			return managedRealmFirewallUDPComment
+		}
+		return managedRealmFirewallTCPComment
+	}
+	return firewallComment(protocol)
+}
+
 func managedIPTablesRule(rule firewallRule) []string {
 	return []string{"-p", rule.protocol, "--dport", strconv.Itoa(rule.port), "-m", "comment", "--comment", firewallComment(rule.protocol), "-j", "ACCEPT"}
 }
 
+func (f *proxyFirewall) managedIPTablesRule(rule firewallRule) []string {
+	return []string{"-p", rule.protocol, "--dport", strconv.Itoa(rule.port), "-m", "comment", "--comment", f.firewallComment(rule.protocol), "-j", "ACCEPT"}
+}
+
 func parseManagedFirewallRules(value string) map[firewallRule]struct{} {
+	return (&proxyFirewall{owner: "proxy"}).parseManagedFirewallRules(value)
+}
+
+func (f *proxyFirewall) parseManagedFirewallRules(value string) map[firewallRule]struct{} {
 	rules := make(map[firewallRule]struct{})
 	scanner := bufio.NewScanner(strings.NewReader(value))
 	for scanner.Scan() {
 		fields := strings.Fields(strings.ReplaceAll(scanner.Text(), `"`, ""))
 		protocol, protocolOK := fieldAfter(fields, "-p")
 		comment, commentOK := fieldAfter(fields, "--comment")
-		if !protocolOK || !commentOK || comment != firewallComment(protocol) || !containsFields(fields, "-j", "ACCEPT") {
+		if !protocolOK || !commentOK || comment != f.firewallComment(protocol) || !containsFields(fields, "-j", "ACCEPT") {
 			continue
 		}
 		portValue, ok := fieldAfter(fields, "--dport")
@@ -192,6 +217,10 @@ type numberedFirewallRule struct {
 }
 
 func parseUFWManagedRules(value string) (map[firewallRule]struct{}, []numberedFirewallRule) {
+	return (&proxyFirewall{owner: "proxy"}).parseUFWManagedRules(value)
+}
+
+func (f *proxyFirewall) parseUFWManagedRules(value string) (map[firewallRule]struct{}, []numberedFirewallRule) {
 	rules := make(map[firewallRule]struct{})
 	numbered := make([]numberedFirewallRule, 0)
 	scanner := bufio.NewScanner(strings.NewReader(value))
@@ -215,7 +244,7 @@ func parseUFWManagedRules(value string) (map[firewallRule]struct{}, []numberedFi
 		}
 		port, portErr := strconv.Atoi(portProtocol[0])
 		rule := firewallRule{port: port, protocol: portProtocol[1]}
-		if portErr != nil || port < 1 || port > 65535 || !strings.Contains(line, "# "+firewallComment(rule.protocol)) {
+		if portErr != nil || port < 1 || port > 65535 || !strings.Contains(line, "# "+f.firewallComment(rule.protocol)) {
 			continue
 		}
 		rules[rule] = struct{}{}

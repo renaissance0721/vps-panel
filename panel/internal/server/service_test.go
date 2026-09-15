@@ -697,12 +697,6 @@ func TestFailedAgentRegistrationDoesNotConsumeEnrollment(t *testing.T) {
 	); !errors.Is(err, ErrInvalidAgentVersion) {
 		t.Fatalf("invalid version error = %v, want ErrInvalidAgentVersion", err)
 	}
-	if _, err := service.RegisterAgent(
-		context.Background(), created.EnrollmentToken, "v0.4.0", true,
-	); !errors.Is(err, ErrInitialConfigExists) {
-		t.Fatalf("initial enrollment with existing config error = %v, want ErrInitialConfigExists", err)
-	}
-
 	var usedAt sql.NullInt64
 	if err := db.QueryRow(
 		`SELECT used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
@@ -716,6 +710,31 @@ func TestFailedAgentRegistrationDoesNotConsumeEnrollment(t *testing.T) {
 		context.Background(), created.EnrollmentToken, "v0.4.0", false,
 	); err != nil {
 		t.Fatalf("valid RegisterAgent() after failures error = %v", err)
+	}
+}
+
+func TestInitialEnrollmentAllowsExistingAgentConfig(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(context.Background(), "New Server On Existing VPS")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	registered, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.4.0", true)
+	if err != nil || registered.ServerID != created.ID {
+		t.Fatalf("register with existing config = (%+v, %v), want server %d", registered, err, created.ID)
+	}
+	var purpose string
+	var usedAt sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT purpose, used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
+	).Scan(&purpose, &usedAt); err != nil {
+		t.Fatalf("read enrollment: %v", err)
+	}
+	if purpose != PurposeInitial || !usedAt.Valid {
+		t.Fatalf("enrollment = (%q, used %v), want initial and used", purpose, usedAt.Valid)
+	}
+	if _, err := service.RegisterAgent(context.Background(), created.EnrollmentToken, "v0.4.0", true); !errors.Is(err, ErrInvalidEnrollment) {
+		t.Fatalf("reused initial token error = %v, want ErrInvalidEnrollment", err)
 	}
 }
 

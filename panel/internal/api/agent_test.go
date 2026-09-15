@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,22 +49,10 @@ func TestAgentRegistrationAPI(t *testing.T) {
 		"agent_version":    "v0.4.0",
 		"existing_config":  true,
 	}, nil)
-	if existingConfig.Code != http.StatusConflict {
+	if existingConfig.Code != http.StatusCreated {
 		t.Fatalf("initial enrollment with existing config status = %d, body = %q", existingConfig.Code, existingConfig.Body.String())
 	}
-	var rejectedUsedAt sql.NullInt64
-	if err := db.QueryRow(
-		`SELECT used_at FROM agent_enrollments WHERE server_id = ?`, created.ID,
-	).Scan(&rejectedUsedAt); err != nil {
-		t.Fatalf("read rejected enrollment: %v", err)
-	}
-	if rejectedUsedAt.Valid {
-		t.Fatal("rejected initial enrollment was consumed")
-	}
-	response := performRequest(t, handler, http.MethodPost, "/api/agent/register", map[string]string{
-		"enrollment_token": created.EnrollmentToken,
-		"agent_version":    "v0.4.0",
-	}, nil)
+	response := existingConfig
 	if response.Code != http.StatusCreated {
 		t.Fatalf("registration status = %d, body = %q", response.Code, response.Body.String())
 	}
@@ -342,6 +333,10 @@ func TestInstallAgentScript(t *testing.T) {
 		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system",
 		"systemctl enable",
 		"systemctl restart",
+		`systemctl restart "${SERVICE_NAME}.service"`,
+		`rc-service "$SERVICE_NAME" restart`,
+		`staged_binary=$(mktemp "${AGENT_DIR}/.vps-panel-agent.XXXXXX")`,
+		`mv -f "$staged_binary" "$BINARY_PATH"`,
 	} {
 		if !strings.Contains(response.Body.String(), required) {
 			t.Fatalf("installer does not contain %q", required)
@@ -361,9 +356,66 @@ func TestInstallAgentScript(t *testing.T) {
 		t.Fatal("installer restarts a deliberately stopped Agent")
 	}
 	registrationIndex := strings.Index(response.Body.String(), `"$download_path" register --server "$server_url" --token "$enrollment_token"`)
-	installIndex := strings.Index(response.Body.String(), `install -m 0755 "$download_path" "$BINARY_PATH"`)
-	if registrationIndex < 0 || installIndex < 0 || registrationIndex >= installIndex {
-		t.Fatal("installer must complete registration before replacing the installed Agent binary")
+	stagingIndex := strings.Index(response.Body.String(), `staged_binary=$(mktemp "${AGENT_DIR}/.vps-panel-agent.XXXXXX")`)
+	replacementIndex := strings.Index(response.Body.String(), `mv -f "$staged_binary" "$BINARY_PATH"`)
+	serviceIndex := strings.Index(response.Body.String(), `install -m 0644 "$service_path" "$service_file"`)
+	if stagingIndex < 0 || registrationIndex < 0 || replacementIndex < 0 || serviceIndex < 0 ||
+		stagingIndex >= registrationIndex || registrationIndex >= replacementIndex || replacementIndex >= serviceIndex {
+		t.Fatal("installer must stage the new binary before registration and replace binary/service only after registration")
+	}
+}
+
+func TestInstallerRestartsExistingSystemdAndOpenRCServices(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX sh")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("POSIX sh is unavailable")
+	}
+	source := string(installAgentScript)
+	start := strings.Index(source, "start_service() {")
+	if start < 0 {
+		t.Fatal("installer start_service function not found")
+	}
+	end := strings.Index(source[start:], "\nwhile [ \"$#\" -gt 0 ]; do")
+	if end < 0 {
+		t.Fatal("installer start_service function end not found")
+	}
+	startService := source[start : start+end]
+	for _, test := range []struct {
+		name          string
+		initSystem    string
+		wantRestart   string
+		unwantedStart string
+	}{
+		{"systemd", "systemd", "systemctl restart vps-panel-agent.service", "systemctl start vps-panel-agent.service"},
+		{"OpenRC", "openrc", "rc-service vps-panel-agent restart", "rc-service vps-panel-agent start"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mockDir := t.TempDir()
+			tracePath := filepath.Join(t.TempDir(), "commands")
+			for _, name := range []string{"systemctl", "rc-service", "rc-update"} {
+				mock := "#!/bin/sh\nprintf '%s %s\\n' '" + name + "' \"$*\" >> \"$TRACE_FILE\"\nexit 0\n"
+				if err := os.WriteFile(filepath.Join(mockDir, name), []byte(mock), 0o755); err != nil {
+					t.Fatalf("write %s mock: %v", name, err)
+				}
+			}
+			script := "set -eu\nSERVICE_NAME=vps-panel-agent\ninit_system=" + test.initSystem +
+				"\nfail() { exit 1; }\n" + startService + "\nstart_service\n"
+			command := exec.Command(sh, "-c", script)
+			command.Env = append(os.Environ(), "PATH="+mockDir+string(os.PathListSeparator)+os.Getenv("PATH"), "TRACE_FILE="+tracePath)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("start_service failed: %v, output %q", err, output)
+			}
+			trace, err := os.ReadFile(tracePath)
+			if err != nil {
+				t.Fatalf("read service commands: %v", err)
+			}
+			if !strings.Contains(string(trace), test.wantRestart) || strings.Contains(string(trace), test.unwantedStart) {
+				t.Fatalf("existing %s service commands = %q, want restart without start", test.name, trace)
+			}
+		})
 	}
 }
 

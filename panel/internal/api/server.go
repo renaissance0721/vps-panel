@@ -1407,8 +1407,6 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, serverstore.ErrInvalidEnrollment):
 		writeError(w, http.StatusUnauthorized, "Enrollment Token 无效、已使用或已过期")
-	case errors.Is(err, serverstore.ErrInitialConfigExists):
-		writeError(w, http.StatusConflict, "此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置")
 	case errors.Is(err, serverstore.ErrInvalidAgentVersion):
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
 	case errors.Is(err, serverstore.ErrInvalidTrafficConfig):

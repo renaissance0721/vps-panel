@@ -49,7 +49,6 @@ var (
 	ErrInvalidAgentVersion  = errors.New("agent version must be 1-64 characters")
 	ErrInvalidAgentToken    = errors.New("invalid agent token")
 	ErrArchived             = errors.New("server is archived")
-	ErrInitialConfigExists  = errors.New("initial enrollment cannot replace an existing Agent config")
 	ErrInvalidSystemInfo    = errors.New("invalid system information")
 	ErrInvalidMetrics       = errors.New("invalid server metrics")
 	ErrInvalidTrafficConfig = errors.New("invalid server traffic configuration")
@@ -730,7 +729,7 @@ func (s *Service) RegisterAgent(
 	ctx context.Context,
 	enrollmentToken string,
 	agentVersion string,
-	existingConfig bool,
+	_ bool,
 ) (RegisteredAgent, error) {
 	if enrollmentToken == "" {
 		return RegisteredAgent{}, ErrInvalidEnrollment
@@ -748,22 +747,17 @@ func (s *Service) RegisterAgent(
 
 	now := s.now().UTC().Truncate(time.Second)
 	var enrollmentID, serverID int64
-	var purpose string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, server_id, purpose FROM agent_enrollments
+		`SELECT id, server_id FROM agent_enrollments
 		 WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
 		token.Hash(enrollmentToken), now.Unix(),
-	).Scan(&enrollmentID, &serverID, &purpose)
+	).Scan(&enrollmentID, &serverID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RegisteredAgent{}, ErrInvalidEnrollment
 	}
 	if err != nil {
 		return RegisteredAgent{}, fmt.Errorf("find agent enrollment: %w", err)
 	}
-	if purpose == PurposeInitial && existingConfig {
-		return RegisteredAgent{}, ErrInitialConfigExists
-	}
-
 	agentToken, agentTokenHash, err := token.New()
 	if err != nil {
 		return RegisteredAgent{}, err

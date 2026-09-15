@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/renaissance0721/vps-panel/panel/internal/api"
+	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
@@ -172,8 +176,8 @@ func TestRegistrationFailurePreservesExistingConfig(t *testing.T) {
 
 	rejectingPanel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"error":"此注册令牌仅用于首次安装，当前 VPS 已存在 Agent 配置"}`))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Enrollment Token 无效、已使用或已过期"}`))
 	}))
 	defer rejectingPanel.Close()
 	secretEnrollment := "secret-enrollment-token"
@@ -183,7 +187,7 @@ func TestRegistrationFailurePreservesExistingConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("registration unexpectedly succeeded with invalid enrollment")
 	}
-	if !strings.Contains(err.Error(), "此注册令牌仅用于首次安装") || !strings.Contains(err.Error(), "409 Conflict") {
+	if !strings.Contains(err.Error(), "Enrollment Token 无效") || !strings.Contains(err.Error(), "401 Unauthorized") {
 		t.Fatalf("registration error = %q, want concrete Panel error and status", err)
 	}
 	if strings.Contains(err.Error(), secretEnrollment) {
@@ -241,6 +245,154 @@ func TestRegistrationFailurePreservesExistingConfig(t *testing.T) {
 		t.Fatal("registration unexpectedly succeeded while Panel was unavailable")
 	}
 	assertFileContents(t, configPath, original)
+}
+
+func newTestRegistrationPanel(t *testing.T) (*httptest.Server, *serverstore.Service, *sql.DB) {
+	t.Helper()
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open Panel database: %v", err)
+	}
+	panel := httptest.NewServer(api.NewHandler(db, t.TempDir()))
+	t.Cleanup(func() {
+		panel.Close()
+		db.Close()
+	})
+	return panel, serverstore.NewService(db), db
+}
+
+func TestRegistrationOverwritesExistingAgentAcrossServersAndPanels(t *testing.T) {
+	panelA, serviceA, dbA := newTestRegistrationPanel(t)
+	serverA, err := serviceA.Create(t.Context(), "Server A")
+	if err != nil {
+		t.Fatalf("create Server A: %v", err)
+	}
+	serverB, err := serviceA.Create(t.Context(), "Server B")
+	if err != nil {
+		t.Fatalf("create Server B: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	first, err := registerAgent(t.Context(), panelA.Client(), panelA.URL, serverA.EnrollmentToken, configPath)
+	if err != nil || first.ServerID != serverA.ID {
+		t.Fatalf("first registration = (%+v, %v), want Server A", first, err)
+	}
+	rebind, err := serviceA.CreateEnrollment(t.Context(), serverA.ID)
+	if err != nil {
+		t.Fatalf("create same-Server rebind enrollment: %v", err)
+	}
+	rebound, err := registerAgent(t.Context(), panelA.Client(), panelA.URL, rebind.EnrollmentToken, configPath)
+	if err != nil || rebound.ServerID != serverA.ID || rebound.AgentToken == first.AgentToken {
+		t.Fatalf("same-Server rebind = (%+v, %v), want replacement credentials", rebound, err)
+	}
+	assertRegisteredConfig(t, configPath, rebound, first.AgentToken)
+	if _, err := serviceA.AuthenticateAgent(t.Context(), first.AgentToken); !errors.Is(err, serverstore.ErrInvalidAgentToken) {
+		t.Fatalf("old same-Server credential error = %v, want ErrInvalidAgentToken", err)
+	}
+	second, err := registerAgent(t.Context(), panelA.Client(), panelA.URL, serverB.EnrollmentToken, configPath)
+	if err != nil || second.ServerID != serverB.ID || second.AgentToken == rebound.AgentToken {
+		t.Fatalf("initial enrollment on existing VPS = (%+v, %v), want Server B with new credentials", second, err)
+	}
+	assertRegisteredConfig(t, configPath, second, rebound.AgentToken)
+	var serverCount int
+	if err := dbA.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCount); err != nil || serverCount != 2 {
+		t.Fatalf("Panel A server count = (%d, %v), want 2", serverCount, err)
+	}
+
+	panelB, serviceB, _ := newTestRegistrationPanel(t)
+	serverOnB, err := serviceB.Create(t.Context(), "Server on Panel B")
+	if err != nil {
+		t.Fatalf("create Server on Panel B: %v", err)
+	}
+	third, err := registerAgent(t.Context(), panelB.Client(), panelB.URL, serverOnB.EnrollmentToken, configPath)
+	if err != nil || third.PanelURL != panelB.URL || third.ServerID != serverOnB.ID {
+		t.Fatalf("cross-Panel registration = (%+v, %v), want Panel B Server", third, err)
+	}
+	assertRegisteredConfig(t, configPath, third, second.AgentToken)
+}
+
+func TestRejectedNewEnrollmentPreservesExistingAgentConfig(t *testing.T) {
+	panel, service, db := newTestRegistrationPanel(t)
+	oldServer, err := service.Create(t.Context(), "Existing Agent")
+	if err != nil {
+		t.Fatalf("create existing Server: %v", err)
+	}
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	if _, err := registerAgent(t.Context(), panel.Client(), panel.URL, oldServer.EnrollmentToken, configPath); err != nil {
+		t.Fatalf("register existing Agent: %v", err)
+	}
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read existing config: %v", err)
+	}
+
+	expired, err := service.Create(t.Context(), "Expired enrollment")
+	if err != nil {
+		t.Fatalf("create expired Server: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE agent_enrollments SET expires_at = 0 WHERE server_id = ?`, expired.ID); err != nil {
+		t.Fatalf("expire enrollment: %v", err)
+	}
+	used, err := service.Create(t.Context(), "Used enrollment")
+	if err != nil {
+		t.Fatalf("create used Server: %v", err)
+	}
+	if _, err := service.RegisterAgent(t.Context(), used.EnrollmentToken, "test", false); err != nil {
+		t.Fatalf("consume enrollment: %v", err)
+	}
+	for _, test := range []struct {
+		name  string
+		token string
+	}{
+		{"invalid", "invalid-token"},
+		{"expired", expired.EnrollmentToken},
+		{"used", used.EnrollmentToken},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := registerAgent(t.Context(), panel.Client(), panel.URL, test.token, configPath); err == nil {
+				t.Fatal("rejected enrollment unexpectedly replaced existing Agent")
+			}
+			assertFileContents(t, configPath, original)
+		})
+	}
+}
+
+func TestFailedAtomicConfigReplacementLeavesNoPartialFile(t *testing.T) {
+	missingPath := filepath.Join(t.TempDir(), "missing", "config.json")
+	if err := saveConfig(missingPath, config{PanelURL: "https://panel.example", ServerID: 12, AgentID: 20, AgentToken: "new-token"}); err == nil {
+		t.Fatal("saveConfig unexpectedly created a temporary file in a missing directory")
+	}
+	if _, err := os.Stat(missingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config after temporary file creation failure = %v, want no file", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "agent", "config.json")
+	if _, err := prepareConfigTarget(configPath); err != nil {
+		t.Fatalf("prepare config target: %v", err)
+	}
+	if err := os.Mkdir(configPath, 0o700); err != nil {
+		t.Fatalf("block config replacement: %v", err)
+	}
+	if err := saveConfig(configPath, config{PanelURL: "https://panel.example", ServerID: 12, AgentID: 20, AgentToken: "new-token"}); err == nil {
+		t.Fatal("saveConfig unexpectedly replaced a directory")
+	}
+	if info, err := os.Stat(configPath); err != nil || !info.IsDir() {
+		t.Fatalf("config target after failure = (%v, %v), want original directory", info, err)
+	}
+	if temporaryFiles, err := filepath.Glob(filepath.Join(filepath.Dir(configPath), ".config-*")); err != nil || len(temporaryFiles) != 0 {
+		t.Fatalf("temporary files after failed replacement = (%v, %v), want none", temporaryFiles, err)
+	}
+}
+
+func assertRegisteredConfig(t *testing.T, path string, want config, oldToken string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read Agent config: %v", err)
+	}
+	var stored config
+	if err := json.Unmarshal(data, &stored); err != nil || stored != want || bytes.Contains(data, []byte(oldToken)) {
+		t.Fatalf("Agent config after rebind = (%+v, %v), want new credentials only", stored, err)
+	}
 }
 
 func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {

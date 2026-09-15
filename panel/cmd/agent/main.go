@@ -290,9 +290,6 @@ func saveConfig(path string, value config) error {
 	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("install Agent config: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("secure Agent config: %w", err)
-	}
 	return nil
 }
 

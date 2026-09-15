@@ -1462,7 +1462,7 @@ Agent = 可更换、可轮换凭据的执行端身份
    pending
    ```
 6. Panel 返回与首次安装格式相同的 Agent 安装命令，不要求用户提供覆盖参数。
-7. Agent 自动检测本机是否已有配置；Panel 仅允许 `rebind` Enrollment 替换旧身份，并在注册成功后使用已 fsync 的临时文件原子替换旧配置。
+7. Agent 自动检测本机是否已有配置；有效的 `initial` 或 `rebind` Enrollment 均允许覆盖旧身份，并在注册成功后使用已 fsync 的临时文件原子替换旧配置。
 8. 注册失败或 Panel 不可达时，旧配置保持不变。
 9. 新 Agent 使用 Enrollment Token 注册，并得到新的长期 Agent Token。
 10. 注册成功后清除 `archived_at`，Server 回到：
@@ -1487,7 +1487,7 @@ Agent = 可更换、可轮换凭据的执行端身份
 
 由于 `agents.server_id` 是唯一关系，重新绑定时删除旧 Agent 认证记录并创建新记录，不制造同一 Server 的多个有效 Agent。
 
-`agent_enrollments.purpose` 只使用 `initial` 和 `rebind` 两种内部值。新建 Server 时自动生成的首个 Enrollment 固定为 `initial`；管理员主动调用 `POST /api/servers/{id}/enrollment` 时固定生成 `rebind`，不根据 Agent 历史或 Server 状态推断。`initial` 仅允许本机没有 Agent 配置时注册；`rebind` 允许在注册成功后安全替换已有配置。
+`agent_enrollments.purpose` 只使用 `initial` 和 `rebind` 两种内部值。新建 Server 时自动生成的首个 Enrollment 固定为 `initial`；管理员主动调用 `POST /api/servers/{id}/enrollment` 时固定生成 `rebind`，不根据 Agent 历史或 Server 状态推断。注册时两种有效 Enrollment 均允许本机已有 Agent 配置；旧配置在注册失败时保持不变，成功后安全替换。
 
 必须保证：
 

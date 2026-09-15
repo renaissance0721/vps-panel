@@ -16,6 +16,7 @@ architecture=""
 temporary_dir=""
 init_system=""
 service_file=""
+staged_binary=""
 
 log() {
   printf '[vps-panel-agent] %s\n' "$*"
@@ -38,6 +39,9 @@ usage() {
 }
 
 cleanup() {
+  if [ -n "$staged_binary" ]; then
+    rm -f "$staged_binary"
+  fi
   if [ -n "$temporary_dir" ] && [ -d "$temporary_dir" ]; then
     rm -rf "$temporary_dir"
   fi
@@ -186,7 +190,7 @@ fi
 server_url=${server_url%/}
 
 prepare_alpine_dependencies
-for command_name in curl uname install mktemp chmod id; do
+for command_name in curl uname install mktemp chmod id mv; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: ${command_name}"
 done
 detect_init_system
@@ -215,6 +219,8 @@ install -d -m 0700 "$CONFIG_DIR"
 install -d -m 0755 "$AGENT_DIR"
 install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm
 install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm
+staged_binary=$(mktemp "${AGENT_DIR}/.vps-panel-agent.XXXXXX")
+install -m 0755 "$download_path" "$staged_binary"
 
 if [ "$init_system" = "systemd" ]; then
   write_systemd_service "$service_path"
@@ -226,7 +232,8 @@ log "Registering Agent..."
 "$download_path" register --server "$server_url" --token "$enrollment_token"
 enrollment_token=""
 
-install -m 0755 "$download_path" "$BINARY_PATH"
+mv -f "$staged_binary" "$BINARY_PATH"
+staged_binary=""
 if [ "$init_system" = "systemd" ]; then
   install -m 0644 "$service_path" "$service_file"
 else

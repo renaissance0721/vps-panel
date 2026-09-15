@@ -173,7 +173,7 @@ type clientShareResponse struct {
 	URI         string         `json:"uri"`
 }
 
-func (s *server) listProxies(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.proxies.List(r.Context())
 	if err != nil {
 		writeInternalError(w)
@@ -181,14 +181,25 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, _ auth.User
 	}
 	response := make([]proxyResponse, 0, len(values))
 	for _, value := range values {
+		allowed, err := s.canAccessServer(r.Context(), user, value.ServerID)
+		if err != nil {
+			writeInternalError(w)
+			return
+		}
+		if !allowed {
+			continue
+		}
 		response = append(response, toProxyResponse(value))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"proxies": response})
 }
 
-func (s *server) createProxy(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createProxyRequest
 	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, request.ServerID) {
 		return
 	}
 	enabled := true
@@ -216,12 +227,12 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeJSON(w, http.StatusCreated, map[string]any{"proxy": toProxyResponse(value)})
 }
 
-func (s *server) getProxy(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getProxy(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
 		return
 	}
-	value, err := s.proxies.Get(r.Context(), id)
+	value, err := s.proxyForUser(r.Context(), user, id)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -229,23 +240,19 @@ func (s *server) getProxy(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
 }
 
-func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
+		return
+	}
+	previous, err := s.proxyForUser(r.Context(), user, id)
+	if err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	var request updateProxyRequest
 	if !decodeJSON(w, r, &request) {
 		return
-	}
-	var previous proxystore.Proxy
-	if request.ListenPort != nil || request.EntryHostMode != nil || request.EntryHost != nil {
-		var err error
-		previous, err = s.proxies.Get(r.Context(), id)
-		if err != nil {
-			writeProxyError(w, err)
-			return
-		}
 	}
 	value, mutation, err := s.proxies.Update(r.Context(), id, proxystore.UpdateInput{
 		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
@@ -258,7 +265,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 		return
 	}
 	s.notifyProxyMutation(mutation)
-	if previous.ID != 0 && (previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost) {
+	if previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
 		mutations, err := s.relays.BumpForProxyTarget(r.Context(), value.ID, value.ServerID)
 		if err != nil {
 			writeInternalError(w)
@@ -269,9 +276,13 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
 }
 
-func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.proxyForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	mutation, err := s.proxies.Delete(r.Context(), id)
@@ -283,9 +294,13 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeNoContent(w)
 }
 
-func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.proxyForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	values, err := s.proxies.ListClients(r.Context(), id)
@@ -307,9 +322,13 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, _ auth
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
 }
 
-func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.proxyForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	var request createClientRequest
@@ -342,12 +361,12 @@ func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	writeJSON(w, http.StatusCreated, map[string]any{"client": toClientResponse(value)})
 }
 
-func (s *server) getProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
 	if !ok {
 		return
 	}
-	value, err := s.proxies.GetClient(r.Context(), id)
+	value, err := s.clientForUser(r.Context(), user, id)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -355,9 +374,14 @@ func (s *server) getProxyClient(w http.ResponseWriter, r *http.Request, _ auth.U
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
-func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
 	if !ok {
+		return
+	}
+	current, err := s.clientForUser(r.Context(), user, id)
+	if err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	var request updateClientRequest
@@ -371,11 +395,6 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	}
 	var traffic *proxystore.ClientTrafficConfig
 	if hasClientTrafficRequest(request.clientTrafficRequest) {
-		current, err := s.proxies.GetClient(r.Context(), id)
-		if err != nil {
-			writeProxyError(w, err)
-			return
-		}
 		parsed, _, err := parseClientTrafficRequest(request.clientTrafficRequest, proxystore.ClientTrafficConfig{
 			LimitBytes: current.TrafficLimitBytes, ResetMode: current.TrafficResetMode,
 			Weekday: current.TrafficResetWeekday, Day: current.TrafficResetDay,
@@ -399,9 +418,13 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
-func (s *server) resetProxyClientTraffic(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) resetProxyClientTraffic(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.clientForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	value, mutation, err := s.proxies.ResetClientTrafficWithMutation(r.Context(), id)
@@ -415,9 +438,13 @@ func (s *server) resetProxyClientTraffic(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
-func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.clientForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	mutation, err := s.proxies.DeleteClient(r.Context(), id)
@@ -429,9 +456,13 @@ func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	writeNoContent(w)
 }
 
-func (s *server) getProxyClientShare(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getProxyClientShare(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.clientForUser(r.Context(), user, id); err != nil {
+		writeProxyError(w, err)
 		return
 	}
 	value, err := s.proxies.GetClientShare(r.Context(), id)

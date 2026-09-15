@@ -134,6 +134,31 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 	return user, nil
 }
 
+func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, username, role, created_at, updated_at FROM users ORDER BY username, id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	users := make([]User, 0)
+	for rows.Next() {
+		var user User
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		user.CreatedAt = time.Unix(createdAt, 0).UTC()
+		user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return users, nil
+}
+
 func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time.Time, error) {
 	tokenValue, tokenHash, err := token.New()
 	if err != nil {

@@ -78,10 +78,12 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAdmin(s.revokeInvitation))
+	mux.HandleFunc("GET /api/users", s.requireAuthentication(s.listUsers))
 	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("PATCH /api/servers/{id}", s.requireAuthentication(s.updateServerExpiration))
+	mux.HandleFunc("PATCH /api/servers/{id}/access", s.requireAuthentication(s.updateServerAccess))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
 	mux.HandleFunc("PATCH /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.updateTrafficAdjustment))
 	mux.HandleFunc("DELETE /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.clearTrafficAdjustment))
@@ -143,7 +145,20 @@ type invitationResponse struct {
 }
 
 type createServerRequest struct {
-	Name string `json:"name"`
+	Name       string  `json:"name"`
+	Visibility string  `json:"visibility"`
+	UserIDs    []int64 `json:"user_ids"`
+}
+
+type updateServerAccessRequest struct {
+	Visibility string  `json:"visibility"`
+	UserIDs    []int64 `json:"user_ids"`
+}
+
+type accessUserResponse struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
 }
 
 type updateServerRequest struct {
@@ -162,6 +177,8 @@ type serverResponse struct {
 	ID                       int64               `json:"id"`
 	Name                     string              `json:"name"`
 	Status                   string              `json:"status"`
+	Visibility               string              `json:"visibility"`
+	AccessUserIDs            []int64             `json:"access_user_ids"`
 	ArchivedAt               *time.Time          `json:"archived_at,omitempty"`
 	ExpiresAt                *time.Time          `json:"expires_at"`
 	MonthlyTrafficLimitBytes *int64              `json:"monthly_traffic_limit_bytes"`
@@ -673,13 +690,26 @@ func (s *server) revokeInvitation(w http.ResponseWriter, r *http.Request, _ auth
 	writeNoContent(w)
 }
 
-func (s *server) listServers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	users, err := s.authService.ListUsers(r.Context())
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	response := make([]accessUserResponse, 0, len(users))
+	for _, user := range users {
+		response = append(response, accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": response})
+}
+
+func (s *server) listServers(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var values []serverstore.Server
 	var err error
 	if r.URL.Query().Get("archived") == "true" {
-		values, err = s.servers.ListArchived(r.Context())
+		values, err = s.servers.ListArchivedForUser(r.Context(), user.ID)
 	} else {
-		values, err = s.servers.List(r.Context())
+		values, err = s.servers.ListForUser(r.Context(), user.ID)
 	}
 	if err != nil {
 		writeInternalError(w)
@@ -692,12 +722,12 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
 }
 
-func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createServerRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	created, err := s.servers.Create(r.Context(), request.Name)
+	created, err := s.servers.CreateForUser(r.Context(), request.Name, request.Visibility, request.UserIDs, user.ID)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -705,9 +735,12 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
-func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getServer(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	value, err := s.servers.Get(r.Context(), id)
@@ -718,9 +751,34 @@ func (s *server) getServer(w http.ResponseWriter, r *http.Request, _ auth.User) 
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(value)})
 }
 
-func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateServerAccess(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
+		return
+	}
+	var request updateServerAccessRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	access, err := s.servers.UpdateAccess(r.Context(), id, user.ID, request.Visibility, request.UserIDs)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access": map[string]any{"visibility": access.Visibility, "user_ids": access.UserIDs},
+	})
+}
+
+func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	var request updateServerRequest
@@ -785,9 +843,12 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
 }
 
-func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	var request updateTrafficAdjustmentRequest
@@ -806,9 +867,12 @@ func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
 }
 
-func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	updated, err := s.servers.ClearTrafficAdjustment(r.Context(), id)
@@ -819,9 +883,12 @@ func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
 }
 
-func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	if err := s.servers.Archive(r.Context(), id); err != nil {
@@ -832,9 +899,12 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, _ auth.Use
 	writeNoContent(w)
 }
 
-func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	created, err := s.servers.CreateEnrollment(r.Context(), id)
@@ -846,9 +916,12 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, _ auth
 	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
 }
 
-func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	targetVersion := formalReleaseVersion(s.panelVersion)
@@ -879,9 +952,12 @@ func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, _ auth.Use
 	})
 }
 
-func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
 	if err := s.servers.PermanentlyDelete(r.Context(), id); err != nil {
@@ -995,6 +1071,8 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		ID:                       value.ID,
 		Name:                     value.Name,
 		Status:                   value.Status,
+		Visibility:               value.Visibility,
+		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
 		ArchivedAt:               value.ArchivedAt,
 		ExpiresAt:                value.ExpiresAt,
 		MonthlyTrafficLimitBytes: value.MonthlyTrafficLimitBytes,
@@ -1321,6 +1399,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, serverstore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
+	case errors.Is(err, serverstore.ErrInvalidVisibility):
+		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
+	case errors.Is(err, serverstore.ErrInvalidServerAccess):
+		writeError(w, http.StatusBadRequest, "服务器访问账号无效")
 	case errors.Is(err, serverstore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, serverstore.ErrInvalidEnrollment):

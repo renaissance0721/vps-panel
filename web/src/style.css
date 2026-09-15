@@ -226,10 +226,31 @@ h1 {
   color: #65717e;
 }
 
-.server-form {
+.server-access-form,
+.server-access-form label {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
+}
+
+.server-access-form > label > span,
+.server-access-users legend {
+  color: #47525d;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.server-access-users {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d9dee5;
+  border-radius: 6px;
+}
+
+.server-access-user {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
 }
 
 .server-details {
@@ -267,7 +288,8 @@ h1 {
 
 .expiration-modal-card,
 .traffic-modal-card,
-.traffic-adjustment-modal-card {
+.traffic-adjustment-modal-card,
+.access-modal-card {
   width: min(420px, calc(100vw - 32px));
 }
 
@@ -754,7 +776,6 @@ h1 {
 
   .health-grid,
   .generated-link,
-  .server-form,
   .secret-field {
     grid-template-columns: 1fr;
   }

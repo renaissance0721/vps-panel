@@ -71,7 +71,7 @@ type relayClientShareResponse struct {
 	NetworkNotice     string         `json:"network_notice,omitempty"`
 }
 
-func (s *server) listRelays(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.relays.List(r.Context())
 	if err != nil {
 		writeInternalError(w)
@@ -79,15 +79,31 @@ func (s *server) listRelays(w http.ResponseWriter, r *http.Request, _ auth.User)
 	}
 	response := make([]relayResponse, 0, len(values))
 	for _, value := range values {
+		if _, err := s.relayForUser(r.Context(), user, value.ID); err != nil {
+			if errors.Is(err, relaystore.ErrNotFound) {
+				continue
+			}
+			writeInternalError(w)
+			return
+		}
 		response = append(response, toRelayResponse(value))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"relays": response})
 }
 
-func (s *server) createRelay(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createRelayRequest
 	if !decodeJSON(w, r, &request) {
 		return
+	}
+	if !s.requireServerAccess(w, r, user, request.ServerID) {
+		return
+	}
+	if request.TargetType == relaystore.TargetProxy && request.TargetProxyID != nil {
+		if _, err := s.proxyForUser(r.Context(), user, *request.TargetProxyID); err != nil {
+			writeProxyError(w, err)
+			return
+		}
 	}
 	enabled := true
 	if request.Enabled != nil {
@@ -108,12 +124,12 @@ func (s *server) createRelay(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeJSON(w, http.StatusCreated, map[string]any{"relay": toRelayResponse(value)})
 }
 
-func (s *server) getRelayClients(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getRelayClients(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
 	if !ok {
 		return
 	}
-	value, err := s.relays.Get(r.Context(), id)
+	value, err := s.relayForUser(r.Context(), user, id)
 	if err != nil {
 		writeRelayError(w, err)
 		return
@@ -164,12 +180,12 @@ func relayNetworkCompatibility(network, protocol string) (bool, string) {
 	return true, ""
 }
 
-func (s *server) getRelay(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) getRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
 	if !ok {
 		return
 	}
-	value, err := s.relays.Get(r.Context(), id)
+	value, err := s.relayForUser(r.Context(), user, id)
 	if err != nil {
 		writeRelayError(w, err)
 		return
@@ -177,14 +193,33 @@ func (s *server) getRelay(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	writeJSON(w, http.StatusOK, map[string]any{"relay": toRelayResponse(value)})
 }
 
-func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
 	if !ok {
+		return
+	}
+	current, err := s.relayForUser(r.Context(), user, id)
+	if err != nil {
+		writeRelayError(w, err)
 		return
 	}
 	var request updateRelayRequest
 	if !decodeJSON(w, r, &request) {
 		return
+	}
+	targetType := current.TargetType
+	if request.TargetType != nil {
+		targetType = *request.TargetType
+	}
+	targetProxyID := current.TargetProxyID
+	if request.TargetProxyID != nil {
+		targetProxyID = request.TargetProxyID
+	}
+	if targetType == relaystore.TargetProxy && targetProxyID != nil {
+		if _, err := s.proxyForUser(r.Context(), user, *targetProxyID); err != nil {
+			writeProxyError(w, err)
+			return
+		}
 	}
 	value, mutation, err := s.relays.Update(r.Context(), id, relaystore.UpdateInput{
 		Name: request.Name, ListenAddress: request.ListenAddress, ListenPort: request.ListenPort,
@@ -201,9 +236,13 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, _ auth.User
 	writeJSON(w, http.StatusOK, map[string]any{"relay": toRelayResponse(value)})
 }
 
-func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
 	if !ok {
+		return
+	}
+	if _, err := s.relayForUser(r.Context(), user, id); err != nil {
+		writeRelayError(w, err)
 		return
 	}
 	mutation, err := s.relays.Delete(r.Context(), id)

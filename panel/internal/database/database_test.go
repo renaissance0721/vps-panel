@@ -28,6 +28,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"admin_invitations",
 		"sessions",
 		"servers",
+		"server_access",
 		"agent_enrollments",
 		"agents",
 		"server_system_info",
@@ -56,7 +57,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	for table, columns := range map[string][]string{
 		"servers": {
-			"desired_state_version", "monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
+			"visibility", "desired_state_version", "monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
 		},
 		"agents": {
 			"applied_config_version", "config_sync_status", "config_sync_error", "config_synced_at",
@@ -172,6 +173,48 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("second migration error = %v", err)
+	}
+}
+
+func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.Exec(`CREATE TABLE servers (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		legacyDB.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at)
+		VALUES (1, 'Existing', 'offline', 1, 1)`); err != nil {
+		legacyDB.Close()
+		t.Fatal(err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migration error = %v", err)
+	}
+	defer db.Close()
+	var visibility string
+	if err := db.QueryRow(`SELECT visibility FROM servers WHERE id = 1`).Scan(&visibility); err != nil {
+		t.Fatal(err)
+	}
+	if visibility != "public" {
+		t.Fatalf("existing server visibility = %q, want public", visibility)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration: %v", err)
 	}
 }
 

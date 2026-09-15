@@ -1,6 +1,6 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10 和 Phase 11**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、Agent 原地升级、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray、Realm 安全托管与 Proxy、Relay 管理。
+多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、Agent 原地升级、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray、Realm 安全托管与 Proxy、Relay 管理。
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
 
@@ -11,6 +11,8 @@ Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同�
 Phase 10 已完成。Xray 使用稳定的非敏感 Client 统计标识维护累计上行/下行计数，Agent 约每 15 秒通过独立认证 HTTP 接口上报，Panel 持久化 baseline、本周期累计和最近活动时间。Client 支持 G/T 流量额度、never / daily / weekly / monthly 上海时区周期、下次重置时间、本周期手动重置和到期时间。实际可用状态实时按 `effective_enabled = enabled && !expired && !quota_exhausted` 派生；达到 90% 显示预警，到期或额度耗尽时从 Xray desired state 失效，周期重置、手动重置或调整配置解除阻塞后自动恢复，同时保留原 Client 凭据和分享 URI。
 
 Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 和 glibc / musl 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、服务重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。
+
+Phase 11.6 已完成账号级 Server 访问控制。Server 默认为所有已登录账号可见的 `public`，也可设为授权一个或多个 admin / vip 的 `private`；Proxy、Client、Relay 和分享链接继承 Server 可见范围，Relay 同时要求源 Server 与目标 Proxy 所属 Server 均可访问。admin 不自动绕过私有范围，角色权限与资源访问权限必须同时满足。该可见范围只约束 Panel 用户 API 和 UI，不影响 Agent、Xray、Realm 或 desired state。
 
 Realm 受管路径：
 

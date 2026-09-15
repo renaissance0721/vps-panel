@@ -105,6 +105,12 @@ const filteredRelays = computed(() => {
   )
 })
 
+class APIError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     cache: 'no-store',
@@ -116,7 +122,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(body?.error ?? `请求失败（${response.status}）`)
+    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status)
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
@@ -129,6 +135,13 @@ async function run(action: () => Promise<void>) {
     await action()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '操作失败'
+    if (reason instanceof APIError && reason.status === 404) {
+      detailOpen.value = false
+      formOpen.value = false
+      selectedRelay.value = null
+      relayClients.value = []
+      await Promise.all([loadRelays(), loadProxies()]).catch(() => undefined)
+    }
   } finally {
     submitting.value = false
   }
@@ -292,6 +305,23 @@ watch(targetType, (value) => {
     targetProxyID.value = proxies.value[0]?.id ?? null
   }
 })
+
+watch(
+  () => props.servers.map((server) => server.id).join(','),
+  async () => {
+    try {
+      await Promise.all([loadRelays(), loadProxies()])
+      if (selectedRelay.value && !relays.value.some((value) => value.id === selectedRelay.value?.id)) {
+        selectedRelay.value = null
+        detailOpen.value = false
+        relayClients.value = []
+        error.value = '中转规则不存在或当前账号无权访问'
+      }
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '无法加载中转规则'
+    }
+  },
+)
 
 onMounted(async () => {
   try {

@@ -247,14 +247,17 @@ func TestServerAPILifecycle(t *testing.T) {
 		method string
 		path   string
 	}{
+		{http.MethodGet, "/api/users"},
 		{http.MethodGet, "/api/servers"},
 		{http.MethodPost, "/api/servers"},
 		{http.MethodGet, "/api/servers/1"},
 		{http.MethodPatch, "/api/servers/1"},
+		{http.MethodPatch, "/api/servers/1/access"},
 		{http.MethodDelete, "/api/servers/1"},
 		{http.MethodPatch, "/api/servers/1/traffic-adjustment"},
 		{http.MethodDelete, "/api/servers/1/traffic-adjustment"},
 		{http.MethodPost, "/api/servers/1/enrollment"},
+		{http.MethodPost, "/api/servers/1/agent-upgrade"},
 		{http.MethodDelete, "/api/servers/1/permanent"},
 	} {
 		response := performRequest(t, handler, request.method, request.path, map[string]string{"name": "test"}, nil)

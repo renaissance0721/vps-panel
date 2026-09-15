@@ -29,6 +29,8 @@ type User = {
   created_at: string
 }
 
+type AccessUser = Pick<User, 'id' | 'username' | 'role'>
+
 type AuthState = {
   requires_initialization: boolean
   authenticated: boolean
@@ -54,6 +56,8 @@ type ServerRecord = {
   id: number
   name: string
   status: 'pending' | 'online' | 'offline'
+  visibility: 'public' | 'private'
+  access_user_ids: number[]
   archived_at?: string
   expires_at: string | null
   monthly_traffic_limit_bytes: number | null
@@ -110,6 +114,7 @@ type CreatedServer = {
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const invitations = ref<Invitation[]>([])
+const users = ref<AccessUser[]>([])
 const servers = ref<ServerRecord[]>([])
 const archivedServers = ref<ServerRecord[]>([])
 const selectedServer = ref<ServerRecord | null>(null)
@@ -117,8 +122,14 @@ const createdServer = ref<CreatedServer | null>(null)
 const serverModalOpen = ref(false)
 const expirationModalOpen = ref(false)
 const trafficAdjustmentModalOpen = ref(false)
+const accessModalOpen = ref(false)
 const sidebarOpen = ref(false)
 const serverName = ref('')
+const serverVisibility = ref<ServerRecord['visibility']>('public')
+const serverAccessUserIDs = ref<number[]>([])
+const accessVisibility = ref<ServerRecord['visibility']>('public')
+const accessUserIDs = ref<number[]>([])
+const accessFormError = ref('')
 const currentPage = ref<'overview' | 'servers' | 'proxies' | 'relays'>('overview')
 const serverListMode = ref<'active' | 'archived'>('active')
 const loading = ref(true)
@@ -184,6 +195,12 @@ const bootstrapUpgradeCommand = computed(() =>
     : '',
 )
 
+class APIError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     cache: 'no-store',
@@ -196,7 +213,7 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(body?.error ?? `请求失败（${response.status}）`)
+    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status)
   }
 
   if (response.status === 204) {
@@ -208,7 +225,7 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
   if (state.value.authenticated) {
-    const requests = [loadHealth(), loadServers()]
+    const requests = [loadHealth(), loadServers(), loadUsers()]
     if (state.value.user?.role === 'admin') {
       requests.push(loadInvitations())
     }
@@ -226,6 +243,11 @@ async function loadInvitations() {
   invitations.value = response.invitations
 }
 
+async function loadUsers() {
+  const response = await api<{ users: AccessUser[] }>('/api/users')
+  users.value = response.users
+}
+
 async function loadServers() {
   if (serverLoadPromise) return serverLoadPromise
   serverLoadPromise = (async () => {
@@ -237,9 +259,21 @@ async function loadServers() {
     servers.value = activeResponse.servers
     archivedServers.value = archivedResponse.servers
     if (selectedServer.value) {
-      selectedServer.value = [...servers.value, ...archivedServers.value].find(
+      const selected = [...servers.value, ...archivedServers.value].find(
         (value) => value.id === selectedServer.value?.id,
-      ) ?? null
+      )
+      if (selected) {
+        selectedServer.value = selected
+      } else {
+        selectedServer.value = null
+        createdServer.value = null
+        serverModalOpen.value = false
+        accessModalOpen.value = false
+        expirationModalOpen.value = false
+        trafficModalOpen.value = false
+        trafficAdjustmentModalOpen.value = false
+        error.value = '服务器不存在或当前账号无权访问'
+      }
     }
   })()
   try {
@@ -326,6 +360,7 @@ async function logout() {
     }
     health.value = null
     invitations.value = []
+    users.value = []
     servers.value = []
     archivedServers.value = []
     selectedServer.value = null
@@ -333,6 +368,7 @@ async function logout() {
     serverModalOpen.value = false
     expirationModalOpen.value = false
     trafficAdjustmentModalOpen.value = false
+    accessModalOpen.value = false
     sidebarOpen.value = false
     expirationInput.value = ''
     generatedLink.value = ''
@@ -373,11 +409,17 @@ async function createServerRecord() {
   await submit(async () => {
     createdServer.value = await api<CreatedServer>('/api/servers', {
       method: 'POST',
-      body: JSON.stringify({ name: serverName.value }),
+      body: JSON.stringify({
+        name: serverName.value,
+        visibility: serverVisibility.value,
+        user_ids: serverVisibility.value === 'private' ? withCurrentUser(serverAccessUserIDs.value) : [],
+      }),
     })
     selectedServer.value = createdServer.value.server
     serverModalOpen.value = true
     serverName.value = ''
+    serverVisibility.value = 'public'
+    serverAccessUserIDs.value = []
     copiedCommand.value = false
     expirationModalOpen.value = false
     trafficModalOpen.value = false
@@ -396,6 +438,79 @@ function viewServer(value: ServerRecord) {
   trafficAdjustmentModalOpen.value = false
   expirationInput.value = ''
   serverModalOpen.value = true
+}
+
+function withCurrentUser(userIDs: number[]): number[] {
+  const result = new Set(userIDs)
+  if (state.value?.user?.id) result.add(state.value.user.id)
+  return [...result]
+}
+
+function ensureCreateCurrentUser() {
+  if (serverVisibility.value === 'private') {
+    serverAccessUserIDs.value = withCurrentUser(serverAccessUserIDs.value)
+  }
+}
+
+function visibilityLabel(value: ServerRecord['visibility']): string {
+  return value === 'private' ? '私有' : '公开'
+}
+
+function accessUserNames(userIDs: number[]): string {
+  const names = users.value.filter((user) => userIDs.includes(user.id)).map((user) => user.username)
+  return names.length > 0 ? names.join('、') : '—'
+}
+
+function openAccessModal() {
+  if (!selectedServer.value) return
+  accessVisibility.value = selectedServer.value.visibility
+  accessUserIDs.value = withCurrentUser(selectedServer.value.access_user_ids)
+  accessFormError.value = ''
+  accessModalOpen.value = true
+}
+
+function closeAccessModal() {
+  accessModalOpen.value = false
+  accessFormError.value = ''
+}
+
+function ensureAccessCurrentUser() {
+  if (accessVisibility.value === 'private') {
+    accessUserIDs.value = withCurrentUser(accessUserIDs.value)
+  }
+}
+
+async function saveServerAccess() {
+  if (!selectedServer.value || submitting.value) return
+  accessFormError.value = ''
+  submitting.value = true
+  try {
+    const response = await api<{ access: { visibility: ServerRecord['visibility']; user_ids: number[] } }>(
+      `/api/servers/${selectedServer.value.id}/access`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          visibility: accessVisibility.value,
+          user_ids: accessVisibility.value === 'private' ? withCurrentUser(accessUserIDs.value) : [],
+        }),
+      },
+    )
+    selectedServer.value.visibility = response.access.visibility
+    selectedServer.value.access_user_ids = response.access.user_ids
+    accessModalOpen.value = false
+    await loadServers()
+  } catch (reason) {
+    accessFormError.value = reason instanceof Error ? reason.message : '访问范围保存失败'
+    if (reason instanceof APIError && reason.status === 404) {
+      accessModalOpen.value = false
+      serverModalOpen.value = false
+      selectedServer.value = null
+      createdServer.value = null
+      await loadServers().catch(() => undefined)
+    }
+  } finally {
+    submitting.value = false
+  }
 }
 
 function agentUpgradeStatus(value: ServerRecord) {
@@ -469,6 +584,8 @@ function closeServerDetails() {
   trafficModalOpen.value = false
   resetTrafficForm()
   trafficAdjustmentModalOpen.value = false
+  accessModalOpen.value = false
+  accessFormError.value = ''
   resetTrafficAdjustmentForm()
 }
 
@@ -613,6 +730,12 @@ async function submit(action: () => Promise<void>) {
     await action()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '操作失败'
+    if (reason instanceof APIError && reason.status === 404 && serverModalOpen.value) {
+      serverModalOpen.value = false
+      selectedServer.value = null
+      createdServer.value = null
+      await loadServers().catch(() => undefined)
+    }
   } finally {
     submitting.value = false
   }
@@ -977,12 +1100,39 @@ onUnmounted(stopServerPolling)
           <div v-if="serverListMode === 'active'" class="server-create">
             <n-card title="新增服务器" :bordered="true">
               <p class="card-copy">创建后将生成一个 24 小时有效的 Agent 安装令牌。</p>
-              <form class="server-form" @submit.prevent="createServerRecord">
-                <n-input
-                  v-model:value="serverName"
-                  maxlength="100"
-                  placeholder="例如：日本服务器 01"
-                />
+              <form class="server-access-form" @submit.prevent="createServerRecord">
+                <label>
+                  <span>名称</span>
+                  <n-input
+                    v-model:value="serverName"
+                    maxlength="100"
+                    placeholder="例如：日本服务器 01"
+                  />
+                </label>
+                <label>
+                  <span>访问范围</span>
+                  <select
+                    v-model="serverVisibility"
+                    class="settings-input"
+                    :disabled="submitting"
+                    @change="ensureCreateCurrentUser"
+                  >
+                    <option value="public">公开（所有已登录账号）</option>
+                    <option value="private">私有（仅指定账号）</option>
+                  </select>
+                </label>
+                <fieldset v-if="serverVisibility === 'private'" class="server-access-users">
+                  <legend>允许访问的账号</legend>
+                  <label v-for="user in users" :key="user.id" class="server-access-user">
+                    <input
+                      v-model="serverAccessUserIDs"
+                      type="checkbox"
+                      :value="user.id"
+                      :disabled="submitting || user.id === state.user?.id"
+                    />
+                    <span>{{ user.username }}（{{ user.role }}）</span>
+                  </label>
+                </fieldset>
                 <n-button type="primary" attr-type="submit" :loading="submitting">
                   新增服务器
                 </n-button>
@@ -1005,7 +1155,12 @@ onUnmounted(stopServerPolling)
                 </thead>
                 <tbody>
                   <tr v-for="value in servers" :key="value.id">
-                    <td>{{ value.name }}</td>
+                    <td>
+                      {{ value.name }}
+                      <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
+                        {{ visibilityLabel(value.visibility) }}
+                      </n-tag>
+                    </td>
                     <td>
                       <div class="server-status-tags">
                         <n-tag :type="statusType(value.status)" size="small">
@@ -1068,7 +1223,12 @@ onUnmounted(stopServerPolling)
                 </thead>
                 <tbody>
                   <tr v-for="value in archivedServers" :key="value.id">
-                    <td>{{ value.name }}</td>
+                    <td>
+                      {{ value.name }}
+                      <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
+                        {{ visibilityLabel(value.visibility) }}
+                      </n-tag>
+                    </td>
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
                     <td class="server-actions">
@@ -1107,6 +1267,28 @@ onUnmounted(stopServerPolling)
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+              <div>
+                <dt>访问范围</dt>
+                <dd class="expiration-display">
+                  <span>
+                    {{ visibilityLabel(selectedServer.visibility) }}
+                    <template v-if="selectedServer.visibility === 'private'">
+                      · {{ accessUserNames(selectedServer.access_user_ids) }}
+                    </template>
+                  </span>
+                  <n-button
+                    class="expiration-edit-button"
+                    size="tiny"
+                    text
+                    title="修改访问范围"
+                    aria-label="修改访问范围"
+                    :disabled="submitting"
+                    @click="openAccessModal"
+                  >
+                    ✎
+                  </n-button>
+                </dd>
+              </div>
               <div>
                 <dt>到期日期</dt>
                 <dd class="expiration-display">
@@ -1328,6 +1510,56 @@ onUnmounted(stopServerPolling)
                 </n-button>
               </div>
             </div>
+          </n-card>
+        </n-modal>
+
+        <n-modal
+          v-model:show="accessModalOpen"
+          :mask-closable="!submitting"
+          @after-leave="accessFormError = ''"
+        >
+          <n-card
+            v-if="selectedServer"
+            class="access-modal-card"
+            title="修改访问范围"
+            :bordered="false"
+            closable
+            @close="closeAccessModal"
+          >
+            <form class="server-access-form" @submit.prevent="saveServerAccess">
+              <n-alert v-if="accessFormError" type="error" class="form-alert">
+                {{ accessFormError }}
+              </n-alert>
+              <label>
+                <span>访问范围</span>
+                <select
+                  v-model="accessVisibility"
+                  class="settings-input"
+                  :disabled="submitting"
+                  @change="ensureAccessCurrentUser"
+                >
+                  <option value="public">公开（所有已登录账号）</option>
+                  <option value="private">私有（仅指定账号）</option>
+                </select>
+              </label>
+              <fieldset v-if="accessVisibility === 'private'" class="server-access-users">
+                <legend>允许访问的账号</legend>
+                <label v-for="user in users" :key="user.id" class="server-access-user">
+                  <input
+                    v-model="accessUserIDs"
+                    type="checkbox"
+                    :value="user.id"
+                    :disabled="submitting || user.id === state.user?.id"
+                  />
+                  <span>{{ user.username }}（{{ user.role }}）</span>
+                </label>
+              </fieldset>
+              <p v-if="accessVisibility === 'private'">当前账号会自动保留访问权限。</p>
+              <div class="expiration-modal-actions">
+                <n-button :disabled="submitting" @click="closeAccessModal">取消</n-button>
+                <n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button>
+              </div>
+            </form>
           </n-card>
         </n-modal>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
 import {
   clientTrafficCycleLabel,
@@ -183,6 +183,12 @@ const filteredProxies = computed(() => {
   )
 })
 
+class APIError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     cache: 'no-store',
@@ -194,7 +200,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(body?.error ?? `请求失败（${response.status}）`)
+    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status)
   }
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
@@ -207,6 +213,15 @@ async function run(action: () => Promise<void>) {
     await action()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '操作失败'
+    if (reason instanceof APIError && reason.status === 404) {
+      proxyDetailOpen.value = false
+      proxyFormOpen.value = false
+      clientDetailOpen.value = false
+      clientFormOpen.value = false
+      selectedProxy.value = null
+      selectedShare.value = null
+      await loadProxies().catch(() => undefined)
+    }
   } finally {
     submitting.value = false
   }
@@ -216,6 +231,24 @@ async function loadProxies() {
   const response = await api<{ proxies: ProxyRecord[] }>('/api/proxies')
   proxies.value = response.proxies
 }
+
+watch(
+  () => props.servers.map((server) => server.id).join(','),
+  async () => {
+    try {
+      await loadProxies()
+      if (selectedProxy.value && !proxies.value.some((value) => value.id === selectedProxy.value?.id)) {
+        selectedProxy.value = null
+        proxyDetailOpen.value = false
+        clientDetailOpen.value = false
+        selectedShare.value = null
+        error.value = '代理节点不存在或当前账号无权访问'
+      }
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '无法加载代理节点'
+    }
+  },
+)
 
 function openCreateProxy() {
   resetProxyForm()

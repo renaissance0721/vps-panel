@@ -33,7 +33,7 @@
 
 > 项目：`renaissance0721/vps-panel`  
 > 文档定位：长期开发指导文档，作为后续 Codex / 人工开发时的阶段边界、架构约束和验收依据。  
-> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10 和 Phase 11 已完成；Phase 7B 暂缓。下一阶段为 Phase 12：分享与订阅。
+> 当前基线：Phase 1–4、Phase 4.5、Phase 4.6、Phase 5A–5B、Phase 6A–6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6 已完成；Phase 7B 暂缓。下一阶段为 Phase 12：分享与订阅。
 > 语言：简体中文。  
 > 原则：每个 Phase 只实现当前验收条件真正需要的功能，不提前堆未来架构。
 
@@ -58,7 +58,7 @@ VPS Panel 的目标不是单纯做一个“探针面板”，而是做一个统�
 - 同一个 Agent 管理 Realm 和端口转发规则
 - 节点分享、订阅、二维码
 - `admin / vip` 两级账号体系
-- Server / Proxy / Relay 等业务资源在账号之间全局共享
+- Server 支持 public / private；Proxy、Client、Relay 和分享链接继承 Server 的账号访问范围
 - ZIP 一键导出、导入、跨 VPS 恢复
 - 后续配置、更新、备份、日志等维护能力
 
@@ -382,40 +382,26 @@ vip
 
 ---
 
-## 1.6 Server、节点和后续业务资源属于 Panel 全局资源池
+## 1.6 Server public / private 访问范围
 
-当前项目不是多租户 SaaS。
-
-不要给每个账号复制一份 Server / Proxy，也不要用“同步任务”在账号之间复制资源。
-
-正确关系：
+当前项目不复制业务资源，也不引入 owner。Server 仍是 Panel 中唯一的真实机器记录，但可设置账号访问范围：
 
 ```text
 Panel
 ├── admin
 ├── vip A
 ├── vip B
-└── Shared Resources
-    ├── Server
+└── Server
+    ├── visibility = public | private
+    ├── server_access（private 时授权一个或多个账号）
     ├── Proxy
-    ├── Client
-    ├── Relay
-    └── Subscription
+    │   └── Client
+    └── Relay
 ```
 
-也就是说：
+`public` 对所有已登录账号可见；`private` 只对 `server_access` 中的账号可见。Proxy 和 Client 完全继承所属 Server；Relay 要求源 Server 可访问，目标为 Proxy 时还要求目标 Proxy 所属 Server 可访问。不可访问的用户态资源统一按不存在处理。
 
-> Server / Proxy / Relay 等资源属于整个 Panel，而不是某一个 User。
-
-当 admin 添加：
-
-```text
-日本服务器
-美国落地 Proxy
-香港 Realm Relay
-```
-
-其他 `vip` 账号读取的也是同一份数据库记录，因此天然同步，不需要创建“同步到 VIP”功能。
+Role 与资源范围相互独立：`admin` 不自动绕过 private Server；原本要求 admin 的操作必须同时满足 admin role 和 Server access。任何已经能访问 Server 的 admin / vip 都可以调整它的 public/private 与授权账号列表，切换为 private 时自动保留当前操作者，防止形成空授权。
 
 固定原则：
 
@@ -423,8 +409,8 @@ Panel
 - 不给 Proxy 增加账号所有权字段。
 - 不为每个 VIP 复制节点。
 - 不实现资源副本同步。
-- admin 和 vip 至少都可以查看、使用共享业务资源。
-- 服务器、节点等业务功能的细粒度修改/删除权限，等真正有需求时再决定；不要现在做复杂权限矩阵。
+- public Server 对 admin / vip 保持共享；private Server 只对显式授权账号开放。
+- Server access 只约束用户 API/UI，不进入 Agent desired state，也不触发 Agent 配置版本变更。
 - 注册邀请、账号级管理以及完整备份/恢复属于 `admin` 专属管理能力。
 
 ---
@@ -1199,7 +1185,7 @@ restart / reload
 `vip`：
 
 - 不能继续邀请其他账号
-- 与 admin 共享同一份 Server / Proxy / Relay 等业务资源
+- 与 admin 使用同一份 Server / Proxy / Relay 数据记录，并受当前 Server public/private 范围约束
 - 不是独立租户
 - 不拥有资源私有副本
 
@@ -1355,7 +1341,9 @@ role = vip
 
 ---
 
-## 4.4 全局共享资源
+## 4.4 全局共享资源（Phase 4.5 历史约束）
+
+> 本节记录 Phase 4.5 当时的共享模型。当前资源访问语义已由 Phase 11.6 的 `public/private + server_access` 取代，且仍不使用 owner 或资源副本。
 
 本阶段不要给 Server 增加 owner。
 
@@ -5473,10 +5461,11 @@ SQLite 当前足够。
 ```text
 users.role = admin | vip
 
-业务资源 = Panel 全局共享
+servers.visibility = public | private
+server_access(server_id, user_id) = private Server 授权账号
 ```
 
-不要给 Server / Proxy 等业务表增加 `owner_user_id` 来制造多租户模型，除非未来明确改变产品定位。
+不要给 Server / Proxy 等业务表增加 `owner_user_id`，也不要复制资源；Proxy、Client、Relay 从实际 Server 关系继承访问范围。
 
 
 不要因为未来可能扩展就提前更换：
@@ -5826,6 +5815,9 @@ Client 流量 / 额度 / 周期 / 到期
 Phase 11
 Realm + Relay
         ↓
+Phase 11.6
+账号级 Server public / private 访问控制
+        ↓
 Phase 12
 订阅 / 分享
         ↓
@@ -5850,7 +5842,7 @@ Chain Phase
 
 # 27. 当前下一步
 
-Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10 和 Phase 11 已完成。
+Phase 4.5、Phase 4.6、Phase 5A、Phase 5B、Phase 6A、Phase 6B、Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6 已完成。
 
 Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。代理主链路的下一阶段是 Phase 12：分享与订阅，当前未开始：
 
@@ -5858,7 +5850,7 @@ Phase 7B 服务器分组、标签与筛选暂缓，不阻塞代理主链路。�
 Phase 12：分享与订阅
 ```
 
-Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10 已完成每 Client 流量、额度、周期、到期与派生有效状态；Phase 11 已接通 Relay → desired state → Agent → Realm 的 TCP/UDP 中转链路。当前停止在 Phase 11，不提前实现 Phase 12。
+Phase 8B 已完成 Agent 的 Xray 安全托管基础；Phase 9A 已建立 VLESS Proxy → Client → Xray → 直连 URI 链路；Phase 9B 已在同一链路增加 Shadowsocks 2022 multi-user、TCP + UDP 防火墙规则与 SIP002 分享 URI；Phase 10 已完成每 Client 流量、额度、周期、到期与派生有效状态；Phase 11 已接通 Relay → desired state → Agent → Realm 的 TCP/UDP 中转链路；Phase 11.6 已完成账号级 Server public/private 访问控制。当前停止在 Phase 11.6，不提前实现 Phase 12。
 
 完整 ZIP 备份 / 导入已经列为固定需求，但实际实现放在 Proxy / Relay 等核心业务数据模型基本稳定后的 Phase 13，避免当前每新增一张业务表就反复重写备份格式。
 
@@ -6043,7 +6035,9 @@ Server
 - [x] 第一个初始化账号是唯一 admin。
 - [x] 邀请注册账号统一为 vip。
 - [x] 只有 admin 可以创建/查看/撤销邀请。
-- [x] Server / Proxy / Relay 等业务资源为 Panel 全局共享资源。
+- [x] Server 支持 public / private，private 可授权一个或多个 admin / vip。
+- [x] Proxy、Client、Relay 与分享链接继承 Server access；Relay 同时检查源与目标。
+- [x] admin 不自动绕过 private Server，Role 与资源访问范围相互独立。
 - [x] 不做按用户复制资源或资源同步副本。
 - [x] 一台 Server 一个 Agent。
 - [x] Agent 主动连接 Panel。
@@ -6115,7 +6109,7 @@ Server
 - [ ] Subscription 输出格式与权限机制。
 - [ ] 是否以及何时需要第二个代理后端（sing-box / Mihomo）；有真实需求再决定。
 - [ ] 是否以及何时需要多跳模型；有真实需求再决定。
-- [ ] vip 对业务资源的最终增删改边界（当前至少共享查看/使用，不做资源隔离）。
+- [x] admin / vip 对有权访问的 Server 保持现有业务操作边界；admin-only 操作仍要求 Role AND Server access。
 - [ ] Phase 13 Backup ZIP 的最终 manifest 字段。
 - [ ] 跨域名迁移时 `update_panel_url` 的确认与安全机制。
 
@@ -6123,6 +6117,14 @@ Server
 
 
 ---
+
+## 2026-09-15 Phase 11.6：账号级 Server 私有访问控制
+
+- `servers.visibility` 固定为 `public` / `private`，已有 Server migration 后保持 `public`。
+- private Server 通过 `server_access(server_id, user_id)` 授权一个或多个 admin / vip，不增加 owner。
+- Proxy、Client 和分享 URI 继承所属 Server；Relay 同时要求源 Server 与目标 Proxy 所属 Server 可访问。
+- admin 不自动绕过 private；原有 admin-only 操作采用 Role AND Server access。
+- 无权访问的用户态资源统一返回 404；Agent、Xray、Realm、desired state 和内部依赖计算保持 unscoped。
 
 ## 2026-09-11 VLESS TLS / REALITY + XTLS 第一版与原创实现硬性约束
 
@@ -6172,11 +6174,13 @@ Server
 
 本次新增并覆盖旧设计：
 
+> 其中第 4、5 条的“全局可见”语义已被 2026-09-15 Phase 11.6 的 Server public/private 访问范围覆盖；同一份资源、不复制资源的原则继续保留。
+
 1. 首次初始化创建的第一个账号为唯一 `admin`。
 2. 通过邀请注册的账号统一为 `vip`。
 3. `vip` 不具有邀请其他账号注册的权限。
-4. Server、Proxy、Relay 等业务资源不按账号隔离，属于 Panel 全局共享资源。
-5. admin 新增的服务器和节点会直接出现在 vip 的共享资源视图中，不通过复制或同步副本实现。
+4. Server、Proxy、Relay 等业务资源使用同一份数据库记录，不创建账号资源副本。
+5. public Server 及派生资源直接出现在所有账号视图；private Server 及派生资源只向授权账号显示。
 6. Panel 必须支持完整 ZIP 导出和导入。
 7. ZIP 需要能够用于另一台 VPS 上的新 Panel 恢复，内部 ID、外键、节点关系等由程序自动处理，不要求人工修改。
 8. 完整导入/导出属于 admin 专属能力。

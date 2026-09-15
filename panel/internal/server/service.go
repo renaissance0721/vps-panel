@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,6 +23,8 @@ const (
 	StatusPending           = "pending"
 	StatusOnline            = "online"
 	StatusOffline           = "offline"
+	VisibilityPublic        = "public"
+	VisibilityPrivate       = "private"
 	PurposeInitial          = "initial"
 	PurposeRebind           = "rebind"
 	TrafficSingle           = "single"
@@ -56,12 +59,16 @@ var (
 	ErrAgentOffline         = errors.New("Agent is offline")
 	ErrAgentNotRegistered   = errors.New("Agent is not registered")
 	ErrInvalidUpgrade       = errors.New("invalid Agent upgrade")
+	ErrInvalidVisibility    = errors.New("invalid server visibility")
+	ErrInvalidServerAccess  = errors.New("invalid server access list")
 )
 
 type Server struct {
 	ID                       int64
 	Name                     string
 	Status                   string
+	Visibility               string
+	AccessUserIDs            []int64
 	ArchivedAt               *time.Time
 	ExpiresAt                *time.Time
 	MonthlyTrafficLimitBytes *int64
@@ -174,6 +181,11 @@ type TrafficConfig struct {
 	ResetTime         string
 }
 
+type Access struct {
+	Visibility string
+	UserIDs    []int64
+}
+
 type CreatedServer struct {
 	Server
 	EnrollmentToken     string
@@ -217,9 +229,28 @@ func NewService(db *sql.DB) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error) {
+	return s.CreateForUser(ctx, name, VisibilityPublic, nil, 0)
+}
+
+func (s *Service) CreateForUser(
+	ctx context.Context,
+	name, visibility string,
+	userIDs []int64,
+	creatorID int64,
+) (CreatedServer, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > maxNameLength {
 		return CreatedServer{}, ErrInvalidName
+	}
+	visibility, err := normalizeVisibility(visibility)
+	if err != nil {
+		return CreatedServer{}, err
+	}
+	if visibility == VisibilityPrivate {
+		userIDs, err = normalizeAccessUserIDs(userIDs, creatorID)
+		if err != nil {
+			return CreatedServer{}, err
+		}
 	}
 
 	tokenValue, tokenHash, err := token.New()
@@ -236,8 +267,8 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 	defer tx.Rollback()
 
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO servers (name, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		name, StatusPending, now.Unix(), now.Unix(),
+		`INSERT INTO servers (name, status, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		name, StatusPending, visibility, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return CreatedServer{}, fmt.Errorf("create server: %w", err)
@@ -245,6 +276,14 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 	serverID, err := result.LastInsertId()
 	if err != nil {
 		return CreatedServer{}, fmt.Errorf("read server id: %w", err)
+	}
+	if visibility == VisibilityPrivate {
+		if err := validateAccessUsers(ctx, tx, userIDs); err != nil {
+			return CreatedServer{}, err
+		}
+		if err := replaceServerAccess(ctx, tx, serverID, userIDs); err != nil {
+			return CreatedServer{}, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO agent_enrollments (server_id, token_hash, purpose, expires_at, created_at)
@@ -262,6 +301,8 @@ func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error
 			ID:               serverID,
 			Name:             name,
 			Status:           StatusPending,
+			Visibility:       visibility,
+			AccessUserIDs:    userIDs,
 			TrafficCountMode: TrafficSingle,
 			TrafficResetDay:  defaultTrafficResetDay,
 			TrafficResetTime: defaultTrafficResetTime,
@@ -281,7 +322,9 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	defer tx.Rollback()
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility,
+		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
+		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 			 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
@@ -351,20 +394,38 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 }
 
 func (s *Service) List(ctx context.Context) ([]Server, error) {
-	return s.list(ctx, false)
+	return s.list(ctx, false, 0)
 }
 
 func (s *Service) ListArchived(ctx context.Context) ([]Server, error) {
-	return s.list(ctx, true)
+	return s.list(ctx, true, 0)
 }
 
-func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
+func (s *Service) ListForUser(ctx context.Context, userID int64) ([]Server, error) {
+	return s.list(ctx, false, userID)
+}
+
+func (s *Service) ListArchivedForUser(ctx context.Context, userID int64) ([]Server, error) {
+	return s.list(ctx, true, userID)
+}
+
+func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Server, error) {
 	archiveCondition := "servers.archived_at IS NULL"
 	if archived {
 		archiveCondition = "servers.archived_at IS NOT NULL"
 	}
+	accessCondition := ""
+	arguments := []any{}
+	if userID > 0 {
+		accessCondition = ` AND (servers.visibility = 'public' OR EXISTS (
+			SELECT 1 FROM server_access WHERE server_access.server_id = servers.id AND server_access.user_id = ?
+		))`
+		arguments = append(arguments, userID)
+	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility,
+		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
+		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
@@ -383,7 +444,7 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 		 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
-		 WHERE `+archiveCondition+` ORDER BY servers.created_at DESC, servers.id DESC`,
+		 WHERE `+archiveCondition+accessCondition+` ORDER BY servers.created_at DESC, servers.id DESC`, arguments...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)
@@ -404,9 +465,65 @@ func (s *Service) list(ctx context.Context, archived bool) ([]Server, error) {
 	return servers, nil
 }
 
+func (s *Service) CanAccess(ctx context.Context, userID, serverID int64) (bool, error) {
+	return canAccessServer(ctx, s.db, userID, serverID)
+}
+
+func (s *Service) UpdateAccess(
+	ctx context.Context,
+	serverID, currentUserID int64,
+	visibility string,
+	userIDs []int64,
+) (Access, error) {
+	visibility, err := normalizeVisibility(visibility)
+	if err != nil {
+		return Access{}, err
+	}
+	if visibility == VisibilityPrivate {
+		userIDs, err = normalizeAccessUserIDs(userIDs, currentUserID)
+		if err != nil {
+			return Access{}, err
+		}
+	} else {
+		userIDs = []int64{}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Access{}, fmt.Errorf("begin server access update: %w", err)
+	}
+	defer tx.Rollback()
+	allowed, err := canAccessServer(ctx, tx, currentUserID, serverID)
+	if err != nil {
+		return Access{}, err
+	}
+	if !allowed {
+		return Access{}, ErrNotFound
+	}
+	if visibility == VisibilityPrivate {
+		if err := validateAccessUsers(ctx, tx, userIDs); err != nil {
+			return Access{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE servers SET visibility = ?, updated_at = ? WHERE id = ?`,
+		visibility, s.now().UTC().Truncate(time.Second).Unix(), serverID,
+	); err != nil {
+		return Access{}, fmt.Errorf("update server visibility: %w", err)
+	}
+	if err := replaceServerAccess(ctx, tx, serverID, userIDs); err != nil {
+		return Access{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Access{}, fmt.Errorf("commit server access update: %w", err)
+	}
+	return Access{Visibility: visibility, UserIDs: userIDs}, nil
+}
+
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.archived_at, servers.expires_at,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility,
+		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
+		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
@@ -1350,6 +1467,7 @@ type rowScanner interface {
 
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
+	var accessUserIDs string
 	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var storedAgentVersion, upgradeTarget, upgradeStatus, upgradeError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
@@ -1360,7 +1478,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &archivedAt, &expiresAt,
+		&value.ID, &value.Name, &value.Status, &value.Visibility, &accessUserIDs, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &storedAgentVersion, &upgradeTarget, &upgradeStatus, &upgradeError,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
@@ -1432,5 +1550,106 @@ func scanServer(row rowScanner) (Server, error) {
 	}
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	if accessUserIDs != "" {
+		for _, rawID := range strings.Split(accessUserIDs, ",") {
+			userID, err := strconv.ParseInt(rawID, 10, 64)
+			if err != nil || userID <= 0 {
+				return Server{}, fmt.Errorf("decode server access user ID: %q", rawID)
+			}
+			value.AccessUserIDs = append(value.AccessUserIDs, userID)
+		}
+		sort.Slice(value.AccessUserIDs, func(i, j int) bool {
+			return value.AccessUserIDs[i] < value.AccessUserIDs[j]
+		})
+	}
 	return value, nil
+}
+
+type rowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func canAccessServer(ctx context.Context, query rowQuerier, userID, serverID int64) (bool, error) {
+	if userID <= 0 || serverID <= 0 {
+		return false, nil
+	}
+	var allowed bool
+	err := query.QueryRowContext(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM servers
+			WHERE id = ? AND (
+				visibility = 'public' OR EXISTS (
+					SELECT 1 FROM server_access
+					WHERE server_access.server_id = servers.id AND server_access.user_id = ?
+				)
+			)
+		)`,
+		serverID, userID,
+	).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("check server access: %w", err)
+	}
+	return allowed, nil
+}
+
+func normalizeVisibility(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return VisibilityPublic, nil
+	}
+	if value != VisibilityPublic && value != VisibilityPrivate {
+		return "", ErrInvalidVisibility
+	}
+	return value, nil
+}
+
+func normalizeAccessUserIDs(values []int64, currentUserID int64) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(values)+1)
+	for _, userID := range values {
+		if userID <= 0 {
+			return nil, ErrInvalidServerAccess
+		}
+		seen[userID] = struct{}{}
+	}
+	if currentUserID > 0 {
+		seen[currentUserID] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil, ErrInvalidServerAccess
+	}
+	result := make([]int64, 0, len(seen))
+	for userID := range seen {
+		result = append(result, userID)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+func validateAccessUsers(ctx context.Context, query rowQuerier, userIDs []int64) error {
+	for _, userID := range userIDs {
+		var exists bool
+		if err := query.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)`, userID,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("validate server access user: %w", err)
+		}
+		if !exists {
+			return ErrInvalidServerAccess
+		}
+	}
+	return nil
+}
+
+func replaceServerAccess(ctx context.Context, tx *sql.Tx, serverID int64, userIDs []int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_access WHERE server_id = ?`, serverID); err != nil {
+		return fmt.Errorf("clear server access: %w", err)
+	}
+	for _, userID := range userIDs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO server_access (server_id, user_id) VALUES (?, ?)`, serverID, userID,
+		); err != nil {
+			return fmt.Errorf("create server access: %w", err)
+		}
+	}
+	return nil
 }

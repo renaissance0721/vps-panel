@@ -71,6 +71,8 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			visibility TEXT NOT NULL DEFAULT 'public'
+				CHECK (visibility IN ('public', 'private')),
 			desired_state_version INTEGER NOT NULL DEFAULT 1,
 			archived_at INTEGER,
 			expires_at INTEGER,
@@ -83,6 +85,13 @@ func migrate(db *sql.DB) error {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS server_access (
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			PRIMARY KEY (server_id, user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_server_access_server_id ON server_access(server_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_server_access_user_id ON server_access(user_id)`,
 		`CREATE TABLE IF NOT EXISTS agent_enrollments (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -227,6 +236,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerArchive(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerAccess(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerExpiration(ctx, db); err != nil {
 		return err
 	}
@@ -264,6 +276,24 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateServerAccess(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'visibility'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect servers.visibility: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'
+			 CHECK (visibility IN ('public', 'private'))`,
+		); err != nil {
+			return fmt.Errorf("add servers.visibility: %w", err)
+		}
+	}
 	return nil
 }
 

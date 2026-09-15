@@ -50,6 +50,30 @@ func TestInitializeCreatesOnlyFirstUserWithHashedPassword(t *testing.T) {
 	}
 }
 
+func TestListUsersReturnsAccountsWithoutCredentials(t *testing.T) {
+	service, _ := newTestService(t)
+	ctx := context.Background()
+	admin, err := service.Initialize(ctx, "admin", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invitation, err := service.CreateInvitation(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterWithInvitation(ctx, invitation.Token, "member", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	users, err := service.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 || users[0].Username != "admin" || users[0].Role != RoleAdmin ||
+		users[1].Username != "member" || users[1].Role != RoleVIP {
+		t.Fatalf("ListUsers() = %+v", users)
+	}
+}
+
 func TestLoginSessionAndLogout(t *testing.T) {
 	service, db := newTestService(t)
 	ctx := context.Background()

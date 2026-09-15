@@ -64,14 +64,15 @@ func TestVerifyAgentBinaryVersionRejectsMismatch(t *testing.T) {
 
 func TestPrepareAgentUpgradeVerifiesBeforeLaunchingAndPreservesConfig(t *testing.T) {
 	managedDirectory := t.TempDir()
-	originalManagedDir, originalManagedPath, originalBaseURL := agentManagedDir, agentManagedPath, releasesBaseURL
+	originalManagedDir, originalManagedPath, originalBaseURL, originalAgentVersion := agentManagedDir, agentManagedPath, releasesBaseURL, agentVersion
 	originalRun, originalLaunch := runUpgradeCommand, launchAgentUpgrade
 	t.Cleanup(func() {
-		agentManagedDir, agentManagedPath, releasesBaseURL = originalManagedDir, originalManagedPath, originalBaseURL
+		agentManagedDir, agentManagedPath, releasesBaseURL, agentVersion = originalManagedDir, originalManagedPath, originalBaseURL, originalAgentVersion
 		runUpgradeCommand, launchAgentUpgrade = originalRun, originalLaunch
 	})
 	agentManagedDir = managedDirectory
 	agentManagedPath = filepath.Join(managedDirectory, "vps-panel-agent")
+	agentVersion = "v0.11.0"
 
 	asset, err := agentReleaseAsset(runtime.GOARCH)
 	if err != nil {
@@ -130,6 +131,36 @@ func TestPrepareAgentUpgradeVerifiesBeforeLaunchingAndPreservesConfig(t *testing
 	stagedPath = ""
 	if err := prepareAgentUpgrade(t.Context(), release.Client(), identity, "v0.12.0"); err == nil || stagedPath != "" {
 		t.Fatalf("checksum failure = %v, staged path = %q", err, stagedPath)
+	}
+}
+
+func TestPrepareAgentUpgradeRejectsDowngradeBeforeDownload(t *testing.T) {
+	originalVersion, originalDir := agentVersion, agentManagedDir
+	t.Cleanup(func() { agentVersion, agentManagedDir = originalVersion, originalDir })
+	agentVersion = "v0.19.2"
+	agentManagedDir = filepath.Join(t.TempDir(), "untouched")
+	requests := 0
+	client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unexpected download", http.StatusInternalServerError)
+	}))
+	defer client.Close()
+
+	for _, target := range []string{"v0.19.1", "v0.19.2", "dev"} {
+		if err := prepareAgentUpgrade(t.Context(), client.Client(), config{}, target); err == nil {
+			t.Fatalf("target %s was accepted", target)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("rejected upgrade made %d downloads", requests)
+	}
+	if _, err := os.Stat(agentManagedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected upgrade created managed directory: %v", err)
+	}
+
+	agentVersion = "dev"
+	if err := prepareAgentUpgrade(t.Context(), client.Client(), config{}, "v0.19.3"); err == nil {
+		t.Fatal("unknown current Agent version was accepted")
 	}
 }
 

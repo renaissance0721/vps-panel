@@ -81,6 +81,17 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 1 && (arguments[0] == "version" || arguments[0] == "--version") {
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("locate Agent binary for version check: %w", err)
+		}
+		if err := preserveCurrentAgentForStagedUpgrade(executable); err != nil {
+			return fmt.Errorf("preserve previous Agent before upgrade: %w", err)
+		}
+		if err := prepareStagedAgentSystemdSandbox(executable); err != nil {
+			os.Remove(filepath.Join(agentManagedDir, ".agent-migration-backup"))
+			return fmt.Errorf("prepare Agent systemd sandbox before upgrade: %w", err)
+		}
 		fmt.Printf("vps-panel-agent %s\n", agentVersion)
 		return nil
 	}
@@ -92,6 +103,13 @@ func run(arguments []string) error {
 	}
 	if len(arguments) > 0 && arguments[0] == agentSystemdMigrationRestartCommand {
 		return runAgentSystemdMigrationRestart(arguments[1:])
+	}
+	if len(arguments) == 1 && arguments[0] == "_prepare-systemd-sandbox" {
+		createdDropIn, err := applyAgentSystemdSandboxMigration()
+		if err != nil && createdDropIn {
+			return restoreAgentSystemdDropIn(err)
+		}
+		return err
 	}
 	if len(arguments) != 0 {
 		return errors.New("usage: vps-panel-agent [version | register --server URL --token TOKEN]")
@@ -461,6 +479,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			if err != nil {
 				return true, false
 			}
+			// Keep the previous binary until the upgraded service is stably connected.
+			os.Remove(filepath.Join(agentManagedDir, ".agent-migration-backup"))
 		case <-metricsTicker.C:
 			metrics, ok := collectAgentMetrics(metricsCollector)
 			if !ok {

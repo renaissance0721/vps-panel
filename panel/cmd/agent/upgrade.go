@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/version"
 )
 
 const (
@@ -53,6 +55,16 @@ func prepareAgentUpgrade(ctx context.Context, client *http.Client, value config,
 	}
 	if !isFormalAgentVersion(targetVersion) {
 		return errors.New("Panel requested an invalid Agent release version")
+	}
+	comparison, ok := version.Compare(agentVersion, targetVersion)
+	if !ok {
+		return errors.New("cannot compare Agent and Panel release versions")
+	}
+	if comparison == 0 {
+		return errors.New("Agent already runs the requested release")
+	}
+	if comparison > 0 {
+		return fmt.Errorf("Agent %s is newer than Panel %s; automatic downgrade is not supported", agentVersion, targetVersion)
 	}
 	if err := os.MkdirAll(agentManagedDir, 0o755); err != nil {
 		return fmt.Errorf("create managed Agent directory: %w", err)

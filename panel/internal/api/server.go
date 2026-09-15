@@ -22,6 +22,7 @@ import (
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
+	"github.com/renaissance0721/vps-panel/panel/internal/version"
 )
 
 const sessionCookieName = "vps_panel_session"
@@ -44,6 +45,7 @@ type server struct {
 
 type agentConnection struct {
 	socket  *websocket.Conn
+	version string
 	writeMu sync.Mutex
 }
 
@@ -192,6 +194,7 @@ type serverResponse struct {
 	CreatedAt                time.Time           `json:"created_at"`
 	UpdatedAt                time.Time           `json:"updated_at"`
 	AgentVersion             string              `json:"agent_version"`
+	AgentVersionStatus       string              `json:"agent_version_status"`
 	AgentUpgradeTarget       string              `json:"agent_upgrade_target,omitempty"`
 	AgentUpgradeStatus       string              `json:"agent_upgrade_status,omitempty"`
 	AgentUpgradeError        string              `json:"agent_upgrade_error,omitempty"`
@@ -505,7 +508,10 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer connection.CloseNow()
 	connection.SetReadLimit(8 << 10)
-	currentConnection := &agentConnection{socket: connection}
+	currentConnection := &agentConnection{
+		socket:  connection,
+		version: strings.TrimSpace(r.Header.Get("X-VPS-Panel-Agent-Version")),
+	}
 	previous := s.trackAgentConnection(agent.ServerID, currentConnection)
 	if previous != nil {
 		previous.socket.CloseNow()
@@ -717,7 +723,7 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request, user auth.U
 	}
 	response := make([]serverResponse, 0, len(values))
 	for _, value := range values {
-		response = append(response, toServerResponse(value))
+		response = append(response, toServerResponse(value, s.panelVersion))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
 }
@@ -748,7 +754,7 @@ func (s *server) getServer(w http.ResponseWriter, r *http.Request, user auth.Use
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(value)})
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(value, s.panelVersion)})
 }
 
 func (s *server) updateServerAccess(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -817,7 +823,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			writeServerError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
 	var expiresAt *time.Time
@@ -840,7 +846,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
 func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -864,7 +870,7 @@ func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request,
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
 func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -880,7 +886,7 @@ func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, 
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated)})
+	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
 func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -941,6 +947,12 @@ func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, user auth.
 		return
 	}
 	if err := s.notifyAgentUpgrade(id, targetVersion); err != nil {
+		if errors.Is(err, serverstore.ErrAgentAlreadyCurrent) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_current", "version": targetVersion,
+			})
+			return
+		}
 		failureContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = s.servers.MarkAgentUpgradeFailed(failureContext, id, targetVersion, "无法向在线 Agent 发送升级指令")
 		cancel()
@@ -1066,7 +1078,7 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 	}
 }
 
-func toServerResponse(value serverstore.Server) serverResponse {
+func toServerResponse(value serverstore.Server, panelVersion string) serverResponse {
 	response := serverResponse{
 		ID:                       value.ID,
 		Name:                     value.Name,
@@ -1084,6 +1096,7 @@ func toServerResponse(value serverstore.Server) serverResponse {
 		CreatedAt:                value.CreatedAt,
 		UpdatedAt:                value.UpdatedAt,
 		AgentVersion:             value.AgentVersion,
+		AgentVersionStatus:       serverstore.AgentVersionStatus(value.AgentVersion, panelVersion),
 		AgentUpgradeTarget:       value.AgentUpgradeTarget,
 		AgentUpgradeStatus:       value.AgentUpgradeStatus,
 		AgentUpgradeError:        value.AgentUpgradeError,
@@ -1135,7 +1148,7 @@ func (s *server) toCreatedServerResponse(
 		command += " \\\n  --version " + version
 	}
 	return createdServerResponse{
-		Server:                   toServerResponse(created.Server),
+		Server:                   toServerResponse(created.Server, s.panelVersion),
 		EnrollmentToken:          created.EnrollmentToken,
 		EnrollmentTokenExpiresAt: created.EnrollmentExpiresAt,
 		AgentInstallationCommand: command,
@@ -1160,25 +1173,10 @@ func releaseVersion(value string) string {
 }
 
 func formalReleaseVersion(value string) string {
-	value = releaseVersion(value)
-	if value == "" {
-		return ""
+	if serverstore.IsFormalReleaseVersion(value) {
+		return value
 	}
-	parts := strings.Split(value[1:], ".")
-	if len(parts) != 3 {
-		return ""
-	}
-	for _, part := range parts {
-		if part == "" {
-			return ""
-		}
-		for _, character := range part {
-			if character < '0' || character > '9' {
-				return ""
-			}
-		}
-	}
-	return value
+	return ""
 }
 
 func (s *server) trackAgentConnection(serverID int64, connection *agentConnection) *agentConnection {
@@ -1279,14 +1277,14 @@ func (s *server) notifyConfigChanged(serverID, version int64) error {
 	return nil
 }
 
-func (s *server) notifyAgentUpgrade(serverID int64, version string) error {
+func (s *server) notifyAgentUpgrade(serverID int64, targetVersion string) error {
 	s.connectionsMu.Lock()
 	connection := s.connections[serverID]
 	s.connectionsMu.Unlock()
 	if connection == nil {
 		return serverstore.ErrAgentOffline
 	}
-	payload, err := json.Marshal(agentUpgradeMessage{Type: "agent_upgrade", Version: version})
+	payload, err := json.Marshal(agentUpgradeMessage{Type: "agent_upgrade", Version: targetVersion})
 	if err != nil {
 		return fmt.Errorf("encode Agent upgrade notification: %w", err)
 	}
@@ -1294,6 +1292,16 @@ func (s *server) notifyAgentUpgrade(serverID int64, version string) error {
 	defer connection.writeMu.Unlock()
 	if !s.isCurrentAgentConnection(serverID, connection) {
 		return serverstore.ErrAgentOffline
+	}
+	comparison, ok := version.Compare(connection.version, targetVersion)
+	if !ok {
+		return serverstore.ErrUnknownAgentVersion
+	}
+	if comparison == 0 {
+		return serverstore.ErrAgentAlreadyCurrent
+	}
+	if comparison > 0 {
+		return fmt.Errorf("%w: Agent %s is newer than Panel %s", serverstore.ErrAgentNewer, connection.version, targetVersion)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1423,6 +1431,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "Agent 当前不在线")
 	case errors.Is(err, serverstore.ErrAgentNotRegistered):
 		writeError(w, http.StatusConflict, "服务器尚未注册 Agent")
+	case errors.Is(err, serverstore.ErrAgentNewer):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, serverstore.ErrUnknownAgentVersion):
+		writeError(w, http.StatusConflict, "Agent 版本未知或为开发版本，不能一键升级")
 	case errors.Is(err, serverstore.ErrInvalidUpgrade):
 		writeError(w, http.StatusBadRequest, "Agent 升级请求无效")
 	case errors.Is(err, relaystore.ErrTargetUnavailable):

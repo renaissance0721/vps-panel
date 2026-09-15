@@ -23,3 +23,12 @@ test('服务器详情展示 Agent 原地升级状态和 bootstrap 命令', async
   assert.doesNotMatch(source, /\/upgrade-agent\.sh \| bash/)
   assert.match(source, /state\.user\?\.role === 'admin'/)
 })
+
+test('高于 Panel 的 Agent 不能展示或触发降级按钮', async () => {
+  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.match(source, /selectedServer\.agent_version_status === 'upgrade_available'/)
+  assert.match(source, /value\.agent_version_status !== 'upgrade_available'/)
+  assert.match(source, /selectedServer\.agent_version_status === 'agent_newer'/)
+  assert.match(source, /请先升级 Panel；不支持自动降级 Agent/)
+  assert.doesNotMatch(source, /selectedServer\.agent_version !== panelReleaseVersion/)
+})

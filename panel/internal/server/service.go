@@ -17,6 +17,7 @@ import (
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
+	"github.com/renaissance0721/vps-panel/panel/internal/version"
 )
 
 const (
@@ -58,6 +59,9 @@ var (
 	ErrAgentOffline         = errors.New("Agent is offline")
 	ErrAgentNotRegistered   = errors.New("Agent is not registered")
 	ErrInvalidUpgrade       = errors.New("invalid Agent upgrade")
+	ErrAgentNewer           = errors.New("Agent is newer than Panel; downgrade is not supported")
+	ErrAgentAlreadyCurrent  = errors.New("Agent already runs the requested release")
+	ErrUnknownAgentVersion  = errors.New("Agent version is not a formal release")
 	ErrInvalidVisibility    = errors.New("invalid server visibility")
 	ErrInvalidServerAccess  = errors.New("invalid server access list")
 )
@@ -842,7 +846,7 @@ func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Age
 
 func (s *Service) PrepareAgentUpgrade(ctx context.Context, serverID int64, targetVersion string) (AgentUpgrade, error) {
 	targetVersion = strings.TrimSpace(targetVersion)
-	if targetVersion == "" || utf8.RuneCountInString(targetVersion) > 64 {
+	if !version.IsFormal(targetVersion) {
 		return AgentUpgrade{}, ErrInvalidUpgrade
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -871,8 +875,15 @@ func (s *Service) PrepareAgentUpgrade(ctx context.Context, serverID int64, targe
 	} else if err != nil {
 		return AgentUpgrade{}, fmt.Errorf("read Agent for upgrade: %w", err)
 	}
-	if currentVersion == targetVersion {
+	comparison, ok := version.Compare(currentVersion, targetVersion)
+	if !ok {
+		return AgentUpgrade{}, ErrUnknownAgentVersion
+	}
+	if comparison == 0 {
 		return AgentUpgrade{AlreadyCurrent: true}, nil
+	}
+	if comparison > 0 {
+		return AgentUpgrade{}, fmt.Errorf("%w: Agent %s is newer than Panel %s", ErrAgentNewer, currentVersion, targetVersion)
 	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	if _, err := tx.ExecContext(ctx,

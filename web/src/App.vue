@@ -71,6 +71,7 @@ type ServerRecord = {
   created_at: string
   updated_at: string
   agent_version: string
+  agent_version_status: 'unregistered' | 'unknown' | 'upgrade_available' | 'up_to_date' | 'agent_newer'
   agent_upgrade_target?: string
   agent_upgrade_status?: 'upgrading' | 'failed'
   agent_upgrade_error?: string
@@ -514,16 +515,19 @@ async function saveServerAccess() {
 }
 
 function agentUpgradeStatus(value: ServerRecord) {
+  if (value.agent_version_status === 'agent_newer') return 'Agent 版本高于 Panel'
   if (value.agent_upgrade_status === 'upgrading') return '升级中'
   if (value.agent_upgrade_status === 'failed') return '升级失败'
-  if (!value.agent_version) return '尚未注册'
-  if (!panelReleaseVersion.value) return '开发版本不可升级'
-  if (value.agent_version === panelReleaseVersion.value) return '最新'
-  return '可升级'
+  switch (value.agent_version_status) {
+    case 'unregistered': return '尚未注册'
+    case 'upgrade_available': return '可升级'
+    case 'up_to_date': return '已是最新'
+    default: return '版本未知或开发版本不可升级'
+  }
 }
 
 async function upgradeAgent(value: ServerRecord) {
-  if (!panelReleaseVersion.value || value.status !== 'online') return
+  if (!panelReleaseVersion.value || value.status !== 'online' || value.agent_version_status !== 'upgrade_available') return
   if (!window.confirm(`确定将 Agent 升级到 ${panelReleaseVersion.value} 吗？升级会短暂断开连接，但不会重新注册。`)) return
   await submit(async () => {
     await api(`/api/servers/${value.id}/agent-upgrade`, { method: 'POST' })
@@ -1321,7 +1325,7 @@ onUnmounted(stopServerPolling)
             <div class="section-heading">
               <h3 class="system-info-title">Agent</h3>
               <n-button
-                v-if="state.user?.role === 'admin' && selectedServer.agent_version && selectedServer.agent_version !== panelReleaseVersion"
+                v-if="state.user?.role === 'admin' && selectedServer.agent_version_status === 'upgrade_available'"
                 size="small"
                 type="primary"
                 secondary
@@ -1338,7 +1342,10 @@ onUnmounted(stopServerPolling)
               <div><dt>升级状态</dt><dd>{{ agentUpgradeStatus(selectedServer) }}</dd></div>
               <div v-if="selectedServer.agent_upgrade_status === 'failed'"><dt>失败原因</dt><dd>{{ selectedServer.agent_upgrade_error || '升级失败' }}</dd></div>
             </dl>
-            <div v-if="state.user?.role === 'admin' && bootstrapUpgradeCommand && selectedServer.agent_version && selectedServer.agent_version !== panelReleaseVersion" class="secret-field">
+            <n-alert v-if="selectedServer.agent_version_status === 'agent_newer'" type="warning" class="form-alert">
+              当前 Agent {{ selectedServer.agent_version }} 高于 Panel {{ health?.version || 'dev' }}，请先升级 Panel；不支持自动降级 Agent。
+            </n-alert>
+            <div v-if="state.user?.role === 'admin' && bootstrapUpgradeCommand && selectedServer.agent_version_status === 'upgrade_available'" class="secret-field">
               <strong>旧版 Agent 引导升级命令（无需 Token）</strong>
               <n-input :value="bootstrapUpgradeCommand" readonly />
               <n-button size="small" secondary @click="copyUpgradeCommand">{{ copiedUpgradeCommand ? '已复制' : '复制命令' }}</n-button>

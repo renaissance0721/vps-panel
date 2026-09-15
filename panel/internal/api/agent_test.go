@@ -1009,6 +1009,78 @@ func TestAgentUpgradeRequiresAdminOnlineFormalVersionAndUsesTypedMessage(t *test
 	}
 }
 
+func TestAgentNewerThanPanelIsVisibleButCannotBeDowngraded(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	handler := NewHandlerWithVersion(db, t.TempDir(), "v0.19.1")
+	initialization := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialization.Code != http.StatusCreated {
+		t.Fatalf("initialize = %d, %s", initialization.Code, initialization.Body.String())
+	}
+	cookie := initialization.Result().Cookies()[0]
+	created, err := service.Create(t.Context(), "Newer Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.19.2", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SetAgentConnectedVersion(t.Context(), registered.ID, created.ID, "v0.19.2"); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/servers/" + strconv.FormatInt(created.ID, 10)
+	response := performRequest(t, handler, http.MethodGet, path, nil, cookie)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"agent_version_status":"agent_newer"`) ||
+		!strings.Contains(response.Body.String(), `"agent_version":"v0.19.2"`) {
+		t.Fatalf("newer Agent response = %d, %s", response.Code, response.Body.String())
+	}
+	upgrade := performRequest(t, handler, http.MethodPost, path+"/agent-upgrade", nil, cookie)
+	if upgrade.Code != http.StatusConflict || !strings.Contains(upgrade.Body.String(), "newer than Panel") {
+		t.Fatalf("downgrade request = %d, %s", upgrade.Code, upgrade.Body.String())
+	}
+	var target, status string
+	if err := db.QueryRow(`SELECT upgrade_target_version, upgrade_status FROM agents WHERE server_id = ?`, created.ID).Scan(&target, &status); err != nil || target != "" || status != "" {
+		t.Fatalf("rejected downgrade changed Agent = (%q, %q, %v)", target, status, err)
+	}
+	health := performRequest(t, handler, http.MethodGet, "/api/health", nil, nil)
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"version":"v0.19.1"`) {
+		t.Fatalf("Panel version source = %d, %s", health.Code, health.Body.String())
+	}
+}
+
+func TestAgentUpgradeNotificationRejectsReconnectedNewerAgent(t *testing.T) {
+	const serverID = int64(7)
+	for _, test := range []struct {
+		connectedVersion string
+		want             error
+	}{
+		{"v0.19.2", serverstore.ErrAgentNewer},
+		{"v0.19.1", serverstore.ErrAgentAlreadyCurrent},
+		{"dev", serverstore.ErrUnknownAgentVersion},
+	} {
+		t.Run(test.connectedVersion, func(t *testing.T) {
+			reconnected := &agentConnection{version: test.connectedVersion}
+			s := &server{connections: map[int64]*agentConnection{serverID: reconnected}}
+			if err := s.notifyAgentUpgrade(serverID, "v0.19.1"); !errors.Is(err, test.want) {
+				t.Fatalf("notify reconnected Agent = %v, want %v", err, test.want)
+			}
+		})
+	}
+
+	stale := &agentConnection{version: "v0.16.0"}
+	s := &server{connections: map[int64]*agentConnection{serverID: &agentConnection{version: "v0.19.2"}}}
+	if s.isCurrentAgentConnection(serverID, stale) {
+		t.Fatal("stale Agent connection remained current after reconnect")
+	}
+}
+
 func TestBootstrapAgentUpgradeScriptPreservesRegistrationAndDoesNotRegister(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

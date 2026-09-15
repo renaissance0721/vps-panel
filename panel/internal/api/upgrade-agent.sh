@@ -109,8 +109,12 @@ restart_service() {
   if [ "$init_system" = "systemd" ]; then
     systemctl daemon-reload
     systemctl enable "${SERVICE_NAME}.service"
-    systemctl restart "${SERVICE_NAME}.service"
-    systemctl is-active --quiet "${SERVICE_NAME}.service"
+    if ! systemctl restart "${SERVICE_NAME}.service" ||
+       ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      systemctl status "${SERVICE_NAME}.service" --no-pager --lines=0 >&2 || true
+      printf '[vps-panel-agent] Error: Agent service did not start after upgrade\n' >&2
+      return 1
+    fi
     return
   fi
   rc-update add "$SERVICE_NAME" default
@@ -202,6 +206,8 @@ else
 fi
 
 install -d -m 0755 "$AGENT_DIR"
+install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm
+install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm
 if [ -f "$BINARY_PATH" ]; then
   install -m 0755 "$BINARY_PATH" "${temporary_dir}/previous-agent"
   had_binary=true

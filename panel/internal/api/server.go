@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -37,6 +39,7 @@ type server struct {
 	servers       *serverstore.Service
 	proxies       *proxystore.Service
 	relays        *relaystore.Service
+	orders        *listorder.Store
 	webRoot       string
 	panelVersion  string
 	connectionsMu sync.Mutex
@@ -60,6 +63,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 		servers:      serverstore.NewService(db),
 		proxies:      proxystore.NewService(db),
 		relays:       relaystore.NewService(db),
+		orders:       listorder.NewStore(db),
 		webRoot:      webRoot,
 		panelVersion: panelVersion,
 		connections:  make(map[int64]*agentConnection),
@@ -81,8 +85,10 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAdmin(s.revokeInvitation))
 	mux.HandleFunc("GET /api/users", s.requireAuthentication(s.listUsers))
+	mux.HandleFunc("GET /api/overview", s.requireAuthentication(s.overview))
 	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireAuthentication(s.createServer))
+	mux.HandleFunc("POST /api/servers/{id}/reorder", s.requireAuthentication(s.reorderServer))
 	mux.HandleFunc("GET /api/servers/{id}", s.requireAuthentication(s.getServer))
 	mux.HandleFunc("PATCH /api/servers/{id}", s.requireAuthentication(s.updateServerExpiration))
 	mux.HandleFunc("PATCH /api/servers/{id}/access", s.requireAuthentication(s.updateServerAccess))
@@ -94,6 +100,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("DELETE /api/servers/{id}/permanent", s.requireAdmin(s.permanentlyDeleteServer))
 	mux.HandleFunc("GET /api/proxies", s.requireAuthentication(s.listProxies))
 	mux.HandleFunc("POST /api/proxies", s.requireAuthentication(s.createProxy))
+	mux.HandleFunc("POST /api/proxies/{id}/reorder", s.requireAuthentication(s.reorderProxy))
 	mux.HandleFunc("GET /api/proxies/{id}", s.requireAuthentication(s.getProxy))
 	mux.HandleFunc("PATCH /api/proxies/{id}", s.requireAuthentication(s.updateProxy))
 	mux.HandleFunc("DELETE /api/proxies/{id}", s.requireAuthentication(s.deleteProxy))
@@ -106,6 +113,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/clients/{id}/share", s.requireAuthentication(s.getProxyClientShare))
 	mux.HandleFunc("GET /api/relays", s.requireAuthentication(s.listRelays))
 	mux.HandleFunc("POST /api/relays", s.requireAuthentication(s.createRelay))
+	mux.HandleFunc("POST /api/relays/{id}/reorder", s.requireAuthentication(s.reorderRelay))
 	mux.HandleFunc("GET /api/relays/{id}", s.requireAuthentication(s.getRelay))
 	mux.HandleFunc("GET /api/relays/{id}/clients", s.requireAuthentication(s.getRelayClients))
 	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAuthentication(s.updateRelay))
@@ -722,9 +730,17 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	response := make([]serverResponse, 0, len(values))
+	ids := make([]int64, 0, len(values))
 	for _, value := range values {
 		response = append(response, toServerResponse(value, s.panelVersion))
+		ids = append(ids, value.ID)
 	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Servers, ids)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
 	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
 }
 

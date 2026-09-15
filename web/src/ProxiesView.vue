@@ -125,6 +125,7 @@ const props = defineProps<{ servers: ServerOption[] }>()
 const proxies = ref<ProxyRecord[]>([])
 const loading = ref(true)
 const submitting = ref(false)
+const reorderingID = ref<number | null>(null)
 const error = ref('')
 const search = ref('')
 
@@ -230,6 +231,19 @@ async function run(action: () => Promise<void>) {
 async function loadProxies() {
   const response = await api<{ proxies: ProxyRecord[] }>('/api/proxies')
   proxies.value = response.proxies
+}
+
+async function reorderProxy(value: ProxyRecord, direction: 'up' | 'down') {
+  if (reorderingID.value !== null || search.value.trim()) return
+  reorderingID.value = value.id
+  await run(async () => {
+    await api(`/api/proxies/${value.id}/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    })
+    await loadProxies()
+  })
+  reorderingID.value = null
 }
 
 watch(
@@ -581,12 +595,19 @@ onMounted(async () => {
       <table class="server-table proxy-table">
         <thead>
           <tr>
+            <th class="reorder-cell" aria-label="排序"></th>
             <th>名称</th><th>服务器</th><th>入口地址</th><th>出口 IP</th><th>端口</th>
             <th>协议</th><th>传输</th><th>安全层</th><th>流控</th><th>状态</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="value in filteredProxies" :key="value.id">
+            <td class="reorder-cell">
+              <div class="reorder-controls" :title="search.trim() ? '清除搜索后可调整顺序' : ''">
+                <n-button size="tiny" quaternary aria-label="上移代理节点" :disabled="reorderingID !== null || !!search.trim() || proxies[0]?.id === value.id" @click="reorderProxy(value, 'up')">↑</n-button>
+                <n-button size="tiny" quaternary aria-label="下移代理节点" :disabled="reorderingID !== null || !!search.trim() || proxies[proxies.length - 1]?.id === value.id" @click="reorderProxy(value, 'down')">↓</n-button>
+              </div>
+            </td>
             <td>{{ value.name }}</td>
             <td>{{ value.server_name }}</td>
             <td>

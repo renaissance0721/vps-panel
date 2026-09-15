@@ -29,12 +29,15 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"sessions",
 		"servers",
 		"server_access",
+		"user_server_order",
 		"agent_enrollments",
 		"agents",
 		"server_system_info",
 		"server_metrics",
 		"proxies",
+		"user_proxy_order",
 		"relays",
+		"user_relay_order",
 		"clients",
 		"client_metrics",
 	} {
@@ -212,6 +215,12 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if visibility != "public" {
 		t.Fatalf("existing server visibility = %q, want public", visibility)
+	}
+	for _, table := range []string{"user_server_order", "user_proxy_order", "user_relay_order"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
+			t.Fatalf("legacy database missing %s after upgrade: %v", table, err)
+		}
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("repeat migration: %v", err)

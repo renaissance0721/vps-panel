@@ -92,6 +92,13 @@ func migrate(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_server_access_server_id ON server_access(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_server_access_user_id ON server_access(user_id)`,
+		`CREATE TABLE IF NOT EXISTS user_server_order (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (user_id, server_id),
+			UNIQUE (user_id, position)
+		)`,
 		`CREATE TABLE IF NOT EXISTS agent_enrollments (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -167,6 +174,13 @@ func migrate(db *sql.DB) error {
 			UNIQUE (server_id, listen_port)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_proxies_server_id ON proxies(server_id)`,
+		`CREATE TABLE IF NOT EXISTS user_proxy_order (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (user_id, proxy_id),
+			UNIQUE (user_id, position)
+		)`,
 		`CREATE TABLE IF NOT EXISTS relays (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -192,6 +206,13 @@ func migrate(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_target_proxy_id ON relays(target_proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS user_relay_order (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			relay_id INTEGER NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (user_id, relay_id),
+			UNIQUE (user_id, position)
+		)`,
 		`CREATE TABLE IF NOT EXISTS clients (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,

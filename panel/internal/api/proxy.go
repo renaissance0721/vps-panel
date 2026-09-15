@@ -7,11 +7,13 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
 
@@ -180,6 +182,7 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	response := make([]proxyResponse, 0, len(values))
+	ids := make([]int64, 0, len(values))
 	for _, value := range values {
 		allowed, err := s.canAccessServer(r.Context(), user, value.ServerID)
 		if err != nil {
@@ -190,7 +193,14 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 			continue
 		}
 		response = append(response, toProxyResponse(value))
+		ids = append(ids, value.ID)
 	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Proxies, ids)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
 	writeJSON(w, http.StatusOK, map[string]any{"proxies": response})
 }
 

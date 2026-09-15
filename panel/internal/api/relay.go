@@ -4,9 +4,11 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
@@ -78,6 +80,7 @@ func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.Us
 		return
 	}
 	response := make([]relayResponse, 0, len(values))
+	ids := make([]int64, 0, len(values))
 	for _, value := range values {
 		if _, err := s.relayForUser(r.Context(), user, value.ID); err != nil {
 			if errors.Is(err, relaystore.ErrNotFound) {
@@ -87,7 +90,14 @@ func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.Us
 			return
 		}
 		response = append(response, toRelayResponse(value))
+		ids = append(ids, value.ID)
 	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Relays, ids)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
 	writeJSON(w, http.StatusOK, map[string]any{"relays": response})
 }
 

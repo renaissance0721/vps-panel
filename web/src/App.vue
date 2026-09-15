@@ -112,10 +112,17 @@ type CreatedServer = {
   agent_installation_command: string
 }
 
+type Overview = {
+  server_count: number
+  proxy_count: number
+  users: { username: string; role: 'admin' | 'vip' }[]
+}
+
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const invitations = ref<Invitation[]>([])
 const users = ref<AccessUser[]>([])
+const overview = ref<Overview | null>(null)
 const servers = ref<ServerRecord[]>([])
 const archivedServers = ref<ServerRecord[]>([])
 const selectedServer = ref<ServerRecord | null>(null)
@@ -135,6 +142,7 @@ const currentPage = ref<'overview' | 'servers' | 'proxies' | 'relays'>('overview
 const serverListMode = ref<'active' | 'archived'>('active')
 const loading = ref(true)
 const submitting = ref(false)
+const serverReorderingID = ref<number | null>(null)
 const error = ref('')
 const generatedLink = ref('')
 const copied = ref(false)
@@ -226,7 +234,7 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
   if (state.value.authenticated) {
-    const requests = [loadHealth(), loadServers(), loadUsers()]
+    const requests = [loadHealth(), loadServers(), loadUsers(), loadOverview()]
     if (state.value.user?.role === 'admin') {
       requests.push(loadInvitations())
     }
@@ -247,6 +255,10 @@ async function loadInvitations() {
 async function loadUsers() {
   const response = await api<{ users: AccessUser[] }>('/api/users')
   users.value = response.users
+}
+
+async function loadOverview() {
+  overview.value = await api<Overview>('/api/overview')
 }
 
 async function loadServers() {
@@ -287,7 +299,7 @@ async function loadServers() {
 function startServerPolling() {
   stopServerPolling()
   serverPollTimer = window.setInterval(() => {
-    if (!state.value?.authenticated || submitting.value) return
+    if (!state.value?.authenticated || submitting.value || serverReorderingID.value !== null) return
     void loadServers().catch(() => undefined)
   }, 5_000)
 }
@@ -362,6 +374,7 @@ async function logout() {
     health.value = null
     invitations.value = []
     users.value = []
+    overview.value = null
     servers.value = []
     archivedServers.value = []
     selectedServer.value = null
@@ -754,6 +767,29 @@ function clearCredentials() {
 function selectPage(page: 'overview' | 'servers' | 'proxies' | 'relays') {
   currentPage.value = page
   sidebarOpen.value = false
+  if (page === 'overview') {
+    void loadOverview().catch((reason) => {
+      error.value = reason instanceof Error ? reason.message : '无法加载概览'
+    })
+  }
+}
+
+async function reorderServer(value: ServerRecord, direction: 'up' | 'down') {
+  if (serverReorderingID.value !== null) return
+  serverReorderingID.value = value.id
+  error.value = ''
+  try {
+    await api(`/api/servers/${value.id}/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    })
+    if (serverLoadPromise) await serverLoadPromise
+    await loadServers()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '调整服务器顺序失败'
+  } finally {
+    serverReorderingID.value = null
+  }
 }
 
 function formatTime(value: string) {
@@ -1024,6 +1060,25 @@ onUnmounted(stopServerPolling)
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
         <template v-if="currentPage === 'overview'">
+          <div class="overview-summary-grid">
+            <n-card title="已注册账号" :bordered="true" class="overview-summary-card">
+              <strong class="overview-summary-number">{{ overview?.users.length ?? '—' }}</strong>
+              <div class="overview-users">
+                <div v-for="account in overview?.users ?? []" :key="account.username" class="overview-user">
+                  <span>{{ account.username }}</span>
+                  <n-tag :type="account.role === 'admin' ? 'info' : 'default'" size="small">{{ account.role }}</n-tag>
+                </div>
+              </div>
+            </n-card>
+            <n-card title="服务器" :bordered="true" class="overview-summary-card">
+              <strong class="overview-summary-number">{{ overview?.server_count ?? '—' }}</strong>
+              <span class="overview-summary-caption">当前账号可访问</span>
+            </n-card>
+            <n-card title="代理节点" :bordered="true" class="overview-summary-card">
+              <strong class="overview-summary-number">{{ overview?.proxy_count ?? '—' }}</strong>
+              <span class="overview-summary-caption">当前账号可访问</span>
+            </n-card>
+          </div>
           <div class="dashboard-grid">
             <n-card title="运行状态" :bordered="true">
               <template #header-extra>
@@ -1150,6 +1205,7 @@ onUnmounted(stopServerPolling)
               <table class="server-table">
                 <thead>
                   <tr>
+                    <th class="reorder-cell" aria-label="排序"></th>
                     <th>名称</th>
                     <th>状态</th>
                     <th>本周期流量</th>
@@ -1159,6 +1215,12 @@ onUnmounted(stopServerPolling)
                 </thead>
                 <tbody>
                   <tr v-for="value in servers" :key="value.id">
+                    <td class="reorder-cell">
+                      <div class="reorder-controls">
+                        <n-button size="tiny" quaternary aria-label="上移服务器" :disabled="serverReorderingID !== null || servers[0]?.id === value.id" @click="reorderServer(value, 'up')">↑</n-button>
+                        <n-button size="tiny" quaternary aria-label="下移服务器" :disabled="serverReorderingID !== null || servers[servers.length - 1]?.id === value.id" @click="reorderServer(value, 'down')">↓</n-button>
+                      </div>
+                    </td>
                     <td>
                       {{ value.name }}
                       <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
@@ -1219,6 +1281,7 @@ onUnmounted(stopServerPolling)
               <table class="server-table">
                 <thead>
                   <tr>
+                    <th class="reorder-cell" aria-label="排序"></th>
                     <th>名称</th>
                     <th>移除时间</th>
                     <th>创建时间</th>
@@ -1227,6 +1290,12 @@ onUnmounted(stopServerPolling)
                 </thead>
                 <tbody>
                   <tr v-for="value in archivedServers" :key="value.id">
+                    <td class="reorder-cell">
+                      <div class="reorder-controls">
+                        <n-button size="tiny" quaternary aria-label="上移已移除服务器" :disabled="serverReorderingID !== null || archivedServers[0]?.id === value.id" @click="reorderServer(value, 'up')">↑</n-button>
+                        <n-button size="tiny" quaternary aria-label="下移已移除服务器" :disabled="serverReorderingID !== null || archivedServers[archivedServers.length - 1]?.id === value.id" @click="reorderServer(value, 'down')">↓</n-button>
+                      </div>
+                    </td>
                     <td>
                       {{ value.name }}
                       <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">

@@ -68,6 +68,7 @@ const relays = ref<RelayRecord[]>([])
 const proxies = ref<ProxyOption[]>([])
 const loading = ref(true)
 const submitting = ref(false)
+const reorderingID = ref<number | null>(null)
 const error = ref('')
 const search = ref('')
 const formOpen = ref(false)
@@ -150,6 +151,19 @@ async function run(action: () => Promise<void>) {
 async function loadRelays() {
   const response = await api<{ relays: RelayRecord[] }>('/api/relays')
   relays.value = response.relays
+}
+
+async function reorderRelay(value: RelayRecord, direction: 'up' | 'down') {
+  if (reorderingID.value !== null || search.value.trim()) return
+  reorderingID.value = value.id
+  await run(async () => {
+    await api(`/api/relays/${value.id}/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    })
+    await loadRelays()
+  })
+  reorderingID.value = null
 }
 
 async function loadProxies() {
@@ -351,9 +365,15 @@ onMounted(async () => {
     <n-empty v-else-if="filteredRelays.length === 0" description="当前没有中转规则" />
     <div v-else class="server-table-wrap">
       <table class="server-table relay-table">
-        <thead><tr><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="value in filteredRelays" :key="value.id">
+            <td class="reorder-cell">
+              <div class="reorder-controls" :title="search.trim() ? '清除搜索后可调整顺序' : ''">
+                <n-button size="tiny" quaternary aria-label="上移中转" :disabled="reorderingID !== null || !!search.trim() || relays[0]?.id === value.id" @click="reorderRelay(value, 'up')">↑</n-button>
+                <n-button size="tiny" quaternary aria-label="下移中转" :disabled="reorderingID !== null || !!search.trim() || relays[relays.length - 1]?.id === value.id" @click="reorderRelay(value, 'down')">↓</n-button>
+              </div>
+            </td>
             <td>{{ value.name }}</td>
             <td>{{ value.server_name }}</td>
             <td>

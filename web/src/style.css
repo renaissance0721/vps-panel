@@ -198,9 +198,46 @@ h1 {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 20px;
   margin-bottom: 20px;
+}
+
+.overview-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.overview-summary-card .n-card__content {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.overview-summary-number {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.overview-summary-caption {
+  color: #65717e;
+  font-size: 12px;
+}
+
+.overview-users {
+  max-height: 112px;
+  overflow-y: auto;
+}
+
+.overview-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: 12px;
 }
 
 .server-create {
@@ -596,6 +633,23 @@ h1 {
   border-bottom: 0;
 }
 
+.server-table .reorder-cell {
+  width: 50px;
+  padding: 8px 4px;
+}
+
+.reorder-controls {
+  display: flex;
+  gap: 2px;
+}
+
+.reorder-controls .n-button {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+}
+
 .health-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -742,6 +796,10 @@ h1 {
   }
 
   .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-summary-grid {
     grid-template-columns: 1fr;
   }
 

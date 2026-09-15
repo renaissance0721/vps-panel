@@ -14,6 +14,8 @@ Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有
 
 Phase 11.6 已完成账号级 Server 访问控制。Server 默认为所有已登录账号可见的 `public`，也可设为授权一个或多个 admin / vip 的 `private`；Proxy、Client、Relay 和分享链接继承 Server 可见范围，Relay 同时要求源 Server 与目标 Proxy 所属 Server 均可访问。admin 不自动绕过私有范围，角色权限与资源访问权限必须同时满足。该可见范围只约束 Panel 用户 API 和 UI，不影响 Agent、Xray、Realm 或 desired state。
 
+概览显示已注册账号的用户名与等级，以及当前账号可访问的未归档服务器数、代理节点数。Server（含已移除列表）、Proxy、Relay 主列表支持账号级 ↑ ↓ 顺序调整；偏好持久化到 SQLite，不改变 Agent 配置或资源业务状态。
+
 Realm 受管路径：
 
 ```text

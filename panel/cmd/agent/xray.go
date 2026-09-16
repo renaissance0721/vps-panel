@@ -84,6 +84,8 @@ type xrayManager struct {
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
+	acme              *acmeManager
+	acmeDomains       []string
 }
 
 func newXrayManager() *xrayManager {
@@ -110,6 +112,7 @@ func newXrayManager() *xrayManager {
 		wait:              waitForXray,
 		healthAttempts:    6,
 		healthCheckDelay:  500 * time.Millisecond,
+		acme:              newACMEManager(),
 	}
 }
 
@@ -129,6 +132,7 @@ func (m *xrayManager) disable(ctx context.Context) error {
 		return fmt.Errorf("inspect managed Xray marker: %w", err)
 	}
 	if !managed {
+		m.acmeDomains = nil
 		return nil
 	}
 	unitExists, err := pathExists(m.unitPath)
@@ -151,12 +155,21 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	if err := m.reconcileFirewall(ctx, nil); err != nil {
 		return err
 	}
+	m.acmeDomains = nil
 	return nil
 }
 
-func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error {
+func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) (applyErr error) {
 	expectedPorts := expectedProxyPorts(proxies)
 	expectedRules := expectedProxyFirewallRules(proxies)
+	domains := make([]string, 0)
+	seenDomains := map[string]bool{}
+	for _, proxy := range proxies {
+		if proxy.Security == "tls" && desiredTLSMode(proxy.TLS) == "acme" && !seenDomains[proxy.ServerName] {
+			seenDomains[proxy.ServerName] = true
+			domains = append(domains, proxy.ServerName)
+		}
+	}
 	candidate, err := renderManagedXrayConfig(proxies)
 	if err != nil {
 		return err
@@ -164,6 +177,19 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 	if err := m.ensureManagedXray(ctx); err != nil {
 		return err
 	}
+	for _, domain := range domains {
+		if m.acme == nil {
+			return errManagedACME
+		}
+		if _, err := m.acme.ensureCertificate(ctx, domain); err != nil {
+			return err
+		}
+	}
+	defer func() {
+		if applyErr == nil {
+			m.acmeDomains = domains
+		}
+	}()
 	if err := ensureSecureDirectory(m.configDir, 0o700); err != nil {
 		return fmt.Errorf("prepare managed Xray config directory: %w", err)
 	}
@@ -238,6 +264,18 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) error 
 	}
 	if err := m.reconcileFirewall(ctx, expectedRules); err != nil {
 		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, err)
+	}
+	return nil
+}
+
+func (m *xrayManager) renewCertificates(ctx context.Context) error {
+	if m.acme == nil {
+		return nil
+	}
+	for _, domain := range m.acmeDomains {
+		if _, err := m.acme.ensureCertificate(ctx, domain); err != nil {
+			return err
+		}
 	}
 	return nil
 }

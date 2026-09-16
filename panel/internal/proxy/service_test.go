@@ -56,6 +56,99 @@ func TestCreateTLSProxyWithFirstClientAndVersion(t *testing.T) {
 	}
 }
 
+func TestACMETLSStoresOnlyModeAndDomain(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	value, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "ACME", ListenPort: 443, EntryHostMode: EntryHostAuto,
+		Enabled: true, Security: SecurityTLS, TLSMode: TLSModeACME,
+		ServerName: "jp.example.com", FirstClientName: "default",
+	})
+	if err != nil || value.Config.TLSMode != TLSModeACME || value.Config.TLSCertificateConfigured {
+		t.Fatalf("create ACME TLS proxy = %+v, %v", value, err)
+	}
+	var configJSON string
+	if err := db.QueryRow(`SELECT config_json FROM proxies WHERE id = ?`, value.ID).Scan(&configJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(configJSON, "certificate") || strings.Contains(configJSON, "private_key") {
+		t.Fatalf("ACME config stored PEM fields: %s", configJSON)
+	}
+	desired, err := ListDesired(t.Context(), db, serverID)
+	if err != nil || len(desired) != 1 || desired[0].TLS.Mode != TLSModeACME ||
+		desired[0].TLS.Certificate != "" || desired[0].TLS.PrivateKey != "" {
+		t.Fatalf("ACME desired state = %+v, %v", desired, err)
+	}
+	for _, domain := range []string{"1.2.3.4", "2001:db8::1", "localhost", "../../etc/passwd", "example.local"} {
+		_, _, err := service.Create(t.Context(), CreateInput{
+			ServerID: serverID, Name: "invalid", ListenPort: 8443, EntryHostMode: EntryHostAuto,
+			Security: SecurityTLS, TLSMode: TLSModeACME, ServerName: domain, FirstClientName: "default",
+		})
+		if !errors.Is(err, ErrInvalidACMEDomain) && !errors.Is(err, ErrInvalidServerName) {
+			t.Fatalf("ACME domain %q error = %v", domain, err)
+		}
+	}
+	_, _, err = service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "manual", ListenPort: 8444, EntryHostMode: EntryHostAuto,
+		Security: SecurityTLS, TLSMode: TLSModeManual, ServerName: "manual.example.com", FirstClientName: "default",
+	})
+	if !errors.Is(err, ErrInvalidTLS) {
+		t.Fatalf("manual TLS without PEM error = %v", err)
+	}
+}
+
+func TestLegacyTLSWithoutModeRemainsManual(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	certificate, privateKey := testCertificate(t)
+	value, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "legacy", ListenPort: 443, EntryHostMode: EntryHostAuto,
+		Enabled: true, Security: SecurityTLS, TLSMode: TLSModeManual, ServerName: "legacy.example.com",
+		Certificate: certificate, PrivateKey: privateKey, FirstClientName: "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE proxies SET config_json = REPLACE(config_json, '"mode":"manual",', '') WHERE id = ?`, value.ID); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := service.Get(t.Context(), value.ID)
+	if err != nil || legacy.Config.TLSMode != TLSModeManual || !legacy.Config.TLSCertificateConfigured {
+		t.Fatalf("legacy TLS = %+v, %v", legacy, err)
+	}
+	desired, err := ListDesired(t.Context(), db, serverID)
+	if err != nil || desired[0].TLS.Mode != TLSModeManual || desired[0].TLS.PrivateKey != strings.TrimSpace(privateKey) {
+		t.Fatalf("legacy desired state = %+v, %v", desired, err)
+	}
+}
+
+func TestSwitchManualTLSToACMERemovesStoredPEM(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	certificate, privateKey := testCertificate(t)
+	value, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "switch", ListenPort: 443, EntryHostMode: EntryHostAuto,
+		Security: SecurityTLS, TLSMode: TLSModeManual, ServerName: "jp.example.com",
+		Certificate: certificate, PrivateKey: privateKey, FirstClientName: "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := TLSModeACME
+	updated, _, err := service.Update(t.Context(), value.ID, UpdateInput{TLSMode: &mode})
+	if err != nil || updated.Config.TLSMode != TLSModeACME || updated.Config.TLSCertificateConfigured {
+		t.Fatalf("switch to ACME = %+v, %v", updated, err)
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT config_json FROM proxies WHERE id = ?`, value.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, "certificate") || strings.Contains(stored, "private_key") || strings.Contains(stored, privateKey) {
+		t.Fatalf("ACME mode retained manual PEM: %s", stored)
+	}
+	mode = TLSModeManual
+	if _, _, err := service.Update(t.Context(), value.ID, UpdateInput{TLSMode: &mode}); !errors.Is(err, ErrInvalidTLS) {
+		t.Fatalf("manual mode without PEM error = %v", err)
+	}
+}
+
 func TestCreateRealityProxyGeneratesCompatibleSecrets(t *testing.T) {
 	_, service, serverID := newTestService(t)
 	value, _, err := service.Create(t.Context(), CreateInput{

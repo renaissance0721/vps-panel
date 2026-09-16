@@ -31,6 +31,8 @@ const (
 	ShadowsocksMethodAES256GCM = "2022-blake3-aes-256-gcm"
 	SecurityTLS                = "tls"
 	SecurityReality            = "reality"
+	TLSModeACME                = "acme"
+	TLSModeManual              = "manual"
 	EntryHostAuto              = "auto"
 	EntryHostManual            = "manual"
 	ServerFlow                 = "xtls-rprx-vision"
@@ -54,6 +56,8 @@ var (
 	ErrInvalidSecurity              = errors.New("security must be tls or reality")
 	ErrInvalidServerName            = errors.New("server name must be a hostname or IP address")
 	ErrInvalidTLS                   = errors.New("TLS certificate and private key are required and must match")
+	ErrInvalidTLSMode               = errors.New("TLS mode must be acme or manual")
+	ErrInvalidACMEDomain            = errors.New("ACME TLS requires a valid DNS hostname")
 	ErrInvalidReality               = errors.New("REALITY server name or target is invalid")
 	ErrInvalidProtocol              = errors.New("protocol must be vless or shadowsocks")
 	ErrInvalidShadowsocksMethod     = errors.New("unsupported Shadowsocks method")
@@ -96,6 +100,7 @@ type PublicConfig struct {
 	ServerName               string
 	Fingerprint              string
 	TLSCertificateConfigured bool
+	TLSMode                  string
 	RealityTarget            string
 	Method                   string
 	Network                  string
@@ -169,6 +174,7 @@ type CreateInput struct {
 	EntryHost         string
 	Enabled           bool
 	Security          string
+	TLSMode           string
 	ServerName        string
 	Certificate       string
 	PrivateKey        string
@@ -186,6 +192,7 @@ type UpdateInput struct {
 	EntryHost     *string
 	Enabled       *bool
 	Security      *string
+	TLSMode       *string
 	ServerName    *string
 	Certificate   *string
 	PrivateKey    *string
@@ -246,8 +253,9 @@ type DesiredShadowsocks struct {
 }
 
 type DesiredTLS struct {
-	Certificate string `json:"certificate"`
-	PrivateKey  string `json:"private_key"`
+	Mode        string `json:"mode"`
+	Certificate string `json:"certificate,omitempty"`
+	PrivateKey  string `json:"private_key,omitempty"`
 }
 
 type DesiredReality struct {
@@ -281,8 +289,9 @@ type storedShadowsocks struct {
 }
 
 type storedTLS struct {
-	Certificate string `json:"certificate"`
-	PrivateKey  string `json:"private_key"`
+	Mode        string `json:"mode,omitempty"`
+	Certificate string `json:"certificate,omitempty"`
+	PrivateKey  string `json:"private_key,omitempty"`
 }
 
 type storedReality struct {
@@ -333,7 +342,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	var credential storedCredential
 	switch protocol {
 	case ProtocolVLESS:
-		config, err = newStoredConfig(input.Security, input.ServerName, input.Certificate, input.PrivateKey, input.RealityTarget)
+		config, err = newStoredConfig(input.Security, input.ServerName, input.TLSMode, input.Certificate, input.PrivateKey, input.RealityTarget)
 		if err == nil {
 			credential, err = newVLESSCredential()
 		}
@@ -534,7 +543,7 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 				return Proxy{}, Mutation{}, ErrImmutableShadowsocksMethod
 			}
 		}
-		if input.Security != nil || input.ServerName != nil || input.Certificate != nil || input.PrivateKey != nil || input.RealityTarget != nil {
+		if input.Security != nil || input.TLSMode != nil || input.ServerName != nil || input.Certificate != nil || input.PrivateKey != nil || input.RealityTarget != nil {
 			return Proxy{}, Mutation{}, ErrInvalidShadowsocksUpdate
 		}
 	default:
@@ -982,7 +991,7 @@ func ListDesired(ctx context.Context, query interface {
 	for _, record := range records {
 		value, config := record.value, record.config
 		if config.TLS != nil {
-			value.TLS = &DesiredTLS{Certificate: config.TLS.Certificate, PrivateKey: config.TLS.PrivateKey}
+			value.TLS = &DesiredTLS{Mode: config.TLS.Mode, Certificate: config.TLS.Certificate, PrivateKey: config.TLS.PrivateKey}
 		}
 		if config.Reality != nil {
 			value.Reality = &DesiredReality{Target: config.Reality.Target, PrivateKey: config.Reality.PrivateKey, ShortID: config.Reality.ShortID}
@@ -1026,7 +1035,7 @@ func ListDesired(ctx context.Context, query interface {
 	return values, nil
 }
 
-func newStoredConfig(security, serverName, certificate, privateKey, realityTarget string) (storedConfig, error) {
+func newStoredConfig(security, serverName, tlsMode, certificate, privateKey, realityTarget string) (storedConfig, error) {
 	security = strings.ToLower(strings.TrimSpace(security))
 	serverName, err := normalizeHost(serverName, false)
 	if err != nil {
@@ -1035,10 +1044,14 @@ func newStoredConfig(security, serverName, certificate, privateKey, realityTarge
 	config := storedConfig{Transport: TransportTCP, Security: security, ServerFlow: ServerFlow, ServerName: serverName, Fingerprint: Fingerprint}
 	switch security {
 	case SecurityTLS:
-		if err := validateTLS(certificate, privateKey); err != nil {
+		mode, err := normalizeTLSMode(tlsMode, certificate, privateKey)
+		if err != nil {
 			return storedConfig{}, err
 		}
-		config.TLS = &storedTLS{Certificate: strings.TrimSpace(certificate), PrivateKey: strings.TrimSpace(privateKey)}
+		if err := validateTLSConfig(mode, serverName, certificate, privateKey); err != nil {
+			return storedConfig{}, err
+		}
+		config.TLS = &storedTLS{Mode: mode, Certificate: strings.TrimSpace(certificate), PrivateKey: strings.TrimSpace(privateKey)}
 	case SecurityReality:
 		target, err := normalizeTarget(realityTarget)
 		if err != nil {
@@ -1071,8 +1084,13 @@ func updateStoredConfig(config *storedConfig, input UpdateInput) error {
 	switch security {
 	case SecurityTLS:
 		certificate, privateKey := "", ""
+		mode := ""
 		if config.Security == SecurityTLS && config.TLS != nil {
 			certificate, privateKey = config.TLS.Certificate, config.TLS.PrivateKey
+			mode = config.TLS.Mode
+		}
+		if input.TLSMode != nil {
+			mode = *input.TLSMode
 		}
 		providedCert, providedKey := input.Certificate != nil && strings.TrimSpace(*input.Certificate) != "", input.PrivateKey != nil && strings.TrimSpace(*input.PrivateKey) != ""
 		if providedCert != providedKey {
@@ -1081,10 +1099,17 @@ func updateStoredConfig(config *storedConfig, input UpdateInput) error {
 		if providedCert {
 			certificate, privateKey = *input.Certificate, *input.PrivateKey
 		}
-		if err := validateTLS(certificate, privateKey); err != nil {
+		mode, err := normalizeTLSMode(mode, certificate, privateKey)
+		if err != nil {
 			return err
 		}
-		*config = storedConfig{Transport: TransportTCP, Security: SecurityTLS, ServerFlow: ServerFlow, ServerName: serverName, Fingerprint: Fingerprint, TLS: &storedTLS{Certificate: strings.TrimSpace(certificate), PrivateKey: strings.TrimSpace(privateKey)}}
+		if mode == TLSModeACME && !providedCert {
+			certificate, privateKey = "", ""
+		}
+		if err := validateTLSConfig(mode, serverName, certificate, privateKey); err != nil {
+			return err
+		}
+		*config = storedConfig{Transport: TransportTCP, Security: SecurityTLS, ServerFlow: ServerFlow, ServerName: serverName, Fingerprint: Fingerprint, TLS: &storedTLS{Mode: mode, Certificate: strings.TrimSpace(certificate), PrivateKey: strings.TrimSpace(privateKey)}}
 	case SecurityReality:
 		target := ""
 		var reality *storedReality
@@ -1122,6 +1147,55 @@ func validateTLS(certificate, privateKey string) error {
 		return ErrInvalidTLS
 	}
 	return nil
+}
+
+func normalizeTLSMode(mode, certificate, privateKey string) (string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		if strings.TrimSpace(certificate) != "" || strings.TrimSpace(privateKey) != "" {
+			return TLSModeManual, nil
+		}
+		return TLSModeACME, nil
+	}
+	if mode != TLSModeACME && mode != TLSModeManual {
+		return "", ErrInvalidTLSMode
+	}
+	return mode, nil
+}
+
+func validateTLSConfig(mode, serverName, certificate, privateKey string) error {
+	if mode == TLSModeACME {
+		if certificate != "" || privateKey != "" {
+			return ErrInvalidTLS
+		}
+		if !validACMEDomain(serverName) {
+			return ErrInvalidACMEDomain
+		}
+		return nil
+	}
+	return validateTLS(certificate, privateKey)
+}
+
+func validACMEDomain(domain string) bool {
+	if net.ParseIP(domain) != nil || len(domain) > 253 || strings.ToLower(domain) != domain || !strings.Contains(domain, ".") {
+		return false
+	}
+	if normalized, err := normalizeHost(domain, false); err != nil || normalized != domain {
+		return false
+	}
+	parts := strings.Split(domain, ".")
+	tld := parts[len(parts)-1]
+	if len(tld) < 2 || tld == "local" || tld == "localhost" {
+		return false
+	}
+	if !strings.HasPrefix(tld, "xn--") {
+		for _, character := range tld {
+			if character < 'a' || character > 'z' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func newRealitySecrets() (string, string, string, error) {
@@ -1355,9 +1429,14 @@ func decodeConfig(protocol, value string) (storedConfig, error) {
 	}
 	switch config.Security {
 	case SecurityTLS:
-		if config.TLS == nil || config.Reality != nil || validateTLS(config.TLS.Certificate, config.TLS.PrivateKey) != nil {
+		if config.TLS == nil || config.Reality != nil {
 			return storedConfig{}, errors.New("invalid stored TLS proxy config")
 		}
+		mode, modeErr := normalizeTLSMode(config.TLS.Mode, config.TLS.Certificate, config.TLS.PrivateKey)
+		if modeErr != nil || validateTLSConfig(mode, config.ServerName, config.TLS.Certificate, config.TLS.PrivateKey) != nil {
+			return storedConfig{}, errors.New("invalid stored TLS proxy config")
+		}
+		config.TLS.Mode = mode
 	case SecurityReality:
 		if config.Reality == nil || config.TLS != nil || validateReality(config.Reality) != nil {
 			return storedConfig{}, errors.New("invalid stored REALITY proxy config")
@@ -1411,6 +1490,7 @@ func publicConfig(config storedConfig) PublicConfig {
 		value.Network = config.Shadowsocks.Network
 	}
 	if config.TLS != nil {
+		value.TLSMode = config.TLS.Mode
 		value.TLSCertificateConfigured = config.TLS.Certificate != "" && config.TLS.PrivateKey != ""
 	}
 	if config.Reality != nil {

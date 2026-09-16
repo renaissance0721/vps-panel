@@ -32,6 +32,7 @@ type ServerOption = {
 type ProxyConfig = {
 	transport?: 'tcp'
 	security?: 'tls' | 'reality'
+	tls_mode?: 'acme' | 'manual'
 	server_flow?: 'xtls-rprx-vision'
 	server_name?: string
 	fingerprint?: 'chrome'
@@ -141,6 +142,7 @@ const proxyEnabled = ref(true)
 const proxyProtocol = ref<ProxyProtocol>('vless')
 const proxyMethod = ref<ShadowsocksMethod>('2022-blake3-aes-128-gcm')
 const proxySecurity = ref<'tls' | 'reality'>('reality')
+const proxyTLSMode = ref<'acme' | 'manual'>('acme')
 const proxyServerName = ref('')
 const proxyCertificate = ref('')
 const proxyPrivateKey = ref('')
@@ -283,6 +285,7 @@ function openEditProxy(value: ProxyRecord) {
 	proxyProtocol.value = value.protocol
 	proxyMethod.value = value.config.method ?? '2022-blake3-aes-128-gcm'
 	proxySecurity.value = value.config.security ?? 'reality'
+	proxyTLSMode.value = value.config.tls_mode ?? (value.config.tls_certificate_configured ? 'manual' : 'acme')
 	proxyServerName.value = value.config.server_name ?? ''
   proxyCertificate.value = ''
   proxyPrivateKey.value = ''
@@ -300,6 +303,7 @@ function resetProxyForm() {
 	proxyProtocol.value = 'vless'
 	proxyMethod.value = '2022-blake3-aes-128-gcm'
   proxySecurity.value = 'reality'
+  proxyTLSMode.value = 'acme'
   proxyServerName.value = ''
   proxyCertificate.value = ''
   proxyPrivateKey.value = ''
@@ -337,8 +341,10 @@ async function saveProxy() {
 			? {
 				security: proxySecurity.value,
 				server_name: proxyServerName.value,
-				certificate: proxyCertificate.value,
-				private_key: proxyPrivateKey.value,
+				...(proxySecurity.value === 'tls' ? {
+					tls_mode: proxyTLSMode.value,
+					...(proxyTLSMode.value === 'manual' ? { certificate: proxyCertificate.value, private_key: proxyPrivateKey.value } : {}),
+				} : {}),
 				reality_target: proxyRealityTarget.value,
 			}
 			: {}
@@ -669,8 +675,12 @@ onMounted(async () => {
         </label>
         <label><span>SNI / Server Name</span><n-input v-model:value="proxyServerName" placeholder="例如：www.example.com" /></label>
         <template v-if="proxySecurity === 'tls'">
-          <label><span>证书 PEM</span><n-input v-model:value="proxyCertificate" type="textarea" :autosize="{ minRows: 4 }" :placeholder="proxyFormMode === 'edit' ? '留空则保留现有证书' : '粘贴完整证书 PEM'" /></label>
-          <label><span>私钥 PEM</span><n-input v-model:value="proxyPrivateKey" type="textarea" :autosize="{ minRows: 4 }" :placeholder="proxyFormMode === 'edit' ? '留空则保留现有私钥' : '粘贴匹配的私钥 PEM'" /></label>
+          <label><span>TLS 证书来源</span><select v-model="proxyTLSMode" class="settings-input"><option value="acme">自动申请（推荐）</option><option value="manual">手动证书</option></select></label>
+          <p v-if="proxyTLSMode === 'acme'">Agent 将使用 Let's Encrypt 自动申请和续期证书。请确保域名已解析到当前服务器，并允许公网访问 TCP 80。</p>
+          <template v-else>
+            <label><span>证书 PEM</span><n-input v-model:value="proxyCertificate" type="textarea" :autosize="{ minRows: 4 }" :placeholder="proxyFormMode === 'edit' ? '留空则保留现有证书' : '粘贴完整证书 PEM'" /></label>
+            <label><span>私钥 PEM</span><n-input v-model:value="proxyPrivateKey" type="textarea" :autosize="{ minRows: 4 }" :placeholder="proxyFormMode === 'edit' ? '留空则保留现有私钥' : '粘贴匹配的私钥 PEM'" /></label>
+          </template>
         </template>
 		<label v-else><span>REALITY 目标地址</span><n-input v-model:value="proxyRealityTarget" placeholder="例如：www.example.com:443" /></label>
 		</template>
@@ -710,7 +720,8 @@ onMounted(async () => {
 		<dl v-if="selectedProxy.protocol === 'vless'" class="server-details">
         <div><dt>SNI</dt><dd>{{ selectedProxy.config.server_name }}</dd></div>
         <div><dt>指纹</dt><dd>{{ selectedProxy.config.fingerprint }}</dd></div>
-        <div v-if="selectedProxy.config.security === 'tls'"><dt>证书</dt><dd>{{ selectedProxy.config.tls_certificate_configured ? '已配置' : '未配置' }}</dd></div>
+		<div v-if="selectedProxy.config.security === 'tls'"><dt>证书来源</dt><dd>{{ selectedProxy.config.tls_mode === 'acme' ? '自动 ACME' : '手动证书' }}</dd></div>
+		<div v-if="selectedProxy.config.security === 'tls'"><dt>证书</dt><dd>{{ selectedProxy.config.tls_mode === 'acme' ? 'Agent 自动管理' : (selectedProxy.config.tls_certificate_configured ? '已配置' : '未配置') }}</dd></div>
 		<template v-else><div><dt>目标地址</dt><dd>{{ selectedProxy.config.reality_target }}</dd></div></template>
       </dl>
       <div class="section-heading"><h3>客户端</h3><n-button size="small" type="primary" @click="openCreateClient">新增客户端</n-button></div>

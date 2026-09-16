@@ -25,6 +25,7 @@ type createProxyRequest struct {
 	EntryHost         string `json:"entry_host"`
 	Enabled           *bool  `json:"enabled"`
 	Security          string `json:"security"`
+	TLSMode           string `json:"tls_mode"`
 	ServerName        string `json:"server_name"`
 	Certificate       string `json:"certificate"`
 	PrivateKey        string `json:"private_key"`
@@ -42,6 +43,7 @@ type updateProxyRequest struct {
 	EntryHost     *string `json:"entry_host"`
 	Enabled       *bool   `json:"enabled"`
 	Security      *string `json:"security"`
+	TLSMode       *string `json:"tls_mode"`
 	ServerName    *string `json:"server_name"`
 	Certificate   *string `json:"certificate"`
 	PrivateKey    *string `json:"private_key"`
@@ -98,6 +100,7 @@ type proxyResponse struct {
 type proxyConfigResponse struct {
 	Transport                string `json:"transport,omitempty"`
 	Security                 string `json:"security,omitempty"`
+	TLSMode                  string `json:"tls_mode,omitempty"`
 	ServerFlow               string `json:"server_flow,omitempty"`
 	ServerName               string `json:"server_name,omitempty"`
 	Fingerprint              string `json:"fingerprint,omitempty"`
@@ -225,7 +228,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	value, mutation, err := s.proxies.Create(r.Context(), proxystore.CreateInput{
 		ServerID: request.ServerID, Name: request.Name, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
-		ServerName: request.ServerName, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
+		ServerName: request.ServerName, TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
 		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Method: request.Method,
 	})
@@ -267,7 +270,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	value, mutation, err := s.proxies.Update(r.Context(), id, proxystore.UpdateInput{
 		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
-		Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
+		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 		Protocol: request.Protocol, Method: request.Method,
 	})
 	if err != nil {
@@ -504,6 +507,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 		Config: proxyConfigResponse{
 			Transport: value.Config.Transport, Security: value.Config.Security,
 			ServerFlow: value.Config.ServerFlow, ServerName: value.Config.ServerName,
+			TLSMode:                  value.Config.TLSMode,
 			Fingerprint:              value.Config.Fingerprint,
 			TLSCertificateConfigured: value.Config.TLSCertificateConfigured,
 			RealityTarget:            value.Config.RealityTarget, Method: value.Config.Method, Network: value.Config.Network,
@@ -697,6 +701,10 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "安全层仅支持 TLS 或 REALITY")
 	case errors.Is(err, proxystore.ErrInvalidTLS):
 		writeError(w, http.StatusBadRequest, "TLS 证书和私钥不能为空且必须匹配")
+	case errors.Is(err, proxystore.ErrInvalidTLSMode):
+		writeError(w, http.StatusBadRequest, "TLS 证书来源仅支持自动 ACME 或手动证书")
+	case errors.Is(err, proxystore.ErrInvalidACMEDomain):
+		writeError(w, http.StatusBadRequest, "自动 ACME 的 SNI 必须是有效公网域名，不能使用 IP 或 localhost")
 	case errors.Is(err, proxystore.ErrInvalidReality):
 		writeError(w, http.StatusBadRequest, "REALITY SNI 或目标地址无效")
 	case errors.Is(err, proxystore.ErrInvalidProtocol):

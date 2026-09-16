@@ -78,7 +78,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system
+ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system
 
 [Install]
 WantedBy=multi-user.target
@@ -206,7 +206,8 @@ else
 fi
 
 install -d -m 0755 "$AGENT_DIR"
-install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm
+install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm /opt/vps-panel/acme
+install -d -m 0700 /var/lib/vps-panel/acme
 install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm
 if [ -f "$BINARY_PATH" ]; then
   install -m 0755 "$BINARY_PATH" "${temporary_dir}/previous-agent"

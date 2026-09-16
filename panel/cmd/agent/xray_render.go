@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -77,8 +78,10 @@ type renderedTLSSettings struct {
 }
 
 type renderedTLSCertificate struct {
-	Certificate []string `json:"certificate"`
-	Key         []string `json:"key"`
+	Certificate     []string `json:"certificate,omitempty"`
+	Key             []string `json:"key,omitempty"`
+	CertificateFile string   `json:"certificateFile,omitempty"`
+	KeyFile         string   `json:"keyFile,omitempty"`
 }
 
 type renderedRealitySettings struct {
@@ -157,11 +160,16 @@ func renderVLESSInbound(proxy desiredProxy) (renderedXrayInbound, error) {
 		})
 	}
 	if proxy.Security == "tls" {
+		certificate := renderedTLSCertificate{}
+		if desiredTLSMode(proxy.TLS) == "acme" {
+			certificate.CertificateFile = path.Join(managedACMECertDir, proxy.ServerName, "fullchain.pem")
+			certificate.KeyFile = path.Join(managedACMECertDir, proxy.ServerName, "private.key")
+		} else {
+			certificate.Certificate, certificate.Key = pemLines(proxy.TLS.Certificate), pemLines(proxy.TLS.PrivateKey)
+		}
 		inbound.StreamSettings.TLSSettings = &renderedTLSSettings{
-			ServerName: proxy.ServerName,
-			Certificates: []renderedTLSCertificate{{
-				Certificate: pemLines(proxy.TLS.Certificate), Key: pemLines(proxy.TLS.PrivateKey),
-			}},
+			ServerName:   proxy.ServerName,
+			Certificates: []renderedTLSCertificate{certificate},
 		}
 	} else {
 		inbound.StreamSettings.Network = "raw"
@@ -211,7 +219,19 @@ func validateDesiredVLESSProxy(proxy desiredProxy) error {
 	}
 	switch proxy.Security {
 	case "tls":
-		if proxy.TLS == nil || proxy.Reality != nil || strings.TrimSpace(proxy.TLS.Certificate) == "" || strings.TrimSpace(proxy.TLS.PrivateKey) == "" {
+		if proxy.TLS == nil || proxy.Reality != nil {
+			return errUnsupportedManagedConfig
+		}
+		switch desiredTLSMode(proxy.TLS) {
+		case "acme":
+			if !validACMEDomain(proxy.ServerName) || proxy.TLS.Certificate != "" || proxy.TLS.PrivateKey != "" {
+				return errUnsupportedManagedConfig
+			}
+		case "manual":
+			if strings.TrimSpace(proxy.TLS.Certificate) == "" || strings.TrimSpace(proxy.TLS.PrivateKey) == "" {
+				return errUnsupportedManagedConfig
+			}
+		default:
 			return errUnsupportedManagedConfig
 		}
 	case "reality":
@@ -223,6 +243,16 @@ func validateDesiredVLESSProxy(proxy desiredProxy) error {
 		return errUnsupportedManagedConfig
 	}
 	return nil
+}
+
+func desiredTLSMode(value *desiredTLS) string {
+	if value != nil && value.Mode == "" && value.Certificate != "" && value.PrivateKey != "" {
+		return "manual"
+	}
+	if value == nil {
+		return ""
+	}
+	return value.Mode
 }
 
 func validShadowsocksDesiredKey(value, method string) bool {

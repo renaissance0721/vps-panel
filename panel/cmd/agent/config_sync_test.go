@@ -109,6 +109,7 @@ func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
 		{fmt.Errorf("%w: systemctl details", errManagedXrayStart), errManagedXrayStart.Error()},
 		{fmt.Errorf("%w: missing port", errManagedXrayHealth), errManagedXrayHealth.Error()},
 		{fmt.Errorf("%w: iptables details", errManagedProxyFirewall), errManagedProxyFirewall.Error()},
+		{fmt.Errorf("%w: certificate private diagnostic", errManagedACME), errManagedACME.Error()},
 		{fmt.Errorf("%w: private diagnostic", errUnsupportedInitSystem), errUnsupportedInitSystem.Error()},
 		{errors.New("internal path detail"), "managed runtime apply failed"},
 	}

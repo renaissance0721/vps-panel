@@ -8,6 +8,14 @@ Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` Web
 
 Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。
 
+### 自动 TLS 证书
+
+创建 VLESS + TCP + TLS 节点时，证书来源默认是“自动申请”。填写目标 Server、名称、端口和 SNI 域名即可；原有“手动证书”模式仍可使用 PEM，已有手动 TLS 节点无需迁移。自动模式要求 SNI 为公网域名（不能是 IP 或 localhost）、域名 A/AAAA 正确解析到目标 VPS，且公网 TCP 80 可达；云厂商安全组如有拦截，需手动放行。若目标机的 80 端口被其他服务占用，HTTP-01 standalone 申请也会失败。
+
+Agent 使用独立、校验过的官方 acme.sh 申请 Let's Encrypt ECC P-256 证书，并在签发或续期期间临时开放本机 TCP 80。Agent 启动后每 12 小时检查当前 ACME 域名，到期前 30 天尝试续期，不安装 acme.sh 的系统 cron。第一版只支持 Let's Encrypt + HTTP-01 standalone；DNS-01、通配符和自定义 CA 尚不支持。
+
+acme.sh 状态保存在 `/var/lib/vps-panel/acme/`，受管脚本保存在 `/opt/vps-panel/acme/`；Xray 读取 `/etc/vps-panel/xray/certs/<域名>/fullchain.pem` 和 `private.key`。证书目录权限为 `0700`，私钥文件权限为 `0600`。自动模式的私钥不进入 Panel 数据库、管理 API 或 Panel → Agent desired state。删除 Proxy 不会删除证书，以免影响同域名的其他节点。签发失败时不会替换现有 Xray 配置或已安装的证书。
+
 Phase 10 已完成。Xray 使用稳定的非敏感 Client 统计标识维护累计上行/下行计数，Agent 约每 15 秒通过独立认证 HTTP 接口上报，Panel 持久化 baseline、本周期累计和最近活动时间。Client 支持 G/T 流量额度、never / daily / weekly / monthly 上海时区周期、下次重置时间、本周期手动重置和到期时间。实际可用状态实时按 `effective_enabled = enabled && !expired && !quota_exhausted` 派生；达到 90% 显示预警，到期或额度耗尽时从 Xray desired state 失效，周期重置、手动重置或调整配置解除阻塞后自动恢复，同时保留原 Client 凭据和分享 URI。
 
 Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 和 glibc / musl 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、服务重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。

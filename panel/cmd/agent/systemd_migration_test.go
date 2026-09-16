@@ -35,7 +35,7 @@ func TestAgentSystemdSandboxMigrationInstallsDropInAndRunsOnlyOnce(t *testing.T)
 		command := strings.Join(append([]string{name}, arguments...), " ")
 		commands = append(commands, command)
 		if command == "systemctl daemon-reload" {
-			currentPaths = oldPaths + "/opt/vps-panel/realm /etc/vps-panel/realm\n"
+			currentPaths = oldPaths + "/opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme\n"
 			return nil, nil
 		}
 		return []byte(currentPaths), nil
@@ -84,7 +84,7 @@ func TestAgentSystemdSandboxMigrationInstallsDropInAndRunsOnlyOnce(t *testing.T)
 		!strings.Contains(string(current), "ProtectSystem=strict") {
 		t.Fatalf("canonical Agent unit changed during migration: %q, %v", current, err)
 	}
-	for _, path := range []string{"/opt/vps-panel/realm", "/etc/vps-panel/realm", "/opt/vps-panel/xray", "/etc/vps-panel/xray"} {
+	for _, path := range []string{"/opt/vps-panel/realm", "/etc/vps-panel/realm", "/opt/vps-panel/xray", "/etc/vps-panel/xray", "/opt/vps-panel/acme", "/var/lib/vps-panel/acme"} {
 		if info, err := os.Stat(rootedPath(root, path)); err != nil || !info.IsDir() {
 			t.Fatalf("migration directory %s = (%v, %v)", path, info, err)
 		}
@@ -111,7 +111,7 @@ func TestAgentSystemdSandboxMigrationNoOpsWhenAlreadyCompatible(t *testing.T) {
 		return hostEnvironment{InitSystem: initSystemSystemd, Libc: libcGlibc}, nil
 	}
 	runAgentMigrationCommand = func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system\n"), nil
+		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system\n"), nil
 	}
 	scheduleAgentMigrationRestart = func(string) error {
 		t.Fatal("compatible systemd sandbox scheduled a restart")
@@ -147,6 +147,40 @@ func TestAgentSystemdSandboxMigrationSkipsOpenRC(t *testing.T) {
 	migrated, err := migrateAgentSystemdSandbox()
 	if err != nil || migrated {
 		t.Fatalf("OpenRC migration = (%v, %v)", migrated, err)
+	}
+}
+
+func TestAgentSystemdSandboxExtendsExistingRealmDropInForACME(t *testing.T) {
+	restore := replaceAgentMigrationDependencies(t)
+	defer restore()
+	root := t.TempDir()
+	agentSystemdMigrationRoot = root
+	agentSystemdDropInPath = filepath.Join(root, "etc", "systemd", "system", "vps-panel-agent.service.d", "realm.conf")
+	if err := os.MkdirAll(filepath.Dir(agentSystemdDropInPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentSystemdDropInPath, []byte(agentLegacyRealmSandboxDropIn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths := "/opt/vps-panel/realm /etc/vps-panel/realm"
+	runAgentMigrationCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+		if len(arguments) > 0 && arguments[0] == "daemon-reload" {
+			paths += " /opt/vps-panel/acme /var/lib/vps-panel/acme"
+			return nil, nil
+		}
+		return []byte(paths), nil
+	}
+	if _, err := applyAgentSystemdSandboxMigration(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(agentSystemdDropInPath)
+	if err != nil || string(contents) != agentRealmSandboxDropIn {
+		t.Fatalf("ACME sandbox drop-in = %q, %v", contents, err)
+	}
+	for _, directory := range []string{"/opt/vps-panel/acme", "/var/lib/vps-panel/acme"} {
+		if info, err := os.Stat(rootedPath(root, directory)); err != nil || !info.IsDir() {
+			t.Fatalf("ACME sandbox directory %s = %v, %v", directory, info, err)
+		}
 	}
 }
 
@@ -223,7 +257,7 @@ func TestAgentSystemdSandboxMigrationReportsWriteAndReloadFailures(t *testing.T)
 				return nil, nil
 			}
 			if reloaded {
-				return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system\n"), nil
+				return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system\n"), nil
 			}
 			return []byte("/opt/vps-panel/agent /etc/systemd/system\n"), nil
 		}
@@ -342,7 +376,7 @@ func TestAgentSystemdMigrationPreparesMissingDirectoriesWithoutOverwritingConfig
 			paths := "/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system"
 			runAgentMigrationCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 				if len(args) > 0 && args[0] == "daemon-reload" {
-					paths += " /opt/vps-panel/realm /etc/vps-panel/realm"
+					paths += " /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"
 					return nil, nil
 				}
 				return []byte(paths), nil
@@ -381,7 +415,7 @@ func TestAgentSystemdMigrationWithCompatibleUnitStillCreatesMissingDirectories(t
 		if len(arguments) != 0 && arguments[0] == "daemon-reload" {
 			t.Fatal("compatible unit was rewritten")
 		}
-		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm"), nil
+		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"), nil
 	}
 	scheduleAgentMigrationRestart = func(backup string) error {
 		_, err := applyAgentSystemdSandboxMigration()
@@ -436,7 +470,7 @@ func TestAgentSystemdMigrationPreservesOldBinaryForRollback(t *testing.T) {
 	paths := "/opt/vps-panel/agent /etc/systemd/system"
 	runAgentMigrationCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
 		if len(arguments) > 0 && arguments[0] == "daemon-reload" {
-			paths += " /opt/vps-panel/realm /etc/vps-panel/realm"
+			paths += " /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"
 			return nil, nil
 		}
 		return []byte(paths), nil
@@ -488,7 +522,7 @@ func TestSuccessfulSystemdMigrationKeepsStagedBackupUntilAgentHeartbeat(t *testi
 	detectUpgradeHostEnvironment = systemdMigrationTestEnvironment
 	waitForAgentMigrationRestart = func() {}
 	runAgentMigrationCommand = func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm"), nil
+		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"), nil
 	}
 	runAgentServiceCommand = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	if err := runAgentSystemdMigrationRestart([]string{"--backup", backup}); err != nil {
@@ -562,7 +596,7 @@ func TestLegacyStagedVersionCheckBootstrapsRealmBeforeOldUpgradeHelperRestarts(t
 	paths := "/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /etc/systemd/system"
 	runAgentMigrationCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
 		if len(arguments) > 0 && arguments[0] == "daemon-reload" {
-			paths += " /opt/vps-panel/realm /etc/vps-panel/realm"
+			paths += " /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"
 			return nil, nil
 		}
 		return []byte(paths), nil
@@ -632,7 +666,7 @@ func TestStagedSystemdBootstrapWithExistingRealmUnitCreatesMissingDirectories(t 
 		if len(arguments) > 0 && arguments[0] == "daemon-reload" {
 			t.Fatal("already compatible unit was changed")
 		}
-		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm"), nil
+		return []byte("/opt/vps-panel/agent /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"), nil
 	}
 	originalLauncher := runUpgradeLauncher
 	defer func() { runUpgradeLauncher = originalLauncher }()
@@ -722,7 +756,7 @@ func TestAgentSystemdMigrationRollsBackWhenNewServiceDiesAfterInitialActiveCheck
 	paths := "/opt/vps-panel/agent /etc/systemd/system"
 	runAgentMigrationCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
 		if len(arguments) > 0 && arguments[0] == "daemon-reload" {
-			paths += " /opt/vps-panel/realm /etc/vps-panel/realm"
+			paths += " /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme"
 			return nil, nil
 		}
 		return []byte(paths), nil

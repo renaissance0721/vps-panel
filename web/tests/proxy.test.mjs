@@ -129,3 +129,13 @@ test('代理节点详情使用加宽卡片且表单宽度保持不变', async ()
 	assert.match(source, /\.proxy-form-card\s*{[^}]*width:\s*min\(760px, calc\(100vw - 32px\)\)/s)
 	assert.match(source, /@media \(max-width: 720px\)[\s\S]*\.proxy-detail-card\s*{[^}]*width:\s*calc\(100vw - 24px\)/)
 })
+
+test('TLS 默认自动 ACME，只有手动模式才提交 PEM，旧证书按手动回填', async () => {
+  const source = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
+  assert.match(source, /proxyTLSMode = ref<'acme' \| 'manual'>\('acme'\)/)
+  assert.match(source, /proxyTLSMode\.value = value\.config\.tls_mode \?\? \(value\.config\.tls_certificate_configured \? 'manual' : 'acme'\)/)
+  assert.match(source, /proxyTLSMode\.value = 'acme'/)
+  assert.match(source, /proxyTLSMode\.value === 'manual' \? \{ certificate: proxyCertificate\.value, private_key: proxyPrivateKey\.value \} : \{\}/)
+  assert.match(source, /v-if="proxyTLSMode === 'acme'"/)
+  assert.match(source, /<template v-else>[\s\S]*?证书 PEM[\s\S]*?私钥 PEM/)
+})

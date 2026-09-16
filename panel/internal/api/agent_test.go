@@ -330,7 +330,7 @@ func TestInstallAgentScript(t *testing.T) {
 		"RestartSec=3",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /etc/systemd/system",
+		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system",
 		"systemctl enable",
 		"systemctl restart",
 		`systemctl restart "${SERVICE_NAME}.service"`,

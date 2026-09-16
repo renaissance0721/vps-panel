@@ -19,7 +19,7 @@ var errUnsupportedManagedConfig = errors.New(unsupportedManagedConfigMessage)
 
 const (
 	configRequestTimeout = 10 * time.Second
-	configApplyTimeout   = 90 * time.Second
+	configApplyTimeout   = 8 * time.Minute
 )
 
 type desiredState struct {
@@ -55,8 +55,9 @@ type desiredShadowsocks struct {
 }
 
 type desiredTLS struct {
-	Certificate string `json:"certificate"`
-	PrivateKey  string `json:"private_key"`
+	Mode        string `json:"mode"`
+	Certificate string `json:"certificate,omitempty"`
+	PrivateKey  string `json:"private_key,omitempty"`
 }
 
 type desiredReality struct {
@@ -96,6 +97,7 @@ type configSynchronizer struct {
 	config                config
 	client                *http.Client
 	applyState            func(context.Context, desiredState) error
+	renewCertificates     func(context.Context) error
 	mu                    sync.Mutex
 	lastSuccessfulVersion int64
 }
@@ -103,7 +105,7 @@ type configSynchronizer struct {
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
 	xray := newXrayManager()
 	realm := newRealmManager()
-	return &configSynchronizer{config: value, client: client, applyState: func(ctx context.Context, state desiredState) error {
+	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, applyState: func(ctx context.Context, state desiredState) error {
 		xrayErr := xray.apply(ctx, state)
 		realmErr := realm.apply(ctx, state.Realm)
 		return errors.Join(xrayErr, realmErr)
@@ -143,6 +145,15 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	}
 	s.lastSuccessfulVersion = state.Version
 	return nil
+}
+
+func (s *configSynchronizer) renew(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.renewCertificates == nil {
+		return nil
+	}
+	return s.renewCertificates(ctx)
 }
 
 func (s *configSynchronizer) fetch(ctx context.Context) (desiredState, error) {
@@ -206,6 +217,7 @@ func desiredStateErrorMessage(err error) string {
 		errManagedXrayConflict,
 		errManagedXrayArch,
 		errManagedProxyFirewall,
+		errManagedACME,
 		errManagedRealmDownload,
 		errManagedRealmChecksum,
 		errManagedRealmValidation,

@@ -407,17 +407,35 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	upgradeRequested := make(chan string, 1)
 	upgradeFinished := make(chan error, 1)
 	upgradeInProgress := false
+	certificateRenewed := make(chan error, 1)
+	renewalInProgress := false
 	disconnected := make(chan error, 1)
 	go func() {
 		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested)
 	}()
-	attemptConfigSync(ctx, configSync)
+	configSyncFinished := make(chan struct{}, 1)
+	configSyncInProgress := false
+	configSyncPending := false
+	startConfigSync := func() {
+		if configSyncInProgress {
+			configSyncPending = true
+			return
+		}
+		configSyncInProgress = true
+		go func() {
+			attemptConfigSync(connectionContext, configSync)
+			configSyncFinished <- struct{}{}
+		}()
+	}
+	startConfigSync()
 	heartbeatTicker := time.NewTicker(agentHeartbeatInterval)
 	defer heartbeatTicker.Stop()
 	metricsTicker := time.NewTicker(agentMetricsInterval)
 	defer metricsTicker.Stop()
 	configTicker := time.NewTicker(agentConfigPollInterval)
 	defer configTicker.Stop()
+	certificateTicker := time.NewTicker(12 * time.Hour)
+	defer certificateTicker.Stop()
 	clientTrafficTicker := time.NewTicker(agentClientTrafficInterval)
 	defer clientTrafficTicker.Stop()
 	publicIPv4Ticker := time.NewTicker(publicIPv4RefreshInterval)
@@ -430,7 +448,13 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 		case <-disconnected:
 			return true, false
 		case <-configChanged:
-			attemptConfigSync(ctx, configSync)
+			startConfigSync()
+		case <-configSyncFinished:
+			configSyncInProgress = false
+			if configSyncPending {
+				configSyncPending = false
+				startConfigSync()
+			}
 		case version := <-upgradeRequested:
 			if upgradeInProgress {
 				continue
@@ -453,7 +477,22 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 				log.Printf("upgrade Agent: %v", upgradeErr)
 			}
 		case <-configTicker.C:
-			attemptConfigSync(ctx, configSync)
+			startConfigSync()
+		case <-certificateTicker.C:
+			if renewalInProgress {
+				continue
+			}
+			renewalInProgress = true
+			go func() {
+				renewContext, cancel := context.WithTimeout(connectionContext, configApplyTimeout)
+				certificateRenewed <- configSync.renew(renewContext)
+				cancel()
+			}()
+		case err := <-certificateRenewed:
+			renewalInProgress = false
+			if err != nil && ctx.Err() == nil {
+				log.Printf("renew managed certificates: %v", err)
+			}
 		case <-clientTrafficTicker.C:
 			trafficContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 			err := trafficReporter.report(trafficContext)

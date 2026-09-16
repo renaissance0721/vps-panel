@@ -91,6 +91,39 @@ func TestManagedXrayInstallsVerifiedArchiveAndStarts(t *testing.T) {
 	}
 }
 
+func TestManagedXrayACMEFailureKeepsCurrentConfig(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	archive := makeXrayArchive(t, []byte("test xray binary"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	manager.client = server.Client()
+	manager.assets = map[string]managedXrayAsset{"amd64": {name: "Xray-linux-64.zip", sha256: checksum(archive)}}
+	if err := manager.apply(t.Context(), enabledXrayState()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(manager.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.acme = newTestACMEManager(t)
+	manager.acme.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("challenge failed")
+	}
+	proxy := testDesiredTLSProxy()
+	proxy.ServerName = "jp.example.com"
+	proxy.TLS = &desiredTLS{Mode: "acme"}
+	if err := manager.apply(t.Context(), desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}); !errors.Is(err, errManagedACME) {
+		t.Fatalf("ACME apply error = %v", err)
+	}
+	after, err := os.ReadFile(manager.configPath)
+	if err != nil || !bytes.Equal(after, current) || commands.count("systemctl", "restart") != 1 {
+		t.Fatalf("failed ACME changed active Xray config or restarted: %v, commands %v", err, commands.calls)
+	}
+}
+
 func TestManagedXrayUsesOpenRCServiceLifecycle(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	root := filepath.Dir(filepath.Dir(filepath.Dir(manager.installDir)))

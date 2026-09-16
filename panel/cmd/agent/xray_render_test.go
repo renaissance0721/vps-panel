@@ -50,6 +50,31 @@ func TestRenderManagedXrayTLSWithMultipleClients(t *testing.T) {
 	}
 }
 
+func TestRenderManagedXrayACMEUsesCertificateFilesOnly(t *testing.T) {
+	proxy := testDesiredTLSProxy()
+	proxy.ServerName = "jp.example.com"
+	proxy.TLS = &desiredTLS{Mode: "acme"}
+	value, err := renderManagedXrayConfig([]desiredProxy{proxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config renderedXrayConfig
+	if err := json.Unmarshal(value, &config); err != nil {
+		t.Fatal(err)
+	}
+	cert := config.Inbounds[0].StreamSettings.TLSSettings.Certificates[0]
+	if cert.CertificateFile != "/etc/vps-panel/xray/certs/jp.example.com/fullchain.pem" ||
+		cert.KeyFile != "/etc/vps-panel/xray/certs/jp.example.com/private.key" ||
+		len(cert.Certificate) != 0 || len(cert.Key) != 0 ||
+		strings.Contains(string(value), `"certificate":`) || strings.Contains(string(value), `"key":`) {
+		t.Fatalf("ACME Xray config contains inline PEM or wrong files: %s", value)
+	}
+	proxy.ServerName = "../unsafe.example.com"
+	if _, err := renderManagedXrayConfig([]desiredProxy{proxy}); !errors.Is(err, errUnsupportedManagedConfig) {
+		t.Fatalf("unsafe ACME desired domain error = %v", err)
+	}
+}
+
 func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
 	reality := desiredProxy{ID: 2, Listen: "0.0.0.0", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, StatsID: "vp-client-3", UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
 	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), reality})

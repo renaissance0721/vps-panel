@@ -105,7 +105,7 @@ func newXrayManager() *xrayManager {
 		goarch:            runtime.GOARCH,
 		releaseBaseURL:    managedXrayReleaseBaseURL,
 		assets:            managedXrayAssets,
-		client:            &http.Client{Timeout: 60 * time.Second},
+		client:            &http.Client{},
 		runCommand:        runXrayCommand,
 		probeListener:     probeXrayListener,
 		reconcileFirewall: firewall.reconcileRules,

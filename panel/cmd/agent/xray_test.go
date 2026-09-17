@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,6 +89,145 @@ func TestManagedXrayInstallsVerifiedArchiveAndStarts(t *testing.T) {
 	}
 	if !commands.active || commands.count("systemctl", "enable") != 1 || commands.count("systemctl", "restart") != 1 {
 		t.Fatalf("systemd calls = %v, active = %v", commands.calls, commands.active)
+	}
+	if paths := xrayDownloadTemps(t, manager.installDir); len(paths) != 0 {
+		t.Fatalf("successful install left temporary downloads: %v", paths)
+	}
+}
+
+func TestManagedXraySlowDownloadUsesApplyContext(t *testing.T) {
+	manager, _ := newTestXrayManager(t)
+	manager.client = newXrayManager().client
+	if manager.client.Timeout != 0 {
+		t.Fatalf("managed Xray client has a fixed total timeout: %s", manager.client.Timeout)
+	}
+	if err := os.MkdirAll(manager.installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := makeXrayArchive(t, []byte("slow download"))
+	firstChunkSent := make(chan struct{})
+	resume := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive[:len(archive)/2])
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		select {
+		case <-resume:
+			_, _ = w.Write(archive[len(archive)/2:])
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	type downloadResult struct {
+		path string
+		err  error
+	}
+	result := make(chan downloadResult, 1)
+	go func() {
+		path, err := manager.download(ctx, managedXrayAsset{name: "Xray-linux-64.zip", sha256: checksum(archive)})
+		result <- downloadResult{path, err}
+	}()
+	select {
+	case <-firstChunkSent:
+	case <-ctx.Done():
+		t.Fatalf("download did not start: %v", ctx.Err())
+	}
+	select {
+	case got := <-result:
+		t.Fatalf("download finished before the response body resumed: %v", got.err)
+	default:
+	}
+	close(resume)
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("slow download: %v", got.err)
+		}
+		defer os.Remove(got.path)
+		if contents, err := os.ReadFile(got.path); err != nil || !bytes.Equal(contents, archive) {
+			t.Fatalf("downloaded archive differs from response: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("slow download did not finish: %v", ctx.Err())
+	}
+}
+
+func TestManagedXrayDownloadCancellationRemovesTemporary(t *testing.T) {
+	manager, _ := newTestXrayManager(t)
+	manager.client = newXrayManager().client
+	if err := os.MkdirAll(manager.installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	firstChunkSent := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("partial archive"))
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.download(ctx, managedXrayAsset{name: "Xray-linux-64.zip"})
+		result <- err
+	}()
+	select {
+	case <-firstChunkSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not start")
+	}
+	wait := time.NewTimer(5 * time.Second)
+	defer wait.Stop()
+	for len(xrayDownloadTemps(t, manager.installDir)) == 0 {
+		select {
+		case err := <-result:
+			t.Fatalf("download finished before cancellation: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		case <-wait.C:
+			t.Fatal("download did not create a temporary archive")
+		}
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, errManagedXrayDownload) || !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("cancelled download error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled download did not stop")
+	}
+	if paths := xrayDownloadTemps(t, manager.installDir); len(paths) != 0 {
+		t.Fatalf("cancelled download left temporary files: %v", paths)
+	}
+	deadlineContext, stop := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer stop()
+	if _, err := manager.download(deadlineContext, managedXrayAsset{name: "Xray-linux-64.zip"}); !errors.Is(err, errManagedXrayDownload) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("expired context download error = %v", err)
+	}
+}
+
+func TestManagedXrayDownloadRejectsOversizedResponse(t *testing.T) {
+	manager, _ := newTestXrayManager(t)
+	if err := os.MkdirAll(manager.installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(managedXrayMaxDownloadBytes+1, 10))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager.releaseBaseURL = server.URL
+	if _, err := manager.download(t.Context(), managedXrayAsset{name: "Xray-linux-64.zip"}); !errors.Is(err, errManagedXrayDownload) || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("oversized download error = %v", err)
+	}
+	if paths := xrayDownloadTemps(t, manager.installDir); len(paths) != 0 {
+		t.Fatalf("oversized download left temporary files: %v", paths)
 	}
 }
 
@@ -174,6 +314,9 @@ func TestManagedXrayRejectsBadChecksumBeforeExecution(t *testing.T) {
 	}
 	if _, err := os.Stat(manager.binaryPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("binary exists after checksum failure: %v", err)
+	}
+	if paths := xrayDownloadTemps(t, manager.installDir); len(paths) != 0 {
+		t.Fatalf("checksum failure left temporary files: %v", paths)
 	}
 }
 
@@ -677,6 +820,21 @@ func newTestXrayManager(t *testing.T) (*xrayManager, *xrayCommandRecorder) {
 		healthCheckDelay:  0,
 	}
 	return manager, commands
+}
+
+func xrayDownloadTemps(t *testing.T, installDir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(installDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".xray-download-") {
+			paths = append(paths, entry.Name())
+		}
+	}
+	return paths
 }
 
 func firewallRulePorts(rules []firewallRule) []int {

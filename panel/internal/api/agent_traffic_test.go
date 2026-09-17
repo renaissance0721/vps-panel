@@ -3,7 +3,9 @@ package api
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -20,7 +22,7 @@ func TestAgentClientTrafficRequiresAuthenticationAndOwnsClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAgent, err := servers.RegisterAgent(t.Context(), firstServer.EnrollmentToken, "test", false)
+	firstAgent, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), firstServer.EnrollmentToken, "test", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +30,7 @@ func TestAgentClientTrafficRequiresAuthenticationAndOwnsClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondAgent, err := servers.RegisterAgent(t.Context(), secondServer.EnrollmentToken, "test", false)
+	secondAgent, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), secondServer.EnrollmentToken, "test", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +85,7 @@ func TestAgentClientTrafficValidatesPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := servers.RegisterAgent(t.Context(), created.EnrollmentToken, "test", false)
+	agent, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "test", false)
 	if err != nil {
 		t.Fatal(err)
 	}

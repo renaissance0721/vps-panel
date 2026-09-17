@@ -1,6 +1,8 @@
-package server
+package agentcontrol
 
-import "github.com/renaissance0721/vps-panel/panel/internal/version"
+import (
+	"github.com/renaissance0721/vps-panel/panel/internal/version"
+)
 
 const (
 	AgentVersionUnregistered     = "unregistered"

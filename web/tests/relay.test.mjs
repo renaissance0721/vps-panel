@@ -23,7 +23,7 @@ test('Relay Network 和目标显示正确', () => {
 
 test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
   const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
-  const view = await readFile(new URL('../src/RelaysView.vue', import.meta.url), 'utf8')
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
   assert.match(app, /selectPage\('relays'\)/)
   assert.match(app, />\s*中转\s*<\/button>/)
   assert.match(app, /<RelaysView v-if="currentPage === 'relays'"/)
@@ -43,7 +43,7 @@ test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
 })
 
 test('中转入口表单和派生客户端链接保持单一 canonical URI 流程', async () => {
-  const view = await readFile(new URL('../src/RelaysView.vue', import.meta.url), 'utf8')
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
   assert.match(view, /v-model="entryHostMode"/)
   assert.match(view, /value="auto">自动检测公网 IPv4/)
   assert.match(view, /value="manual">手动填写/)

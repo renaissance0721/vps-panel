@@ -13,7 +13,7 @@ test('服务器未设置到期时间时显示不限', () => {
 })
 
 test('服务器详情展示 Agent 原地升级状态和 bootstrap 命令', async () => {
-  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const source = (await Promise.all(["composables/useServers.ts","components/server/ServerDetail.vue"].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
   assert.match(source, /Agent 版本/)
   assert.match(source, /Panel 版本/)
   assert.match(source, /升级状态/)
@@ -21,11 +21,11 @@ test('服务器详情展示 Agent 原地升级状态和 bootstrap 命令', async
   assert.match(source, /\/upgrade-agent\.sh/)
   assert.match(source, /\/upgrade-agent\.sh \| sh/)
   assert.doesNotMatch(source, /\/upgrade-agent\.sh \| bash/)
-  assert.match(source, /state\.user\?\.role === 'admin'/)
+  assert.match(source, /state\?\.user\?\.role === 'admin'/)
 })
 
 test('高于 Panel 的 Agent 不能展示或触发降级按钮', async () => {
-  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const source = (await Promise.all(["composables/useServers.ts","components/server/ServerDetail.vue"].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
   assert.match(source, /selectedServer\.agent_version_status === 'upgrade_available'/)
   assert.match(source, /value\.agent_version_status !== 'upgrade_available'/)
   assert.match(source, /selectedServer\.agent_version_status === 'agent_newer'/)

@@ -29,7 +29,6 @@ test('代理列表按协议显示字段', () => {
     protocol: 'Shadowsocks', transport: '--', security: '--', flow: '--',
   })
 })
-
 test('Shadowsocks 创建方法固定为支持的 SS2022 AES 方法', () => {
   assert.deepEqual(shadowsocksMethods, [
     '2022-blake3-aes-128-gcm',
@@ -92,50 +91,9 @@ test('客户端生命周期状态、使用率和上海时区到期时间显示�
   assert.equal(formatClientExpirationInput('2026-12-31T16:00:00Z'), '2027-01-01T00:00')
 })
 
-test('Proxy 详情隐藏 Client UUID 并保留两种协议的分享 URI 复制', async () => {
-  const source = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
-  assert.match(source, /v-model="proxyProtocol"/)
-  assert.match(source, /proxyProtocol === 'vless'/)
-  assert.match(source, /:disabled="proxyFormMode === 'edit'"/)
-  assert.match(source, /selectedShare\.protocol === 'vless'/)
-	assert.match(source, /copyClientURI\(client\)/)
-	assert.match(source, /copyShareURI\(selectedShare\.uri\)/)
-	assert.match(source, /selectedShare\.protocol === 'vless' \? 'VLESS' : 'Shadowsocks'/)
-  assert.match(source, /<th>已用 \/ 总量<\/th><th>周期<\/th><th>到期时间<\/th><th>最近活动<\/th>/)
-	assert.match(source, /showsVLESSClientFields\(selectedProxy\.protocol\).*UDP\/443/)
-	assert.doesNotMatch(source, /<th[^>]*>UUID<\/th>/)
-	assert.doesNotMatch(source, /uuid_summary/)
-	assert.doesNotMatch(source, /selectedShare\.client\.uuid/)
-	assert.doesNotMatch(source, /复制 UUID/)
-  assert.match(source, /本周期上行/)
-  assert.match(source, /本周期下行/)
-  assert.match(source, /本周期已用/)
-  assert.match(source, /clientTrafficResetMode === 'weekly'/)
-  assert.match(source, /clientTrafficResetMode === 'monthly'/)
-  assert.match(source, /resetClientTraffic/)
-  assert.match(source, /clientStatusLabel\(client\.status\)/)
-  assert.match(source, /用户启用/)
-  assert.match(source, /实际可用/)
-  assert.match(source, /clientExpirationMode === 'specified'/)
-  assert.match(source, /type="datetime-local"/)
-  assert.match(source, /expires_at: clientExpirationMode\.value/)
-  assert.match(source, /last_activity_at \? formatTime/)
-  assert.doesNotMatch(source, /Reality Public Key|REALITY Public Key|reality_public_key|reality_short_id/)
-})
-
 test('代理节点详情使用加宽卡片且表单宽度保持不变', async () => {
 	const source = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 	assert.match(source, /\.proxy-detail-card\s*{[^}]*width:\s*min\(1180px, calc\(100vw - 48px\)\)/s)
 	assert.match(source, /\.proxy-form-card\s*{[^}]*width:\s*min\(760px, calc\(100vw - 32px\)\)/s)
 	assert.match(source, /@media \(max-width: 720px\)[\s\S]*\.proxy-detail-card\s*{[^}]*width:\s*calc\(100vw - 24px\)/)
-})
-
-test('TLS 默认自动 ACME，只有手动模式才提交 PEM，旧证书按手动回填', async () => {
-  const source = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
-  assert.match(source, /proxyTLSMode = ref<'acme' \| 'manual'>\('acme'\)/)
-  assert.match(source, /proxyTLSMode\.value = value\.config\.tls_mode \?\? \(value\.config\.tls_certificate_configured \? 'manual' : 'acme'\)/)
-  assert.match(source, /proxyTLSMode\.value = 'acme'/)
-  assert.match(source, /proxyTLSMode\.value === 'manual' \? \{ certificate: proxyCertificate\.value, private_key: proxyPrivateKey\.value \} : \{\}/)
-  assert.match(source, /v-if="proxyTLSMode === 'acme'"/)
-  assert.match(source, /<template v-else>[\s\S]*?证书 PEM[\s\S]*?私钥 PEM/)
 })

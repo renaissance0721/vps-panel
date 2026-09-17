@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -285,7 +286,7 @@ func TestRegistrationOverwritesExistingAgentAcrossServersAndPanels(t *testing.T)
 		t.Fatalf("same-Server rebind = (%+v, %v), want replacement credentials", rebound, err)
 	}
 	assertRegisteredConfig(t, configPath, rebound, first.AgentToken)
-	if _, err := serviceA.AuthenticateAgent(t.Context(), first.AgentToken); !errors.Is(err, serverstore.ErrInvalidAgentToken) {
+	if _, err := agentcontrol.NewService(dbA, time.Now).AuthenticateAgent(t.Context(), first.AgentToken); !errors.Is(err, agentcontrol.ErrInvalidAgentToken) {
 		t.Fatalf("old same-Server credential error = %v, want ErrInvalidAgentToken", err)
 	}
 	second, err := registerAgent(t.Context(), panelA.Client(), panelA.URL, serverB.EnrollmentToken, configPath)
@@ -336,7 +337,7 @@ func TestRejectedNewEnrollmentPreservesExistingAgentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create used Server: %v", err)
 	}
-	if _, err := service.RegisterAgent(t.Context(), used.EnrollmentToken, "test", false); err != nil {
+	if _, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), used.EnrollmentToken, "test", false); err != nil {
 		t.Fatalf("consume enrollment: %v", err)
 	}
 	for _, test := range []struct {

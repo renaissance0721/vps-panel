@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
-const proxies = await readFile(new URL('../src/ProxiesView.vue', import.meta.url), 'utf8')
-const relays = await readFile(new URL('../src/RelaysView.vue', import.meta.url), 'utf8')
+const app = (await Promise.all(["App.vue","types/overview.ts","composables/useOverview.ts","views/OverviewView.vue","composables/useServers.ts","components/server/ServerList.vue"].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
+const proxies = (await Promise.all(["composables/useProxies.ts","components/proxy/ProxyList.vue"].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
+const relays = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
 test('概览展示账号安全摘要及权限范围内的服务器和代理节点数量', () => {

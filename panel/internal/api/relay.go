@@ -266,7 +266,7 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 
 func (s *server) notifyRelayMutations(mutations []relaystore.Mutation) {
 	for _, mutation := range mutations {
-		if err := s.notifyConfigChanged(mutation.ServerID, mutation.Version); err != nil {
+		if err := s.agents.NotifyConfigChanged(mutation.ServerID, mutation.Version); err != nil {
 			log.Printf("notify Agent for server %d config version %d: %v", mutation.ServerID, mutation.Version, err)
 		}
 	}

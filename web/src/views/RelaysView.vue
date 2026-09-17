@@ -1,14 +1,35 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
+import {
+  computed,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
+
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NEmpty,
+  NInput,
+  NModal,
+  NSpin,
+  NTag,
+} from 'naive-ui'
+
 import {
   relayNetworkLabel,
   relayEndpointLabel,
   relayTargetLabel,
   type RelayNetwork,
   type RelayTargetType,
-} from './relay'
-import { clientStatusLabel, clientStatusTagType, type ClientStatus } from './proxy'
+} from '../relay'
+
+import {
+  clientStatusLabel,
+  clientStatusTagType,
+  type ClientStatus,
+} from '../proxy'
 
 type ServerOption = {
   id: number
@@ -80,7 +101,6 @@ const relayClients = ref<RelayClientShare[]>([])
 const relayClientsLoading = ref(false)
 const relayShareError = ref('')
 const copiedRelayClientID = ref<number | null>(null)
-
 const name = ref('')
 const serverID = ref<number | null>(null)
 const listenPort = ref(9502)
@@ -105,29 +125,6 @@ const filteredRelays = computed(() => {
       .some((field) => field.toLowerCase().includes(keyword)),
   )
 })
-
-class APIError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message)
-  }
-}
-
-async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    cache: 'no-store',
-    credentials: 'same-origin',
-    ...options,
-    headers: options?.body
-      ? { 'Content-Type': 'application/json', ...options.headers }
-      : options?.headers,
-  })
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status)
-  }
-  if (response.status === 204) return undefined as T
-  return (await response.json()) as T
-}
 
 async function run(action: () => Promise<void>) {
   submitting.value = true
@@ -306,14 +303,6 @@ async function removeRelay(value: RelayRecord) {
   })
 }
 
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
-}
-
 watch(targetType, (value) => {
   if (value === 'proxy' && targetProxyID.value === null) {
     targetProxyID.value = proxies.value[0]?.id ?? null
@@ -346,10 +335,17 @@ onMounted(async () => {
     loading.value = false
   }
 })
+import {
+  api,
+  APIError,
+} from '../api/client'
+import {
+  formatTime,
+} from '../format'
 </script>
 
 <template>
-  <n-alert v-if="error" class="page-alert" type="error" closable @close="error = ''">
+<n-alert v-if="error" class="page-alert" type="error" closable @close="error = ''">
     {{ error }}
   </n-alert>
 

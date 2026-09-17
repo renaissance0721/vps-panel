@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
-	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 const defaultHealthcheckURL = "http://127.0.0.1:8080/api/health"
@@ -45,7 +45,7 @@ func run() error {
 	}
 	defer db.Close()
 	resetContext, cancelReset := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := serverstore.NewService(db).ResetOnline(resetContext); err != nil {
+	if err := agentcontrol.NewService(db, time.Now).ResetOnline(resetContext); err != nil {
 		cancelReset()
 		return fmt.Errorf("prepare server states: %w", err)
 	}

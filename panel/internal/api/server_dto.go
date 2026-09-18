@@ -25,6 +25,7 @@ type updateServerAccessRequest struct {
 }
 
 type updateServerRequest struct {
+	Name                     *string         `json:"name"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`
 	MonthlyTrafficLimitBytes json.RawMessage `json:"monthly_traffic_limit_bytes"`
 	TrafficCountMode         *string         `json:"traffic_count_mode"`

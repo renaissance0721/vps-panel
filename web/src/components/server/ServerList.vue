@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ref,
   toRefs,
 } from 'vue'
 import {
@@ -48,6 +49,36 @@ const {
   archivedServers,
   formatTime,
 } = toRefs(props.model)
+const draggedID = ref<number | null>(null)
+const dropTargetID = ref<number | null>(null)
+const draggedArchived = ref(false)
+
+function startDrag(event: DragEvent, id: number, archived: boolean) {
+  if (serverReorderingID.value !== null || !event.dataTransfer) return
+  draggedID.value = id
+  draggedArchived.value = archived
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', String(id))
+}
+
+function endDrag() {
+  draggedID.value = null
+  dropTargetID.value = null
+}
+
+function dragOver(event: DragEvent, id: number, archived: boolean) {
+  if (draggedID.value === null || draggedArchived.value !== archived || draggedID.value === id) return
+  event.preventDefault()
+  dropTargetID.value = id
+}
+
+async function dropServer(id: number, archived: boolean) {
+  const sourceID = draggedID.value
+  if (sourceID === null || draggedArchived.value !== archived) return
+  const source = (archived ? archivedServers.value : servers.value).find((row) => row.id === sourceID)
+  endDrag()
+  if (source) await reorderServer.value(source, id)
+}
 </script>
 
 <template>
@@ -66,12 +97,9 @@ const {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="value in servers" :key="value.id">
+                  <tr v-for="value in servers" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id, false)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropServer(value.id, false)">
                     <td class="reorder-cell">
-                      <div class="reorder-controls">
-                        <n-button size="tiny" quaternary aria-label="上移服务器" :disabled="serverReorderingID !== null || servers[0]?.id === value.id" @click="reorderServer(value, 'up')">↑</n-button>
-                        <n-button size="tiny" quaternary aria-label="下移服务器" :disabled="serverReorderingID !== null || servers[servers.length - 1]?.id === value.id" @click="reorderServer(value, 'down')">↓</n-button>
-                      </div>
+                      <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, false)" @dragend="endDrag"><span></span><span></span><span></span></span>
                     </td>
                     <td>
                       {{ value.name }}
@@ -141,12 +169,9 @@ const {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="value in archivedServers" :key="value.id">
+                  <tr v-for="value in archivedServers" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id, true)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropServer(value.id, true)">
                     <td class="reorder-cell">
-                      <div class="reorder-controls">
-                        <n-button size="tiny" quaternary aria-label="上移已移除服务器" :disabled="serverReorderingID !== null || archivedServers[0]?.id === value.id" @click="reorderServer(value, 'up')">↑</n-button>
-                        <n-button size="tiny" quaternary aria-label="下移已移除服务器" :disabled="serverReorderingID !== null || archivedServers[archivedServers.length - 1]?.id === value.id" @click="reorderServer(value, 'down')">↓</n-button>
-                      </div>
+                      <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, true)" @dragend="endDrag"><span></span><span></span><span></span></span>
                     </td>
                     <td>
                       {{ value.name }}

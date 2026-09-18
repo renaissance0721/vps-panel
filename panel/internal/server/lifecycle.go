@@ -6,6 +6,29 @@ import (
 	"time"
 )
 
+func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server, error) {
+	var err error
+	name, err = normalizeServerName(name)
+	if err != nil {
+		return Server{}, err
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET name = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+		name, s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server name: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server name count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *time.Time) (Server, error) {
 	var expiresAtValue any
 	if expiresAt != nil {

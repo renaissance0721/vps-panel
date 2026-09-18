@@ -25,6 +25,7 @@ const props = defineProps<{
     | 'accessUserNames'
     | 'submitting'
     | 'openAccessModal'
+    | 'openNameModal'
     | 'formatExpirationDate'
     | 'openExpirationModal'
     | 'formatTime'
@@ -55,6 +56,7 @@ const {
   accessUserNames,
   submitting,
   openAccessModal,
+  openNameModal,
   formatExpirationDate,
   openExpirationModal,
   formatTime,
@@ -91,8 +93,11 @@ const {
             closable
             @close="serverModalOpen = false"
           >
+            <div class="server-detail-grid">
+              <section class="server-detail-section">
+                <h3 class="system-info-title">基本信息</h3>
             <dl class="server-details">
-              <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
+              <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting" @click="openNameModal">✎</n-button></dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div>
                 <dt>访问范围</dt>
@@ -144,7 +149,9 @@ const {
                 <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
               </div>
             </dl>
+              </section>
 
+              <section class="server-detail-section">
             <div class="section-heading">
               <h3 class="system-info-title">Agent</h3>
               <n-button
@@ -173,7 +180,9 @@ const {
               <n-input :value="bootstrapUpgradeCommand" readonly />
               <n-button size="small" secondary @click="copyUpgradeCommand">{{ copiedUpgradeCommand ? '已复制' : '复制命令' }}</n-button>
             </div>
+              </section>
 
+              <section class="server-detail-section">
             <h3 class="system-info-title">系统信息</h3>
             <n-empty
               v-if="!selectedServer.system_info"
@@ -202,7 +211,9 @@ const {
               </div>
               <div><dt>公网 IPv4</dt><dd>{{ selectedServer.system_info.public_ipv4 || '未检测' }}</dd></div>
             </dl>
+              </section>
 
+              <section class="server-detail-section">
             <h3 class="system-info-title">动态指标</h3>
             <n-empty
               v-if="!selectedServer.metrics"
@@ -227,8 +238,10 @@ const {
               </div>
               <div><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
             </dl>
+              </section>
+            </div>
 
-            <ServerTraffic :model="model" />
+            <section class="server-detail-section server-detail-section--wide"><ServerTraffic :model="model" /></section>
 <div v-if="state?.user?.role === 'admin'" class="server-modal-actions">
               <n-button
                 type="primary"

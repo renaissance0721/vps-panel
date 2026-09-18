@@ -30,6 +30,7 @@ import {
   clientStatusTagType,
   type ClientStatus,
 } from '../proxy'
+import { moveRow, persistMove } from '../reorder'
 
 type ServerOption = {
   id: number
@@ -90,6 +91,8 @@ const proxies = ref<ProxyOption[]>([])
 const loading = ref(true)
 const submitting = ref(false)
 const reorderingID = ref<number | null>(null)
+const draggedID = ref<number | null>(null)
+const dropTargetID = ref<number | null>(null)
 const error = ref('')
 const search = ref('')
 const formOpen = ref(false)
@@ -150,17 +153,49 @@ async function loadRelays() {
   relays.value = response.relays
 }
 
-async function reorderRelay(value: RelayRecord, direction: 'up' | 'down') {
+async function reorderRelay(value: RelayRecord, targetID: number) {
   if (reorderingID.value !== null || search.value.trim()) return
+  const move = moveRow(relays.value, value.id, targetID)
+  if (!move) return
   reorderingID.value = value.id
-  await run(async () => {
-    await api(`/api/relays/${value.id}/reorder`, {
-      method: 'POST',
-      body: JSON.stringify({ direction }),
-    })
-    await loadRelays()
-  })
-  reorderingID.value = null
+  error.value = ''
+  try {
+    await persistMove(move, (direction) =>
+      api(`/api/relays/${value.id}/reorder`, {
+        method: 'POST',
+        body: JSON.stringify({ direction }),
+      }),
+      loadRelays,
+    )
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '调整中转顺序失败'
+  } finally {
+    reorderingID.value = null
+  }
+}
+
+function startDrag(event: DragEvent, id: number) {
+  if (reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
+  draggedID.value = id
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', String(id))
+}
+
+function endDrag() {
+  draggedID.value = null
+  dropTargetID.value = null
+}
+
+function dragOver(event: DragEvent, id: number) {
+  if (draggedID.value === null || draggedID.value === id || search.value.trim()) return
+  event.preventDefault()
+  dropTargetID.value = id
+}
+
+async function dropRelay(id: number) {
+  const source = relays.value.find((row) => row.id === draggedID.value)
+  endDrag()
+  if (source && !search.value.trim()) await reorderRelay(source, id)
 }
 
 async function loadProxies() {
@@ -363,12 +398,9 @@ import {
       <table class="server-table relay-table">
         <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="value in filteredRelays" :key="value.id">
+          <tr v-for="value in filteredRelays" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropRelay(value.id)">
             <td class="reorder-cell">
-              <div class="reorder-controls" :title="search.trim() ? '清除搜索后可调整顺序' : ''">
-                <n-button size="tiny" quaternary aria-label="上移中转" :disabled="reorderingID !== null || !!search.trim() || relays[0]?.id === value.id" @click="reorderRelay(value, 'up')">↑</n-button>
-                <n-button size="tiny" quaternary aria-label="下移中转" :disabled="reorderingID !== null || !!search.trim() || relays[relays.length - 1]?.id === value.id" @click="reorderRelay(value, 'down')">↓</n-button>
-              </div>
+              <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
             </td>
             <td>{{ value.name }}</td>
             <td>{{ value.server_name }}</td>

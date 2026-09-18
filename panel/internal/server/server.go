@@ -25,11 +25,12 @@ func (s *Service) CreateForUser(
 	userIDs []int64,
 	creatorID int64,
 ) (CreatedServer, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > maxNameLength {
-		return CreatedServer{}, ErrInvalidName
+	var err error
+	name, err = normalizeServerName(name)
+	if err != nil {
+		return CreatedServer{}, err
 	}
-	visibility, err := normalizeVisibility(visibility)
+	visibility, err = normalizeVisibility(visibility)
 	if err != nil {
 		return CreatedServer{}, err
 	}
@@ -94,6 +95,14 @@ func (s *Service) CreateForUser(
 		EnrollmentToken:     enrollment.Token,
 		EnrollmentExpiresAt: enrollment.ExpiresAt,
 	}, nil
+}
+
+func normalizeServerName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || utf8.RuneCountInString(name) > maxNameLength {
+		return "", ErrInvalidName
+	}
+	return name, nil
 }
 
 func (s *Service) List(ctx context.Context) ([]Server, error) {

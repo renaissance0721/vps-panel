@@ -124,6 +124,30 @@ test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Mo
   assert.match(form, /type="number"/)
 })
 
+test('服务器名称保存后详情保持打开且列表使用新名称', async t => {
+  const updated = serverRecord({ name: '新名称' })
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, init })
+    if (init?.method === 'PATCH') return json({ server: updated })
+    return json({ servers: url.includes('?archived=true') ? [] : [updated] })
+  })
+  const { model } = serverModel()
+  model.viewServer(serverRecord())
+  model.openNameModal()
+  assert.equal(model.nameInput.value, '测试服务器')
+  model.nameInput.value = '  新名称  '
+  await model.saveServerName()
+  assert.deepEqual(JSON.parse(calls[0].init.body), { name: '新名称' })
+  assert.equal(model.selectedServer.value.name, '新名称')
+  assert.equal(model.servers.value[0].name, '新名称')
+  assert.equal(model.serverModalOpen.value, true)
+  assert.equal(model.nameModalOpen.value, false)
+  const detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /server-detail-grid/)
+  for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
+})
+
 test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段', async t => {
   const calls = []
   const selected = ref(null), error = ref('')

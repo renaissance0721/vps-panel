@@ -22,6 +22,8 @@ import type {
 import {
   formatTime,
 } from '../format'
+import { moveRow, persistMove } from '../reorder'
+import { adminFirst } from '../adminFirst'
 import {
   formatPercent,
   formatBytes,
@@ -62,11 +64,15 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const accessVisibility = ref<ServerRecord['visibility']>('public')
   const accessUserIDs = ref<number[]>([])
   const accessFormError = ref('')
+  const orderedUsers = computed(() => adminFirst(users.value))
   const serverListMode = ref<'active' | 'archived'>('active')
   const serverReorderingID = ref<number | null>(null)
   const copiedCommand = ref(false)
   const copiedUpgradeCommand = ref(false)
   const expirationInput = ref('')
+  const nameModalOpen = ref(false)
+  const nameInput = ref('')
+  const nameFormError = ref('')
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
 
@@ -132,6 +138,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
           createdServer.value = null
           serverModalOpen.value = false
           accessModalOpen.value = false
+          nameModalOpen.value = false
           expirationModalOpen.value = false
           trafficModalOpen.value = false
           trafficAdjustmentModalOpen.value = false
@@ -179,6 +186,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     copiedCommand.value = false
     copiedUpgradeCommand.value = false
     expirationModalOpen.value = false
+    nameModalOpen.value = false
     trafficModalOpen.value = false
     trafficAdjustmentModalOpen.value = false
     expirationInput.value = ''
@@ -318,7 +326,44 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     trafficAdjustmentModalOpen.value = false
     accessModalOpen.value = false
     accessFormError.value = ''
+    nameModalOpen.value = false
+    nameInput.value = ''
+    nameFormError.value = ''
     resetTrafficAdjustmentForm()
+  }
+
+  function openNameModal() {
+    if (!selectedServer.value || selectedServer.value.archived_at) return
+    nameInput.value = selectedServer.value.name
+    nameFormError.value = ''
+    nameModalOpen.value = true
+  }
+
+  function closeNameModal() {
+    nameModalOpen.value = false
+    nameInput.value = ''
+    nameFormError.value = ''
+  }
+
+  async function saveServerName() {
+    if (!selectedServer.value || submitting.value) return
+    const name = nameInput.value.trim()
+    if (!name || [...name].length > 100) {
+      nameFormError.value = '服务器名称不能为空且不能超过 100 个字符'
+      return
+    }
+    const id = selectedServer.value.id
+    nameFormError.value = ''
+    await submit(async () => {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      })
+      selectedServer.value = response.server
+      closeNameModal()
+      await loadServers()
+    })
+    if (nameModalOpen.value && error.value) nameFormError.value = error.value
   }
 
   function openExpirationModal() {
@@ -443,17 +488,21 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     }
   }
 
-  async function reorderServer(value: ServerRecord, direction: 'up' | 'down') {
+  async function reorderServer(value: ServerRecord, targetID: number) {
     if (serverReorderingID.value !== null) return
+    const rows = value.archived_at ? archivedServers.value : servers.value
+    const move = moveRow(rows, value.id, targetID)
+    if (!move) return
     serverReorderingID.value = value.id
     error.value = ''
     try {
-      await api(`/api/servers/${value.id}/reorder`, {
-        method: 'POST',
-        body: JSON.stringify({ direction }),
-      })
-      if (serverLoadPromise) await serverLoadPromise
-      await loadServers()
+      await persistMove(move, (direction) =>
+        api(`/api/servers/${value.id}/reorder`, {
+          method: 'POST',
+          body: JSON.stringify({ direction }),
+        }),
+        loadServers,
+      )
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : '调整服务器顺序失败'
     } finally {
@@ -468,6 +517,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     createdServer.value = null
     serverModalOpen.value = false
     expirationModalOpen.value = false
+    nameModalOpen.value = false
+    nameInput.value = ''
+    nameFormError.value = ''
     trafficAdjustmentModalOpen.value = false
     accessModalOpen.value = false
     expirationInput.value = ''
@@ -476,6 +528,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   async function handleMissingServer() {
     if (!serverModalOpen.value) return
     serverModalOpen.value = false
+    nameModalOpen.value = false
     selectedServer.value = null
     createdServer.value = null
     await loadServers().catch(() => undefined)
@@ -488,6 +541,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     createdServer,
     serverModalOpen,
     expirationModalOpen,
+    nameModalOpen,
+    nameInput,
+    nameFormError,
     trafficAdjustmentModalOpen,
     accessModalOpen,
     serverName,
@@ -531,6 +587,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     archiveServer,
     regenerateEnrollment,
     closeServerDetails,
+    openNameModal,
+    closeNameModal,
+    saveServerName,
     openExpirationModal,
     closeExpirationModal,
     saveExpiration,
@@ -546,6 +605,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     reorderServer,
     state,
     users,
+    orderedUsers,
     health,
     submitting,
     formatTime,

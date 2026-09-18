@@ -254,7 +254,7 @@ h1 {
 }
 
 .proxy-table {
-  min-width: 1180px;
+  min-width: 1080px;
 }
 
 .secondary-text {
@@ -391,9 +391,34 @@ h1 {
 }
 
 .server-modal-card {
-  width: min(640px, calc(100vw - 32px));
+  width: min(960px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
+}
+
+.server-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.server-detail-section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #e7ebef;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.server-detail-section .system-info-title,
+.server-detail-section .section-heading {
+  margin-top: 0;
+}
+
+.server-detail-section--wide {
+  margin-bottom: 16px;
 }
 
 .proxy-form-card {
@@ -634,21 +659,32 @@ h1 {
 }
 
 .server-table .reorder-cell {
-  width: 50px;
+  width: 42px;
   padding: 8px 4px;
 }
 
-.reorder-controls {
-  display: flex;
-  gap: 2px;
+.drag-handle {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  cursor: grab;
 }
 
-.reorder-controls .n-button {
-  width: 20px;
-  height: 20px;
-  min-width: 20px;
-  padding: 0;
+.drag-handle > span {
+  display: block;
+  height: 2px;
+  border-radius: 1px;
+  background: #73808c;
 }
+
+.drag-handle:active { cursor: grabbing; }
+.drag-handle--disabled { opacity: 0.35; cursor: not-allowed; }
+.server-table tr.row-dragging { opacity: 0.5; }
+.server-table tr.row-drop-target { background: #eef8f2; }
 
 .health-grid {
   display: grid;
@@ -847,4 +883,9 @@ h1 {
     grid-template-columns: 1fr;
     gap: 3px;
   }
+}
+
+@media (max-width: 720px) {
+  .server-detail-grid { grid-template-columns: 1fr; }
+  .server-modal-card { width: calc(100vw - 24px); }
 }

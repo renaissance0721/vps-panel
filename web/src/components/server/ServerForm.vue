@@ -19,7 +19,7 @@ const props = defineProps<{
     | 'serverVisibility'
     | 'submitting'
     | 'ensureCreateCurrentUser'
-    | 'users'
+    | 'orderedUsers'
     | 'serverAccessUserIDs'
     | 'state'
   >
@@ -31,7 +31,7 @@ const {
   serverVisibility,
   submitting,
   ensureCreateCurrentUser,
-  users,
+  orderedUsers,
   serverAccessUserIDs,
   state,
 } = toRefs(props.model)
@@ -64,7 +64,7 @@ const {
                 </label>
                 <fieldset v-if="serverVisibility === 'private'" class="server-access-users">
                   <legend>允许访问的账号</legend>
-                  <label v-for="user in users" :key="user.id" class="server-access-user">
+                  <label v-for="user in orderedUsers" :key="user.id" class="server-access-user">
                     <input
                       v-model="serverAccessUserIDs"
                       type="checkbox"

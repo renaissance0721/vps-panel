@@ -33,6 +33,7 @@ import type {
 import {
   formatTime,
 } from '../format'
+import { moveRow, persistMove } from '../reorder'
 import {
   useProxyForm,
 } from './useProxyForm'
@@ -93,17 +94,25 @@ export function useProxies(props: { servers: ServerOption[] }) {
     proxies.value = response.proxies
   }
 
-  async function reorderProxy(value: ProxyRecord, direction: 'up' | 'down') {
+  async function reorderProxy(value: ProxyRecord, targetID: number) {
     if (reorderingID.value !== null || search.value.trim()) return
+    const move = moveRow(proxies.value, value.id, targetID)
+    if (!move) return
     reorderingID.value = value.id
-    await run(async () => {
-      await api(`/api/proxies/${value.id}/reorder`, {
-        method: 'POST',
-        body: JSON.stringify({ direction }),
-      })
-      await loadProxies()
-    })
-    reorderingID.value = null
+    error.value = ''
+    try {
+      await persistMove(move, (direction) =>
+        api(`/api/proxies/${value.id}/reorder`, {
+          method: 'POST',
+          body: JSON.stringify({ direction }),
+        }),
+        loadProxies,
+      )
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '调整代理节点顺序失败'
+    } finally {
+      reorderingID.value = null
+    }
   }
 
   watch(

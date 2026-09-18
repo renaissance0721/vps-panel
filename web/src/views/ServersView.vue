@@ -12,6 +12,7 @@ import ServerForm from '../components/server/ServerForm.vue'
 import ServerList from '../components/server/ServerList.vue'
 import ServerDetail from '../components/server/ServerDetail.vue'
 import ServerAccessForm from '../components/server/ServerAccessForm.vue'
+import ServerNameForm from '../components/server/ServerNameForm.vue'
 import ServerExpirationForm from '../components/server/ServerExpirationForm.vue'
 import ServerTrafficForm from '../components/server/ServerTrafficForm.vue'
 import ServerTrafficAdjustmentForm from '../components/server/ServerTrafficAdjustmentForm.vue'
@@ -43,6 +44,7 @@ const { serverListMode } = toRefs(props.model)
           <ServerForm :model="model" /><ServerList :model="model" /></template>
 <ServerDetail :model="model" />
 <ServerAccessForm :model="model" />
+<ServerNameForm :model="model" />
 <ServerExpirationForm :model="model" />
 <ServerTrafficForm :model="model" />
 <ServerTrafficAdjustmentForm :model="model" />

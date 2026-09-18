@@ -105,10 +105,26 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	hasExpiration := len(request.ExpiresAt) != 0
+	hasName := request.Name != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
-	if hasExpiration == hasAnyTraffic {
+	settingCount := 0
+	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic} {
+		if present {
+			settingCount++
+		}
+	}
+	if settingCount != 1 {
 		writeError(w, http.StatusBadRequest, "服务器设置格式无效")
+		return
+	}
+	if hasName {
+		updated, err := s.servers.UpdateName(r.Context(), id, *request.Name)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
 	if hasAnyTraffic {

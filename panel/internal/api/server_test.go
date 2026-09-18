@@ -373,6 +373,50 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 }
 
+func TestServerRenamePatchContract(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	handler := NewHandler(db, t.TempDir())
+	initialized := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{"username": "admin", "password": "strong-password"}, nil)
+	if initialized.Code != http.StatusCreated {
+		t.Fatalf("initialize: %d %s", initialized.Code, initialized.Body.String())
+	}
+	cookie := initialized.Result().Cookies()[0]
+	created := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]string{"name": "Original"}, cookie)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", created.Code, created.Body.String())
+	}
+	var result createdServerResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/servers/" + strconv.FormatInt(result.Server.ID, 10)
+	renamed := performRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "  Renamed  "}, cookie)
+	if renamed.Code != http.StatusOK || !strings.Contains(renamed.Body.String(), `"name":"Renamed"`) {
+		t.Fatalf("rename: %d %s", renamed.Code, renamed.Body.String())
+	}
+	for _, payload := range []map[string]any{
+		{"name": "  "},
+		{"name": strings.Repeat("a", 101)},
+		{"name": "Another", "expires_at": "2026-12-31"},
+	} {
+		response := performRequest(t, handler, http.MethodPatch, path, payload, cookie)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid patch %v: %d %s", payload, response.Code, response.Body.String())
+		}
+		if payload["expires_at"] != nil && !strings.Contains(response.Body.String(), "服务器设置格式无效") {
+			t.Fatalf("mixed patch: %s", response.Body.String())
+		}
+	}
+	missing := performRequest(t, handler, http.MethodPatch, "/api/servers/999999", map[string]any{"name": "Missing"}, cookie)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing rename: %d %s", missing.Code, missing.Body.String())
+	}
+}
+
 func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

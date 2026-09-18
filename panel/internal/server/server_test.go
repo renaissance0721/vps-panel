@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -49,5 +50,31 @@ func TestCreateRejectsInvalidName(t *testing.T) {
 		if _, err := service.Create(context.Background(), name); !errors.Is(err, ErrInvalidName) {
 			t.Fatalf("Create(%q) error = %v, want ErrInvalidName", name, err)
 		}
+	}
+}
+
+func TestUpdateName(t *testing.T) {
+	service, _ := newTestService(t)
+	created, err := service.Create(context.Background(), "Original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return updatedAt }
+	updated, err := service.UpdateName(context.Background(), created.ID, "  Renamed  ")
+	if err != nil || updated.Name != "Renamed" || updated.ID != created.ID || !updated.UpdatedAt.Equal(updatedAt) || updated.Status != created.Status {
+		t.Fatalf("UpdateName() = (%+v, %v)", updated, err)
+	}
+	listed, err := service.List(context.Background())
+	if err != nil || len(listed) != 1 || listed[0].Name != "Renamed" {
+		t.Fatalf("List() = (%+v, %v)", listed, err)
+	}
+	for _, name := range []string{"   ", strings.Repeat("a", maxNameLength+1)} {
+		if _, err := service.UpdateName(context.Background(), created.ID, name); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("UpdateName(%q) error = %v", name, err)
+		}
+	}
+	if _, err := service.UpdateName(context.Background(), created.ID+100, "Missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateName(missing) error = %v", err)
 	}
 }

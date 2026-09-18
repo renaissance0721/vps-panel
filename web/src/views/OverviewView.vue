@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  computed,
   toRefs,
 } from 'vue'
 import {
@@ -12,9 +13,11 @@ import {
 import type {
   OverviewViewState,
 } from '../composables/useOverview'
+import { adminFirst } from '../adminFirst'
 
 const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation'> }>()
 const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, copyInvitation, copied, invitations, formatTime, revokeInvitation } = toRefs(props.model)
+const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 </script>
 
 <template>
@@ -22,19 +25,19 @@ const { overview, isHealthy, health, state, submitting, createInvitation, genera
             <n-card title="已注册账号" :bordered="true" class="overview-summary-card">
               <strong class="overview-summary-number">{{ overview?.users.length ?? '—' }}</strong>
               <div class="overview-users">
-                <div v-for="account in overview?.users ?? []" :key="account.username" class="overview-user">
+                <div v-for="account in orderedUsers" :key="account.username" class="overview-user">
                   <span>{{ account.username }}</span>
                   <n-tag :type="account.role === 'admin' ? 'info' : 'default'" size="small">{{ account.role }}</n-tag>
                 </div>
               </div>
             </n-card>
             <n-card title="服务器" :bordered="true" class="overview-summary-card">
-              <strong class="overview-summary-number">{{ overview?.server_count ?? '—' }}</strong>
               <span class="overview-summary-caption">当前账号可访问</span>
+              <strong class="overview-summary-number">{{ overview?.server_count ?? '—' }}</strong>
             </n-card>
             <n-card title="代理节点" :bordered="true" class="overview-summary-card">
-              <strong class="overview-summary-number">{{ overview?.proxy_count ?? '—' }}</strong>
               <span class="overview-summary-caption">当前账号可访问</span>
+              <strong class="overview-summary-number">{{ overview?.proxy_count ?? '—' }}</strong>
             </n-card>
           </div>
           <div class="dashboard-grid">

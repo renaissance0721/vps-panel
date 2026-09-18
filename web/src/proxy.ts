@@ -21,6 +21,13 @@ export const shadowsocksMethods: ShadowsocksMethod[] = [
   '2022-blake3-aes-256-gcm',
 ]
 
+export function proxyAddressLines(value: { server_public_ipv4: string; entry_address: string }): string[] {
+  const ip = value.server_public_ipv4
+  const address = value.entry_address
+  if (!ip && !address) return ['未检测']
+  return address && address !== ip ? [ip, address].filter(Boolean) : [ip || address]
+}
+
 export function proxyListProtocolFields(protocol: ProxyProtocol, security?: 'tls' | 'reality') {
   if (protocol === 'shadowsocks') {
     return { protocol: 'Shadowsocks', transport: '--', security: '--', flow: '--' }

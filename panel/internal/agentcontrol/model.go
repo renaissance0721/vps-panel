@@ -57,9 +57,10 @@ type AgentUpgrade struct {
 }
 
 type DesiredState struct {
-	Version int64
-	Proxies []proxystore.DesiredProxy
-	Relays  []relaystore.DesiredRelay
+	Version            int64
+	OutboundPreference string
+	Proxies            []proxystore.DesiredProxy
+	Relays             []relaystore.DesiredRelay
 }
 
 type ConfigResult struct {

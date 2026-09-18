@@ -29,6 +29,51 @@ func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server
 	return s.Get(ctx, id)
 }
 
+func (s *Service) UpdateOutboundPreference(ctx context.Context, id int64, preference string) (Server, int64, error) {
+	switch preference {
+	case OutboundAuto, OutboundPreferIPv4, OutboundPreferIPv6:
+	default:
+		return Server{}, 0, ErrInvalidOutboundPreference
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Server{}, 0, fmt.Errorf("begin outbound preference update: %w", err)
+	}
+	defer tx.Rollback()
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE servers SET outbound_preference = ?, desired_state_version = desired_state_version + 1, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`, preference, now, id,
+	)
+	if err != nil {
+		return Server{}, 0, fmt.Errorf("update outbound preference: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, 0, fmt.Errorf("read updated outbound preference count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, 0, ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+		now, id,
+	); err != nil {
+		return Server{}, 0, fmt.Errorf("mark Agent config pending: %w", err)
+	}
+	var version int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT desired_state_version FROM servers WHERE id = ?`, id,
+	).Scan(&version); err != nil {
+		return Server{}, 0, fmt.Errorf("read desired state version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Server{}, 0, fmt.Errorf("commit outbound preference update: %w", err)
+	}
+	updated, err := s.Get(ctx, id)
+	return updated, version, err
+}
+
 func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *time.Time) (Server, error) {
 	var expiresAtValue any
 	if expiresAt != nil {

@@ -40,6 +40,7 @@ const props = defineProps<{
     | 'formatPercent'
     | 'formatBytes'
     | 'formatUptime'
+    | 'setOutboundPreference'
     | 'regenerateEnrollment'
     | 'permanentlyDeleteServer'
     | 'createdServer'
@@ -71,6 +72,7 @@ const {
   formatPercent,
   formatBytes,
   formatUptime,
+  setOutboundPreference,
   regenerateEnrollment,
   permanentlyDeleteServer,
   createdServer,
@@ -220,23 +222,34 @@ const {
               size="small"
               description="暂无动态指标"
             />
-            <dl v-else class="server-details">
-              <div><dt>CPU</dt><dd>{{ formatPercent(selectedServer.metrics.cpu_percent) }}</dd></div>
-              <div>
+            <dl class="server-details">
+              <div v-if="selectedServer.metrics"><dt>CPU</dt><dd>{{ formatPercent(selectedServer.metrics.cpu_percent) }}</dd></div>
+              <div v-if="selectedServer.metrics">
                 <dt>内存</dt>
                 <dd>
                   {{ formatBytes(selectedServer.metrics.memory_used_bytes) }} /
                   {{ formatBytes(selectedServer.metrics.memory_total_bytes) }}
                 </dd>
               </div>
-              <div>
+              <div v-if="selectedServer.metrics">
                 <dt>根分区磁盘</dt>
                 <dd>
                   {{ formatBytes(selectedServer.metrics.disk_used_bytes) }} /
                   {{ formatBytes(selectedServer.metrics.disk_total_bytes) }}
                 </dd>
               </div>
-              <div><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
+              <div v-if="selectedServer.metrics"><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
+              <div>
+                <dt>当前出站</dt>
+                <dd>
+                  <span class="outbound-preference-buttons">
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
+                  </span>
+                  <small v-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
+                </dd>
+              </div>
             </dl>
               </section>
             </div>

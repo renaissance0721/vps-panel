@@ -29,6 +29,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerAccess(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerOutboundPreference(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerExpiration(ctx, db); err != nil {
 		return err
 	}
@@ -82,6 +85,24 @@ func migrateServerAccess(ctx context.Context, db *sql.DB) error {
 			 CHECK (visibility IN ('public', 'private'))`,
 		); err != nil {
 			return fmt.Errorf("add servers.visibility: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateServerOutboundPreference(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'outbound_preference'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect servers.outbound_preference: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN outbound_preference TEXT NOT NULL DEFAULT 'auto'
+			 CHECK (outbound_preference IN ('auto', 'prefer_ipv4', 'prefer_ipv6'))`,
+		); err != nil {
+			return fmt.Errorf("add servers.outbound_preference: %w", err)
 		}
 	}
 	return nil

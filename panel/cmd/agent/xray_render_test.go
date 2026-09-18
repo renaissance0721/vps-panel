@@ -20,10 +20,74 @@ import (
 	"time"
 )
 
+func TestRenderManagedXrayOutboundPreference(t *testing.T) {
+	for _, test := range []struct {
+		preference string
+		strategy   string
+	}{
+		{"auto", ""},
+		{"", ""}, // Legacy desired state without the field.
+		{"prefer_ipv4", "UseIPv4v6"},
+		{"prefer_ipv6", "UseIPv6v4"},
+	} {
+		t.Run(test.preference, func(t *testing.T) {
+			value, err := renderManagedXrayConfig(nil, test.preference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var config struct {
+				Outbounds []map[string]any `json:"outbounds"`
+			}
+			if err := json.Unmarshal(value, &config); err != nil {
+				t.Fatal(err)
+			}
+			if len(config.Outbounds) != 1 || config.Outbounds[0]["protocol"] != "freedom" || config.Outbounds[0]["tag"] != "direct" {
+				t.Fatalf("direct outbound = %+v", config.Outbounds)
+			}
+			stream, hasStream := config.Outbounds[0]["streamSettings"]
+			if test.strategy == "" {
+				if hasStream || len(config.Outbounds[0]) != 2 {
+					t.Fatalf("auto direct outbound = %+v", config.Outbounds[0])
+				}
+				return
+			}
+			if !hasStream || stream.(map[string]any)["sockopt"].(map[string]any)["domainStrategy"] != test.strategy {
+				t.Fatalf("direct outbound strategy = %+v", config.Outbounds[0])
+			}
+		})
+	}
+	if _, err := renderManagedXrayConfig(nil, "ForceIPv4"); !errors.Is(err, errUnsupportedManagedConfig) {
+		t.Fatalf("invalid outbound preference error = %v", err)
+	}
+}
+
+func TestRenderedOutboundPreferencePassesXrayValidation(t *testing.T) {
+	binary := os.Getenv("XRAY_TEST_BINARY")
+	if binary == "" {
+		t.Skip("set XRAY_TEST_BINARY to validate against a real Xray binary")
+	}
+	for _, preference := range []string{"auto", "prefer_ipv4", "prefer_ipv6"} {
+		t.Run(preference, func(t *testing.T) {
+			config, err := renderManagedXrayConfig(nil, preference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, config, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.CommandContext(t.Context(), binary, "run", "-test", "-config", path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("Xray validation failed: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func TestRenderManagedXrayTLSWithMultipleClients(t *testing.T) {
 	proxy := testDesiredTLSProxy()
 	proxy.Clients = append(proxy.Clients, desiredClient{ID: 2, StatsID: "vp-client-2", UUID: "123e4567-e89b-42d3-a456-426614174001"})
-	value, err := renderManagedXrayConfig([]desiredProxy{proxy})
+	value, err := renderManagedXrayConfig([]desiredProxy{proxy}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +118,7 @@ func TestRenderManagedXrayACMEUsesCertificateFilesOnly(t *testing.T) {
 	proxy := testDesiredTLSProxy()
 	proxy.ServerName = "jp.example.com"
 	proxy.TLS = &desiredTLS{Mode: "acme"}
-	value, err := renderManagedXrayConfig([]desiredProxy{proxy})
+	value, err := renderManagedXrayConfig([]desiredProxy{proxy}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,14 +134,14 @@ func TestRenderManagedXrayACMEUsesCertificateFilesOnly(t *testing.T) {
 		t.Fatalf("ACME Xray config contains inline PEM or wrong files: %s", value)
 	}
 	proxy.ServerName = "../unsafe.example.com"
-	if _, err := renderManagedXrayConfig([]desiredProxy{proxy}); !errors.Is(err, errUnsupportedManagedConfig) {
+	if _, err := renderManagedXrayConfig([]desiredProxy{proxy}, "auto"); !errors.Is(err, errUnsupportedManagedConfig) {
 		t.Fatalf("unsafe ACME desired domain error = %v", err)
 	}
 }
 
 func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
 	reality := desiredProxy{ID: 2, Listen: "0.0.0.0", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, StatsID: "vp-client-3", UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
-	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), reality})
+	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), reality}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +176,7 @@ func TestRenderManagedXrayRejectsInvalidSemantics(t *testing.T) {
 		func() desiredProxy { value := testDesiredTLSProxy(); value.TLS = nil; return value }(),
 	}
 	for _, value := range tests {
-		if _, err := renderManagedXrayConfig([]desiredProxy{value}); !errors.Is(err, errUnsupportedManagedConfig) {
+		if _, err := renderManagedXrayConfig([]desiredProxy{value}, "auto"); !errors.Is(err, errUnsupportedManagedConfig) {
 			t.Fatalf("invalid proxy error = %v for %+v", err, value)
 		}
 	}
@@ -126,7 +190,7 @@ func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
 	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
 	empty := testDesiredShadowsocksProxy(5, 8390, "2022-blake3-aes-128-gcm", 16)
 	empty.Clients = nil
-	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), ss128, ss256, empty})
+	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), ss128, ss256, empty}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +244,7 @@ func TestRenderManagedXrayRejectsInvalidShadowsocksSecrets(t *testing.T) {
 		}(),
 	}
 	for _, value := range tests {
-		if _, err := renderManagedXrayConfig([]desiredProxy{value}); !errors.Is(err, errUnsupportedManagedConfig) {
+		if _, err := renderManagedXrayConfig([]desiredProxy{value}, "auto"); !errors.Is(err, errUnsupportedManagedConfig) {
 			t.Fatalf("invalid Shadowsocks desired state error = %v for %+v", err, value)
 		}
 	}
@@ -222,7 +286,7 @@ func TestRenderedConfigAcceptedByPinnedXrayWhenAvailable(t *testing.T) {
 		{"shadowsocks-256", []desiredProxy{ss256}},
 	} {
 		t.Run(candidate.name, func(t *testing.T) {
-			value, err := renderManagedXrayConfig(candidate.proxies)
+			value, err := renderManagedXrayConfig(candidate.proxies, "auto")
 			if err != nil {
 				t.Fatal(err)
 			}

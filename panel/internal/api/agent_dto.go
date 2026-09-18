@@ -24,8 +24,9 @@ type agentDesiredStateResponse struct {
 }
 
 type agentDesiredXrayState struct {
-	Enabled bool                      `json:"enabled"`
-	Proxies []proxystore.DesiredProxy `json:"proxies"`
+	Enabled            bool                      `json:"enabled"`
+	OutboundPreference string                    `json:"outbound_preference"`
+	Proxies            []proxystore.DesiredProxy `json:"proxies"`
 }
 
 type agentDesiredRealmState struct {

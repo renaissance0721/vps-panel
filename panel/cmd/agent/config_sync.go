@@ -29,8 +29,9 @@ type desiredState struct {
 }
 
 type desiredXrayState struct {
-	Enabled bool           `json:"enabled"`
-	Proxies []desiredProxy `json:"proxies"`
+	Enabled            bool           `json:"enabled"`
+	OutboundPreference string         `json:"outbound_preference"`
+	Proxies            []desiredProxy `json:"proxies"`
 }
 
 type desiredProxy struct {

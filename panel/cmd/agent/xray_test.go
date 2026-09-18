@@ -465,7 +465,7 @@ func TestManagedXraySameConfigActiveAndHealthyAvoidsRestart(t *testing.T) {
 	seedManagedXray(t, manager, []byte("binary"))
 	proxy := testDesiredTLSProxy()
 	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}
-	config, err := renderManagedXrayConfig(state.Xray.Proxies)
+	config, err := renderManagedXrayConfig(state.Xray.Proxies, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestManagedXraySameConfigMissingListenerRestartsAndFails(t *testing.T) {
 	seedManagedXray(t, manager, []byte("binary"))
 	proxy := testDesiredTLSProxy()
 	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}
-	config, err := renderManagedXrayConfig(state.Xray.Proxies)
+	config, err := renderManagedXrayConfig(state.Xray.Proxies, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestManagedXrayRemovedProxyAppliesOnlyRemainingPort(t *testing.T) {
 	remaining.Clients[0].ID = 2
 	remaining.Clients[0].StatsID = "vp-client-2"
 	remaining.Clients[0].UUID = "123e4567-e89b-42d3-a456-426614174001"
-	oldConfig, err := renderManagedXrayConfig([]desiredProxy{removed, remaining})
+	oldConfig, err := renderManagedXrayConfig([]desiredProxy{removed, remaining}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestManagedXrayMissingListenerRollsBackNewConfig(t *testing.T) {
 	seedManagedXray(t, manager, []byte("binary"))
 	oldProxy := testDesiredTLSProxy()
 	oldProxy.Port = 8443
-	oldConfig, err := renderManagedXrayConfig([]desiredProxy{oldProxy})
+	oldConfig, err := renderManagedXrayConfig([]desiredProxy{oldProxy}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestManagedXrayFirewallFailureRollsBackNewConfig(t *testing.T) {
 	seedManagedXray(t, manager, []byte("binary"))
 	oldProxy := testDesiredTLSProxy()
 	oldProxy.Port = 8443
-	old, err := renderManagedXrayConfig([]desiredProxy{oldProxy})
+	old, err := renderManagedXrayConfig([]desiredProxy{oldProxy}, "auto")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,11 +782,33 @@ func TestManagedXrayRejectsUnsupportedDesiredStates(t *testing.T) {
 	manager, _ := newTestXrayManager(t)
 	tests := []desiredState{
 		{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{{Protocol: "unsupported"}}}},
+		{Xray: desiredXrayState{Enabled: true, OutboundPreference: "bogus"}},
+		{Xray: desiredXrayState{OutboundPreference: "bogus"}},
 	}
 	for index, state := range tests {
 		if err := manager.apply(t.Context(), state); err == nil || err.Error() != unsupportedManagedConfigMessage {
 			t.Fatalf("unsupported state %d error = %v", index, err)
 		}
+	}
+}
+
+func TestManagedXrayPreferenceChangeValidatesAndAppliesConfig(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, renderManagedXrayBaseConfig(), 0o600)
+	for _, preference := range []string{"prefer_ipv4", "prefer_ipv6", "auto"} {
+		state := desiredState{Xray: desiredXrayState{Enabled: true, OutboundPreference: preference}}
+		if err := manager.apply(t.Context(), state); err != nil {
+			t.Fatalf("apply %s: %v", preference, err)
+		}
+		want, err := renderManagedXrayConfig(nil, preference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFileEquals(t, manager.configPath, want)
+	}
+	if len(commands.validationPaths()) != 3 || commands.count("systemctl", "restart") != 3 {
+		t.Fatalf("preference changes did not validate and restart Xray: %v", commands.calls)
 	}
 }
 

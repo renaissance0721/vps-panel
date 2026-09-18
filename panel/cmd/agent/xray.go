@@ -121,9 +121,12 @@ func (m *xrayManager) apply(ctx context.Context, state desiredState) error {
 		return errUnsupportedManagedConfig
 	}
 	if !state.Xray.Enabled {
+		if _, err := renderManagedXrayConfig(nil, state.Xray.OutboundPreference); err != nil {
+			return err
+		}
 		return m.disable(ctx)
 	}
-	return m.enable(ctx, state.Xray.Proxies)
+	return m.enable(ctx, state.Xray.Proxies, state.Xray.OutboundPreference)
 }
 
 func (m *xrayManager) disable(ctx context.Context) error {
@@ -159,7 +162,7 @@ func (m *xrayManager) disable(ctx context.Context) error {
 	return nil
 }
 
-func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) (applyErr error) {
+func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy, outboundPreference string) (applyErr error) {
 	expectedPorts := expectedProxyPorts(proxies)
 	expectedRules := expectedProxyFirewallRules(proxies)
 	domains := make([]string, 0)
@@ -170,7 +173,7 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy) (apply
 			domains = append(domains, proxy.ServerName)
 		}
 	}
-	candidate, err := renderManagedXrayConfig(proxies)
+	candidate, err := renderManagedXrayConfig(proxies, outboundPreference)
 	if err != nil {
 		return err
 	}
@@ -702,7 +705,7 @@ func renderedConfigState(value []byte) ([]int, []firewallRule, bool) {
 }
 
 func renderManagedXrayBaseConfig() []byte {
-	value, _ := renderManagedXrayConfig(nil)
+	value, _ := renderManagedXrayConfig(nil, "auto")
 	return value
 }
 

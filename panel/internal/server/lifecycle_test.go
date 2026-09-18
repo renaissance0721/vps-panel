@@ -83,6 +83,46 @@ func TestPermanentlyDeleteOnlyDeletesArchivedServer(t *testing.T) {
 	}
 }
 
+func TestUpdateOutboundPreferenceBumpsDesiredStateAndMarksAgentPending(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(t.Context(), "Outbound preference")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.21.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agents SET config_sync_status = 'failed', config_sync_error = 'previous failure' WHERE id = ?`, registered.ID); err != nil {
+		t.Fatal(err)
+	}
+	for index, preference := range []string{OutboundPreferIPv4, OutboundPreferIPv6, OutboundAuto} {
+		updated, version, err := service.UpdateOutboundPreference(t.Context(), created.ID, preference)
+		if err != nil || updated.OutboundPreference != preference || version != int64(index+2) {
+			t.Fatalf("UpdateOutboundPreference(%q) = (%+v, %d, %v)", preference, updated, version, err)
+		}
+		var status, syncError string
+		var storedVersion int64
+		if err := db.QueryRow(`SELECT agents.config_sync_status, agents.config_sync_error, servers.desired_state_version
+			FROM agents JOIN servers ON servers.id = agents.server_id WHERE agents.id = ?`, registered.ID,
+		).Scan(&status, &syncError, &storedVersion); err != nil {
+			t.Fatal(err)
+		}
+		if status != "pending" || syncError != "" || storedVersion != version {
+			t.Fatalf("sync state = (%q, %q, %d), want pending, empty, %d", status, syncError, storedVersion, version)
+		}
+		listed, err := service.List(t.Context())
+		if err != nil || len(listed) != 1 || listed[0].OutboundPreference != preference {
+			t.Fatalf("List() = (%+v, %v)", listed, err)
+		}
+	}
+	for _, invalid := range []string{"", "ipv4", "force_ipv6"} {
+		if _, _, err := service.UpdateOutboundPreference(t.Context(), created.ID, invalid); !errors.Is(err, ErrInvalidOutboundPreference) {
+			t.Fatalf("invalid preference %q error = %v", invalid, err)
+		}
+	}
+}
+
 func TestUpdateExpirationSetsModifiesClearsAndReturnsFromQueries(t *testing.T) {
 	service, _ := newTestService(t)
 	created, err := service.Create(context.Background(), "Expiration")

@@ -94,11 +94,30 @@ type renderedRealitySettings struct {
 }
 
 type renderedXrayOutbound struct {
-	Protocol string `json:"protocol"`
-	Tag      string `json:"tag"`
+	Protocol       string                              `json:"protocol"`
+	Tag            string                              `json:"tag"`
+	StreamSettings *renderedXrayOutboundStreamSettings `json:"streamSettings,omitempty"`
 }
 
-func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
+type renderedXrayOutboundStreamSettings struct {
+	Sockopt renderedXraySockopt `json:"sockopt"`
+}
+
+type renderedXraySockopt struct {
+	DomainStrategy string `json:"domainStrategy"`
+}
+
+func renderManagedXrayConfig(proxies []desiredProxy, outboundPreference string) ([]byte, error) {
+	direct := renderedXrayOutbound{Protocol: "freedom", Tag: "direct"}
+	switch outboundPreference {
+	case "", "auto":
+	case "prefer_ipv4":
+		direct.StreamSettings = &renderedXrayOutboundStreamSettings{Sockopt: renderedXraySockopt{DomainStrategy: "UseIPv4v6"}}
+	case "prefer_ipv6":
+		direct.StreamSettings = &renderedXrayOutboundStreamSettings{Sockopt: renderedXraySockopt{DomainStrategy: "UseIPv6v4"}}
+	default:
+		return nil, errUnsupportedManagedConfig
+	}
 	config := renderedXrayConfig{
 		Log: renderedXrayLog{LogLevel: "warning"},
 		API: renderedXrayAPI{Tag: "api", Listen: managedXrayStatsAPIAddress, Services: []string{"StatsService"}},
@@ -107,7 +126,7 @@ func renderManagedXrayConfig(proxies []desiredProxy) ([]byte, error) {
 		}},
 		Stats:     renderedXrayStats{},
 		Inbounds:  make([]renderedXrayInbound, 0, len(proxies)),
-		Outbounds: []renderedXrayOutbound{{Protocol: "freedom", Tag: "direct"}},
+		Outbounds: []renderedXrayOutbound{direct},
 	}
 	ports := make(map[int]struct{}, len(proxies))
 	for _, proxy := range proxies {

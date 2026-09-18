@@ -3,6 +3,7 @@ export type ServerRecord = {
   name: string
   status: 'pending' | 'online' | 'offline'
   visibility: 'public' | 'private'
+  outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'
   access_user_ids: number[]
   archived_at?: string
   expires_at: string | null

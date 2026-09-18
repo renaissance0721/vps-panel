@@ -35,7 +35,7 @@ after(async () => {
 function serverRecord(overrides = {}) {
   return {
     id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
-    archived_at: null, expires_at: null, monthly_traffic_limit_bytes: null,
+    archived_at: null, expires_at: null, outbound_preference: 'auto', monthly_traffic_limit_bytes: null,
     traffic_count_mode: 'single', traffic_reset_day: 1, traffic_reset_time: '00:00',
     traffic_used_bytes: 0, last_seen_at: null, system_info: null, metrics: null,
     created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z',
@@ -146,6 +146,58 @@ test('服务器名称保存后详情保持打开且列表使用新名称', async
   const detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /server-detail-grid/)
   for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
+})
+
+test('出站优先级按钮高亮当前设置，归档时禁用', async () => {
+  const { model } = serverModel()
+  for (const [preference, label] of [['auto', '系统默认'], ['prefer_ipv4', '优先 IPv4'], ['prefer_ipv6', '优先 IPv6']]) {
+    model.viewServer(serverRecord({ outbound_preference: preference, status: 'offline' }))
+    const detail = await render('components/server/ServerDetail.vue', model)
+    assert.match(detail, new RegExp(`<button[^>]*type="primary"[^>]*>${label}</button>`))
+    assert.match(detail, /设置会保存，待 Agent 下次上线自动应用。/)
+  }
+  model.viewServer(serverRecord({ archived_at: '2026-09-18T00:00:00Z', outbound_preference: 'prefer_ipv6' }))
+  const archived = await render('components/server/ServerDetail.vue', model)
+  assert.match(archived, /<button[^>]*disabled[^>]*>优先 IPv6<\/button>/)
+})
+
+test('切换出站优先级发送单项 PATCH 并保持详情打开', async t => {
+  let current = serverRecord({ status: 'online' })
+  const calls = []
+  const prompts = []
+  const originalConfirm = window.confirm
+  let approved = false
+  window.confirm = message => { prompts.push(message); return approved }
+  t.after(() => { window.confirm = originalConfirm })
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'PATCH') {
+      calls.push({ url, body: JSON.parse(init.body) })
+      current = serverRecord({ ...current, outbound_preference: calls.at(-1).body.outbound_preference })
+      return json({ server: current })
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : [current] })
+  })
+  const { model, submitting } = serverModel()
+  model.viewServer(current)
+  await model.setOutboundPreference(current, 'auto')
+  assert.equal(calls.length, 0)
+  assert.equal(prompts.length, 0)
+  await model.setOutboundPreference(current, 'prefer_ipv4')
+  assert.equal(calls.length, 0)
+  assert.equal(prompts[0], '切换出站 IP 优先级会重新应用 Xray 配置，现有代理连接可能短暂中断。是否继续？')
+  approved = true
+  for (const preference of ['prefer_ipv4', 'prefer_ipv6']) {
+    await model.setOutboundPreference(model.selectedServer.value, preference)
+    assert.deepEqual(calls.at(-1), { url: '/api/servers/7', body: { outbound_preference: preference } })
+    assert.equal(model.selectedServer.value.outbound_preference, preference)
+    assert.equal(model.servers.value[0].outbound_preference, preference)
+    assert.equal(model.serverModalOpen.value, true)
+    assert.equal(submitting.value, false)
+  }
+  const count = calls.length
+  await model.setOutboundPreference(model.selectedServer.value, 'prefer_ipv6')
+  await model.setOutboundPreference(serverRecord({ archived_at: '2026-09-18T00:00:00Z' }), 'auto')
+  assert.equal(calls.length, count)
 })
 
 test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段', async t => {

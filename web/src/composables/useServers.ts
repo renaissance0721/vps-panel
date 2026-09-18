@@ -366,6 +366,19 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     if (nameModalOpen.value && error.value) nameFormError.value = error.value
   }
 
+  async function setOutboundPreference(server: ServerRecord, preference: ServerRecord['outbound_preference']) {
+    if (submitting.value || server.archived_at || server.outbound_preference === preference) return
+    if (!window.confirm('切换出站 IP 优先级会重新应用 Xray 配置，现有代理连接可能短暂中断。是否继续？')) return
+    await submit(async () => {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${server.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ outbound_preference: preference }),
+      })
+      selectedServer.value = response.server
+      await loadServers()
+    })
+  }
+
   function openExpirationModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     expirationInput.value = selectedServer.value.expires_at
@@ -590,6 +603,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     openNameModal,
     closeNameModal,
     saveServerName,
+    setOutboundPreference,
     openExpirationModal,
     closeExpirationModal,
     saveExpiration,

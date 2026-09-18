@@ -43,8 +43,9 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
 		Version: state.Version,
 		Xray: agentDesiredXrayState{
-			Enabled: len(state.Proxies) > 0,
-			Proxies: state.Proxies,
+			Enabled:            len(state.Proxies) > 0,
+			OutboundPreference: state.OutboundPreference,
+			Proxies:            state.Proxies,
 		},
 		Realm: agentDesiredRealmState{
 			Enabled: len(state.Relays) > 0,

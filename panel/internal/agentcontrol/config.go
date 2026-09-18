@@ -21,11 +21,11 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		return DesiredState{}, err
 	}
 	err = tx.QueryRowContext(ctx,
-		`SELECT servers.desired_state_version
+		`SELECT servers.desired_state_version, servers.outbound_preference
 		 FROM agents JOIN servers ON servers.id = agents.server_id
 		 WHERE agents.id = ? AND agents.server_id = ? AND servers.archived_at IS NULL`,
 		agentID, serverID,
-	).Scan(&state.Version)
+	).Scan(&state.Version, &state.OutboundPreference)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DesiredState{}, ErrInvalidAgentToken
 	}

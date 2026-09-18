@@ -36,12 +36,15 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 		t.Fatalf("Open() migration error = %v", err)
 	}
 	defer db.Close()
-	var visibility string
-	if err := db.QueryRow(`SELECT visibility FROM servers WHERE id = 1`).Scan(&visibility); err != nil {
+	var visibility, outboundPreference string
+	if err := db.QueryRow(`SELECT visibility, outbound_preference FROM servers WHERE id = 1`).Scan(&visibility, &outboundPreference); err != nil {
 		t.Fatal(err)
 	}
 	if visibility != "public" {
 		t.Fatalf("existing server visibility = %q, want public", visibility)
+	}
+	if outboundPreference != "auto" {
+		t.Fatalf("existing server outbound preference = %q, want auto", outboundPreference)
 	}
 	for _, table := range []string{"user_server_order", "user_proxy_order", "user_relay_order"} {
 		var name string

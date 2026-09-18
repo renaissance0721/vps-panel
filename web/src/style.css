@@ -313,6 +313,19 @@ h1 {
   font-weight: 600;
 }
 
+.outbound-preference-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.outbound-preference-note {
+  display: block;
+  margin-top: 6px;
+  color: #65717e;
+  font-weight: 400;
+}
+
 .expiration-display {
   display: flex;
   align-items: center;

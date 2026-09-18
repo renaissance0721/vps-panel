@@ -20,6 +20,9 @@ func TestCreateStoresPendingServerAndHashedEnrollment(t *testing.T) {
 	if created.Name != "JP Native 01" || created.Status != StatusPending {
 		t.Fatalf("Create() server = %+v, want trimmed name and pending status", created.Server)
 	}
+	if created.OutboundPreference != OutboundAuto {
+		t.Fatalf("new server outbound preference = %q, want auto", created.OutboundPreference)
+	}
 	if created.ExpiresAt != nil {
 		t.Fatalf("Create() ExpiresAt = %v, want nil", created.ExpiresAt)
 	}

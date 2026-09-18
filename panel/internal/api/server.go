@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"time"
@@ -106,10 +107,11 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	}
 	hasExpiration := len(request.ExpiresAt) != 0
 	hasName := request.Name != nil
+	hasOutboundPreference := request.OutboundPreference != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic} {
+	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic, hasOutboundPreference} {
 		if present {
 			settingCount++
 		}
@@ -123,6 +125,18 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		if err != nil {
 			writeServerError(w, err)
 			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
+		return
+	}
+	if hasOutboundPreference {
+		updated, version, err := s.servers.UpdateOutboundPreference(r.Context(), id, *request.OutboundPreference)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if err := s.agents.NotifyConfigChanged(id, version); err != nil {
+			log.Printf("notify Agent of outbound preference change: %v", err)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
@@ -258,6 +272,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
 	case errors.Is(err, serverstore.ErrInvalidServerAccess):
 		writeError(w, http.StatusBadRequest, "服务器访问账号无效")
+	case errors.Is(err, serverstore.ErrInvalidOutboundPreference):
+		writeError(w, http.StatusBadRequest, "服务器出站优先级无效")
 	case errors.Is(err, serverstore.ErrNotFound), errors.Is(err, agentcontrol.ErrServerNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, agentcontrol.ErrInvalidEnrollment):

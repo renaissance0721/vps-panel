@@ -81,16 +81,17 @@ func (s *Service) CreateForUser(
 
 	return CreatedServer{
 		Server: Server{
-			ID:               serverID,
-			Name:             name,
-			Status:           StatusPending,
-			Visibility:       visibility,
-			AccessUserIDs:    userIDs,
-			TrafficCountMode: TrafficSingle,
-			TrafficResetDay:  defaultTrafficResetDay,
-			TrafficResetTime: defaultTrafficResetTime,
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			ID:                 serverID,
+			Name:               name,
+			Status:             StatusPending,
+			Visibility:         visibility,
+			OutboundPreference: OutboundAuto,
+			AccessUserIDs:      userIDs,
+			TrafficCountMode:   TrafficSingle,
+			TrafficResetDay:    defaultTrafficResetDay,
+			TrafficResetTime:   defaultTrafficResetTime,
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		},
 		EnrollmentToken:     enrollment.Token,
 		EnrollmentExpiresAt: enrollment.ExpiresAt,
@@ -135,7 +136,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		arguments = append(arguments, userID)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.visibility,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -179,7 +180,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.visibility,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -228,7 +229,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &value.Visibility, &accessUserIDs, &archivedAt, &expiresAt,
+		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &accessUserIDs, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &storedAgentVersion, &upgradeTarget, &upgradeStatus, &upgradeError,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,

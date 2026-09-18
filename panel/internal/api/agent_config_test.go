@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +59,7 @@ func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
 		t.Fatalf("decode desired state: %v", err)
 	}
-	if state.Version != 1 || state.Xray.Enabled || state.Xray.Proxies == nil || len(state.Xray.Proxies) != 0 ||
+	if state.Version != 1 || state.Xray.Enabled || state.Xray.OutboundPreference != serverstore.OutboundAuto || state.Xray.Proxies == nil || len(state.Xray.Proxies) != 0 ||
 		state.Realm.Enabled || state.Realm.Relays == nil || len(state.Realm.Relays) != 0 {
 		t.Fatalf("initial desired state = %+v", state)
 	}
@@ -216,5 +218,84 @@ func TestPanelSendsConfigChangedToCurrentAgentConnection(t *testing.T) {
 	if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil ||
 		notification.Type != "config_changed" || notification.Version != 7 {
 		t.Fatalf("config notification = %q", message)
+	}
+}
+
+func TestServerOutboundPreferencePatchNotifiesOnlineAgent(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Outbound API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "v0.21.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	initialized := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialized.Code != http.StatusCreated {
+		t.Fatalf("initialize: %d %s", initialized.Code, initialized.Body.String())
+	}
+	cookie := initialized.Result().Cookies()[0]
+	panel := httptest.NewServer(handler)
+	defer panel.Close()
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + registered.Token}},
+	})
+	if err != nil {
+		t.Fatalf("connect Agent: %v, response = %+v", err, response)
+	}
+	defer connection.CloseNow()
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	path := "/api/servers/" + strconv.FormatInt(created.ID, 10)
+	for _, payload := range []map[string]any{
+		{"name": "changed", "outbound_preference": "prefer_ipv4"},
+		{"outbound_preference": "invalid"},
+	} {
+		response := performRequest(t, handler, http.MethodPatch, path, payload, cookie)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid PATCH %v = %d %s", payload, response.Code, response.Body.String())
+		}
+	}
+	changed := performRequest(t, handler, http.MethodPatch, path, map[string]string{
+		"outbound_preference": "prefer_ipv4",
+	}, cookie)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("preference PATCH = %d %s", changed.Code, changed.Body.String())
+	}
+	var updated struct {
+		Server serverResponse `json:"server"`
+	}
+	if err := json.Unmarshal(changed.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Server.OutboundPreference != serverstore.OutboundPreferIPv4 {
+		t.Fatalf("server response preference = %q", updated.Server.OutboundPreference)
+	}
+	readContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, message, err := connection.Read(readContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notification struct {
+		Type    string `json:"type"`
+		Version int64  `json:"version"`
+	}
+	if err := json.Unmarshal(message, &notification); err != nil || notification.Type != "config_changed" || notification.Version != 2 {
+		t.Fatalf("config notification = %s, error = %v", message, err)
+	}
+	stateResponse := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, registered.Token)
+	var state agentDesiredStateResponse
+	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil ||
+		state.Version != 2 || state.Xray.OutboundPreference != serverstore.OutboundPreferIPv4 {
+		t.Fatalf("desired state = (%d, %s)", stateResponse.Code, stateResponse.Body.String())
 	}
 }

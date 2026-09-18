@@ -35,6 +35,8 @@ func schemaStatements() []string {
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
 			visibility TEXT NOT NULL DEFAULT 'public'
 				CHECK (visibility IN ('public', 'private')),
+			outbound_preference TEXT NOT NULL DEFAULT 'auto'
+				CHECK (outbound_preference IN ('auto', 'prefer_ipv4', 'prefer_ipv6')),
 			desired_state_version INTEGER NOT NULL DEFAULT 1,
 			archived_at INTEGER,
 			expires_at INTEGER,

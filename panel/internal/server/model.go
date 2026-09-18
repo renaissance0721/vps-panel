@@ -11,6 +11,9 @@ const (
 	StatusOffline           = "offline"
 	VisibilityPublic        = "public"
 	VisibilityPrivate       = "private"
+	OutboundAuto            = "auto"
+	OutboundPreferIPv4      = "prefer_ipv4"
+	OutboundPreferIPv6      = "prefer_ipv6"
 	TrafficSingle           = "single"
 	TrafficBidirectional    = "bidirectional"
 	maxNameLength           = 100
@@ -20,14 +23,15 @@ const (
 )
 
 var (
-	ErrInvalidName          = errors.New("server name must be 1-100 characters")
-	ErrNotFound             = errors.New("server not found")
-	ErrInvalidSystemInfo    = errors.New("invalid system information")
-	ErrInvalidMetrics       = errors.New("invalid server metrics")
-	ErrInvalidTrafficConfig = errors.New("invalid server traffic configuration")
-	ErrInvalidTrafficTarget = errors.New("invalid server traffic target")
-	ErrInvalidVisibility    = errors.New("invalid server visibility")
-	ErrInvalidServerAccess  = errors.New("invalid server access list")
+	ErrInvalidName               = errors.New("server name must be 1-100 characters")
+	ErrNotFound                  = errors.New("server not found")
+	ErrInvalidSystemInfo         = errors.New("invalid system information")
+	ErrInvalidMetrics            = errors.New("invalid server metrics")
+	ErrInvalidTrafficConfig      = errors.New("invalid server traffic configuration")
+	ErrInvalidTrafficTarget      = errors.New("invalid server traffic target")
+	ErrInvalidVisibility         = errors.New("invalid server visibility")
+	ErrInvalidServerAccess       = errors.New("invalid server access list")
+	ErrInvalidOutboundPreference = errors.New("invalid server outbound preference")
 )
 
 type Server struct {
@@ -35,6 +39,7 @@ type Server struct {
 	Name                     string
 	Status                   string
 	Visibility               string
+	OutboundPreference       string
 	AccessUserIDs            []int64
 	ArchivedAt               *time.Time
 	ExpiresAt                *time.Time

@@ -14,32 +14,34 @@ import (
 )
 
 type createRelayRequest struct {
-	ServerID      int64  `json:"server_id"`
-	Name          string `json:"name"`
-	ListenAddress string `json:"listen_address"`
-	ListenPort    int    `json:"listen_port"`
-	EntryHostMode string `json:"entry_host_mode"`
-	EntryHost     string `json:"entry_host"`
-	TargetType    string `json:"target_type"`
-	TargetProxyID *int64 `json:"target_proxy_id"`
-	TargetHost    string `json:"target_host"`
-	TargetPort    int    `json:"target_port"`
-	Network       string `json:"network"`
-	Enabled       *bool  `json:"enabled"`
+	ServerID       int64  `json:"server_id"`
+	Name           string `json:"name"`
+	ListenAddress  string `json:"listen_address"`
+	ListenPort     int    `json:"listen_port"`
+	EntryHostMode  string `json:"entry_host_mode"`
+	EntryHost      string `json:"entry_host"`
+	TargetType     string `json:"target_type"`
+	TargetProxyID  *int64 `json:"target_proxy_id"`
+	TargetClientID *int64 `json:"target_client_id"`
+	TargetHost     string `json:"target_host"`
+	TargetPort     int    `json:"target_port"`
+	Network        string `json:"network"`
+	Enabled        *bool  `json:"enabled"`
 }
 
 type updateRelayRequest struct {
-	Name          *string `json:"name"`
-	ListenAddress *string `json:"listen_address"`
-	ListenPort    *int    `json:"listen_port"`
-	EntryHostMode *string `json:"entry_host_mode"`
-	EntryHost     *string `json:"entry_host"`
-	TargetType    *string `json:"target_type"`
-	TargetProxyID *int64  `json:"target_proxy_id"`
-	TargetHost    *string `json:"target_host"`
-	TargetPort    *int    `json:"target_port"`
-	Network       *string `json:"network"`
-	Enabled       *bool   `json:"enabled"`
+	Name           *string `json:"name"`
+	ListenAddress  *string `json:"listen_address"`
+	ListenPort     *int    `json:"listen_port"`
+	EntryHostMode  *string `json:"entry_host_mode"`
+	EntryHost      *string `json:"entry_host"`
+	TargetType     *string `json:"target_type"`
+	TargetProxyID  *int64  `json:"target_proxy_id"`
+	TargetClientID *int64  `json:"target_client_id"`
+	TargetHost     *string `json:"target_host"`
+	TargetPort     *int    `json:"target_port"`
+	Network        *string `json:"network"`
+	Enabled        *bool   `json:"enabled"`
 }
 
 type relayResponse struct {
@@ -55,6 +57,7 @@ type relayResponse struct {
 	EntryAddress       string    `json:"entry_address"`
 	TargetType         string    `json:"target_type"`
 	TargetProxyID      *int64    `json:"target_proxy_id"`
+	TargetClientID     *int64    `json:"target_client_id"`
 	TargetProxyName    string    `json:"target_proxy_name"`
 	TargetHost         string    `json:"target_host"`
 	TargetPort         int       `json:"target_port"`
@@ -123,7 +126,7 @@ func (s *server) createRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		ServerID: request.ServerID, Name: request.Name, ListenAddress: request.ListenAddress,
 		ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		TargetType:    request.TargetType,
-		TargetProxyID: request.TargetProxyID, TargetHost: request.TargetHost,
+		TargetProxyID: request.TargetProxyID, TargetClientID: request.TargetClientID, TargetHost: request.TargetHost,
 		TargetPort: request.TargetPort, Network: request.Network, Enabled: enabled,
 	})
 	if err != nil {
@@ -157,26 +160,27 @@ func (s *server) getRelayClients(w http.ResponseWriter, r *http.Request, user au
 		writeRelayError(w, relaystore.ErrTargetUnavailable)
 		return
 	}
-	target, err := s.proxies.Get(r.Context(), *value.TargetProxyID)
+	if value.TargetClientID == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"clients": response})
+		return
+	}
+	share, err := s.proxies.GetClientShareAtEndpoint(r.Context(), *value.TargetClientID, proxystore.ShareEndpoint{
+		Address: value.EntryAddress,
+		Port:    value.ListenPort,
+	})
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
-	for _, client := range target.Clients {
-		share, err := s.proxies.GetClientShareAtEndpoint(r.Context(), client.ID, proxystore.ShareEndpoint{
-			Address: value.EntryAddress,
-			Port:    value.ListenPort,
-		})
-		if err != nil {
-			writeProxyError(w, err)
-			return
-		}
-		compatible, notice := relayNetworkCompatibility(value.Network, share.Protocol)
-		response = append(response, relayClientShareResponse{
-			Client: toClientResponse(share.Client), Protocol: share.Protocol, URI: share.URI,
-			NetworkCompatible: compatible, NetworkNotice: notice,
-		})
+	if share.Client.ProxyID != *value.TargetProxyID {
+		writeRelayError(w, relaystore.ErrInvalidTargetClient)
+		return
 	}
+	compatible, notice := relayNetworkCompatibility(value.Network, share.Protocol)
+	response = append(response, relayClientShareResponse{
+		Client: toClientResponse(share.Client), Protocol: share.Protocol, URI: share.URI,
+		NetworkCompatible: compatible, NetworkNotice: notice,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
 }
 
@@ -234,7 +238,7 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.U
 	value, mutation, err := s.relays.Update(r.Context(), id, relaystore.UpdateInput{
 		Name: request.Name, ListenAddress: request.ListenAddress, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
-		TargetType: request.TargetType, TargetProxyID: request.TargetProxyID,
+		TargetType: request.TargetType, TargetProxyID: request.TargetProxyID, TargetClientID: request.TargetClientID,
 		TargetHost: request.TargetHost, TargetPort: request.TargetPort,
 		Network: request.Network, Enabled: request.Enabled,
 	})
@@ -278,7 +282,7 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 		ServerPublicIPv4: value.ServerPublicIPv4, Name: value.Name,
 		ListenAddress: value.ListenAddress, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
-		TargetType: value.TargetType, TargetProxyID: value.TargetProxyID,
+		TargetType: value.TargetType, TargetProxyID: value.TargetProxyID, TargetClientID: value.TargetClientID,
 		TargetProxyName: value.TargetProxyName, TargetHost: value.TargetHost,
 		TargetPort: value.TargetPort, TargetAddressReady: value.TargetAddressReady,
 		Network: value.Network, Enabled: value.Enabled,
@@ -308,6 +312,8 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4")
 	case errors.Is(err, relaystore.ErrInvalidTarget):
 		writeError(w, http.StatusBadRequest, "目标必须是有效代理节点或 Host/IP 与端口")
+	case errors.Is(err, relaystore.ErrInvalidTargetClient):
+		writeError(w, http.StatusBadRequest, "目标客户端必须属于所选目标 Proxy")
 	case errors.Is(err, relaystore.ErrInvalidNetwork):
 		writeError(w, http.StatusBadRequest, "Network 仅支持 TCP、UDP 或 TCP + UDP")
 	case errors.Is(err, relaystore.ErrPortConflict):

@@ -13,6 +13,7 @@ import ProxyForm from '../components/proxy/ProxyForm.vue'
 import ProxyDetail from '../components/proxy/ProxyDetail.vue'
 import ClientForm from '../components/proxy/ClientForm.vue'
 import ClientDetail from '../components/proxy/ClientDetail.vue'
+import QRCodeModal from '../components/share/QRCodeModal.vue'
 const props = defineProps<{ servers: ServerOption[] }>()
 const model = reactive(useProxies(props))
 </script>
@@ -23,4 +24,5 @@ const model = reactive(useProxies(props))
 <ProxyDetail :model="model" />
 <ClientForm :model="model" />
 <ClientDetail :model="model" />
+<QRCodeModal :show="model.qrOpen" :uri="model.qrURI" :title="model.qrTitle" :subtitle="model.qrSubtitle" @update:show="model.setQRCodeOpen" />
 </template>

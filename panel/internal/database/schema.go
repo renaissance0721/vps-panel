@@ -156,6 +156,7 @@ func schemaStatements() []string {
 			entry_host TEXT NOT NULL DEFAULT '',
 			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'manual')),
 			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			target_client_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
 			target_host TEXT NOT NULL DEFAULT '',
 			target_port INTEGER CHECK (target_port BETWEEN 1 AND 65535),
 			network TEXT NOT NULL CHECK (network IN ('tcp', 'udp', 'tcp,udp')),
@@ -165,7 +166,7 @@ func schemaStatements() []string {
 			CHECK (
 				(target_type = 'proxy' AND target_proxy_id IS NOT NULL AND target_host = '' AND target_port IS NULL)
 				OR
-				(target_type = 'manual' AND target_proxy_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
+				(target_type = 'manual' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
 			)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,

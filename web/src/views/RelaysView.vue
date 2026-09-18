@@ -31,6 +31,7 @@ import {
   type ClientStatus,
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
+import QRCodeModal from '../components/share/QRCodeModal.vue'
 
 type ServerOption = {
   id: number
@@ -61,6 +62,7 @@ type RelayRecord = {
   entry_address: string
   target_type: RelayTargetType
   target_proxy_id: number | null
+  target_client_id: number | null
   target_proxy_name: string
   target_host: string
   target_port: number
@@ -84,6 +86,12 @@ type RelayClientShare = {
   network_notice?: string
 }
 
+type TargetClientOption = {
+  id: number
+  name: string
+  status: ClientStatus
+}
+
 const props = defineProps<{ servers: ServerOption[] }>()
 
 const relays = ref<RelayRecord[]>([])
@@ -104,6 +112,10 @@ const relayClients = ref<RelayClientShare[]>([])
 const relayClientsLoading = ref(false)
 const relayShareError = ref('')
 const copiedRelayClientID = ref<number | null>(null)
+const qrOpen = ref(false)
+const qrURI = ref('')
+const qrTitle = ref('')
+const qrSubtitle = ref('')
 const name = ref('')
 const serverID = ref<number | null>(null)
 const listenPort = ref(9502)
@@ -112,6 +124,11 @@ const entryHost = ref('')
 const network = ref<RelayNetwork>('tcp')
 const targetType = ref<RelayTargetType>('proxy')
 const targetProxyID = ref<number | null>(null)
+const targetClientID = ref<number | null>(null)
+const targetClients = ref<TargetClientOption[]>([])
+const targetClientsLoading = ref(false)
+const targetClientsError = ref('')
+let targetClientsRequest = 0
 const targetHost = ref('')
 const targetPort = ref(443)
 const enabled = ref(true)
@@ -137,6 +154,7 @@ async function run(action: () => Promise<void>) {
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '操作失败'
     if (reason instanceof APIError && reason.status === 404) {
+      setQRCodeOpen(false)
       detailOpen.value = false
       formOpen.value = false
       selectedRelay.value = null
@@ -203,6 +221,43 @@ async function loadProxies() {
   proxies.value = response.proxies
 }
 
+async function loadTargetClients(proxyID: number | null, selectedID: number | null = null) {
+  const request = ++targetClientsRequest
+  targetClients.value = []
+  targetClientID.value = null
+  targetClientsError.value = ''
+  if (proxyID === null) {
+    targetClientsLoading.value = false
+    return
+  }
+  targetClientsLoading.value = true
+  try {
+    const response = await api<{ clients: TargetClientOption[] }>(`/api/proxies/${proxyID}/clients`)
+    if (request !== targetClientsRequest || targetType.value !== 'proxy') return
+    targetClients.value = response.clients
+    if (selectedID !== null && response.clients.some((client) => client.id === selectedID)) {
+      targetClientID.value = selectedID
+    }
+  } catch (reason) {
+    if (request === targetClientsRequest) {
+      targetClientsError.value = reason instanceof Error ? reason.message : '无法加载目标客户端'
+    }
+  } finally {
+    if (request === targetClientsRequest) targetClientsLoading.value = false
+  }
+}
+
+function onTargetProxyChange() {
+  void loadTargetClients(targetProxyID.value)
+}
+
+function onTargetTypeChange() {
+  if (targetType.value === 'proxy' && targetProxyID.value === null) {
+    targetProxyID.value = proxies.value[0]?.id ?? null
+  }
+  void loadTargetClients(targetType.value === 'proxy' ? targetProxyID.value : null)
+}
+
 function resetForm() {
   editingID.value = null
   name.value = ''
@@ -213,6 +268,7 @@ function resetForm() {
   network.value = 'tcp'
   targetType.value = proxies.value.length === 0 ? 'manual' : 'proxy'
   targetProxyID.value = proxies.value[0]?.id ?? null
+  targetClientID.value = null
   targetHost.value = ''
   targetPort.value = 443
   enabled.value = true
@@ -220,6 +276,7 @@ function resetForm() {
 
 function openCreate() {
   resetForm()
+  void loadTargetClients(targetType.value === 'proxy' ? targetProxyID.value : null)
   error.value = ''
   formMode.value = 'create'
   formOpen.value = true
@@ -237,6 +294,7 @@ function openEdit(value: RelayRecord) {
   network.value = value.network
   targetType.value = value.target_type
   targetProxyID.value = value.target_proxy_id
+  void loadTargetClients(value.target_type === 'proxy' ? value.target_proxy_id : null, value.target_client_id)
   targetHost.value = value.target_type === 'manual' ? value.target_host : ''
   targetPort.value = value.target_type === 'manual' ? value.target_port : 443
   enabled.value = value.enabled
@@ -255,8 +313,8 @@ async function saveRelay() {
       network: network.value,
       target_type: targetType.value,
       ...(targetType.value === 'proxy'
-        ? { target_proxy_id: targetProxyID.value }
-        : { target_host: targetHost.value, target_port: targetPort.value }),
+        ? { target_proxy_id: targetProxyID.value, target_client_id: targetClientID.value }
+        : { target_proxy_id: null, target_client_id: null, target_host: targetHost.value, target_port: targetPort.value }),
       enabled: enabled.value,
     }
     const path = formMode.value === 'create' ? '/api/relays' : `/api/relays/${editingID.value}`
@@ -278,7 +336,7 @@ async function loadRelayClientShares(value: RelayRecord) {
   relayClientsLoading.value = false
   relayShareError.value = ''
   copiedRelayClientID.value = null
-  if (value.target_type !== 'proxy' || !value.entry_address || !value.target_address_ready) return
+  if (value.target_type !== 'proxy' || value.target_client_id === null || !value.entry_address || !value.target_address_ready) return
   relayClientsLoading.value = true
   try {
     const response = await api<{ clients: RelayClientShare[] }>(`/api/relays/${value.id}/clients`)
@@ -288,6 +346,23 @@ async function loadRelayClientShares(value: RelayRecord) {
   } finally {
     relayClientsLoading.value = false
   }
+}
+
+function setQRCodeOpen(show: boolean) {
+  qrOpen.value = show
+  if (!show) {
+    qrURI.value = ''
+    qrTitle.value = ''
+    qrSubtitle.value = ''
+  }
+}
+
+function showRelayQRCode(client: RelayClientShare) {
+  if (!selectedRelay.value || selectedRelay.value.target_type !== 'proxy' || !client.network_compatible) return
+  qrURI.value = client.uri
+  qrTitle.value = `${selectedRelay.value.name} - ${client.client.name}`
+  qrSubtitle.value = client.protocol === 'vless' ? 'VLESS · 中转' : 'Shadowsocks 2022 · 中转'
+  qrOpen.value = true
 }
 
 async function showRelay(id: number) {
@@ -331,6 +406,7 @@ async function removeRelay(value: RelayRecord) {
   await run(async () => {
     await api(`/api/relays/${value.id}`, { method: 'DELETE' })
     if (selectedRelay.value?.id === value.id) {
+      setQRCodeOpen(false)
       selectedRelay.value = null
       detailOpen.value = false
     }
@@ -338,18 +414,13 @@ async function removeRelay(value: RelayRecord) {
   })
 }
 
-watch(targetType, (value) => {
-  if (value === 'proxy' && targetProxyID.value === null) {
-    targetProxyID.value = proxies.value[0]?.id ?? null
-  }
-})
-
 watch(
   () => props.servers.map((server) => server.id).join(','),
   async () => {
     try {
       await Promise.all([loadRelays(), loadProxies()])
       if (selectedRelay.value && !relays.value.some((value) => value.id === selectedRelay.value?.id)) {
+        setQRCodeOpen(false)
         selectedRelay.value = null
         detailOpen.value = false
         relayClients.value = []
@@ -450,22 +521,35 @@ import {
         </label>
         <label>
           <span>目标类型</span>
-          <select v-model="targetType" class="settings-input"><option value="proxy">Panel Proxy</option><option value="manual">手动地址</option></select>
+          <select v-model="targetType" class="settings-input" @change="onTargetTypeChange"><option value="proxy">Panel Proxy</option><option value="manual">手动地址</option></select>
         </label>
         <label v-if="targetType === 'proxy'">
           <span>目标 Proxy</span>
-          <select v-model.number="targetProxyID" class="settings-input">
+          <select v-model.number="targetProxyID" class="settings-input" @change="onTargetProxyChange">
             <option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">
               {{ proxy.name }} · {{ proxy.server_name }} · {{ proxy.entry_address || '入口未检测' }}:{{ proxy.listen_port }} · {{ proxy.protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}
             </option>
           </select>
         </label>
+        <template v-if="targetType === 'proxy'">
+          <label>
+            <span>目标客户端</span>
+            <select v-model.number="targetClientID" class="settings-input" :disabled="targetClientsLoading || targetClients.length === 0">
+              <option :value="null">请选择目标客户端</option>
+              <option v-for="client in targetClients" :key="client.id" :value="client.id">{{ client.name }} · {{ clientStatusLabel(client.status) }}</option>
+            </select>
+          </label>
+          <n-alert v-if="targetClientsError" type="error">{{ targetClientsError }}</n-alert>
+          <p v-else-if="targetClientsLoading">正在加载目标客户端…</p>
+          <n-alert v-else-if="targetProxyID !== null && targetClients.length === 0" type="warning">该 Proxy 暂无客户端，请先在代理节点中创建客户端</n-alert>
+          <p v-else>中转分享链接使用所选客户端的现有凭据；Relay 转发仍允许目标 Proxy 的其他有效凭据连接。</p>
+        </template>
         <template v-else>
           <label><span>目标 Host / IP</span><n-input v-model:value="targetHost" placeholder="例如：node.example.com 或 2001:db8::1" /></label>
           <label><span>目标端口</span><input v-model.number="targetPort" class="settings-input" type="number" min="1" max="65535" /></label>
         </template>
         <label class="checkbox-row"><input v-model="enabled" type="checkbox" /><span>启用中转</span></label>
-        <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
+        <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="targetType === 'proxy' && (targetClientID === null || targetClientsLoading || !!targetClientsError)">保存</n-button></div>
       </form>
     </n-card>
   </n-modal>
@@ -480,13 +564,14 @@ import {
         <div><dt>状态</dt><dd>{{ selectedRelay.enabled ? '启用' : '禁用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ formatTime(selectedRelay.updated_at) }}</dd></div>
       </dl>
-      <h3>客户端节点</h3>
+      <h3>目标客户端</h3>
       <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
+      <n-alert v-else-if="selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
       <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4</n-alert>
       <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">目标代理节点入口地址不可用</n-alert>
       <n-alert v-else-if="relayShareError" type="error">{{ relayShareError }}</n-alert>
       <div v-else-if="relayClientsLoading" class="loading-row"><n-spin size="small" /><span>正在加载客户端节点…</span></div>
-      <n-empty v-else-if="relayClients.length === 0" description="目标代理节点没有客户端" />
+      <n-empty v-else-if="relayClients.length === 0" description="目标客户端不可用" />
       <div v-else class="relay-client-list">
         <div v-for="client in relayClients" :key="client.client.id" class="relay-client-share">
           <div class="relay-client-heading">
@@ -495,11 +580,13 @@ import {
             <n-tag :type="relayClientStatusTagType(client)" size="small">{{ relayClientStatusLabel(client) }}</n-tag>
           </div>
           <n-alert v-if="client.network_notice" :type="client.network_compatible ? 'warning' : 'error'">{{ client.network_notice }}</n-alert>
+          <strong>中转 URI</strong>
           <n-input :value="client.uri" type="textarea" readonly :autosize="{ minRows: 3 }" />
-          <div class="modal-actions"><n-button type="primary" :disabled="!client.network_compatible" @click="copyRelayClientURI(client)">{{ copiedRelayClientID === client.client.id ? '链接已复制' : '复制链接' }}</n-button></div>
+          <div class="modal-actions"><n-button secondary :disabled="!client.network_compatible" @click="showRelayQRCode(client)">二维码</n-button><n-button type="primary" :disabled="!client.network_compatible" @click="copyRelayClientURI(client)">{{ copiedRelayClientID === client.client.id ? '链接已复制' : '复制链接' }}</n-button></div>
         </div>
       </div>
       <div class="modal-actions"><n-button secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
     </n-card>
   </n-modal>
+  <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="setQRCodeOpen" />
 </template>

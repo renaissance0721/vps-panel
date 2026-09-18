@@ -20,7 +20,7 @@ func normalizeCreate(input CreateInput) (Relay, error) {
 		ServerID: input.ServerID, Name: input.Name, ListenAddress: listenAddress,
 		ListenPort: input.ListenPort, EntryHostMode: input.EntryHostMode, EntryHost: input.EntryHost,
 		TargetType:    input.TargetType,
-		TargetProxyID: input.TargetProxyID, TargetHost: input.TargetHost,
+		TargetProxyID: input.TargetProxyID, TargetClientID: input.TargetClientID, TargetHost: input.TargetHost,
 		TargetPort: input.TargetPort, Network: input.Network, Enabled: input.Enabled,
 	})
 }
@@ -57,6 +57,7 @@ func normalizeRelay(value Relay) (Relay, error) {
 		value.TargetPort = 0
 	case TargetManual:
 		value.TargetProxyID = nil
+		value.TargetClientID = nil
 		host, err := normalizeHost(value.TargetHost)
 		if err != nil || !validPort(value.TargetPort) {
 			return Relay{}, ErrInvalidTarget
@@ -85,6 +86,18 @@ func validateTarget(ctx context.Context, query interface {
 	}
 	if err != nil {
 		return fmt.Errorf("validate relay target proxy: %w", err)
+	}
+	if value.TargetClientID != nil {
+		var clientID int64
+		err := query.QueryRowContext(ctx,
+			`SELECT id FROM clients WHERE id = ? AND proxy_id = ?`, *value.TargetClientID, *value.TargetProxyID,
+		).Scan(&clientID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidTargetClient
+		}
+		if err != nil {
+			return fmt.Errorf("validate relay target client: %w", err)
+		}
 	}
 	return nil
 }

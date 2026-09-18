@@ -287,7 +287,7 @@ func TestListReorderAPIIsPerUserPersistentAndDoesNotChangeBusinessState(t *testi
 	moveOrderAPI(t, handler, accounts.memberCookie, "proxies", hiddenProxy.ID, "up", http.StatusNotFound)
 	hiddenRelay := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: a.Server.ID, Name: "Hidden Target Relay", ListenPort: 9804,
-		TargetType: "proxy", TargetProxyID: &hiddenProxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &hiddenProxy.ID, TargetClientID: &hiddenProxy.Clients[0].ID, Network: "tcp",
 	}, accounts.adminCookie)
 	var createdRelay struct {
 		Relay relayResponse `json:"relay"`

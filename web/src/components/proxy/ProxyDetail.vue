@@ -6,6 +6,7 @@ import {
   NModal,
   NCard,
   NButton,
+  NAlert,
 } from 'naive-ui'
 import type {
   ProxiesViewState,
@@ -17,18 +18,21 @@ const props = defineProps<{
     | 'selectedProxy'
     | 'proxyDetailOpen'
     | 'openEditProxy'
+    | 'error'
   >
 }>()
 const {
   selectedProxy,
   proxyDetailOpen,
   openEditProxy,
+  error,
 } = toRefs(props.model)
 </script>
 
 <template>
 <n-modal v-if="selectedProxy" v-model:show="proxyDetailOpen">
     <n-card class="proxy-detail-card" title="代理节点详情" :bordered="false" closable @close="proxyDetailOpen = false">
+      <n-alert v-if="error" type="error">{{ error }}</n-alert>
       <h3>基础</h3>
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedProxy.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedProxy.server_name }}</dd></div>

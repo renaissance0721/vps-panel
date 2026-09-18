@@ -17,7 +17,7 @@ before(async () => {
     root: fileURLToPath(new URL('..', import.meta.url)),
     plugins: [vue()],
     resolve: { alias: { 'naive-ui': fileURLToPath(new URL('./helpers/ui-stubs.mjs', import.meta.url)) } },
-    server: { middlewareMode: true, watch: null },
+    server: { middlewareMode: true, watch: null, hmr: false },
     optimizeDeps: { noDiscovery: true, include: [] },
   })
   ;({ useServers } = await loader.ssrLoadModule('/src/composables/useServers.ts'))
@@ -273,5 +273,51 @@ test('Proxy Client 列表实际渲染不含凭据，两个协议仍复制后端 
     await model.copyClientURI(client)
     assert.equal(copied, expectedURI)
     assert.equal(model.copiedClientID.value, 2)
+  }
+})
+
+test('Proxy 客户端二维码点击后读取现有分享 URI，详情复用已加载的 URI，关闭清空状态', async t => {
+  let model
+  await renderToString(createSSRApp({ setup() { model = useProxies({ servers: [] }); return () => null } }))
+  const calls = []
+  let share
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls.push(url)
+    return json({ share })
+  })
+  const client = { id: 2, name: '手机', status: 'normal', enabled: true, client_udp443: false,
+    traffic_limit_bytes: null, traffic_reset_mode: 'never', traffic_reset_weekday: 1,
+    traffic_reset_day: 1, traffic_reset_time: '00:00', expires_at: null, metrics: null }
+  assert.equal(model.qrOpen.value, false)
+  assert.equal(model.qrURI.value, '')
+  for (const [protocol, uri, subtitle] of [
+    ['vless', 'vless://uuid@node.example.com:443?security=reality&fp=chrome#中文%20节点', 'VLESS'],
+    ['shadowsocks', 'ss://password@node.example.com:8388#中文%20节点', 'Shadowsocks 2022'],
+  ]) {
+    share = { client, proxy_name: '日本节点', protocol, uri }
+    model.selectedProxy.value = { id: 3, name: '日本节点', protocol, clients: [client] }
+    const list = await render('components/proxy/ClientList.vue', model)
+    assert.match(list, /<button[^>]*>二维码<\/button>/)
+    assert.equal(model.qrOpen.value, false)
+    await model.showClientQRCode(client)
+    assert.equal(calls.at(-1), '/api/clients/2/share')
+    assert.equal(model.qrURI.value, uri)
+    assert.equal(model.qrTitle.value, '日本节点 - 手机')
+    assert.equal(model.qrSubtitle.value, subtitle)
+    assert.equal(model.qrOpen.value, true)
+    model.setQRCodeOpen(false)
+    assert.equal(model.qrOpen.value, false)
+    assert.equal(model.qrURI.value, '')
+    assert.equal(model.qrTitle.value, '')
+    assert.equal(model.qrSubtitle.value, '')
+    model.selectedShare.value = share
+    model.clientDetailOpen.value = true
+    const detail = await render('components/proxy/ClientDetail.vue', model)
+    assert.match(detail, /<button[^>]*>二维码<\/button>/)
+    const requestCount = calls.length
+    model.showSelectedShareQRCode()
+    assert.equal(calls.length, requestCount)
+    assert.equal(model.qrURI.value, uri)
+    model.setQRCodeOpen(false)
   }
 })

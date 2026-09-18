@@ -269,15 +269,15 @@ func TestDerivedResourcesRequireServerAccessAndRelayBothSides(t *testing.T) {
 	}
 	memberRelay := createRelay(accounts.memberCookie, createRelayRequest{
 		ServerID: memberServer.Server.ID, Name: "Member Relay", ListenPort: 9502,
-		TargetType: "proxy", TargetProxyID: &publicProxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &publicProxy.ID, TargetClientID: &publicProxy.Clients[0].ID, Network: "tcp",
 	})
 	adminRelay := createRelay(accounts.adminCookie, createRelayRequest{
 		ServerID: publicServer.Server.ID, Name: "Admin Target Relay", ListenPort: 9503,
-		TargetType: "proxy", TargetProxyID: &adminProxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &adminProxy.ID, TargetClientID: &adminProxy.Clients[0].ID, Network: "tcp",
 	})
 	bothPrivateRelay := createRelay(accounts.adminCookie, createRelayRequest{
 		ServerID: adminServer.Server.ID, Name: "Admin Private Relay", ListenPort: 9504,
-		TargetType: "proxy", TargetProxyID: &adminProxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &adminProxy.ID, TargetClientID: &adminProxy.Clients[0].ID, Network: "tcp",
 	})
 	agentConfig := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, memberAgent.AgentToken)
 	if agentConfig.Code != http.StatusOK || !strings.Contains(agentConfig.Body.String(), `"port":8445`) ||

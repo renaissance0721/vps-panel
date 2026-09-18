@@ -27,6 +27,7 @@ var (
 	ErrInvalidEntryHost     = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
 	ErrEntryUnavailable     = errors.New("relay entry address is unavailable")
 	ErrInvalidTarget        = errors.New("relay target is invalid")
+	ErrInvalidTargetClient  = errors.New("relay target client must belong to target proxy")
 	ErrInvalidNetwork       = errors.New("relay network must be tcp, udp, or tcp,udp")
 	ErrPortConflict         = errors.New("relay listen port conflicts with an existing listener")
 	ErrTargetUnavailable    = errors.New("relay target address is unavailable")
@@ -45,6 +46,7 @@ type Relay struct {
 	EntryAddress       string
 	TargetType         string
 	TargetProxyID      *int64
+	TargetClientID     *int64
 	TargetProxyName    string
 	TargetHost         string
 	TargetPort         int
@@ -56,32 +58,34 @@ type Relay struct {
 }
 
 type CreateInput struct {
-	ServerID      int64
-	Name          string
-	ListenAddress string
-	ListenPort    int
-	EntryHostMode string
-	EntryHost     string
-	TargetType    string
-	TargetProxyID *int64
-	TargetHost    string
-	TargetPort    int
-	Network       string
-	Enabled       bool
+	ServerID       int64
+	Name           string
+	ListenAddress  string
+	ListenPort     int
+	EntryHostMode  string
+	EntryHost      string
+	TargetType     string
+	TargetProxyID  *int64
+	TargetClientID *int64
+	TargetHost     string
+	TargetPort     int
+	Network        string
+	Enabled        bool
 }
 
 type UpdateInput struct {
-	Name          *string
-	ListenAddress *string
-	ListenPort    *int
-	EntryHostMode *string
-	EntryHost     *string
-	TargetType    *string
-	TargetProxyID *int64
-	TargetHost    *string
-	TargetPort    *int
-	Network       *string
-	Enabled       *bool
+	Name           *string
+	ListenAddress  *string
+	ListenPort     *int
+	EntryHostMode  *string
+	EntryHost      *string
+	TargetType     *string
+	TargetProxyID  *int64
+	TargetClientID *int64
+	TargetHost     *string
+	TargetPort     *int
+	Network        *string
+	Enabled        *bool
 }
 
 type Mutation struct {

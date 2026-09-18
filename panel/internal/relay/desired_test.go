@@ -21,10 +21,14 @@ func TestRelayProxyTargetResolutionAndDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 	targetID := int64(10)
+	clientID := int64(20)
+	if _, err := db.Exec(`INSERT INTO clients (id, proxy_id, name, credential_json, created_at, updated_at) VALUES (20, 10, 'Client', '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
 	service := NewService(db)
 	created, _, err := service.Create(t.Context(), CreateInput{
 		ServerID: 1, Name: "Proxy relay", ListenPort: 9502, TargetType: TargetProxy,
-		TargetProxyID: &targetID, Network: NetworkBoth, Enabled: true,
+		TargetProxyID: &targetID, TargetClientID: &clientID, Network: NetworkBoth, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -37,9 +37,11 @@ func TestRelayAPIAuthenticationAndCRUD(t *testing.T) {
 	if err := json.Unmarshal(serverCreation.Body.Bytes(), &server); err != nil {
 		t.Fatal(err)
 	}
+	ignoredTargetID := int64(999)
 	creation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: server.Server.ID, Name: "Manual TCP", ListenPort: 9502,
-		TargetType: "manual", TargetHost: "example.com", TargetPort: 443,
+		TargetType: "manual", TargetProxyID: &ignoredTargetID, TargetClientID: &ignoredTargetID,
+		TargetHost: "example.com", TargetPort: 443,
 		Network: "tcp",
 	}, cookie)
 	if creation.Code != http.StatusCreated {
@@ -52,7 +54,8 @@ func TestRelayAPIAuthenticationAndCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created.Relay.ListenAddress != "0.0.0.0" || created.Relay.EntryHostMode != "auto" ||
-		created.Relay.EntryHost != "" || !created.Relay.Enabled || !created.Relay.TargetAddressReady {
+		created.Relay.EntryHost != "" || !created.Relay.Enabled || !created.Relay.TargetAddressReady ||
+		created.Relay.TargetProxyID != nil || created.Relay.TargetClientID != nil {
 		t.Fatalf("created relay = %+v", created.Relay)
 	}
 	path := "/api/relays/" + strconv.FormatInt(created.Relay.ID, 10)
@@ -116,9 +119,41 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 		t.Fatalf("create VLESS proxy = %d, %s", proxyCreation.Code, proxyCreation.Body.String())
 	}
 	proxyID := proxy.Proxy.ID
+	clientID := proxy.Proxy.Clients[0].ID
+	secondClient := performRequest(t, handler, http.MethodPost,
+		"/api/proxies/"+strconv.FormatInt(proxyID, 10)+"/clients", createClientRequest{Name: "Tablet"}, cookie)
+	if secondClient.Code != http.StatusCreated {
+		t.Fatalf("create second target Client = %d, %s", secondClient.Code, secondClient.Body.String())
+	}
+	missingClient := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
+		ServerID: source.Server.ID, Name: "Missing Client", ListenPort: 35153,
+		TargetType: "proxy", TargetProxyID: &proxyID, Network: "tcp",
+	}, cookie)
+	if missingClient.Code != http.StatusBadRequest {
+		t.Fatalf("missing target Client = %d, %s", missingClient.Code, missingClient.Body.String())
+	}
+	otherProxyCreation := performRequest(t, handler, http.MethodPost, "/api/proxies", createProxyRequest{
+		ServerID: target.Server.ID, Name: "Other Target", ListenPort: 8443,
+		EntryHostMode: "manual", EntryHost: "other.example.com", Security: "reality",
+		ServerName: "www.example.com", RealityTarget: "www.example.com:443", FirstClientName: "Other",
+	}, cookie)
+	var otherProxy struct {
+		Proxy proxyResponse `json:"proxy"`
+	}
+	if otherProxyCreation.Code != http.StatusCreated || json.Unmarshal(otherProxyCreation.Body.Bytes(), &otherProxy) != nil {
+		t.Fatalf("create other Proxy = %d, %s", otherProxyCreation.Code, otherProxyCreation.Body.String())
+	}
+	foreignClientID := otherProxy.Proxy.Clients[0].ID
+	mismatchedClient := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
+		ServerID: source.Server.ID, Name: "Wrong Client", ListenPort: 35154,
+		TargetType: "proxy", TargetProxyID: &proxyID, TargetClientID: &foreignClientID, Network: "tcp",
+	}, cookie)
+	if mismatchedClient.Code != http.StatusBadRequest {
+		t.Fatalf("foreign target Client = %d, %s", mismatchedClient.Code, mismatchedClient.Body.String())
+	}
 	relayCreation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: source.Server.ID, Name: "KR Relay", ListenPort: 35152,
-		TargetType: "proxy", TargetProxyID: &proxyID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &proxyID, TargetClientID: &clientID, Network: "tcp",
 	}, cookie)
 	var relay struct {
 		Relay relayResponse `json:"relay"`
@@ -128,6 +163,19 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 		t.Fatalf("create Relay = %d, %s", relayCreation.Code, relayCreation.Body.String())
 	}
 	path := "/api/relays/" + strconv.FormatInt(relay.Relay.ID, 10)
+	if relay.Relay.TargetClientID == nil || *relay.Relay.TargetClientID != clientID {
+		t.Fatalf("saved target client = %+v", relay.Relay.TargetClientID)
+	}
+	mismatchedUpdate := performRequest(t, handler, http.MethodPatch, path,
+		updateRelayRequest{TargetClientID: &foreignClientID}, cookie)
+	if mismatchedUpdate.Code != http.StatusBadRequest {
+		t.Fatalf("update to foreign target Client = %d, %s", mismatchedUpdate.Code, mismatchedUpdate.Body.String())
+	}
+	missingClientOnProxyChange := performRequest(t, handler, http.MethodPatch, path,
+		updateRelayRequest{TargetProxyID: &otherProxy.Proxy.ID}, cookie)
+	if missingClientOnProxyChange.Code != http.StatusBadRequest {
+		t.Fatalf("change target Proxy without Client = %d, %s", missingClientOnProxyChange.Code, missingClientOnProxyChange.Body.String())
+	}
 	directResponse := performRequest(t, handler, http.MethodGet,
 		"/api/clients/"+strconv.FormatInt(proxy.Proxy.Clients[0].ID, 10)+"/share", nil, cookie)
 	var direct struct {
@@ -140,7 +188,7 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 	var shares struct {
 		Clients []relayClientShareResponse `json:"clients"`
 	}
-	if sharesResponse.Code != http.StatusOK || json.Unmarshal(sharesResponse.Body.Bytes(), &shares) != nil || len(shares.Clients) != 1 {
+	if sharesResponse.Code != http.StatusOK || json.Unmarshal(sharesResponse.Body.Bytes(), &shares) != nil || len(shares.Clients) != 1 || shares.Clients[0].Client.ID != clientID {
 		t.Fatalf("Relay shares = %d, %s", sharesResponse.Code, sharesResponse.Body.String())
 	}
 	directURI, _ := url.Parse(direct.Share.URI)
@@ -211,6 +259,22 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 		shares.Clients[0].Client.EffectiveEnabled {
 		t.Fatalf("quota-exhausted Relay client = %s", sharesResponse.Body.String())
 	}
+	deletedClient := performRequest(t, handler, http.MethodDelete,
+		"/api/clients/"+strconv.FormatInt(clientID, 10), nil, cookie)
+	if deletedClient.Code != http.StatusNoContent {
+		t.Fatalf("delete selected Client = %d, %s", deletedClient.Code, deletedClient.Body.String())
+	}
+	var afterDelete struct {
+		Relay relayResponse `json:"relay"`
+	}
+	getAfterDelete := performRequest(t, handler, http.MethodGet, path, nil, cookie)
+	if getAfterDelete.Code != http.StatusOK || json.Unmarshal(getAfterDelete.Body.Bytes(), &afterDelete) != nil || afterDelete.Relay.TargetClientID != nil {
+		t.Fatalf("Relay after Client deletion = %d, %s", getAfterDelete.Code, getAfterDelete.Body.String())
+	}
+	shareAfterDelete := performRequest(t, handler, http.MethodGet, path+"/clients", nil, cookie)
+	if shareAfterDelete.Code != http.StatusOK || !strings.Contains(shareAfterDelete.Body.String(), `"clients":[]`) {
+		t.Fatalf("Relay shares after Client deletion = %d, %s", shareAfterDelete.Code, shareAfterDelete.Body.String())
+	}
 }
 
 func TestRelayDerivedShadowsocksSharePreservesCredentialsAndWarnsForTCPOnly(t *testing.T) {
@@ -241,10 +305,11 @@ func TestRelayDerivedShadowsocksSharePreservesCredentialsAndWarnsForTCPOnly(t *t
 		t.Fatalf("create SS proxy = %d, %s", proxyCreation.Code, proxyCreation.Body.String())
 	}
 	proxyID := proxy.Proxy.ID
+	clientID := proxy.Proxy.Clients[0].ID
 	relayCreation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: server.Server.ID, Name: "SS Relay", ListenPort: 9502,
 		EntryHostMode: "manual", EntryHost: "relay.example.com",
-		TargetType: "proxy", TargetProxyID: &proxyID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &proxyID, TargetClientID: &clientID, Network: "tcp",
 	}, cookie)
 	var relay struct {
 		Relay relayResponse `json:"relay"`
@@ -314,9 +379,10 @@ func TestRelayClientSharesRejectUnavailableEntryAndSkipManualTarget(t *testing.T
 		t.Fatalf("create target Proxy = %d, %s", proxyCreation.Code, proxyCreation.Body.String())
 	}
 	proxyID := proxy.Proxy.ID
+	clientID := proxy.Proxy.Clients[0].ID
 	unavailable := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: server.Server.ID, Name: "Unavailable entry", ListenPort: 9503,
-		TargetType: "proxy", TargetProxyID: &proxyID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &proxyID, TargetClientID: &clientID, Network: "tcp",
 	}, cookie)
 	_ = json.Unmarshal(unavailable.Body.Bytes(), &relay)
 	response = performRequest(t, handler, http.MethodGet,
@@ -368,7 +434,7 @@ func TestReferencedProxyDeletionReturnsConflict(t *testing.T) {
 	}
 	creation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: server.Server.ID, Name: "Reference", ListenPort: 9502,
-		TargetType: "proxy", TargetProxyID: &proxy.Proxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &proxy.Proxy.ID, TargetClientID: &proxy.Proxy.Clients[0].ID, Network: "tcp",
 	}, cookie)
 	if creation.Code != http.StatusCreated {
 		t.Fatalf("create proxy relay = %d, %s", creation.Code, creation.Body.String())
@@ -412,7 +478,7 @@ func TestProxyTargetChangeBumpsRelaySourceVersion(t *testing.T) {
 	}
 	relayCreation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: source.Server.ID, Name: "Proxy Relay", ListenPort: 9502,
-		TargetType: "proxy", TargetProxyID: &proxy.Proxy.ID, Network: "tcp",
+		TargetType: "proxy", TargetProxyID: &proxy.Proxy.ID, TargetClientID: &proxy.Proxy.Clients[0].ID, Network: "tcp",
 	}, cookie)
 	if relayCreation.Code != http.StatusCreated {
 		t.Fatalf("create relay = %d, %s", relayCreation.Code, relayCreation.Body.String())

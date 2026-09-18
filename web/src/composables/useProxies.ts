@@ -53,6 +53,10 @@ export function useProxies(props: { servers: ServerOption[] }) {
   const selectedShare = ref<ClientShare | null>(null)
   const copiedShareURI = ref(false)
   const copiedClientID = ref<number | null>(null)
+  const qrOpen = ref(false)
+  const qrURI = ref('')
+  const qrTitle = ref('')
+  const qrSubtitle = ref('')
 
   const proxyForm = useProxyForm(props, selectedProxy, error, run, loadProxies, showProxy)
   const { proxyFormOpen } = proxyForm
@@ -76,6 +80,7 @@ export function useProxies(props: { servers: ServerOption[] }) {
     } catch (reason) {
       error.value = reason instanceof Error ? reason.message : '操作失败'
       if (reason instanceof APIError && reason.status === 404) {
+        setQRCodeOpen(false)
         proxyDetailOpen.value = false
         proxyFormOpen.value = false
         clientDetailOpen.value = false
@@ -121,6 +126,7 @@ export function useProxies(props: { servers: ServerOption[] }) {
       try {
         await loadProxies()
         if (selectedProxy.value && !proxies.value.some((value) => value.id === selectedProxy.value?.id)) {
+          setQRCodeOpen(false)
           selectedProxy.value = null
           proxyDetailOpen.value = false
           clientDetailOpen.value = false
@@ -220,6 +226,34 @@ export function useProxies(props: { servers: ServerOption[] }) {
     })
   }
 
+  function setQRCodeOpen(show: boolean) {
+    qrOpen.value = show
+    if (!show) {
+      qrURI.value = ''
+      qrTitle.value = ''
+      qrSubtitle.value = ''
+    }
+  }
+
+  async function showClientQRCode(client: ClientSummary) {
+    setQRCodeOpen(false)
+    await run(async () => {
+      const share = await loadShare(client.id)
+      qrURI.value = share.uri
+      qrTitle.value = `${selectedProxy.value?.name ?? share.proxy_name} - ${client.name}`
+      qrSubtitle.value = share.protocol === 'vless' ? 'VLESS' : 'Shadowsocks 2022'
+      qrOpen.value = true
+    })
+  }
+
+  function showSelectedShareQRCode() {
+    if (!selectedShare.value) return
+    qrURI.value = selectedShare.value.uri
+    qrTitle.value = `${selectedShare.value.proxy_name} - ${selectedShare.value.client.name}`
+    qrSubtitle.value = selectedShare.value.protocol === 'vless' ? 'VLESS' : 'Shadowsocks 2022'
+    qrOpen.value = true
+  }
+
   async function copyShareURI(value: string) {
     try {
       await navigator.clipboard.writeText(value)
@@ -238,6 +272,6 @@ export function useProxies(props: { servers: ServerOption[] }) {
       loading.value = false
     }
   })
-  return { proxies, loading, submitting, reorderingID, error, search, proxyDetailOpen, selectedProxy, clientDetailOpen, selectedShare, copiedShareURI, copiedClientID, filteredProxies, run, loadProxies, reorderProxy, showProxy, refreshSelectedProxy, toggleProxy, removeProxy, resetClientTraffic, toggleClient, removeClient, loadShare, showClient, copyClientURI, copyShareURI, ...proxyForm, ...clientForm, servers: computed(() => props.servers), clientTrafficCycleLabel, clientTrafficUsageLabel, clientTrafficUsagePercentLabel, clientStatusLabel, clientStatusTagType, formatClientExpiration, formatClientTrafficBytes, proxyListProtocolFields, shadowsocksMethods, showsVLESSClientFields, formatTime }
+  return { proxies, loading, submitting, reorderingID, error, search, proxyDetailOpen, selectedProxy, clientDetailOpen, selectedShare, copiedShareURI, copiedClientID, qrOpen, qrURI, qrTitle, qrSubtitle, setQRCodeOpen, showClientQRCode, showSelectedShareQRCode, filteredProxies, run, loadProxies, reorderProxy, showProxy, refreshSelectedProxy, toggleProxy, removeProxy, resetClientTraffic, toggleClient, removeClient, loadShare, showClient, copyClientURI, copyShareURI, ...proxyForm, ...clientForm, servers: computed(() => props.servers), clientTrafficCycleLabel, clientTrafficUsageLabel, clientTrafficUsagePercentLabel, clientStatusLabel, clientStatusTagType, formatClientExpiration, formatClientTrafficBytes, proxyListProtocolFields, shadowsocksMethods, showsVLESSClientFields, formatTime }
 }
 export type ProxiesViewState = UnwrapNestedRefs<ReturnType<typeof useProxies>>

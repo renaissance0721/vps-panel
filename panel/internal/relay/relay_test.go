@@ -63,10 +63,14 @@ func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testi
 		t.Fatal(err)
 	}
 	targetID := int64(10)
+	clientID := int64(20)
+	if _, err := db.Exec(`INSERT INTO clients (id, proxy_id, name, credential_json, created_at, updated_at) VALUES (20, 10, 'Client', '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
 	service := NewService(db)
 	created, _, err := service.Create(t.Context(), CreateInput{
 		ServerID: 1, Name: "Proxy relay", ListenPort: 35152,
-		TargetType: TargetProxy, TargetProxyID: &targetID, Network: NetworkTCP, Enabled: true,
+		TargetType: TargetProxy, TargetProxyID: &targetID, TargetClientID: &clientID, Network: NetworkTCP, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +120,23 @@ func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testi
 		t.Fatalf("dynamic auto Relay entry = %+v, %v", updated, err)
 	}
 	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+	otherClientID := int64(21)
+	if _, err := db.Exec(`INSERT INTO clients (id, proxy_id, name, credential_json, created_at, updated_at) VALUES (21, 10, 'Other', '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{TargetClientID: &otherClientID})
+	if err != nil || updated.TargetClientID == nil || *updated.TargetClientID != otherClientID {
+		t.Fatalf("selected Relay client = %+v, %v", updated, err)
+	}
+	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
+	if _, err := db.Exec(`DELETE FROM clients WHERE id = ?`, otherClientID); err != nil {
+		t.Fatal(err)
+	}
+	enabled := false
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{Enabled: &enabled})
+	if err != nil || updated.TargetClientID != nil || updated.Enabled {
+		t.Fatalf("legacy Relay with no selected Client = %+v, %v", updated, err)
+	}
 }
 
 func TestRelayAutoEntryCanBeUnavailableWithoutAffectingDesiredState(t *testing.T) {

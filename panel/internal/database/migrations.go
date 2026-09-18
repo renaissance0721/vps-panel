@@ -59,6 +59,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateRelayEntryHost(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateRelayTargetClient(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateProxyProtocols(ctx, db); err != nil {
 		return err
 	}
@@ -69,6 +72,23 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateRelayTargetClient(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('relays') WHERE name = 'target_client_id'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect relays.target_client_id: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE relays ADD COLUMN target_client_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL`,
+		); err != nil {
+			return fmt.Errorf("add relays.target_client_id: %w", err)
+		}
+	}
 	return nil
 }
 

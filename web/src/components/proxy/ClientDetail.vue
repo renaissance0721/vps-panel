@@ -26,6 +26,7 @@ const props = defineProps<{
     | 'submitting'
     | 'resetClientTraffic'
     | 'copyShareURI'
+    | 'showSelectedShareQRCode'
     | 'copiedShareURI'
   >
 }>()
@@ -42,6 +43,7 @@ const {
   submitting,
   resetClientTraffic,
   copyShareURI,
+  showSelectedShareQRCode,
   copiedShareURI,
 } = toRefs(props.model)
 </script>
@@ -65,7 +67,7 @@ const {
 		<template v-else><div><dt>加密方法</dt><dd>{{ selectedShare.method }}</dd></div><div><dt>网络</dt><dd>TCP + UDP</dd></div></template>
       </dl>
 		<div class="share-field"><strong>直连 {{ selectedShare.protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }} URI</strong><n-input :value="selectedShare.uri" type="textarea" readonly :autosize="{ minRows: 4 }" /></div>
-		<div class="modal-actions"><n-button secondary :disabled="submitting" @click="resetClientTraffic">重置本周期流量</n-button><n-button type="primary" @click="copyShareURI(selectedShare.uri)">{{ copiedShareURI ? '链接已复制' : `复制 ${selectedShare.protocol === 'vless' ? 'VLESS' : 'Shadowsocks'} 链接` }}</n-button></div>
+		<div class="modal-actions"><n-button secondary :disabled="submitting" @click="resetClientTraffic">重置本周期流量</n-button><n-button secondary @click="showSelectedShareQRCode">二维码</n-button><n-button type="primary" @click="copyShareURI(selectedShare.uri)">{{ copiedShareURI ? '链接已复制' : `复制 ${selectedShare.protocol === 'vless' ? 'VLESS' : 'Shadowsocks'} 链接` }}</n-button></div>
     </n-card>
   </n-modal>
 </template>

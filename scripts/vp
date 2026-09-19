@@ -2,9 +2,10 @@
 
 set -Eeuo pipefail
 
-readonly INSTALL_DIR="/opt/vps-panel"
-readonly DATA_DIR="/var/lib/vps-panel"
-readonly CONFIG_DIR="/etc/vps-panel"
+readonly INSTALL_DIR="/opt/vps-panel/panel"
+readonly INSTALL_MARKER="${INSTALL_DIR}/.vps-panel-install"
+readonly DATA_DIR="/var/lib/vps-panel/panel"
+readonly CONFIG_DIR="/etc/vps-panel/panel"
 readonly CONFIG_FILE="${CONFIG_DIR}/environment"
 readonly SERVICE_FILE="/etc/systemd/system/vps-panel.service"
 readonly SERVICE_NAME="vps-panel.service"
@@ -22,7 +23,7 @@ fail() {
 require_installation() {
   [[ ${EUID} -eq 0 ]] || fail "run vp as root"
   command -v systemctl >/dev/null 2>&1 || fail "systemctl is not installed"
-  [[ -x "${INSTALL_DIR}/vps-panel" && -f "$SERVICE_FILE" ]] || \
+  [[ -x "${INSTALL_DIR}/vps-panel" && -f "$INSTALL_MARKER" && -f "$SERVICE_FILE" ]] || \
     fail "VPS Panel is not installed in ${INSTALL_DIR}"
 }
 
@@ -129,6 +130,7 @@ remove_caddy_configuration() {
 uninstall_panel() {
   local confirmation=""
   local delete_data=""
+  local shared_root=""
 
   printf 'Type uninstall to remove VPS Panel: '
   IFS= read -r confirmation
@@ -140,13 +142,15 @@ uninstall_panel() {
   printf 'Also permanently delete SQLite data? [y/N]: '
   IFS= read -r delete_data
 
+  [[ "$INSTALL_DIR" == "/opt/vps-panel/panel" ]] || fail "unexpected installation path"
+  [[ "$DATA_DIR" == "/var/lib/vps-panel/panel" ]] || fail "unexpected data path"
+  [[ "$CONFIG_DIR" == "/etc/vps-panel/panel" ]] || fail "unexpected config path"
+  [[ "$COMMAND_PATH" == "/usr/local/bin/vp" ]] || fail "unexpected command path"
+  for shared_root in /opt/vps-panel /var/lib/vps-panel /etc/vps-panel; do
+    [[ ! -L "$shared_root" ]] || fail "shared root must not be a symbolic link: $shared_root"
+  done
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   remove_caddy_configuration
-
-  [[ "$INSTALL_DIR" == "/opt/vps-panel" ]] || fail "unexpected installation path"
-  [[ "$DATA_DIR" == "/var/lib/vps-panel" ]] || fail "unexpected data path"
-  [[ "$CONFIG_DIR" == "/etc/vps-panel" ]] || fail "unexpected config path"
-  [[ "$COMMAND_PATH" == "/usr/local/bin/vp" ]] || fail "unexpected command path"
   rm -f -- "$SERVICE_FILE"
   systemctl daemon-reload
   rm -rf -- "$INSTALL_DIR" "$CONFIG_DIR"

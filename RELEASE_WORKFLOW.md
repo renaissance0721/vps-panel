@@ -230,7 +230,7 @@ vp update
 → 获取 GitHub latest Release
 → 下载当前架构的 Panel tar.gz
 → 解压到 staging
-→ 替换 /opt/vps-panel
+→ 替换 /opt/vps-panel/panel
 → 重启 Panel
 → 健康检查
 ```
@@ -248,32 +248,32 @@ Panel 更新时，旧前端必须被新 Release 中的前端完整替换。
 目标目录：
 
 ```text
-/opt/vps-panel/web
+/opt/vps-panel/panel/web
 ```
 
 更新过程应保证：
 
 ```text
-旧 /opt/vps-panel
+旧 /opt/vps-panel/panel
 → 备份或移走
 
 新 Release
 → 解压到 staging
 
 staging
-→ 替换成为新的 /opt/vps-panel
+→ 替换成为新的 /opt/vps-panel/panel
 ```
 
 不要只更新：
 
 ```text
-/opt/vps-panel/vps-panel
+/opt/vps-panel/panel/vps-panel
 ```
 
 而保留旧的：
 
 ```text
-/opt/vps-panel/web
+/opt/vps-panel/panel/web
 ```
 
 也不要简单把新前端文件覆盖到旧目录，导致旧 hashed assets 长期残留。

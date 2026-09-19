@@ -60,7 +60,7 @@ func run() error {
 		Addr: listenAddr,
 		Handler: api.NewHandlerWithBackup(db, webDir, panelVersion, api.BackupConfig{
 			DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
-			EnvironmentFile: "/etc/vps-panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
+			EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
 			RestoreRequested: restoreRequested,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

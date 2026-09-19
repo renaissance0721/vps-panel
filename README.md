@@ -86,11 +86,18 @@ vps-panel-linux-arm64.tar.gz
 
 ```text
 /opt/vps-panel/
-├── vps-panel
-└── web/
+├── panel/
+│   ├── vps-panel
+│   ├── web/
+│   └── .vps-panel-install
+├── agent/             # 同机安装 Agent 时保留
+├── xray/              # Agent 受管程序
+├── realm/             # Agent 受管程序
+└── acme/              # Agent 受管程序
 
-/var/lib/vps-panel/        SQLite 持久化数据
-/etc/vps-panel/environment 运行配置
+/var/lib/vps-panel/panel/        SQLite 数据与待恢复备份
+/var/lib/vps-panel/acme/         Agent ACME 状态
+/etc/vps-panel/panel/environment Panel 运行配置
 /etc/systemd/system/vps-panel.service
 ```
 
@@ -157,11 +164,13 @@ vp uninstall
 vp domain
 ```
 
-`vp update` 会下载最新 Release，在不删除 `/var/lib/vps-panel` 数据的情况下替换程序文件并重启服务。健康检查失败时，安装脚本会尽可能恢复上一版程序。
+`vp update` 会下载最新 Release，只替换 `/opt/vps-panel/panel/` 并重启服务，保留 `/var/lib/vps-panel/panel/` 数据。健康检查失败时，安装脚本会尽可能恢复上一版程序。
 
-从旧 Docker Compose 版本首次执行 `vp update` 时，脚本会停止旧容器，并将 `vps-panel_panel-data` 卷中的 SQLite 数据迁移到 `/var/lib/vps-panel`。旧 Docker 数据卷不会自动删除。
+从旧原生版本首次执行 `vp update` 时，安装器只迁移根目录中的旧 Panel 程序、SQLite 与配置文件到各自的 `panel/` 子目录。Agent、Xray、Realm 与 ACME 目录保持不变。
 
-`vp uninstall` 默认保留 SQLite 数据；只有在二次确认时才会删除 `/var/lib/vps-panel`。卸载不会自动移除 Caddy 软件包，以免影响 VPS 上的其他站点。
+从旧 Docker Compose 版本首次执行 `vp update` 时，脚本会停止旧容器，并将 `vps-panel_panel-data` 卷中的 SQLite 数据迁移到 `/var/lib/vps-panel/panel/`。旧 Docker 数据卷不会自动删除。
+
+`vp uninstall` 默认保留 SQLite 数据；只有在二次确认时才会删除 `/var/lib/vps-panel/panel/`。卸载只删除 Panel 自己的程序与配置子目录，不会删除共享父目录或 Agent 文件，也不会自动移除 Caddy 软件包。
 
 ## GitHub Release 构建
 

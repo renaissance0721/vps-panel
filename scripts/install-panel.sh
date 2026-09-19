@@ -5,11 +5,16 @@ set -Eeuo pipefail
 readonly REPOSITORY="renaissance0721/vps-panel"
 readonly RELEASE_DOWNLOAD_BASE="https://github.com/${REPOSITORY}/releases/latest/download"
 readonly REMOTE_MANAGER="https://raw.githubusercontent.com/${REPOSITORY}/main/scripts/vp"
-readonly INSTALL_DIR="/opt/vps-panel"
-readonly INSTALL_MARKER="${INSTALL_DIR}/.vps-panel-install"
-readonly DATA_DIR="/var/lib/vps-panel"
-readonly CONFIG_DIR="/etc/vps-panel"
-readonly CONFIG_FILE="${CONFIG_DIR}/environment"
+readonly ROOT_DIR="/opt/vps-panel"
+readonly INSTALL_DIR="/opt/vps-panel/panel"
+readonly INSTALL_MARKER="/opt/vps-panel/panel/.vps-panel-install"
+readonly LEGACY_INSTALL_MARKER="${ROOT_DIR}/.vps-panel-install"
+readonly DATA_ROOT="/var/lib/vps-panel"
+readonly DATA_DIR="/var/lib/vps-panel/panel"
+readonly CONFIG_ROOT="/etc/vps-panel"
+readonly CONFIG_DIR="/etc/vps-panel/panel"
+readonly CONFIG_FILE="/etc/vps-panel/panel/environment"
+readonly LEGACY_CONFIG_FILE="${CONFIG_ROOT}/environment"
 readonly SERVICE_FILE="/etc/systemd/system/vps-panel.service"
 readonly COMMAND_PATH="/usr/local/bin/vp"
 readonly CADDY_FILE="/etc/caddy/Caddyfile"
@@ -26,6 +31,7 @@ had_existing_install=0
 install_swapped=0
 legacy_docker_install=0
 legacy_docker_stopped=0
+legacy_native_install=0
 rollback_needed=0
 config_existed=0
 unit_existed=0
@@ -33,6 +39,7 @@ caddy_changed=0
 caddy_main_existed=0
 caddy_snippet_existed=0
 caddy_installed=0
+migrated_data_files=()
 
 log() {
   printf '[vps-panel] %s\n' "$*"
@@ -69,8 +76,10 @@ current_domain() {
 
   if [[ -f "$CONFIG_FILE" ]]; then
     domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$CONFIG_FILE" | tail -n 1)"
-  elif [[ -f "${INSTALL_DIR}/deploy/.env" ]]; then
-    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "${INSTALL_DIR}/deploy/.env" | tail -n 1)"
+  elif [[ -f "$LEGACY_CONFIG_FILE" ]]; then
+    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$LEGACY_CONFIG_FILE" | tail -n 1)"
+  elif [[ -f "${ROOT_DIR}/deploy/.env" ]]; then
+    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "${ROOT_DIR}/deploy/.env" | tail -n 1)"
   fi
 
   printf '%s\n' "$domain"
@@ -171,6 +180,7 @@ restore_caddy() {
 }
 
 rollback_install() {
+  local name=""
   log "Restoring the previous installation..."
   if [[ "$had_existing_install" -eq 0 || "$legacy_docker_install" -eq 1 ]]; then
     systemctl disable --now vps-panel.service >/dev/null 2>&1 || true
@@ -179,22 +189,35 @@ rollback_install() {
   fi
 
   if [[ "$install_swapped" -eq 1 ]]; then
-    [[ "$INSTALL_DIR" == "/opt/vps-panel" ]] || return 0
+    [[ "$INSTALL_DIR" == "/opt/vps-panel/panel" ]] || return 0
     rm -rf -- "$INSTALL_DIR" || true
   fi
-  if [[ "$had_existing_install" -eq 1 && -d "$backup_dir" && ! -e "$INSTALL_DIR" ]]; then
+  if [[ "$legacy_native_install" -eq 1 && -d "$backup_dir" ]]; then
+    for name in vps-panel web .vps-panel-install; do
+      if [[ -e "${backup_dir}/${name}" && ! -e "${ROOT_DIR}/${name}" ]]; then
+        mv "${backup_dir}/${name}" "${ROOT_DIR}/${name}" || true
+      fi
+    done
+    rmdir "$backup_dir" >/dev/null 2>&1 || true
+  elif [[ "$had_existing_install" -eq 1 && -d "$backup_dir" && ! -e "$INSTALL_DIR" ]]; then
     mv "$backup_dir" "$INSTALL_DIR" || true
   fi
+
+  for name in "${migrated_data_files[@]}"; do
+    if [[ -e "${DATA_DIR}/${name}" && ! -e "${DATA_ROOT}/${name}" ]]; then
+      mv "${DATA_DIR}/${name}" "${DATA_ROOT}/${name}" || true
+    fi
+  done
 
   restore_file "$CONFIG_FILE" "${temporary_dir}/environment.backup" "$config_existed"
   restore_file "$SERVICE_FILE" "${temporary_dir}/vps-panel.service.backup" "$unit_existed"
   systemctl daemon-reload >/dev/null 2>&1 || true
   restore_caddy
 
-  if [[ "$legacy_docker_stopped" -eq 1 && -f "${INSTALL_DIR}/deploy/docker-compose.yml" ]]; then
+  if [[ "$legacy_docker_stopped" -eq 1 && -f "${ROOT_DIR}/deploy/docker-compose.yml" ]]; then
     docker compose \
-      --project-directory "${INSTALL_DIR}/deploy" \
-      -f "${INSTALL_DIR}/deploy/docker-compose.yml" \
+      --project-directory "${ROOT_DIR}/deploy" \
+      -f "${ROOT_DIR}/deploy/docker-compose.yml" \
       up -d >/dev/null 2>&1 || true
   elif [[ "$had_existing_install" -eq 1 ]]; then
     systemctl start vps-panel.service >/dev/null 2>&1 || true
@@ -207,10 +230,10 @@ cleanup() {
   if [[ -n "$temporary_dir" && -d "$temporary_dir" ]]; then
     rm -rf -- "$temporary_dir"
   fi
-  if [[ -n "$staged_dir" && -d "$staged_dir" ]]; then
+  if [[ "$staged_dir" == "${ROOT_DIR}/.panel.new."* && -d "$staged_dir" ]]; then
     rm -rf -- "$staged_dir"
   fi
-  if [[ "$rollback_needed" -eq 0 && -n "$backup_dir" && -d "$backup_dir" ]]; then
+  if [[ "$rollback_needed" -eq 0 && "$backup_dir" == "${ROOT_DIR}/.panel.backup."* && -d "$backup_dir" ]]; then
     rm -rf -- "$backup_dir"
   fi
 }
@@ -237,13 +260,14 @@ ensure_service_user() {
       --shell /usr/sbin/nologin \
       vps-panel
   fi
+  [[ -d "$DATA_ROOT" ]] || install -d -m 0755 "$DATA_ROOT"
   install -d -o vps-panel -g vps-panel -m 0750 "$DATA_DIR"
 }
 
 migrate_legacy_docker_data() {
   local volume_path=""
 
-  [[ -f "${INSTALL_DIR}/deploy/docker-compose.yml" ]] || return 0
+  [[ -f "${ROOT_DIR}/deploy/docker-compose.yml" && "$legacy_native_install" -eq 0 && ! -f "$INSTALL_MARKER" ]] || return 0
   legacy_docker_install=1
   command -v docker >/dev/null 2>&1 || fail "the legacy Docker installation was found, but Docker is unavailable for migration"
   docker compose version >/dev/null 2>&1 || fail "the legacy Docker installation requires Docker Compose for migration"
@@ -256,8 +280,8 @@ migrate_legacy_docker_data() {
 
   log "Stopping the legacy Docker Compose deployment..."
   docker compose \
-    --project-directory "${INSTALL_DIR}/deploy" \
-    -f "${INSTALL_DIR}/deploy/docker-compose.yml" \
+    --project-directory "${ROOT_DIR}/deploy" \
+    -f "${ROOT_DIR}/deploy/docker-compose.yml" \
     down --remove-orphans
   legacy_docker_stopped=1
   rollback_needed=1
@@ -269,7 +293,20 @@ migrate_legacy_docker_data() {
   fi
 }
 
+migrate_legacy_native_data() {
+  local name=""
+
+  [[ "$legacy_native_install" -eq 1 ]] || return 0
+  for name in panel.db panel.db-wal panel.db-shm restore; do
+    if [[ -e "${DATA_ROOT}/${name}" ]]; then
+      mv "${DATA_ROOT}/${name}" "${DATA_DIR}/${name}"
+      migrated_data_files+=("$name")
+    fi
+  done
+}
+
 write_service_configuration() {
+  [[ -d "$CONFIG_ROOT" ]] || install -d -m 0755 "$CONFIG_ROOT"
   install -d -m 0755 "$CONFIG_DIR"
   if [[ -f "$CONFIG_FILE" ]]; then
     config_existed=1
@@ -434,21 +471,42 @@ for command_name in curl tar uname systemctl install getent groupadd useradd; do
 done
 [[ -d /run/systemd/system ]] || fail "systemd is not running on this VPS"
 
-if [[ -L "$INSTALL_DIR" ]]; then
-  fail "${INSTALL_DIR} must not be a symbolic link"
-fi
+for directory in "$ROOT_DIR" "$INSTALL_DIR" "$DATA_ROOT" "$DATA_DIR" "$CONFIG_ROOT" "$CONFIG_DIR"; do
+  [[ ! -L "$directory" ]] || fail "${directory} must not be a symbolic link"
+done
+for owned_file in "$CONFIG_FILE" "$LEGACY_CONFIG_FILE" "$SERVICE_FILE" "$COMMAND_PATH"; do
+  [[ ! -L "$owned_file" ]] || fail "${owned_file} must not be a symbolic link"
+done
 if [[ -d "$INSTALL_DIR" && ! -f "$INSTALL_MARKER" ]]; then
   if [[ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     fail "${INSTALL_DIR} already exists and was not created by this installer"
   fi
+fi
+if [[ -f "$LEGACY_INSTALL_MARKER" ]]; then
+  [[ ! -e "$INSTALL_DIR" ]] || fail "old and new Panel installation directories both exist"
+  [[ -f "${ROOT_DIR}/vps-panel" && -d "${ROOT_DIR}/web" ]] || \
+    fail "the legacy Panel installation is incomplete"
+  for old_file in "${ROOT_DIR}/vps-panel" "${ROOT_DIR}/web" "$LEGACY_INSTALL_MARKER"; do
+    [[ ! -L "$old_file" ]] || fail "legacy Panel files must not be symbolic links"
+  done
+  [[ -f "${DATA_ROOT}/panel.db" ]] || fail "the legacy Panel database is missing"
+  for name in panel.db panel.db-wal panel.db-shm restore; do
+    [[ ! -L "${DATA_ROOT}/${name}" && ! -L "${DATA_DIR}/${name}" ]] || \
+      fail "Panel data paths must not be symbolic links"
+    if [[ -e "${DATA_ROOT}/${name}" && -e "${DATA_DIR}/${name}" ]]; then
+      fail "old and new Panel data both contain ${name}"
+    fi
+  done
+  legacy_native_install=1
 fi
 
 choose_domain
 detect_architecture
 
 temporary_dir="$(mktemp -d)"
-staged_dir="/opt/.vps-panel.new.$$"
-backup_dir="/opt/.vps-panel.backup.$$"
+[[ -d "$ROOT_DIR" ]] || install -d -m 0755 "$ROOT_DIR"
+staged_dir="${ROOT_DIR}/.panel.new.$$"
+backup_dir="${ROOT_DIR}/.panel.backup.$$"
 trap on_exit EXIT
 [[ ! -e "$staged_dir" && ! -e "$backup_dir" ]] || fail "temporary installation path already exists"
 
@@ -477,14 +535,21 @@ chmod -R a+rX "$staged_dir"
 
 ensure_service_user
 migrate_legacy_docker_data
-write_service_configuration
 
-if [[ -d "$INSTALL_DIR" ]]; then
+if [[ -d "$INSTALL_DIR" || "$legacy_native_install" -eq 1 ]]; then
   had_existing_install=1
 fi
 rollback_needed=1
+write_service_configuration
 systemctl stop vps-panel.service >/dev/null 2>&1 || true
-if [[ "$had_existing_install" -eq 1 ]]; then
+if systemctl is-active --quiet vps-panel.service; then
+  fail "Panel service did not stop; database migration was not started"
+fi
+migrate_legacy_native_data
+if [[ "$legacy_native_install" -eq 1 ]]; then
+  install -d -m 0755 "$backup_dir"
+  mv "${ROOT_DIR}/vps-panel" "${ROOT_DIR}/web" "$LEGACY_INSTALL_MARKER" "$backup_dir/"
+elif [[ "$had_existing_install" -eq 1 ]]; then
   mv "$INSTALL_DIR" "$backup_dir"
 fi
 mv "$staged_dir" "$INSTALL_DIR"
@@ -514,6 +579,9 @@ fi
 install -d -m 0755 /usr/local/bin
 install -m 0755 "${temporary_dir}/vp" "$COMMAND_PATH"
 rollback_needed=0
+if [[ "$legacy_native_install" -eq 1 ]]; then
+  rm -f -- "$LEGACY_CONFIG_FILE" || log "Could not remove the old Panel environment file"
+fi
 
 log "Management command installed: vp"
 if [[ "$legacy_docker_install" -eq 1 ]]; then

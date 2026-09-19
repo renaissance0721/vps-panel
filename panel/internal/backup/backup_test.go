@@ -28,7 +28,7 @@ const testVersion = "v0.23.0"
 const testDomain = "panel.example.com"
 
 func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
-	sourceDir := t.TempDir()
+	sourceDir := filepath.Join(t.TempDir(), "var", "lib", "vps-panel", "panel")
 	source, err := database.Open(sourceDir)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,15 @@ func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 		t.Fatalf("ZIP entries=%d", len(archiveReader.File))
 	}
 	archiveReader.Close()
-	targetDir := t.TempDir()
+	targetRoot := t.TempDir()
+	targetDir := filepath.Join(targetRoot, "var", "lib", "vps-panel", "panel")
+	acmeDir := filepath.Join(targetRoot, "var", "lib", "vps-panel", "acme")
+	if err := os.MkdirAll(acmeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(acmeDir, "account"), []byte("agent state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	target, err := database.Open(targetDir)
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +92,9 @@ func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	got := rowsByTable(t, restored)
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("database rows changed after restore\nwant: %#v\ngot: %#v", want, got)
+	}
+	if data, err := os.ReadFile(filepath.Join(acmeDir, "account")); err != nil || string(data) != "agent state" {
+		t.Fatalf("Agent ACME state changed: %q, %v", data, err)
 	}
 	var count int
 	if err := restored.QueryRow(`SELECT count(*) FROM users WHERE id=999`).Scan(&count); err != nil || count != 0 {

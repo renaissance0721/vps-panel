@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
@@ -23,6 +24,16 @@ type server struct {
 	webRoot      string
 	panelVersion string
 	agents       *agentcontrol.Service
+	backup       BackupConfig
+	backupMu     sync.Mutex
+}
+
+type BackupConfig struct {
+	DataDir          string
+	Domain           string
+	EnvironmentFile  string
+	CaddyFile        string
+	RestoreRequested chan<- struct{}
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
@@ -30,6 +41,10 @@ func NewHandler(db *sql.DB, webRoot string) http.Handler {
 }
 
 func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handler {
+	return NewHandlerWithBackup(db, webRoot, panelVersion, BackupConfig{})
+}
+
+func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) http.Handler {
 	s := &server{
 		db:           db,
 		authService:  auth.NewService(db),
@@ -40,6 +55,7 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 		webRoot:      webRoot,
 		panelVersion: panelVersion,
 		agents:       agentcontrol.NewService(db, time.Now),
+		backup:       backupConfig,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
@@ -57,6 +73,8 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	mux.HandleFunc("GET /api/admin/invitations", s.requireAdmin(s.listInvitations))
 	mux.HandleFunc("POST /api/admin/invitations", s.requireAdmin(s.createInvitation))
 	mux.HandleFunc("DELETE /api/admin/invitations/{id}", s.requireAdmin(s.revokeInvitation))
+	mux.HandleFunc("GET /api/admin/backup/export", s.requireAdmin(s.exportBackup))
+	mux.HandleFunc("POST /api/admin/backup/import", s.requireAdmin(s.importBackup))
 	mux.HandleFunc("GET /api/users", s.requireAuthentication(s.listUsers))
 	mux.HandleFunc("GET /api/overview", s.requireAuthentication(s.overview))
 	mux.HandleFunc("GET /api/servers", s.requireAuthentication(s.listServers))

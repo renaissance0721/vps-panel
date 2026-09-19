@@ -15,8 +15,8 @@ import type {
 } from '../composables/useOverview'
 import { adminFirst } from '../adminFirst'
 
-const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation'> }>()
-const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, copyInvitation, copied, invitations, formatTime, revokeInvitation } = toRefs(props.model)
+const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation' | 'backupFile' | 'backupBusy' | 'backupStatus' | 'selectBackup' | 'exportBackup' | 'importBackup'> }>()
+const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, copyInvitation, copied, invitations, formatTime, revokeInvitation, backupFile, backupBusy, backupStatus, selectBackup, exportBackup, importBackup } = toRefs(props.model)
 const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 </script>
 
@@ -94,5 +94,15 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
                 </n-button>
               </div>
             </div>
+          </n-card>
+          <n-card v-if="state?.user?.role === 'admin'" title="备份与恢复" :bordered="true">
+            <h3>整站备份</h3>
+            <p class="card-copy">导出的 ZIP 包含 Panel 数据、账号、服务器、Agent 身份、代理节点、中转、客户端、流量和权限等敏感信息，请妥善保管。</p>
+            <n-button type="primary" :loading="backupBusy" @click="exportBackup">导出备份</n-button>
+            <h3>恢复备份</h3>
+            <input type="file" accept=".zip,application/zip" :disabled="backupBusy" @change="selectBackup" />
+            <p v-if="backupFile">已选择：{{ backupFile.name }}</p>
+            <n-button type="error" :disabled="!backupFile || backupBusy" :loading="backupBusy" @click="importBackup">导入并恢复</n-button>
+            <p v-if="backupStatus" role="status">{{ backupStatus }}</p>
           </n-card>
 </template>

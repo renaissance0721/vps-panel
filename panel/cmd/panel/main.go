@@ -2,23 +2,27 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
+	"github.com/renaissance0721/vps-panel/panel/internal/backup"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 )
 
 const defaultHealthcheckURL = "http://127.0.0.1:8080/api/health"
 
 var panelVersion = "dev"
+var errRestoreRestart = errors.New("restore staged; restarting panel")
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
@@ -39,7 +43,7 @@ func run() error {
 	dataDir := envOrDefault("PANEL_DATA_DIR", "data")
 	webDir := envOrDefault("PANEL_WEB_DIR", "../web/dist")
 
-	db, err := database.Open(dataDir)
+	db, err := openDatabase(dataDir)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -51,9 +55,14 @@ func run() error {
 	}
 	cancelReset()
 
+	restoreRequested := make(chan struct{}, 1)
 	server := &http.Server{
-		Addr:              listenAddr,
-		Handler:           api.NewHandlerWithVersion(db, webDir, panelVersion),
+		Addr: listenAddr,
+		Handler: api.NewHandlerWithBackup(db, webDir, panelVersion, api.BackupConfig{
+			DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
+			EnvironmentFile: "/etc/vps-panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
+			RestoreRequested: restoreRequested,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
@@ -78,9 +87,49 @@ func run() error {
 		if err := server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("shut down panel: %w", err)
 		}
+	case <-restoreRequested:
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			return fmt.Errorf("shut down panel for restore: %w", err)
+		}
+		return errRestoreRestart
 	}
 
 	return nil
+}
+
+func openDatabase(dataDir string) (*sql.DB, error) {
+	attempt, err := backup.ApplyPendingRestore(dataDir)
+	if err != nil {
+		if errors.Is(err, backup.ErrRecoveryFailed) {
+			return nil, err
+		}
+		log.Printf("pending restore rejected; opening existing database: %v", err)
+	}
+	db, openErr := database.Open(dataDir)
+	if attempt == nil {
+		return db, openErr
+	}
+	if openErr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		openErr = backup.ValidateDatabase(ctx, filepath.Join(dataDir, "panel.db"))
+		cancel()
+	}
+	if openErr == nil {
+		openErr = attempt.Commit()
+		if openErr == nil {
+			return db, nil
+		}
+	}
+	if db != nil {
+		_ = db.Close()
+	}
+	if err := attempt.Rollback(); err != nil {
+		return nil, fmt.Errorf("restored database failed: %v; rollback failed: %w", openErr, err)
+	}
+	log.Printf("restored database rejected; original database recovered: %v", openErr)
+	return database.Open(dataDir)
 }
 
 func healthcheck() error {

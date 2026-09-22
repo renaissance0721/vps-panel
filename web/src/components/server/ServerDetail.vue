@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  computed,
   toRefs,
 } from 'vue'
 import {
@@ -9,10 +10,18 @@ import {
   NAlert,
   NInput,
   NEmpty,
+  NDrawer,
+  NDrawerContent,
+  NSpin,
+  NTag,
 } from 'naive-ui'
 import type {
   ServersViewState,
 } from '../../composables/useServers'
+import type {
+  DiagnosticCheck,
+  DiagnosticStatus,
+} from '../../types/server'
 import ServerTraffic from './ServerTraffic.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
 const props = defineProps<{
@@ -46,6 +55,12 @@ const props = defineProps<{
     | 'createdServer'
     | 'copyAgentCommand'
     | 'copiedCommand'
+    | 'diagnosticOpen'
+    | 'diagnosticLoading'
+    | 'diagnosticReport'
+    | 'diagnosticError'
+    | 'openDiagnostics'
+    | 'runDiagnostics'
   >
 }>()
 const {
@@ -78,7 +93,71 @@ const {
   createdServer,
   copyAgentCommand,
   copiedCommand,
+  diagnosticOpen,
+  diagnosticLoading,
+  diagnosticReport,
+  diagnosticError,
+  openDiagnostics,
+  runDiagnostics,
 } = toRefs(props.model)
+
+const diagnosticGroupDefinitions = [
+  { title: 'Agent', prefixes: ['agent.'] },
+  { title: '配置同步', prefixes: ['config.'] },
+  { title: 'Xray', prefixes: ['xray.'] },
+  { title: 'Realm', prefixes: ['realm.'] },
+  { title: '中转目标', prefixes: ['relay.'] },
+  { title: 'TLS', prefixes: ['tls.'] },
+  { title: 'Panel → 入口', prefixes: ['panel.'] },
+  { title: '协议端到端', prefixes: ['protocol.'] },
+  { title: '其他', prefixes: ['diagnostic.'] },
+]
+
+const diagnosticGroups = computed(() => diagnosticGroupDefinitions
+  .map((group) => ({
+    title: group.title,
+    checks: diagnosticReport.value?.checks.filter((check) =>
+      group.prefixes.some((prefix) => check.code.startsWith(prefix)),
+    ) ?? [],
+  }))
+  .filter((group) => group.checks.length > 0))
+
+function diagnosticStatusIcon(status: DiagnosticStatus) {
+  if (status === 'pass') return '✓'
+  if (status === 'warning') return '!'
+  if (status === 'fail') return '✕'
+  return '—'
+}
+
+function diagnosticStatusType(status: DiagnosticStatus): 'success' | 'warning' | 'error' | 'default' {
+  if (status === 'pass') return 'success'
+  if (status === 'warning') return 'warning'
+  if (status === 'fail') return 'error'
+  return 'default'
+}
+
+function diagnosticCheckTitle(check: DiagnosticCheck) {
+  if (check.label) return check.label
+  const labels: Record<string, string> = {
+    'agent.connected': 'Agent 在线',
+    'config.version': '配置版本',
+    'config.sync': '最近一次配置同步',
+    'xray.service': 'Xray service',
+    'xray.config': 'Xray 当前配置',
+    'realm.service': 'Realm service',
+    'protocol.end_to_end': 'VLESS / Shadowsocks 协议握手',
+    'diagnostic.truncated': '诊断结果限制',
+  }
+  return labels[check.code] ?? check.code
+}
+
+function diagnosticCheckMeta(check: DiagnosticCheck) {
+  const values = []
+  if (check.endpoint) values.push(check.endpoint)
+  if (check.protocol) values.push(check.protocol.toUpperCase())
+  if (check.latency_ms !== undefined) values.push(`${check.latency_ms} ms`)
+  return values.join(' · ')
+}
 </script>
 
 <template>
@@ -156,6 +235,16 @@ const {
               <section class="server-detail-section">
             <div class="section-heading">
               <h3 class="system-info-title">Agent</h3>
+              <div class="section-heading-actions">
+              <n-button
+                size="small"
+                secondary
+                :loading="diagnosticLoading"
+                :disabled="!!selectedServer.archived_at"
+                @click="openDiagnostics(selectedServer)"
+              >
+                一键诊断
+              </n-button>
               <n-button
                 v-if="state?.user?.role === 'admin' && selectedServer.agent_version_status === 'upgrade_available'"
                 size="small"
@@ -167,6 +256,7 @@ const {
               >
                 {{ panelReleaseVersion ? `升级 Agent 到 ${panelReleaseVersion}` : '开发版本不可升级' }}
               </n-button>
+              </div>
             </div>
             <dl class="server-details">
               <div><dt>Agent 版本</dt><dd>{{ selectedServer.agent_version || '—' }}</dd></div>
@@ -306,4 +396,45 @@ const {
             </div>
           </n-card>
         </n-modal>
+
+        <n-drawer v-if="selectedServer" v-model:show="diagnosticOpen" width="min(720px, 100vw)" placement="right">
+          <n-drawer-content title="服务器一键诊断" closable>
+            <n-alert type="info" class="diagnostic-notice">
+              TCP 检查只表示指定网络位置可以建立连接，不代表 VLESS / Shadowsocks 协议端到端可用；UDP 仅检查节点本地 listener，不判断远端可达性。
+            </n-alert>
+            <div v-if="diagnosticLoading && !diagnosticReport" class="loading-row">
+              <n-spin size="small" /><span>正在诊断...</span>
+            </div>
+            <n-alert v-if="diagnosticError" type="error" class="diagnostic-notice">
+              {{ diagnosticError }}
+            </n-alert>
+            <n-empty
+              v-if="!diagnosticLoading && !diagnosticReport && !diagnosticError"
+              description="尚未诊断"
+            />
+            <template v-if="diagnosticReport">
+              <p class="diagnostic-summary">
+                完成于 {{ formatTime(diagnosticReport.started_at) }} · 用时 {{ diagnosticReport.duration_ms }} ms
+              </p>
+              <section v-for="group in diagnosticGroups" :key="group.title" class="diagnostic-group">
+                <h3>{{ group.title }}</h3>
+                <div v-for="(check, index) in group.checks" :key="`${check.code}-${check.resource_id ?? 0}-${index}`" class="diagnostic-check">
+                  <n-tag :type="diagnosticStatusType(check.status)" size="small" round>
+                    {{ diagnosticStatusIcon(check.status) }}
+                  </n-tag>
+                  <div>
+                    <strong>{{ diagnosticCheckTitle(check) }}</strong>
+                    <span v-if="diagnosticCheckMeta(check)" class="diagnostic-meta">{{ diagnosticCheckMeta(check) }}</span>
+                    <p v-if="check.detail">{{ check.detail }}</p>
+                  </div>
+                </div>
+              </section>
+            </template>
+            <template #footer>
+              <n-button type="primary" :loading="diagnosticLoading" @click="runDiagnostics()">
+                {{ diagnosticReport ? '重新诊断' : '开始诊断' }}
+              </n-button>
+            </template>
+          </n-drawer-content>
+        </n-drawer>
 </template>

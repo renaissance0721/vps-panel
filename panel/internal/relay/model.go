@@ -48,6 +48,7 @@ type Relay struct {
 	TargetProxyID      *int64
 	TargetClientID     *int64
 	TargetProxyName    string
+	TargetClientName   string
 	TargetHost         string
 	TargetPort         int
 	TargetAddressReady bool

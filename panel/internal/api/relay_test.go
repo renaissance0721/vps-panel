@@ -166,6 +166,17 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 	if relay.Relay.TargetClientID == nil || *relay.Relay.TargetClientID != clientID {
 		t.Fatalf("saved target client = %+v", relay.Relay.TargetClientID)
 	}
+	if relay.Relay.TargetClientName != "Phone" {
+		t.Fatalf("saved target client name = %q", relay.Relay.TargetClientName)
+	}
+	listResponse := performRequest(t, handler, http.MethodGet, "/api/relays", nil, cookie)
+	var listed struct {
+		Relays []relayResponse `json:"relays"`
+	}
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &listed) != nil ||
+		len(listed.Relays) != 1 || listed.Relays[0].TargetClientName != "Phone" {
+		t.Fatalf("list Relay target client name = %d, %s", listResponse.Code, listResponse.Body.String())
+	}
 	mismatchedUpdate := performRequest(t, handler, http.MethodPatch, path,
 		updateRelayRequest{TargetClientID: &foreignClientID}, cookie)
 	if mismatchedUpdate.Code != http.StatusBadRequest {

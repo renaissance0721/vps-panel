@@ -191,7 +191,7 @@ func list(ctx context.Context, query interface {
 	rows, err := query.QueryContext(ctx,
 		`SELECT relays.id, relays.server_id, source.name, COALESCE(source_info.public_ipv4, ''),
 		 relays.name, relays.listen_address, relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type,
-		 relays.target_proxy_id, relays.target_client_id, relays.target_host, relays.target_port,
+		 relays.target_proxy_id, relays.target_client_id, target_client.name, relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
 		 target_proxy.name, target_proxy.listen_port, target_proxy.entry_host_mode,
 		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at
@@ -199,6 +199,7 @@ func list(ctx context.Context, query interface {
 		 JOIN servers AS source ON source.id = relays.server_id
 		 LEFT JOIN server_system_info AS source_info ON source_info.server_id = source.id
 		 LEFT JOIN proxies AS target_proxy ON target_proxy.id = relays.target_proxy_id
+		 LEFT JOIN clients AS target_client ON target_client.id = relays.target_client_id
 		 LEFT JOIN servers AS target_server ON target_server.id = target_proxy.server_id
 		 LEFT JOIN server_system_info AS target_info ON target_info.server_id = target_server.id `+condition,
 		arguments...,
@@ -211,13 +212,13 @@ func list(ctx context.Context, query interface {
 	for rows.Next() {
 		var value Relay
 		var targetProxyID, targetClientID, storedTargetPort, proxyPort, targetArchived sql.NullInt64
-		var targetProxyName, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
+		var targetProxyName, targetClientName, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.ServerID, &value.ServerName, &value.ServerPublicIPv4,
 			&value.Name, &value.ListenAddress, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType,
-			&targetProxyID, &targetClientID, &value.TargetHost, &storedTargetPort,
+			&targetProxyID, &targetClientID, &targetClientName, &value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
 			&targetProxyName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
 		); err != nil {
@@ -242,6 +243,7 @@ func list(ctx context.Context, query interface {
 		if targetClientID.Valid {
 			id := targetClientID.Int64
 			value.TargetClientID = &id
+			value.TargetClientName = targetClientName.String
 		}
 		if value.TargetType == TargetManual {
 			value.TargetPort = int(storedTargetPort.Int64)

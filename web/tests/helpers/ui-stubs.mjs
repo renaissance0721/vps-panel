@@ -19,6 +19,10 @@ export const NModal = defineComponent({
   props: { show: Boolean },
   setup: (props, { slots }) => () => props.show ? slots.default?.() : null,
 })
+export const NDrawer = NModal
+export const NDrawerContent = defineComponent({
+  setup: (_, { slots, attrs }) => () => h('section', attrs, [slots.default?.(), slots.footer?.()]),
+})
 export const NButton = defineComponent({
   props: ['attrType'],
   setup: (props, { slots, attrs }) => () => h('button', { ...attrs, type: props.attrType }, slots.default?.()),

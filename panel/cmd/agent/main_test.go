@@ -23,6 +23,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -470,6 +471,117 @@ func TestConnectAgentUsesStoredTokenAndKeepsConnection(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("WebSocket handler did not observe disconnect")
+	}
+}
+
+func TestAgentAdvertisesDiagnosticsAndReturnsMatchingRequestIDAfterUnknownMessage(t *testing.T) {
+	requestID, err := diagnostic.NewRequestID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultReceived := make(chan diagnostic.Result, 1)
+	handlerResult := make(chan error, 1)
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestAgentConfig(w, r) {
+			return
+		}
+		if r.Header.Get("X-VPS-Panel-Agent-Capabilities") != diagnostic.CapabilityV1 {
+			handlerResult <- errors.New("Agent did not advertise diagnostics_v1")
+			return
+		}
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			handlerResult <- err
+			return
+		}
+		defer connection.CloseNow()
+		if _, _, err := connection.Read(context.Background()); err != nil {
+			handlerResult <- err
+			return
+		}
+		if err := connection.Write(context.Background(), websocket.MessageText, []byte(`{"type":"future_message"}`)); err != nil {
+			handlerResult <- err
+			return
+		}
+		request, _ := json.Marshal(diagnostic.Request{Type: "diagnostic_request", RequestID: requestID})
+		if err := connection.Write(context.Background(), websocket.MessageText, request); err != nil {
+			handlerResult <- err
+			return
+		}
+		for {
+			messageType, message, err := connection.Read(context.Background())
+			if err != nil {
+				handlerResult <- err
+				return
+			}
+			var result diagnostic.Result
+			if messageType == websocket.MessageText && json.Unmarshal(message, &result) == nil && result.Type == "diagnostic_result" {
+				resultReceived <- result
+				<-connection.CloseRead(context.Background()).Done()
+				handlerResult <- nil
+				return
+			}
+		}
+	}))
+	defer panel.Close()
+
+	value := config{PanelURL: panel.URL, ServerID: 1, AgentID: 1, AgentToken: "diagnostic-token"}
+	synchronizer := newConfigSynchronizer(value, panel.Client())
+	publicIPv4 := &publicIPv4State{detect: func(context.Context) string { return "" }}
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{}, 1)
+	go func() {
+		connectAgentOnce(ctx, value, synchronizer, publicIPv4)
+		finished <- struct{}{}
+	}()
+	select {
+	case result := <-resultReceived:
+		if result.RequestID != requestID || diagnostic.ValidateResult(result) != nil {
+			t.Fatalf("diagnostic result = %+v", result)
+		}
+	case err := <-handlerResult:
+		t.Fatalf("Panel handler: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Agent did not return diagnostic_result")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("Agent connection did not stop")
+	}
+	select {
+	case err := <-handlerResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Panel handler did not finish")
+	}
+}
+
+func TestAgentRejectsMalformedKnownDiagnosticRequest(t *testing.T) {
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		if connection.Write(context.Background(), websocket.MessageText, []byte(`{"type":"diagnostic_request","request_id":"predictable"}`)) == nil {
+			<-connection.CloseRead(context.Background()).Done()
+		}
+	}))
+	defer panel.Close()
+	connection, _, err := websocket.Dial(t.Context(), panel.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	err = readPanelMessages(
+		t.Context(), connection, make(chan struct{}, 1), make(chan string, 1), make(chan string, 1),
+	)
+	if err == nil {
+		t.Fatal("Agent accepted malformed diagnostic_request")
 	}
 }
 

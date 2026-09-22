@@ -239,7 +239,7 @@ func TestNewAgentConnectionReplacesOldConnectionWithoutFalseOffline(t *testing.T
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
 }
 
-func TestAgentWebSocketRejectsUnknownMessageType(t *testing.T) {
+func TestAgentWebSocketIgnoresUnknownMessageType(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -261,14 +261,18 @@ func TestAgentWebSocketRejectsUnknownMessageType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect Agent WebSocket: %v, response = %+v", err, response)
 	}
-	disconnected := connection.CloseRead(context.Background())
 	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{"type":"future_message"}`)); err != nil {
 		t.Fatalf("write unknown Agent message: %v", err)
 	}
-	select {
-	case <-disconnected.Done():
-	case <-time.After(time.Second):
-		t.Fatal("unknown Agent message did not close WebSocket")
+	if _, err := db.Exec(`UPDATE agents SET last_seen_at = NULL WHERE id = ?`, registered.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Write(t.Context(), websocket.MessageText, []byte(`{"type":"heartbeat"}`)); err != nil {
+		t.Fatalf("write heartbeat after unknown message: %v", err)
+	}
+	waitForLastSeen(t, service, created.ID)
+	if err := connection.Close(websocket.StatusNormalClosure, "test complete"); err != nil {
+		t.Fatal(err)
 	}
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
 }

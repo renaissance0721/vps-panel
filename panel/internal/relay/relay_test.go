@@ -78,6 +78,9 @@ func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testi
 	if created.EntryHostMode != EntryHostAuto || created.EntryAddress != "198.51.100.10" {
 		t.Fatalf("auto Relay entry = %+v", created)
 	}
+	if created.TargetClientName != "Client" {
+		t.Fatalf("Relay target client name = %q", created.TargetClientName)
+	}
 	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
 
 	mode, host := EntryHostManual, "core.example.com"

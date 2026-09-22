@@ -148,6 +148,54 @@ test('服务器名称保存后详情保持打开且列表使用新名称', async
   for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
 })
 
+test('服务器一键诊断请求固定 API 并按模块展示结构化结果', async t => {
+  const calls = []
+  const report = {
+    server_id: 7,
+    started_at: '2026-09-22T05:00:00Z',
+    duration_ms: 42,
+    checks: [
+      { code: 'agent.connected', status: 'pass', detail: 'Agent 在线并已响应诊断请求' },
+      { code: 'config.version', status: 'pass', detail: 'Desired v1 / Applied v1' },
+      { code: 'xray.listener', status: 'pass', label: 'US VLESS', endpoint: '127.0.0.1:443', protocol: 'tcp' },
+      { code: 'relay.target_tcp', status: 'fail', label: 'SG Relay', endpoint: '203.0.113.8:8443', protocol: 'tcp', detail: 'timeout' },
+      { code: 'panel.entry_tcp', status: 'pass', label: 'US VLESS', endpoint: 'node.example.com:443', latency_ms: 42 },
+      { code: 'protocol.end_to_end', status: 'skipped', detail: '未执行协议握手' },
+    ],
+  }
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, init })
+    return json(report)
+  })
+  const { model } = serverModel()
+  const server = serverRecord({ status: 'online' })
+  model.viewServer(server)
+  await model.openDiagnostics(server)
+  assert.equal(calls[0].url, '/api/servers/7/diagnostics')
+  assert.equal(calls[0].init.method, 'POST')
+  assert.deepEqual(model.diagnosticReport.value, report)
+  const detail = await render('components/server/ServerDetail.vue', model)
+  for (const label of ['一键诊断', '配置同步', 'Xray', '中转目标', 'Panel → 入口', '协议端到端', '重新诊断']) {
+    assert.match(detail, new RegExp(label))
+  }
+  assert.match(detail, /TCP 检查只表示指定网络位置可以建立连接/)
+  assert.match(detail, /US VLESS/)
+  assert.match(detail, /node\.example\.com:443/)
+})
+
+test('旧 Agent 的诊断不支持错误显示在诊断 Drawer 内', async t => {
+  t.mock.method(globalThis, 'fetch', async () => json({ error: '当前 Agent 不支持一键诊断，请升级 Agent。' }, 409))
+  const { model } = serverModel()
+  const server = serverRecord({ status: 'online' })
+  model.viewServer(server)
+  await model.openDiagnostics(server)
+  assert.equal(model.diagnosticOpen.value, true)
+  assert.equal(model.diagnosticError.value, '当前 Agent 不支持一键诊断，请升级 Agent。')
+  const detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /当前 Agent 不支持一键诊断，请升级 Agent。/)
+  assert.match(detail, /开始诊断/)
+})
+
 test('出站优先级按钮高亮当前设置，归档时禁用', async () => {
   const { model } = serverModel()
   for (const [preference, label] of [['auto', '系统默认'], ['prefer_ipv4', '优先 IPv4'], ['prefer_ipv6', '优先 IPv6']]) {

@@ -64,6 +64,7 @@ type RelayRecord = {
   target_proxy_id: number | null
   target_client_id: number | null
   target_proxy_name: string
+  target_client_name: string
   target_host: string
   target_port: number
   target_address_ready: boolean
@@ -141,7 +142,7 @@ const filteredRelays = computed(() => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return relays.value
   return relays.value.filter((value) =>
-    [value.name, value.server_name, value.entry_address, relayTargetLabel(value)]
+    [value.name, value.server_name, value.entry_address, relayTargetLabel(value), value.target_client_name]
       .some((field) => field.toLowerCase().includes(keyword)),
   )
 })
@@ -467,7 +468,7 @@ import {
     <n-empty v-else-if="filteredRelays.length === 0" description="当前没有中转规则" />
     <div v-else class="server-table-wrap">
       <table class="server-table relay-table">
-        <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>客户端</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="value in filteredRelays" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropRelay(value.id)">
             <td class="reorder-cell">
@@ -481,6 +482,7 @@ import {
             </td>
             <td>{{ value.listen_port }}</td>
             <td>{{ relayTargetLabel(value) }}</td>
+            <td>{{ value.target_client_name || '—' }}</td>
             <td>{{ relayNetworkLabel(value.network) }}</td>
             <td><n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag></td>
             <td class="server-actions">

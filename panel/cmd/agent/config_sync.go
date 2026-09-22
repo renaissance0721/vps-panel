@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 )
 
 const unsupportedManagedConfigMessage = "managed proxy configuration is not supported by this Agent version"
@@ -99,6 +101,8 @@ type configSynchronizer struct {
 	client                *http.Client
 	applyState            func(context.Context, desiredState) error
 	renewCertificates     func(context.Context) error
+	diagnoseState         func(context.Context, desiredState) []diagnostic.Check
+	now                   func() time.Time
 	mu                    sync.Mutex
 	lastSuccessfulVersion int64
 }
@@ -106,11 +110,31 @@ type configSynchronizer struct {
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
 	xray := newXrayManager()
 	realm := newRealmManager()
-	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, applyState: func(ctx context.Context, state desiredState) error {
+	runner := newAgentDiagnosticRunner(xray, realm)
+	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, now: time.Now, applyState: func(ctx context.Context, state desiredState) error {
 		xrayErr := xray.apply(ctx, state)
 		realmErr := realm.apply(ctx, state.Realm)
 		return errors.Join(xrayErr, realmErr)
 	}}
+}
+
+func (s *configSynchronizer) diagnose(ctx context.Context, requestID string) diagnostic.Result {
+	startedAt := s.now()
+	state, err := s.fetch(ctx)
+	checks := make([]diagnostic.Check, 0)
+	if err != nil {
+		checks = append(checks,
+			diagnostic.Check{Code: "xray.service", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Xray 检查"},
+			diagnostic.Check{Code: "xray.config", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Xray 配置检查"},
+			diagnostic.Check{Code: "realm.service", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Realm 检查"},
+		)
+	} else {
+		checks = s.diagnoseState(ctx, state)
+	}
+	return diagnostic.Result{
+		Type: "diagnostic_result", RequestID: requestID, StartedAt: startedAt.Unix(),
+		DurationMS: time.Since(startedAt).Milliseconds(), Checks: checks,
+	}
 }
 
 func (s *configSynchronizer) sync(ctx context.Context) error {

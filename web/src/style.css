@@ -622,6 +622,53 @@ h1 {
   margin-top: 20px;
 }
 
+.diagnostic-notice {
+  margin-bottom: 16px;
+}
+
+.diagnostic-summary {
+  margin: 0 0 16px;
+  color: #66717d;
+  font-size: 13px;
+}
+
+.diagnostic-group {
+  margin-top: 20px;
+}
+
+.diagnostic-group h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.diagnostic-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #edf0f2;
+}
+
+.diagnostic-check > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.diagnostic-check p {
+  margin: 0;
+  color: #66717d;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-meta {
+  color: #47525d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .modal-enrollment {
   padding-top: 20px;
   margin-top: 20px;

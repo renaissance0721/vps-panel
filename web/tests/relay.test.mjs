@@ -18,7 +18,7 @@ test('Relay Network 和目标显示正确', () => {
   assert.equal(relayTargetLabel({
     target_type: 'proxy', target_proxy_name: '日本节点', target_host: '203.0.113.10',
     target_port: 8443, target_address_ready: true,
-  }), '日本节点 · 203.0.113.10:8443')
+  }), '日本节点 · 8443')
 })
 
 test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
@@ -27,7 +27,8 @@ test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
   assert.match(app, /selectPage\('relays'\)/)
   assert.match(app, />\s*中转\s*<\/button>/)
   assert.match(app, /<RelaysView v-if="currentPage === 'relays'"/)
-  assert.match(view, /<th>名称<\/th><th>服务器<\/th><th>入口地址<\/th><th>监听端口<\/th><th>目标<\/th><th>Network<\/th><th>状态<\/th><th>操作<\/th>/)
+  assert.match(view, /<th>名称<\/th><th>服务器<\/th><th>入口地址<\/th><th>监听端口<\/th><th>目标<\/th><th>客户端<\/th><th>Network<\/th><th>状态<\/th><th>操作<\/th>/)
+  assert.match(view, /value\.target_client_name \|\| '—'/)
   assert.match(view, /value\.entry_address \|\| '入口地址不可用'/)
   assert.match(view, /value="tcp">TCP/)
   assert.match(view, /value="udp">UDP/)

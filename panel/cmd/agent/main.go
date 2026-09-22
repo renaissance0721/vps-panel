@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 )
 
 const defaultConfigPath = "/etc/vps-panel-agent/config.json"
@@ -373,6 +374,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
 	header.Set("X-VPS-Panel-Agent-Version", agentVersion)
+	header.Set("X-VPS-Panel-Agent-Capabilities", diagnostic.CapabilityV1)
 	connection, response, err := dialAgentWebSocket(
 		ctx,
 		value.PanelURL+"/api/agent/ws",
@@ -405,13 +407,16 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	defer cancelConnection()
 	configChanged := make(chan struct{}, 1)
 	upgradeRequested := make(chan string, 1)
+	diagnosticRequested := make(chan string, 1)
+	diagnosticFinished := make(chan diagnostic.Result, 1)
+	diagnosticInProgress := false
 	upgradeFinished := make(chan error, 1)
 	upgradeInProgress := false
 	certificateRenewed := make(chan error, 1)
 	renewalInProgress := false
 	disconnected := make(chan error, 1)
 	go func() {
-		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested)
+		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested, diagnosticRequested)
 	}()
 	configSyncFinished := make(chan struct{}, 1)
 	configSyncInProgress := false
@@ -475,6 +480,24 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			upgradeInProgress = false
 			if upgradeErr != nil {
 				log.Printf("upgrade Agent: %v", upgradeErr)
+			}
+		case requestID := <-diagnosticRequested:
+			if diagnosticInProgress {
+				continue
+			}
+			diagnosticInProgress = true
+			go func() {
+				diagnosticContext, cancel := context.WithTimeout(connectionContext, agentDiagnosticTimeout)
+				diagnosticFinished <- configSync.diagnose(diagnosticContext, requestID)
+				cancel()
+			}()
+		case result := <-diagnosticFinished:
+			diagnosticInProgress = false
+			diagnosticContext, cancel := context.WithTimeout(connectionContext, 5*time.Second)
+			err := sendDiagnosticResult(diagnosticContext, connection, result)
+			cancel()
+			if err != nil {
+				return true, false
 			}
 		case <-configTicker.C:
 			startConfigSync()
@@ -550,6 +573,7 @@ func readPanelMessages(
 	connection *websocket.Conn,
 	configChanged chan<- struct{},
 	upgradeRequested chan<- string,
+	diagnosticRequested chan<- string,
 ) error {
 	for {
 		messageType, message, err := connection.Read(ctx)
@@ -560,7 +584,7 @@ func readPanelMessages(
 			Type    string          `json:"type"`
 			Version json.RawMessage `json:"version"`
 		}
-		if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil {
+		if messageType != websocket.MessageText || json.Unmarshal(message, &notification) != nil || strings.TrimSpace(notification.Type) == "" {
 			return errors.New("Panel sent an invalid WebSocket message")
 		}
 		switch notification.Type {
@@ -582,10 +606,27 @@ func readPanelMessages(
 			case upgradeRequested <- version:
 			default:
 			}
+		case "diagnostic_request":
+			var request diagnostic.Request
+			if json.Unmarshal(message, &request) != nil || !diagnostic.ValidRequestID(request.RequestID) {
+				return errors.New("Panel sent an invalid WebSocket message")
+			}
+			select {
+			case diagnosticRequested <- request.RequestID:
+			default:
+			}
 		default:
-			return errors.New("Panel sent an invalid WebSocket message")
+			continue
 		}
 	}
+}
+
+func sendDiagnosticResult(ctx context.Context, connection *websocket.Conn, result diagnostic.Result) error {
+	payload, err := diagnostic.EncodeResult(result)
+	if err != nil {
+		return fmt.Errorf("encode diagnostic result: %w", err)
+	}
+	return connection.Write(ctx, websocket.MessageText, payload)
 }
 
 func sendHeartbeat(ctx context.Context, connection *websocket.Conn) error {

@@ -13,9 +13,12 @@ import (
 )
 
 type Connection struct {
-	Socket  *websocket.Conn
-	Version string
-	writeMu sync.Mutex
+	Socket             *websocket.Conn
+	Version            string
+	Capabilities       map[string]bool
+	writeMu            sync.Mutex
+	diagnosticsMu      sync.Mutex
+	pendingDiagnostics map[string]chan diagnosticResponse
 }
 type agentConfigChangedMessage struct {
 	Type    string `json:"type"`
@@ -32,6 +35,9 @@ func (s *Service) TrackConnection(serverID int64, connection *Connection) *Conne
 	defer s.connectionsMu.Unlock()
 	previous := s.connections[serverID]
 	s.connections[serverID] = connection
+	if previous != nil {
+		previous.failPendingDiagnostics(ErrAgentOffline)
+	}
 	return previous
 }
 
@@ -42,6 +48,7 @@ func (s *Service) UntrackConnection(serverID int64, connection *Connection) bool
 		return false
 	}
 	delete(s.connections, serverID)
+	connection.failPendingDiagnostics(ErrAgentOffline)
 	return true
 }
 
@@ -58,6 +65,7 @@ func (s *Service) DisconnectCurrent(serverID int64, connection *Connection) (boo
 		return false, nil
 	}
 	delete(s.connections, serverID)
+	connection.failPendingDiagnostics(ErrAgentOffline)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return true, s.SetAgentOffline(ctx, serverID)
@@ -134,6 +142,7 @@ func (s *Service) CloseConnections(serverID int64) {
 	delete(s.connections, serverID)
 	s.connectionsMu.Unlock()
 	if connection != nil {
+		connection.failPendingDiagnostics(ErrAgentOffline)
 		connection.Socket.CloseNow()
 	}
 }

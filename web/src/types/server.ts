@@ -58,3 +58,25 @@ export type CreatedServer = {
   enrollment_token_expires_at: string
   agent_installation_command: string
 }
+
+export type DiagnosticStatus = 'pass' | 'warning' | 'fail' | 'skipped'
+
+export type DiagnosticCheck = {
+  code: string
+  status: DiagnosticStatus
+  resource_id?: number
+  label?: string
+  endpoint?: string
+  protocol?: string
+  latency_ms?: number
+  expires_at?: number
+  remaining_days?: number
+  detail?: string
+}
+
+export type DiagnosticReport = {
+  server_id: number
+  started_at: string
+  duration_ms: number
+  checks: DiagnosticCheck[]
+}

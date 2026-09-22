@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -25,10 +26,11 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
-	connection.SetReadLimit(8 << 10)
+	connection.SetReadLimit(64 << 10)
 	currentConnection := &agentcontrol.Connection{
-		Socket:  connection,
-		Version: strings.TrimSpace(r.Header.Get("X-VPS-Panel-Agent-Version")),
+		Socket:       connection,
+		Version:      strings.TrimSpace(r.Header.Get("X-VPS-Panel-Agent-Version")),
+		Capabilities: agentcontrol.ParseCapabilities(r.Header.Get("X-VPS-Panel-Agent-Capabilities")),
 	}
 	previous := s.agents.TrackConnection(agent.ServerID, currentConnection)
 	if previous != nil {
@@ -62,7 +64,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
 			Type string `json:"type"`
 		}
-		if messageType != websocket.MessageText || json.Unmarshal(message, &payload) != nil {
+		if messageType != websocket.MessageText || json.Unmarshal(message, &payload) != nil || strings.TrimSpace(payload.Type) == "" {
 			_ = connection.Close(websocket.StatusPolicyViolation, "invalid Agent message")
 			break
 		}
@@ -153,9 +155,17 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = connection.Close(websocket.StatusPolicyViolation, "invalid metrics")
 				validMessage = false
 			}
+		case "diagnostic_result":
+			var result diagnostic.Result
+			if len(message) > diagnostic.MaxResultBytes || json.Unmarshal(message, &result) != nil ||
+				diagnostic.ValidateResult(result) != nil {
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid diagnostic result")
+				validMessage = false
+				break
+			}
+			s.agents.ResolveDiagnostics(currentConnection, result)
 		default:
-			_ = connection.Close(websocket.StatusPolicyViolation, "unknown Agent message")
-			validMessage = false
+			continue
 		}
 		if !validMessage {
 			break

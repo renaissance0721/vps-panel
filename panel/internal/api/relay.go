@@ -59,6 +59,7 @@ type relayResponse struct {
 	TargetProxyID      *int64    `json:"target_proxy_id"`
 	TargetClientID     *int64    `json:"target_client_id"`
 	TargetProxyName    string    `json:"target_proxy_name"`
+	TargetClientName   string    `json:"target_client_name"`
 	TargetHost         string    `json:"target_host"`
 	TargetPort         int       `json:"target_port"`
 	TargetAddressReady bool      `json:"target_address_ready"`
@@ -283,7 +284,7 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 		ListenAddress: value.ListenAddress, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		TargetType: value.TargetType, TargetProxyID: value.TargetProxyID, TargetClientID: value.TargetClientID,
-		TargetProxyName: value.TargetProxyName, TargetHost: value.TargetHost,
+		TargetProxyName: value.TargetProxyName, TargetClientName: value.TargetClientName, TargetHost: value.TargetHost,
 		TargetPort: value.TargetPort, TargetAddressReady: value.TargetAddressReady,
 		Network: value.Network, Enabled: value.Enabled,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,

@@ -18,6 +18,7 @@ import type {
 import type {
   ServerRecord,
   CreatedServer,
+  DiagnosticReport,
 } from '../types/server'
 import {
   formatTime,
@@ -57,6 +58,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const serverModalOpen = ref(false)
   const expirationModalOpen = ref(false)
   const trafficAdjustmentModalOpen = ref(false)
+  const diagnosticOpen = ref(false)
+  const diagnosticLoading = ref(false)
+  const diagnosticReport = ref<DiagnosticReport | null>(null)
+  const diagnosticError = ref('')
   const accessModalOpen = ref(false)
   const serverName = ref('')
   const serverVisibility = ref<ServerRecord['visibility']>('public')
@@ -75,6 +80,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const nameFormError = ref('')
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
+  let diagnosticRequest = 0
 
   let serverLoadPromise: Promise<void> | null = null
 
@@ -181,6 +187,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   function viewServer(value: ServerRecord) {
+    diagnosticRequest++
     selectedServer.value = value
     createdServer.value = null
     copiedCommand.value = false
@@ -189,6 +196,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameModalOpen.value = false
     trafficModalOpen.value = false
     trafficAdjustmentModalOpen.value = false
+    diagnosticOpen.value = false
+    diagnosticLoading.value = false
+    diagnosticReport.value = null
+    diagnosticError.value = ''
     expirationInput.value = ''
     serverModalOpen.value = true
   }
@@ -316,6 +327,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   function closeServerDetails() {
+    diagnosticRequest++
     selectedServer.value = null
     createdServer.value = null
     copiedCommand.value = false
@@ -324,6 +336,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     trafficModalOpen.value = false
     resetTrafficForm()
     trafficAdjustmentModalOpen.value = false
+    diagnosticOpen.value = false
+    diagnosticLoading.value = false
+    diagnosticReport.value = null
+    diagnosticError.value = ''
     accessModalOpen.value = false
     accessFormError.value = ''
     nameModalOpen.value = false
@@ -492,6 +508,37 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     })
   }
 
+  async function openDiagnostics(value: ServerRecord) {
+    diagnosticOpen.value = true
+    diagnosticReport.value = null
+    diagnosticError.value = ''
+    await runDiagnostics(value)
+  }
+
+  async function runDiagnostics(value?: ServerRecord) {
+    const server = value ?? selectedServer.value
+    if (!server || diagnosticLoading.value) return
+    diagnosticLoading.value = true
+    diagnosticError.value = ''
+    const request = ++diagnosticRequest
+    try {
+      const report = await api<DiagnosticReport>(`/api/servers/${server.id}/diagnostics`, {
+        method: 'POST',
+      })
+      if (request === diagnosticRequest && selectedServer.value?.id === server.id)
+        diagnosticReport.value = report
+    } catch (reason) {
+      if (request !== diagnosticRequest) return
+      diagnosticError.value = reason instanceof Error ? reason.message : '服务器诊断失败'
+      if (reason instanceof APIError && reason.status === 404) {
+        diagnosticOpen.value = false
+        await handleMissingServer()
+      }
+    } finally {
+      if (request === diagnosticRequest) diagnosticLoading.value = false
+    }
+  }
+
   async function copyAgentCommand(value: string) {
     try {
       await navigator.clipboard.writeText(value)
@@ -524,6 +571,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   function resetSession() {
+    diagnosticRequest++
     servers.value = []
     archivedServers.value = []
     selectedServer.value = null
@@ -535,6 +583,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameFormError.value = ''
     trafficAdjustmentModalOpen.value = false
     accessModalOpen.value = false
+    diagnosticOpen.value = false
+    diagnosticLoading.value = false
+    diagnosticReport.value = null
+    diagnosticError.value = ''
     expirationInput.value = ''
   }
 
@@ -558,6 +610,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameInput,
     nameFormError,
     trafficAdjustmentModalOpen,
+    diagnosticOpen,
+    diagnosticLoading,
+    diagnosticReport,
+    diagnosticError,
     accessModalOpen,
     serverName,
     serverVisibility,
@@ -615,6 +671,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     saveTrafficAdjustment,
     clearTrafficAdjustment,
     permanentlyDeleteServer,
+    openDiagnostics,
+    runDiagnostics,
     copyAgentCommand,
     reorderServer,
     state,

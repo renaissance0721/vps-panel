@@ -142,6 +142,7 @@ func TestServerAccessScopesListsMutationsAndAdminOperations(t *testing.T) {
 		{http.MethodDelete, "/traffic-adjustment"},
 		{http.MethodPost, "/enrollment"},
 		{http.MethodPost, "/agent-upgrade"},
+		{http.MethodPost, "/diagnostics"},
 		{http.MethodDelete, "/permanent"},
 		{http.MethodPatch, "/access"},
 	} {

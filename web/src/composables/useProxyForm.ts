@@ -13,6 +13,7 @@ import type {
 import {
   api,
 } from '../api/client'
+import { agentSupportsCapability } from '../server'
 import type {
   Ref,
 } from 'vue'
@@ -41,6 +42,25 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const selectedServerPublicIPv4 = computed(() =>
     props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
   )
+  const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
+  const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.reality'))
+  const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.tls.acme'))
+  const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.tls.manual'))
+  const proxyVLESSSupported = computed(() => proxyVLESSRealitySupported.value || proxyTLSACMESupported.value || proxyTLSManualSupported.value)
+  const proxyTLSSupported = computed(() => proxyTLSACMESupported.value || proxyTLSManualSupported.value)
+  const proxyShadowsocksSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.shadowsocks'))
+  const proxyCapabilityWarning = computed(() => {
+    if (proxyProtocol.value === 'shadowsocks') {
+      return proxyShadowsocksSupported.value ? '' : '当前 Agent 不支持 Shadowsocks'
+    }
+    if (proxySecurity.value === 'reality') {
+      return proxyVLESSRealitySupported.value ? '' : '当前 Agent 不支持 VLESS + REALITY'
+    }
+    if (proxyTLSMode.value === 'manual') {
+      return proxyTLSManualSupported.value ? '' : '当前 Agent 不支持 VLESS + TLS（手动证书）'
+    }
+    return proxyTLSACMESupported.value ? '' : '当前 Agent 不支持 VLESS + TLS（ACME）'
+  })
 
   function openCreateProxy() {
     resetProxyForm()
@@ -89,6 +109,10 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   }
 
   async function saveProxy() {
+	if (proxyEnabled.value && proxyCapabilityWarning.value) {
+	  error.value = proxyCapabilityWarning.value
+	  return
+	}
     if (!proxyName.value.trim() || (proxyProtocol.value === 'vless' && !proxyServerName.value.trim())) {
       error.value = proxyProtocol.value === 'vless' ? '请填写节点名称和 SNI' : '请填写节点名称'
       return
@@ -174,6 +198,13 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     firstClientName,
     firstClientUDP443,
     selectedServerPublicIPv4,
+    proxyVLESSSupported,
+    proxyVLESSRealitySupported,
+    proxyTLSSupported,
+    proxyTLSACMESupported,
+    proxyTLSManualSupported,
+    proxyShadowsocksSupported,
+    proxyCapabilityWarning,
     openCreateProxy,
     openEditProxy,
     resetProxyForm,

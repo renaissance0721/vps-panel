@@ -84,54 +84,9 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	if err != nil {
 		return Relay{}, Mutation{}, err
 	}
-	targetProxyChanged := input.TargetProxyID != nil && (value.TargetProxyID == nil || *value.TargetProxyID != *input.TargetProxyID)
-	if input.Name != nil {
-		value.Name = *input.Name
-	}
-	if input.ListenAddress != nil {
-		value.ListenAddress = *input.ListenAddress
-	}
-	if input.ListenPort != nil {
-		value.ListenPort = *input.ListenPort
-	}
-	if input.EntryHostMode != nil {
-		value.EntryHostMode = *input.EntryHostMode
-	}
-	if input.EntryHost != nil {
-		value.EntryHost = *input.EntryHost
-	}
-	if input.TargetType != nil {
-		value.TargetType = *input.TargetType
-	}
-	if input.TargetProxyID != nil {
-		id := *input.TargetProxyID
-		value.TargetProxyID = &id
-	}
-	if input.TargetClientID != nil {
-		id := *input.TargetClientID
-		value.TargetClientID = &id
-	} else if targetProxyChanged {
-		// Selecting a different proxy must also select one of its clients.
-		value.TargetClientID = nil
-	}
-	if input.TargetHost != nil {
-		value.TargetHost = *input.TargetHost
-	}
-	if input.TargetPort != nil {
-		value.TargetPort = *input.TargetPort
-	}
-	if input.Network != nil {
-		value.Network = *input.Network
-	}
-	if input.Enabled != nil {
-		value.Enabled = *input.Enabled
-	}
-	value, err = normalizeRelay(value)
+	value, err = ValidateUpdateInput(value, input)
 	if err != nil {
 		return Relay{}, Mutation{}, err
-	}
-	if value.TargetType == TargetProxy && targetProxyChanged && value.TargetClientID == nil {
-		return Relay{}, Mutation{}, ErrInvalidTargetClient
 	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
 		return Relay{}, Mutation{}, err

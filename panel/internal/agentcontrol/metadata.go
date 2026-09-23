@@ -98,6 +98,21 @@ func (value Metadata) CapabilitySet() map[string]bool {
 	return result
 }
 
+func SupportsCapability(value Metadata, capability string) bool {
+	if value.Implementation == "" && value.APIVersion == 0 {
+		return true
+	}
+	if value.Implementation == "" || value.APIVersion != CurrentAPIVersion {
+		return false
+	}
+	for _, declared := range value.Capabilities {
+		if declared == capability {
+			return true
+		}
+	}
+	return false
+}
+
 func EncodeCapabilities(values []string) (string, error) {
 	normalized, err := NormalizeCapabilities(values)
 	if err != nil {

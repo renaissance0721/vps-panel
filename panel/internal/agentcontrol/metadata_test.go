@@ -51,3 +51,20 @@ func TestSelfUpgradeIdentityBoundary(t *testing.T) {
 		t.Fatalf("implementation switch error = %v", err)
 	}
 }
+
+func TestSupportsCapabilityKeepsLegacyCompatibilityAndEnforcesV1(t *testing.T) {
+	if !SupportsCapability(Metadata{}, CapabilityRelayRealm) {
+		t.Fatal("Legacy Agent capability should remain unknown and allowed")
+	}
+	identified := Metadata{
+		Implementation: "third-party-agent",
+		APIVersion:     CurrentAPIVersion,
+		Capabilities:   []string{CapabilityProxyVLESSReality},
+	}
+	if !SupportsCapability(identified, CapabilityProxyVLESSReality) {
+		t.Fatal("declared API v1 capability was rejected")
+	}
+	if SupportsCapability(identified, CapabilityProxyVLESSACME) {
+		t.Fatal("undeclared API v1 capability was allowed")
+	}
+}

@@ -1,6 +1,17 @@
 import type {
   ServerRecord,
 } from './types/server'
+
+type AgentMetadata = Pick<ServerRecord, 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'>
+
+export function agentSupportsCapability(server: AgentMetadata, capability: string): boolean {
+  const implementation = server.agent_implementation ?? ''
+  const apiVersion = server.agent_api_version ?? 0
+  if (implementation === '' && apiVersion === 0) return true
+  if (implementation === '' || apiVersion !== 1) return false
+  return (server.agent_capabilities ?? []).includes(capability)
+}
+
 export function formatExpirationDate(value: string): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',

@@ -69,7 +69,7 @@ diagnostics_v1
 self_upgrade
 ```
 
-Unknown but syntactically valid capabilities are retained. Capabilities describe implemented behavior; Agent API v1 does not enforce Proxy or Relay CRUD restrictions.
+Unknown but syntactically valid capabilities are retained. For an explicitly identified API v1 Agent, the Panel uses declared capabilities to control Proxy and Relay creation or enablement, IPv4/IPv6 outbound preference, and diagnostics UI availability. Disabling, deleting, and restoring outbound preference to `auto` remain available. Legacy Agents keep the previous compatibility behavior because their capabilities are unknown rather than empty.
 
 Official automatic upgrade is available to an identified v1 Agent only when `implementation` is `vps-panel-agent` and `self_upgrade` is declared. A third-party Agent never receives the official `agent_upgrade` message, regardless of its version string.
 

@@ -70,3 +70,13 @@ test('中转 Modal 保持小屏可用且列表只在自身容器横向滚动', a
   assert.match(source, /@media \(max-width: 720px\)[\s\S]*\.relay-toolbar\s*{[^}]*grid-template-columns:\s*1fr/s)
   assert.match(source, /@media \(max-width: 720px\)[\s\S]*\.relay-detail-card\s*{[^}]*width:\s*calc\(100vw - 24px\)/)
 })
+
+test('Relay 源服务器和重新启用受 relay.realm 控制但禁用删除保持可用', async () => {
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
+  assert.match(view, /agentSupportsCapability\(server, 'relay\.realm'\)/)
+  assert.match(view, /:disabled="!serverSupportsRealm\(server\.id\)"/)
+  assert.match(view, /:disabled="!value\.enabled && !serverSupportsRealm\(value\.server_id\)"/)
+  assert.match(view, /enabled && !selectedServerSupportsRealm/)
+  assert.match(view, /当前 Agent 不支持 Realm 中转/)
+  assert.match(view, /removeRelay\(value\)/)
+})

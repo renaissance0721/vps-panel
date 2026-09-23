@@ -4,7 +4,7 @@
 >
 > 文档定位：VPS Panel 的**统一开发指南**。本文合并并替代原来的“总开发指导”和“前端 UI Guide”，作为后续人工开发、Codex 任务拆解、架构边界和验收的单一参考。
 >
-> 生成基线：`main @ de045754bde9237a501d90e8e3285f0287b209a6`（2026-09-22）。
+> 生成基线：`main @ 1138866a790003a66e4bffb780c331ea7dc34d87`（2026-09-23）。
 >
 > 若本文与当前代码发生冲突：
 >
@@ -52,6 +52,8 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Agent 一次性 Enrollment + 长期 Token
 - Agent WebSocket 在线状态、Heartbeat、静态系统信息、动态指标
 - Agent 原地升级
+- Agent API v1 identity metadata 与 capability 持久化
+- Proxy / Relay / 出站偏好 capability enforcement 与 diagnostics UI 控制
 - Server 到期日期
 - Server 月流量统计、额度、重置周期、手动校准
 - Panel ↔ Agent desired-state 配置同步
@@ -83,7 +85,6 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - 历史 Metrics 图表
 - 完整通知系统
 - 自动 Panel URL 迁移
-- 正式第三方 Agent API 身份模型（`implementation / api_version / capabilities` 持久化尚未落地）
 
 旧文档中的 Phase 编号只保留历史参考价值。当前继续开发时，应以**当前代码 + 本文“未实现 / 下一步”**为边界，不再机械按照旧 Phase 数字推进。
 
@@ -536,23 +537,13 @@ GET  /api/agent/ws
 
 ```text
 Authorization: Bearer <agent_token>
+X-VPS-Panel-Agent-Implementation: <implementation>
 X-VPS-Panel-Agent-Version: <version>
+X-VPS-Panel-Agent-API: 1
 X-VPS-Panel-Agent-Capabilities: diagnostics_v1
 ```
 
-目前 capability 只正式用于：
-
-```text
-diagnostics_v1
-```
-
-当前还没有正式持久化：
-
-```text
-agent implementation
-agent API version
-完整 capability list
-```
+Agent 注册与 WebSocket 会保存并刷新 `implementation`、`version`、`api_version` 和完整 capability list。明确声明 API v1 的 Agent 会按 capability 限制 Proxy、Relay 和出站偏好；诊断执行仍以当前在线连接的 `diagnostics_v1` 为最终依据。Legacy Agent（`implementation=""`、`api_version=0`）保持兼容模式，不做严格 capability enforcement。
 
 ## 5.3 当前消息类型
 
@@ -1234,29 +1225,31 @@ bootstrap 保留原 Agent config，不重新注册。
 
 ---
 
-# 17. 第三方 Agent：当前状态与未来边界
+# 17. 第三方 Agent：当前状态与边界
 
-当前 Panel 仍然默认：
-
-```text
-agent.version
-≈ 官方 VPS Panel Agent release version
-```
-
-并且当前 `Connection.Capabilities` 只是运行时能力，主要用于 `diagnostics_v1`。
-
-因此第三方 Agent（例如 BoardRay）目前只能做兼容适配，Panel 还没有正式识别：
+当前 Panel 已正式识别并持久化：
 
 ```text
 implementation
-implementation version
-Agent API version
-完整 capabilities
+version
+api_version
+capabilities
 ```
 
-## 17.1 规划中的最小 Agent API v1
+明确声明 API v1 的 Agent 按 capability 控制 Proxy / Relay 创建与启用、IPv4 / IPv6 出站偏好和 diagnostics UI。真正执行诊断时仍使用当前在线 `Connection.Capabilities`。
 
-未来若正式实现第三方 Agent，应增加：
+Legacy Agent 使用兼容模式：
+
+```text
+implementation = ""
+api_version = 0
+```
+
+其 capability 视为 unknown，不因空 capability list 禁止现有功能。
+
+## 17.1 当前最小 Agent API v1
+
+当前已实现字段：
 
 ```text
 implementation
@@ -1281,7 +1274,7 @@ capabilities
 → 它真正支持哪些当前功能
 ```
 
-建议 capability 与真实 Panel 功能直接对应，例如：
+capability 与真实 Panel 功能直接对应，例如：
 
 ```text
 proxy.vless.tls.acme
@@ -1305,7 +1298,7 @@ xray.tls
 
 否则无法区分“TLS ACME 支持但手动 TLS 不支持”等真实差异。
 
-## 17.2 这个规划当前未实现
+## 17.2 当前实现边界
 
 除非单独开启对应任务，否则不要：
 
@@ -1315,9 +1308,7 @@ xray.tls
 - 改现有 Agent API URL
 - 静默过滤 Agent 不支持的 desired state
 
-第一步只需要“正确识别 Agent + 防止官方 updater 覆盖第三方 Agent”。
-
-第二步再根据 capability 限制 Proxy / Relay 创建与启用。
+当前已实现 Agent identity、官方自动升级安全边界，以及 Proxy / Relay / 出站偏好 / diagnostics UI 的 capability 控制；不会静默过滤、降级或修改已有 desired state。
 
 ---
 
@@ -2106,8 +2097,8 @@ bash -n <script>
 | ZIP backup / restore | 已实现 | admin-only，同域名校验 |
 | 一键诊断 | 已实现 | `diagnostics_v1` |
 | Panel URL 自动迁移 | 未实现 | 仍需同域名迁移或人工改 Agent |
-| Agent API v1 identity | 未实现 | 当前只有 version + diagnostics capability |
-| 第三方 Agent capability enforcement | 未实现 | 后续独立任务 |
+| Agent API v1 identity | 已实现 | implementation / version / api_version / capabilities |
+| 第三方 Agent capability enforcement | 已实现 | Proxy / Relay / 出站偏好 / diagnostics UI；Legacy 兼容 |
 | 历史指标 | 未实现 | 不阻塞主链路 |
 | 通知系统 | 未实现 | 不阻塞主链路 |
 | 分组 / 标签 | 暂缓 | 不阻塞主链路 |
@@ -2116,9 +2107,9 @@ bash -n <script>
 
 # 31. 建议的下一步开发顺序
 
-以下是**规划**，不是当前实现。
+以下记录当前完成状态和后续规划。
 
-## 31.1 Agent API v1 身份元数据
+## 31.1 Agent API v1 身份元数据（已实现）
 
 目标：
 
@@ -2128,11 +2119,11 @@ bash -n <script>
 - capability 持久化
 - 防止官方 updater 覆盖第三方 Agent
 
-第一阶段不要同时做 capability CRUD 限制。
+当前已完成 identity metadata、capability 持久化及官方 updater 安全边界。
 
-## 31.2 capability-aware 操作限制
+## 31.2 capability-aware 操作限制（已实现）
 
-Agent identity 稳定后再做：
+当前已完成：
 
 - 创建 / 启用 Proxy 前校验能力
 - 创建 / 启用 Relay 前校验 `relay.realm`

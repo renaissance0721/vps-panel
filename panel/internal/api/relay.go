@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -123,13 +124,27 @@ func (s *server) createRelay(w http.ResponseWriter, r *http.Request, user auth.U
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
-	value, mutation, err := s.relays.Create(r.Context(), relaystore.CreateInput{
+	input := relaystore.CreateInput{
 		ServerID: request.ServerID, Name: request.Name, ListenAddress: request.ListenAddress,
 		ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		TargetType:    request.TargetType,
 		TargetProxyID: request.TargetProxyID, TargetClientID: request.TargetClientID, TargetHost: request.TargetHost,
 		TargetPort: request.TargetPort, Network: request.Network, Enabled: enabled,
-	})
+	}
+	supported, err := s.serverSupportsCapability(r, request.ServerID, agentcontrol.CapabilityRelayRealm)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	if !supported {
+		if err := relaystore.ValidateCreateInput(input); err != nil {
+			writeRelayError(w, err)
+			return
+		}
+		writeError(w, http.StatusConflict, "当前 Agent 不支持 Realm 中转")
+		return
+	}
+	value, mutation, err := s.relays.Create(r.Context(), input)
 	if err != nil {
 		writeRelayError(w, err)
 		return
@@ -236,13 +251,30 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.U
 			return
 		}
 	}
-	value, mutation, err := s.relays.Update(r.Context(), id, relaystore.UpdateInput{
+	input := relaystore.UpdateInput{
 		Name: request.Name, ListenAddress: request.ListenAddress, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		TargetType: request.TargetType, TargetProxyID: request.TargetProxyID, TargetClientID: request.TargetClientID,
 		TargetHost: request.TargetHost, TargetPort: request.TargetPort,
 		Network: request.Network, Enabled: request.Enabled,
-	})
+	}
+	validated, err := relaystore.ValidateUpdateInput(current, input)
+	if err != nil {
+		writeRelayError(w, err)
+		return
+	}
+	if validated.Enabled {
+		supported, err := s.serverSupportsCapability(r, validated.ServerID, agentcontrol.CapabilityRelayRealm)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if !supported {
+			writeError(w, http.StatusConflict, "当前 Agent 不支持 Realm 中转")
+			return
+		}
+	}
+	value, mutation, err := s.relays.Update(r.Context(), id, input)
 	if err != nil {
 		writeRelayError(w, err)
 		return

@@ -11,28 +11,33 @@ import (
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
-func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutation, error) {
+type preparedCreate struct {
+	protocol, name, clientName, entryHostMode, entryHost string
+	configJSON, credentialJSON                           []byte
+}
+
+func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 	protocol, err := normalizeProtocol(input.Protocol)
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	name, err := validateName(input.Name)
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	clientName, err := validateName(input.FirstClientName)
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	if input.ServerID <= 0 {
-		return Proxy{}, Mutation{}, ErrServerNotFound
+		return preparedCreate{}, ErrServerNotFound
 	}
 	if err := validatePort(input.ListenPort); err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	entryHostMode, entryHost, err := normalizeEntryHost(input.EntryHostMode, input.EntryHost)
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	var config storedConfig
 	var credential storedCredential
@@ -44,20 +49,37 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		}
 	case ProtocolShadowsocks:
 		if input.FirstClientUDP443 {
-			return Proxy{}, Mutation{}, ErrShadowsocksClientUDP443
+			return preparedCreate{}, ErrShadowsocksClientUDP443
 		}
 		config, credential, err = newShadowsocksConfigAndCredential(input.Method)
 	}
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return preparedCreate{}, err
 	}
 	configJSON, err := json.Marshal(config)
 	if err != nil {
-		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
+		return preparedCreate{}, fmt.Errorf("encode proxy config: %w", err)
 	}
 	credentialJSON, err := json.Marshal(credential)
 	if err != nil {
-		return Proxy{}, Mutation{}, fmt.Errorf("encode client credential: %w", err)
+		return preparedCreate{}, fmt.Errorf("encode client credential: %w", err)
+	}
+	return preparedCreate{
+		protocol: protocol, name: name, clientName: clientName,
+		entryHostMode: entryHostMode, entryHost: entryHost,
+		configJSON: configJSON, credentialJSON: credentialJSON,
+	}, nil
+}
+
+func ValidateCreateInput(input CreateInput) error {
+	_, err := prepareCreateInput(input)
+	return err
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutation, error) {
+	prepared, err := prepareCreateInput(input)
+	if err != nil {
+		return Proxy{}, Mutation{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -69,7 +91,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	if err := ensureActiveServer(ctx, tx, input.ServerID); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
-	if err := relaystore.ProxyPortAvailable(ctx, tx, input.ServerID, input.ListenPort, protocol); err != nil {
+	if err := relaystore.ProxyPortAvailable(ctx, tx, input.ServerID, input.ListenPort, prepared.protocol); err != nil {
 		if errors.Is(err, relaystore.ErrPortConflict) {
 			return Proxy{}, Mutation{}, ErrPortConflict
 		}
@@ -79,8 +101,8 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		`INSERT INTO proxies
 		 (server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.ServerID, name, protocol, input.ListenPort, entryHostMode, entryHost, input.Enabled,
-		string(configJSON), now.Unix(), now.Unix(),
+		input.ServerID, prepared.name, prepared.protocol, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
+		string(prepared.configJSON), now.Unix(), now.Unix(),
 	)
 	if isUniqueConstraint(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
@@ -96,7 +118,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		`INSERT INTO clients
 		 (proxy_id, name, credential_json, client_udp443, enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
-		proxyID, clientName, string(credentialJSON), input.FirstClientUDP443, now.Unix(), now.Unix(),
+		proxyID, prepared.clientName, string(prepared.credentialJSON), input.FirstClientUDP443, now.Unix(), now.Unix(),
 	); err != nil {
 		return Proxy{}, Mutation{}, fmt.Errorf("create first proxy client: %w", err)
 	}
@@ -172,35 +194,34 @@ func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {
 	return value, nil
 }
 
-func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Proxy, Mutation, error) {
-	now := s.now().UTC().Truncate(time.Second)
-	tx, err := s.db.BeginTx(ctx, nil)
+type proxyUpdateQuery interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input UpdateInput) (Proxy, storedConfig, error) {
+	value, config, err := getProxyForMutation(ctx, query, id)
 	if err != nil {
-		return Proxy{}, Mutation{}, fmt.Errorf("begin proxy update: %w", err)
-	}
-	defer tx.Rollback()
-	value, config, err := getProxyForMutation(ctx, tx, id)
-	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return Proxy{}, storedConfig{}, err
 	}
 	if input.Protocol != nil {
 		protocol, protocolErr := normalizeProtocol(*input.Protocol)
 		if protocolErr != nil {
-			return Proxy{}, Mutation{}, protocolErr
+			return Proxy{}, storedConfig{}, protocolErr
 		}
 		if protocol != value.Protocol {
-			return Proxy{}, Mutation{}, ErrImmutableProtocol
+			return Proxy{}, storedConfig{}, ErrImmutableProtocol
 		}
 	}
 	if input.Name != nil {
 		value.Name, err = validateName(*input.Name)
 		if err != nil {
-			return Proxy{}, Mutation{}, err
+			return Proxy{}, storedConfig{}, err
 		}
 	}
 	if input.ListenPort != nil {
 		if err := validatePort(*input.ListenPort); err != nil {
-			return Proxy{}, Mutation{}, err
+			return Proxy{}, storedConfig{}, err
 		}
 		value.ListenPort = *input.ListenPort
 	}
@@ -213,7 +234,7 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	}
 	value.EntryHostMode, value.EntryHost, err = normalizeEntryHost(entryHostMode, entryHost)
 	if err != nil {
-		return Proxy{}, Mutation{}, err
+		return Proxy{}, storedConfig{}, err
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
@@ -221,39 +242,59 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	switch value.Protocol {
 	case ProtocolVLESS:
 		if input.Method != nil {
-			return Proxy{}, Mutation{}, ErrInvalidShadowsocksMethod
+			return Proxy{}, storedConfig{}, ErrInvalidShadowsocksMethod
 		}
 		if err := updateStoredConfig(&config, input); err != nil {
-			return Proxy{}, Mutation{}, err
+			return Proxy{}, storedConfig{}, err
 		}
 	case ProtocolShadowsocks:
 		if config.Shadowsocks == nil {
-			return Proxy{}, Mutation{}, errors.New("invalid stored Shadowsocks proxy config")
+			return Proxy{}, storedConfig{}, errors.New("invalid stored Shadowsocks proxy config")
 		}
 		if input.Method != nil {
 			method, methodErr := normalizeShadowsocksMethod(*input.Method)
 			if methodErr != nil {
-				return Proxy{}, Mutation{}, methodErr
+				return Proxy{}, storedConfig{}, methodErr
 			}
 			if method != config.Shadowsocks.Method {
-				return Proxy{}, Mutation{}, ErrImmutableShadowsocksMethod
+				return Proxy{}, storedConfig{}, ErrImmutableShadowsocksMethod
 			}
 		}
 		if input.Security != nil || input.TLSMode != nil || input.ServerName != nil || input.Certificate != nil || input.PrivateKey != nil || input.RealityTarget != nil {
-			return Proxy{}, Mutation{}, ErrInvalidShadowsocksUpdate
+			return Proxy{}, storedConfig{}, ErrInvalidShadowsocksUpdate
 		}
 	default:
-		return Proxy{}, Mutation{}, ErrInvalidProtocol
+		return Proxy{}, storedConfig{}, ErrInvalidProtocol
+	}
+	if err := relaystore.ProxyPortAvailable(ctx, query, value.ServerID, value.ListenPort, value.Protocol); err != nil {
+		if errors.Is(err, relaystore.ErrPortConflict) {
+			return Proxy{}, storedConfig{}, ErrPortConflict
+		}
+		return Proxy{}, storedConfig{}, err
+	}
+	value.Config = publicConfig(config)
+	return value, config, nil
+}
+
+func (s *Service) ValidateUpdate(ctx context.Context, id int64, input UpdateInput) (Proxy, error) {
+	value, _, err := prepareUpdate(ctx, s.db, id, input)
+	return value, err
+}
+
+func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Proxy, Mutation, error) {
+	now := s.now().UTC().Truncate(time.Second)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Proxy{}, Mutation{}, fmt.Errorf("begin proxy update: %w", err)
+	}
+	defer tx.Rollback()
+	value, config, err := prepareUpdate(ctx, tx, id, input)
+	if err != nil {
+		return Proxy{}, Mutation{}, err
 	}
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
-	}
-	if err := relaystore.ProxyPortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Protocol); err != nil {
-		if errors.Is(err, relaystore.ErrPortConflict) {
-			return Proxy{}, Mutation{}, ErrPortConflict
-		}
-		return Proxy{}, Mutation{}, err
 	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE proxies SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
@@ -347,8 +388,10 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	return value, config, nil
 }
 
-func getProxyForMutation(ctx context.Context, tx *sql.Tx, id int64) (Proxy, storedConfig, error) {
-	value, config, err := scanProxy(tx.QueryRowContext(ctx,
+func getProxyForMutation(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id int64) (Proxy, storedConfig, error) {
+	value, config, err := scanProxy(query.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,

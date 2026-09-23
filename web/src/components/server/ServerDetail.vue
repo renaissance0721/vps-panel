@@ -25,6 +25,7 @@ import type {
 import {
   agentAPILabel,
   agentImplementationLabel,
+  agentSupportsCapability,
 } from '../../server'
 import ServerTraffic from './ServerTraffic.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
@@ -104,6 +105,9 @@ const {
   openDiagnostics,
   runDiagnostics,
 } = toRefs(props.model)
+
+const diagnosticsSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, 'diagnostics_v1'))
+const outboundPreferenceSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, 'outbound_preference'))
 
 const diagnosticGroupDefinitions = [
   { title: 'Agent', prefixes: ['agent.'] },
@@ -244,11 +248,13 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 size="small"
                 secondary
                 :loading="diagnosticLoading"
-                :disabled="!!selectedServer.archived_at"
+                :disabled="!!selectedServer.archived_at || !diagnosticsSupported"
+                :title="diagnosticsSupported ? undefined : '当前 Agent 不支持一键诊断'"
                 @click="openDiagnostics(selectedServer)"
               >
                 一键诊断
               </n-button>
+              <small v-if="!diagnosticsSupported" class="secondary-text">当前 Agent 不支持一键诊断</small>
               <n-button
                 v-if="state?.user?.role === 'admin' && selectedServer.agent_can_self_upgrade && selectedServer.agent_version_status === 'upgrade_available'"
                 size="small"
@@ -349,9 +355,10 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 <dd>
                   <span class="outbound-preference-buttons">
                     <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="!!selectedServer.archived_at || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="!!selectedServer.archived_at || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
                   </span>
+                  <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
                   <small v-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
                 </dd>
               </div>

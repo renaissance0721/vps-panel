@@ -32,12 +32,12 @@ import {
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
+import { agentSupportsCapability } from '../server'
+import type { ServerRecord } from '../types/server'
 
-type ServerOption = {
-  id: number
-  name: string
-  system_info: { public_ipv4: string } | null
-}
+type ServerOption = Pick<ServerRecord,
+  'id' | 'name' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+>
 
 type ProxyOption = {
   id: number
@@ -137,6 +137,13 @@ const enabled = ref(true)
 const selectedServerPublicIPv4 = computed(() =>
   props.servers.find((server) => server.id === serverID.value)?.system_info?.public_ipv4 ?? '',
 )
+function serverSupportsRealm(id: number | null) {
+  const server = props.servers.find((value) => value.id === id)
+  return server !== undefined && agentSupportsCapability(server, 'relay.realm')
+}
+const hasRelayServer = computed(() => props.servers.some((server) => serverSupportsRealm(server.id)))
+const selectedServerSupportsRealm = computed(() => serverSupportsRealm(serverID.value))
+const relayCapabilityWarning = computed(() => selectedServerSupportsRealm.value ? '' : '当前 Agent 不支持 Realm 中转')
 
 const filteredRelays = computed(() => {
   const keyword = search.value.trim().toLowerCase()
@@ -262,7 +269,7 @@ function onTargetTypeChange() {
 function resetForm() {
   editingID.value = null
   name.value = ''
-  serverID.value = props.servers[0]?.id ?? null
+  serverID.value = props.servers.find((server) => serverSupportsRealm(server.id))?.id ?? null
   listenPort.value = 9502
   entryHostMode.value = 'auto'
   entryHost.value = ''
@@ -303,6 +310,10 @@ function openEdit(value: RelayRecord) {
 }
 
 async function saveRelay() {
+  if (enabled.value && !selectedServerSupportsRealm.value) {
+    error.value = '当前 Agent 不支持 Realm 中转'
+    return
+  }
   await run(async () => {
     const payload = {
       ...(formMode.value === 'create' ? { server_id: serverID.value } : {}),
@@ -393,6 +404,7 @@ function relayClientStatusTagType(value: RelayClientShare) {
 }
 
 async function toggleRelay(value: RelayRecord) {
+  if (!value.enabled && !serverSupportsRealm(value.server_id)) return
   await run(async () => {
     await api(`/api/relays/${value.id}`, {
       method: 'PATCH',
@@ -458,7 +470,7 @@ import {
 
   <div class="relay-toolbar">
     <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或目标" />
-    <n-button type="primary" :disabled="props.servers.length === 0" @click="openCreate">
+    <n-button type="primary" :disabled="!hasRelayServer" :title="hasRelayServer ? undefined : '当前没有支持 Realm 中转的服务器'" @click="openCreate">
       新增中转
     </n-button>
   </div>
@@ -488,7 +500,7 @@ import {
             <td class="server-actions">
               <n-button size="small" secondary @click="showRelay(value.id)">查看</n-button>
               <n-button size="small" secondary @click="openEdit(value)">编辑</n-button>
-              <n-button size="small" secondary @click="toggleRelay(value)">{{ value.enabled ? '禁用' : '启用' }}</n-button>
+              <n-button size="small" secondary :disabled="!value.enabled && !serverSupportsRealm(value.server_id)" :title="!value.enabled && !serverSupportsRealm(value.server_id) ? '当前 Agent 不支持 Realm 中转' : undefined" @click="toggleRelay(value)">{{ value.enabled ? '禁用' : '启用' }}</n-button>
               <n-button size="small" type="error" secondary @click="removeRelay(value)">删除</n-button>
             </td>
           </tr>
@@ -505,7 +517,7 @@ import {
         <label>
           <span>源服务器</span>
           <select v-model.number="serverID" class="settings-input" :disabled="formMode === 'edit'">
-            <option v-for="server in props.servers" :key="server.id" :value="server.id">{{ server.name }}</option>
+            <option v-for="server in props.servers" :key="server.id" :value="server.id" :disabled="!serverSupportsRealm(server.id)">{{ server.name }}</option>
           </select>
         </label>
         <label>
@@ -550,8 +562,9 @@ import {
           <label><span>目标 Host / IP</span><n-input v-model:value="targetHost" placeholder="例如：node.example.com 或 2001:db8::1" /></label>
           <label><span>目标端口</span><input v-model.number="targetPort" class="settings-input" type="number" min="1" max="65535" /></label>
         </template>
+        <n-alert v-if="relayCapabilityWarning" type="warning">{{ relayCapabilityWarning }}</n-alert>
         <label class="checkbox-row"><input v-model="enabled" type="checkbox" /><span>启用中转</span></label>
-        <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="targetType === 'proxy' && (targetClientID === null || targetClientsLoading || !!targetClientsError)">保存</n-button></div>
+        <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="(enabled && !selectedServerSupportsRealm) || (targetType === 'proxy' && (targetClientID === null || targetClientsLoading || !!targetClientsError))">保存</n-button></div>
       </form>
     </n-card>
   </n-modal>

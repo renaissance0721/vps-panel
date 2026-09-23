@@ -130,6 +130,22 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if hasOutboundPreference {
+		preference := *request.OutboundPreference
+		if preference != serverstore.OutboundAuto && preference != serverstore.OutboundPreferIPv4 && preference != serverstore.OutboundPreferIPv6 {
+			writeServerError(w, serverstore.ErrInvalidOutboundPreference)
+			return
+		}
+		if preference != serverstore.OutboundAuto {
+			supported, err := s.serverSupportsCapability(r, id, agentcontrol.CapabilityOutboundPreference)
+			if err != nil {
+				writeServerError(w, err)
+				return
+			}
+			if !supported {
+				writeError(w, http.StatusConflict, "当前 Agent 不支持出站 IPv4 / IPv6 偏好")
+				return
+			}
+		}
 		updated, version, err := s.servers.UpdateOutboundPreference(r.Context(), id, *request.OutboundPreference)
 		if err != nil {
 			writeServerError(w, err)
@@ -190,6 +206,19 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
+}
+
+func (s *server) serverSupportsCapability(r *http.Request, serverID int64, capability string) (bool, error) {
+	value, err := s.servers.Get(r.Context(), serverID)
+	if err != nil {
+		return false, err
+	}
+	return agentcontrol.SupportsCapability(agentcontrol.Metadata{
+		Implementation: value.AgentImplementation,
+		Version:        value.AgentVersion,
+		APIVersion:     value.AgentAPIVersion,
+		Capabilities:   value.AgentCapabilities,
+	}, capability), nil
 }
 
 func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {

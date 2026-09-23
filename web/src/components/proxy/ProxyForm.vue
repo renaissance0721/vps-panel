@@ -7,6 +7,7 @@ import {
   NCard,
   NInput,
   NButton,
+  NAlert,
 } from 'naive-ui'
 import type {
   ProxiesViewState,
@@ -34,6 +35,11 @@ const props = defineProps<{
     | 'proxyEnabled'
     | 'firstClientName'
     | 'firstClientUDP443'
+    | 'proxyVLESSSupported'
+    | 'proxyVLESSRealitySupported'
+    | 'proxyTLSSupported'
+    | 'proxyShadowsocksSupported'
+    | 'proxyCapabilityWarning'
   >
 }>()
 const {
@@ -54,6 +60,11 @@ const {
   proxyEnabled,
   firstClientName,
   firstClientUDP443,
+  proxyVLESSSupported,
+  proxyVLESSRealitySupported,
+  proxyTLSSupported,
+  proxyShadowsocksSupported,
+  proxyCapabilityWarning,
 } = toRefs(props.model)
 </script>
 
@@ -71,7 +82,7 @@ const {
 		<label v-if="proxyFormMode === 'create'">
 			<span>协议</span>
 			<select v-model="proxyProtocol" class="settings-input">
-				<option value="vless">VLESS</option><option value="shadowsocks">Shadowsocks</option>
+				<option value="vless" :disabled="!proxyVLESSSupported">VLESS</option><option value="shadowsocks" :disabled="!proxyShadowsocksSupported">Shadowsocks</option>
 			</select>
 		</label>
 		<div v-else class="fixed-fields"><span>协议：{{ proxyProtocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</span></div>
@@ -89,7 +100,7 @@ const {
 		<label>
           <span>安全层</span>
           <select v-model="proxySecurity" class="settings-input">
-            <option value="reality">REALITY</option><option value="tls">TLS</option>
+			<option value="reality" :disabled="!proxyVLESSRealitySupported">REALITY</option><option value="tls" :disabled="!proxyTLSSupported">TLS</option>
           </select>
         </label>
         <label><span>SNI / Server Name</span><n-input v-model:value="proxyServerName" placeholder="例如：www.example.com" /></label>
@@ -97,6 +108,7 @@ const {
 		<RealityForm v-else :model="model" />
 		</template>
 		<ShadowsocksForm v-else :model="model" />
+		<n-alert v-if="proxyCapabilityWarning" type="warning">{{ proxyCapabilityWarning }}</n-alert>
         <label class="checkbox-row"><input v-model="proxyEnabled" type="checkbox" /><span>启用代理节点</span></label>
         <fieldset v-if="proxyFormMode === 'create'" class="client-fieldset">
           <legend>首个客户端</legend>
@@ -104,7 +116,7 @@ const {
 			<p>客户端凭据由系统安全生成。</p>
 			<label v-if="proxyProtocol === 'vless'" class="checkbox-row"><input v-model="firstClientUDP443" type="checkbox" /><span>允许 UDP/443 / QUIC</span></label>
         </fieldset>
-        <div class="modal-actions"><n-button @click="proxyFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
+        <div class="modal-actions"><n-button @click="proxyFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="proxyEnabled && !!proxyCapabilityWarning">保存</n-button></div>
       </form>
     </n-card>
   </n-modal>

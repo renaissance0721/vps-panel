@@ -5,11 +5,11 @@ import type {
   ClientTrafficResetMode,
   ClientStatus,
 } from '../proxy'
-export type ServerOption = {
-  id: number
-  name: string
-  system_info: { public_ipv4: string } | null
-}
+import type { ServerRecord } from './server'
+
+export type ServerOption = Pick<ServerRecord,
+  'id' | 'name' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+>
 
 export type ProxyConfig = {
   transport?: 'tcp'

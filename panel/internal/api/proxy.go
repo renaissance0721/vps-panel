@@ -5,7 +5,9 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -58,13 +60,29 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	if request.EntryHostMode == "" {
 		request.EntryHostMode = proxystore.EntryHostAuto
 	}
-	value, mutation, err := s.proxies.Create(r.Context(), proxystore.CreateInput{
+	input := proxystore.CreateInput{
 		ServerID: request.ServerID, Name: request.Name, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
 		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Method: request.Method,
-	})
+	}
+	if capability, message := requiredCreateProxyCapability(request); capability != "" {
+		supported, err := s.serverSupportsCapability(r, request.ServerID, capability)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if !supported {
+			if err := proxystore.ValidateCreateInput(input); err != nil {
+				writeProxyError(w, err)
+				return
+			}
+			writeError(w, http.StatusConflict, message)
+			return
+		}
+	}
+	value, mutation, err := s.proxies.Create(r.Context(), input)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -100,12 +118,30 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	value, mutation, err := s.proxies.Update(r.Context(), id, proxystore.UpdateInput{
+	input := proxystore.UpdateInput{
 		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 		Protocol: request.Protocol, Method: request.Method,
-	})
+	}
+	validated, err := s.proxies.ValidateUpdate(r.Context(), id, input)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	if validated.Enabled {
+		capability, message := requiredProxyCapability(validated)
+		supported, err := s.serverSupportsCapability(r, validated.ServerID, capability)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if !supported {
+			writeError(w, http.StatusConflict, message)
+			return
+		}
+	}
+	value, mutation, err := s.proxies.Update(r.Context(), id, input)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -120,6 +156,54 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		s.notifyRelayMutations(mutations)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
+}
+
+func requiredCreateProxyCapability(request createProxyRequest) (string, string) {
+	protocol := strings.ToLower(strings.TrimSpace(request.Protocol))
+	if protocol == "" {
+		protocol = proxystore.ProtocolVLESS
+	}
+	if protocol == proxystore.ProtocolShadowsocks {
+		return agentcontrol.CapabilityProxyShadowsocks, "当前 Agent 不支持 Shadowsocks"
+	}
+	if protocol != proxystore.ProtocolVLESS {
+		return "", ""
+	}
+	security := strings.ToLower(strings.TrimSpace(request.Security))
+	if security == proxystore.SecurityReality {
+		return agentcontrol.CapabilityProxyVLESSReality, "当前 Agent 不支持 VLESS + REALITY"
+	}
+	if security != proxystore.SecurityTLS {
+		return "", ""
+	}
+	mode := strings.ToLower(strings.TrimSpace(request.TLSMode))
+	if mode == "" {
+		if strings.TrimSpace(request.Certificate) != "" || strings.TrimSpace(request.PrivateKey) != "" {
+			mode = proxystore.TLSModeManual
+		} else {
+			mode = proxystore.TLSModeACME
+		}
+	}
+	if mode == proxystore.TLSModeACME {
+		return agentcontrol.CapabilityProxyVLESSACME, "当前 Agent 不支持 VLESS + TLS（ACME）"
+	}
+	if mode == proxystore.TLSModeManual {
+		return agentcontrol.CapabilityProxyVLESSManual, "当前 Agent 不支持 VLESS + TLS（手动证书）"
+	}
+	return "", ""
+}
+
+func requiredProxyCapability(value proxystore.Proxy) (string, string) {
+	if value.Protocol == proxystore.ProtocolShadowsocks {
+		return agentcontrol.CapabilityProxyShadowsocks, "当前 Agent 不支持 Shadowsocks"
+	}
+	if value.Config.Security == proxystore.SecurityReality {
+		return agentcontrol.CapabilityProxyVLESSReality, "当前 Agent 不支持 VLESS + REALITY"
+	}
+	if value.Config.TLSMode == proxystore.TLSModeManual {
+		return agentcontrol.CapabilityProxyVLESSManual, "当前 Agent 不支持 VLESS + TLS（手动证书）"
+	}
+	return agentcontrol.CapabilityProxyVLESSACME, "当前 Agent 不支持 VLESS + TLS（ACME）"
 }
 
 func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.User) {

@@ -204,6 +204,18 @@ test('出站优先级按钮高亮当前设置，归档时禁用', async () => {
     assert.match(detail, new RegExp(`<button[^>]*type="primary"[^>]*>${label}</button>`))
     assert.match(detail, /设置会保存，待 Agent 下次上线自动应用。/)
   }
+  model.viewServer(serverRecord({
+    status: 'offline',
+    agent_implementation: 'third-party-agent',
+    agent_api_version: 1,
+    agent_capabilities: [],
+  }))
+  const unsupported = await render('components/server/ServerDetail.vue', model)
+  assert.match(unsupported, /当前 Agent 不支持出站 IPv4 \/ IPv6 偏好。/)
+  assert.doesNotMatch(unsupported, /设置会保存，待 Agent 下次上线自动应用。/)
+  const autoButton = unsupported.match(/<button[^>]*>系统默认<\/button>/)?.[0] ?? ''
+  assert.doesNotMatch(autoButton, /disabled/)
+
   model.viewServer(serverRecord({ archived_at: '2026-09-18T00:00:00Z', outbound_preference: 'prefer_ipv6' }))
   const archived = await render('components/server/ServerDetail.vue', model)
   assert.match(archived, /<button[^>]*disabled[^>]*>优先 IPv6<\/button>/)

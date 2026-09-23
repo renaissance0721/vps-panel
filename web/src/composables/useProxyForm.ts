@@ -13,7 +13,10 @@ import type {
 import {
   api,
 } from '../api/client'
-import { agentSupportsCapability } from '../server'
+import {
+  agentCapabilities,
+  agentSupportsCapability,
+} from '../server'
 import type {
   Ref,
 } from 'vue'
@@ -43,12 +46,12 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
   )
   const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
-  const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.reality'))
-  const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.tls.acme'))
-  const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.vless.tls.manual'))
+  const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
+  const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
+  const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
   const proxyVLESSSupported = computed(() => proxyVLESSRealitySupported.value || proxyTLSACMESupported.value || proxyTLSManualSupported.value)
   const proxyTLSSupported = computed(() => proxyTLSACMESupported.value || proxyTLSManualSupported.value)
-  const proxyShadowsocksSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, 'proxy.shadowsocks'))
+  const proxyShadowsocksSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyShadowsocks))
   const proxyCapabilityWarning = computed(() => {
     if (proxyProtocol.value === 'shadowsocks') {
       return proxyShadowsocksSupported.value ? '' : '当前 Agent 不支持 Shadowsocks'

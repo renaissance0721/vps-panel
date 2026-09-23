@@ -73,7 +73,8 @@ test('中转 Modal 保持小屏可用且列表只在自身容器横向滚动', a
 
 test('Relay 源服务器和重新启用受 relay.realm 控制但禁用删除保持可用', async () => {
   const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
-  assert.match(view, /agentSupportsCapability\(server, 'relay\.realm'\)/)
+  assert.match(view, /agentSupportsCapability\(server, agentCapabilities\.relayRealm\)/)
+  assert.doesNotMatch(view, /'relay\.realm'/)
   assert.match(view, /:disabled="!serverSupportsRealm\(server\.id\)"/)
   assert.match(view, /:disabled="!value\.enabled && !serverSupportsRealm\(value\.server_id\)"/)
   assert.match(view, /enabled && !selectedServerSupportsRealm/)

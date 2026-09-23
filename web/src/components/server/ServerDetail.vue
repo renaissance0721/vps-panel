@@ -24,6 +24,7 @@ import type {
 } from '../../types/server'
 import {
   agentAPILabel,
+  agentCapabilities,
   agentImplementationLabel,
   agentSupportsCapability,
 } from '../../server'
@@ -106,8 +107,8 @@ const {
   runDiagnostics,
 } = toRefs(props.model)
 
-const diagnosticsSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, 'diagnostics_v1'))
-const outboundPreferenceSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, 'outbound_preference'))
+const diagnosticsSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.diagnosticsV1))
+const outboundPreferenceSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.outboundPreference))
 
 const diagnosticGroupDefinitions = [
   { title: 'Agent', prefixes: ['agent.'] },
@@ -359,7 +360,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                     <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="!!selectedServer.archived_at || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
                   </span>
                   <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
-                  <small v-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
+                  <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
                 </dd>
               </div>
             </dl>

@@ -4,6 +4,16 @@ import type {
 
 type AgentMetadata = Pick<ServerRecord, 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'>
 
+export const agentCapabilities = {
+  proxyVLESSReality: 'proxy.vless.reality',
+  proxyVLESSTLSACME: 'proxy.vless.tls.acme',
+  proxyVLESSTLSManual: 'proxy.vless.tls.manual',
+  proxyShadowsocks: 'proxy.shadowsocks',
+  relayRealm: 'relay.realm',
+  outboundPreference: 'outbound_preference',
+  diagnosticsV1: 'diagnostics_v1',
+} as const
+
 export function agentSupportsCapability(server: AgentMetadata, capability: string): boolean {
   const implementation = server.agent_implementation ?? ''
   const apiVersion = server.agent_api_version ?? 0

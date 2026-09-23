@@ -32,7 +32,10 @@ import {
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
-import { agentSupportsCapability } from '../server'
+import {
+  agentCapabilities,
+  agentSupportsCapability,
+} from '../server'
 import type { ServerRecord } from '../types/server'
 
 type ServerOption = Pick<ServerRecord,
@@ -139,7 +142,7 @@ const selectedServerPublicIPv4 = computed(() =>
 )
 function serverSupportsRealm(id: number | null) {
   const server = props.servers.find((value) => value.id === id)
-  return server !== undefined && agentSupportsCapability(server, 'relay.realm')
+  return server !== undefined && agentSupportsCapability(server, agentCapabilities.relayRealm)
 }
 const hasRelayServer = computed(() => props.servers.some((server) => serverSupportsRealm(server.id)))
 const selectedServerSupportsRealm = computed(() => serverSupportsRealm(serverID.value))

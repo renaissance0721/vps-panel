@@ -13,13 +13,16 @@ test('TLS 默认自动 ACME，只有手动模式才提交 PEM，旧证书按手�
 })
 
 test('Proxy 表单按精确 capability 控制协议、安全层和 TLS 模式', async () => {
-  const source = (await Promise.all([
+  const files = await Promise.all([
     'composables/useProxyForm.ts', 'components/proxy/ProxyForm.vue', 'components/proxy/TLSForm.vue', 'types/proxy.ts',
-  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
-  assert.match(source, /proxy\.vless\.reality/)
-  assert.match(source, /proxy\.vless\.tls\.acme/)
-  assert.match(source, /proxy\.vless\.tls\.manual/)
-  assert.match(source, /proxy\.shadowsocks/)
+  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
+  const [form] = files
+  const source = files.join('\n')
+  assert.match(form, /agentCapabilities\.proxyVLESSReality/)
+  assert.match(form, /agentCapabilities\.proxyVLESSTLSACME/)
+  assert.match(form, /agentCapabilities\.proxyVLESSTLSManual/)
+  assert.match(form, /agentCapabilities\.proxyShadowsocks/)
+  assert.doesNotMatch(form, /'(?:proxy\.vless\.reality|proxy\.vless\.tls\.acme|proxy\.vless\.tls\.manual|proxy\.shadowsocks)'/)
   assert.match(source, /value="vless" :disabled="!proxyVLESSSupported"/)
   assert.match(source, /value="shadowsocks" :disabled="!proxyShadowsocksSupported"/)
   assert.match(source, /value="reality" :disabled="!proxyVLESSRealitySupported"/)

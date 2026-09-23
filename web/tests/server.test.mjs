@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   agentAPILabel,
+  agentCapabilities,
   agentImplementationLabel,
   agentSupportsCapability,
   formatServerExpiration,
@@ -59,21 +60,35 @@ test('Agent 升级 UI 使用服务端安全判断并展示 metadata', async () =
 test('Agent capability helper 保持 Legacy 兼容并严格限制 API v1', () => {
   assert.equal(agentSupportsCapability({
     agent_implementation: '', agent_api_version: 0, agent_capabilities: [],
-  }, 'relay.realm'), true)
+  }, agentCapabilities.relayRealm), true)
   assert.equal(agentSupportsCapability({
     agent_implementation: 'third-party-agent', agent_api_version: 1, agent_capabilities: ['diagnostics_v1'],
-  }, 'diagnostics_v1'), true)
+  }, agentCapabilities.diagnosticsV1), true)
   assert.equal(agentSupportsCapability({
     agent_implementation: 'third-party-agent', agent_api_version: 1, agent_capabilities: ['metrics'],
-  }, 'diagnostics_v1'), false)
+  }, agentCapabilities.diagnosticsV1), false)
+})
+
+test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
+  assert.deepEqual(agentCapabilities, {
+    proxyVLESSReality: 'proxy.vless.reality',
+    proxyVLESSTLSACME: 'proxy.vless.tls.acme',
+    proxyVLESSTLSManual: 'proxy.vless.tls.manual',
+    proxyShadowsocks: 'proxy.shadowsocks',
+    relayRealm: 'relay.realm',
+    outboundPreference: 'outbound_preference',
+    diagnosticsV1: 'diagnostics_v1',
+  })
 })
 
 test('服务器详情按 capability 控制诊断和出站偏好且始终允许系统默认', async () => {
   const source = await readFile(new URL('../src/components/server/ServerDetail.vue', import.meta.url), 'utf8')
-  assert.match(source, /agentSupportsCapability\(selectedServer\.value, 'diagnostics_v1'\)/)
-  assert.match(source, /agentSupportsCapability\(selectedServer\.value, 'outbound_preference'\)/)
+  assert.match(source, /agentSupportsCapability\(selectedServer\.value, agentCapabilities\.diagnosticsV1\)/)
+  assert.match(source, /agentSupportsCapability\(selectedServer\.value, agentCapabilities\.outboundPreference\)/)
   assert.match(source, /当前 Agent 不支持一键诊断/)
   assert.match(source, /当前 Agent 不支持出站 IPv4 \/ IPv6 偏好/)
+  assert.match(source, /<small v-if="!outboundPreferenceSupported"[^>]*>/)
+  assert.match(source, /<small v-else-if="!selectedServer\.archived_at && selectedServer\.status !== 'online'"[^>]*>/)
   const autoButton = source.match(/<n-button[^>]+setOutboundPreference\(selectedServer, 'auto'\)[^>]*>/)?.[0] ?? ''
   assert.doesNotMatch(autoButton, /outboundPreferenceSupported/)
 })

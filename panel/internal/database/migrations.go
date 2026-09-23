@@ -50,6 +50,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateAgentUpgrade(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateAgentMetadata(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerPublicIPv4(ctx, db); err != nil {
 		return err
 	}
@@ -72,6 +75,32 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateAgentMetadata(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"implementation", "implementation TEXT NOT NULL DEFAULT ''"},
+		{"api_version", "api_version INTEGER NOT NULL DEFAULT 0"},
+		{"capabilities_json", "capabilities_json TEXT NOT NULL DEFAULT '[]'"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect agents.%s column: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE agents ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add agents.%s column: %w", column.name, err)
+		}
+	}
 	return nil
 }
 

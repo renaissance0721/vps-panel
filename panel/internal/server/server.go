@@ -141,11 +141,8 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
-		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT version FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
+		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
+		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -155,6 +152,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
+		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE `+archiveCondition+accessCondition+` ORDER BY servers.created_at DESC, servers.id DESC`, arguments...,
@@ -185,11 +183,8 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
-		 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT version FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
-		 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
+		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
+		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -199,6 +194,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
+		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE servers.id = ? AND servers.archived_at IS NULL`, id,
@@ -220,7 +216,9 @@ func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var accessUserIDs string
 	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
-	var storedAgentVersion, upgradeTarget, upgradeStatus, upgradeError sql.NullString
+	var implementation, storedAgentVersion, capabilitiesJSON sql.NullString
+	var apiVersion sql.NullInt64
+	var upgradeTarget, upgradeStatus, upgradeError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, publicIPv4, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
@@ -231,7 +229,8 @@ func scanServer(row rowScanner) (Server, error) {
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &accessUserIDs, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
-		&lastSeenAt, &storedAgentVersion, &upgradeTarget, &upgradeStatus, &upgradeError,
+		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
+		&upgradeTarget, &upgradeStatus, &upgradeError,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
@@ -255,7 +254,15 @@ func scanServer(row rowScanner) (Server, error) {
 		lastSeenTime := time.Unix(lastSeenAt.Int64, 0).UTC()
 		value.LastSeenAt = &lastSeenTime
 	}
+	value.AgentImplementation = implementation.String
 	value.AgentVersion = storedAgentVersion.String
+	value.AgentAPIVersion = int(apiVersion.Int64)
+	value.AgentCapabilities = []string{}
+	if capabilitiesJSON.Valid {
+		if err := json.Unmarshal([]byte(capabilitiesJSON.String), &value.AgentCapabilities); err != nil {
+			return Server{}, fmt.Errorf("decode Agent capabilities: %w", err)
+		}
+	}
 	value.AgentUpgradeTarget = upgradeTarget.String
 	value.AgentUpgradeStatus = upgradeStatus.String
 	value.AgentUpgradeError = upgradeError.String

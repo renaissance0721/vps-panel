@@ -277,6 +277,72 @@ func TestAgentWebSocketIgnoresUnknownMessageType(t *testing.T) {
 	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
 }
 
+func TestAgentWebSocketPersistsIdentityAndRejectsImplementationSwitch(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	created, err := service.Create(t.Context(), "Metadata Agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(
+		t.Context(), created.EnrollmentToken, "v0.4.2", false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel := httptest.NewServer(NewHandler(db, t.TempDir()))
+	defer panel.Close()
+	header := http.Header{"Authorization": []string{"Bearer " + registered.Token}}
+	header.Set("X-VPS-Panel-Agent-Implementation", "io.github.matthewlu070111.boardray")
+	header.Set("X-VPS-Panel-Agent-Version", "v0.4.3")
+	header.Set("X-VPS-Panel-Agent-API", "1")
+	header.Set("X-VPS-Panel-Agent-Capabilities", "metrics, diagnostics_v1,metrics")
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("connect identified Agent = %v, response = %+v", err, response)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOnline)
+	var implementation, version, capabilitiesJSON string
+	var apiVersion int
+	if err := db.QueryRow(
+		`SELECT implementation, version, api_version, capabilities_json FROM agents WHERE server_id = ?`, created.ID,
+	).Scan(&implementation, &version, &apiVersion, &capabilitiesJSON); err != nil {
+		t.Fatal(err)
+	}
+	if implementation != "io.github.matthewlu070111.boardray" || version != "v0.4.3" ||
+		apiVersion != 1 || capabilitiesJSON != `["diagnostics_v1","metrics"]` {
+		t.Fatalf("persisted metadata = (%q, %q, %d, %s)", implementation, version, apiVersion, capabilitiesJSON)
+	}
+	if err := connection.Close(websocket.StatusNormalClosure, "metadata persisted"); err != nil {
+		t.Fatal(err)
+	}
+	waitForServerStatus(t, service, created.ID, serverstore.StatusOffline)
+
+	header.Set("X-VPS-Panel-Agent-Implementation", agentcontrol.OfficialImplementation)
+	rejected, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err == nil {
+		rejected.CloseNow()
+		t.Fatal("implementation switch opened a WebSocket")
+	}
+	if response == nil || response.StatusCode != http.StatusConflict {
+		t.Fatalf("implementation switch response = %+v", response)
+	}
+	header.Set("X-VPS-Panel-Agent-Implementation", "io.github.matthewlu070111.boardray")
+	header.Set("X-VPS-Panel-Agent-API", "2")
+	rejected, response, err = websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+	if err == nil {
+		rejected.CloseNow()
+		t.Fatal("unsupported Agent API opened a WebSocket")
+	}
+	if response == nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unsupported Agent API response = %+v", response)
+	}
+}
+
 func TestOldConnectionCannotOverwriteSystemInfo(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

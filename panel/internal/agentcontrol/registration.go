@@ -5,9 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
@@ -16,14 +14,30 @@ func (s *Service) RegisterAgent(
 	ctx context.Context,
 	enrollmentToken string,
 	agentVersion string,
+	existingConfig bool,
+) (RegisteredAgent, error) {
+	return s.RegisterAgentWithMetadata(ctx, enrollmentToken, Metadata{Version: agentVersion}, existingConfig)
+}
+
+func (s *Service) RegisterAgentWithMetadata(
+	ctx context.Context,
+	enrollmentToken string,
+	metadata Metadata,
 	_ bool,
 ) (RegisteredAgent, error) {
 	if enrollmentToken == "" {
 		return RegisteredAgent{}, ErrInvalidEnrollment
 	}
-	agentVersion = strings.TrimSpace(agentVersion)
-	if agentVersion == "" || utf8.RuneCountInString(agentVersion) > 64 {
+	metadata, err := NormalizeMetadata(metadata)
+	if err != nil {
+		return RegisteredAgent{}, err
+	}
+	if metadata.Version == "" {
 		return RegisteredAgent{}, ErrInvalidAgentVersion
+	}
+	capabilitiesJSON, err := EncodeCapabilities(metadata.Capabilities)
+	if err != nil {
+		return RegisteredAgent{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -54,9 +68,11 @@ func (s *Service) RegisterAgent(
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO agents
-		 (server_id, token_hash, version, registered_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		serverID, agentTokenHash, agentVersion, now.Unix(), now.Unix(), now.Unix(),
+		 (server_id, token_hash, implementation, version, api_version, capabilities_json,
+		  registered_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		serverID, agentTokenHash, metadata.Implementation, metadata.Version, metadata.APIVersion,
+		capabilitiesJSON, now.Unix(), now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return RegisteredAgent{}, fmt.Errorf("create agent: %w", err)
@@ -114,10 +130,10 @@ func (s *Service) AuthenticateAgent(ctx context.Context, agentToken string) (Age
 
 	var agent Agent
 	err := s.db.QueryRowContext(ctx,
-		`SELECT agents.id, agents.server_id FROM agents
+		`SELECT agents.id, agents.server_id, agents.implementation FROM agents
 		 JOIN servers ON servers.id = agents.server_id
 		 WHERE agents.token_hash = ? AND servers.archived_at IS NULL`, token.Hash(agentToken),
-	).Scan(&agent.ID, &agent.ServerID)
+	).Scan(&agent.ID, &agent.ServerID, &agent.Implementation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, ErrInvalidAgentToken
 	}

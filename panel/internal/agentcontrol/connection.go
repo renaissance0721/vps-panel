@@ -14,7 +14,9 @@ import (
 
 type Connection struct {
 	Socket             *websocket.Conn
+	Implementation     string
 	Version            string
+	APIVersion         int
 	Capabilities       map[string]bool
 	writeMu            sync.Mutex
 	diagnosticsMu      sync.Mutex
@@ -108,6 +110,9 @@ func (s *Service) NotifyAgentUpgrade(serverID int64, targetVersion string) error
 	s.connectionsMu.Unlock()
 	if connection == nil {
 		return ErrAgentOffline
+	}
+	if !CanSelfUpgradeConnection(connection.Implementation, connection.APIVersion, connection.Capabilities) {
+		return ErrAgentUpgradeUnsupported
 	}
 	payload, err := json.Marshal(agentUpgradeMessage{Type: "agent_upgrade", Version: targetVersion})
 	if err != nil {

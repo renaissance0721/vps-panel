@@ -22,6 +22,10 @@ import type {
   DiagnosticCheck,
   DiagnosticStatus,
 } from '../../types/server'
+import {
+  agentAPILabel,
+  agentImplementationLabel,
+} from '../../server'
 import ServerTraffic from './ServerTraffic.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
 const props = defineProps<{
@@ -246,7 +250,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 一键诊断
               </n-button>
               <n-button
-                v-if="state?.user?.role === 'admin' && selectedServer.agent_version_status === 'upgrade_available'"
+                v-if="state?.user?.role === 'admin' && selectedServer.agent_can_self_upgrade && selectedServer.agent_version_status === 'upgrade_available'"
                 size="small"
                 type="primary"
                 secondary
@@ -259,7 +263,18 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               </div>
             </div>
             <dl class="server-details">
+              <div><dt>Agent 类型</dt><dd>{{ agentImplementationLabel(selectedServer.agent_implementation) }}</dd></div>
               <div><dt>Agent 版本</dt><dd>{{ selectedServer.agent_version || '—' }}</dd></div>
+              <div><dt>Agent API</dt><dd>{{ agentAPILabel(selectedServer.agent_api_version) }}</dd></div>
+              <div>
+                <dt>能力</dt>
+                <dd class="agent-capabilities">
+                  <span v-if="(selectedServer.agent_capabilities?.length ?? 0) === 0">—</span>
+                  <n-tag v-for="capability in selectedServer.agent_capabilities ?? []" :key="capability" size="small">
+                    {{ capability }}
+                  </n-tag>
+                </dd>
+              </div>
               <div><dt>Panel 版本</dt><dd>{{ health?.version || 'dev' }}</dd></div>
               <div><dt>升级状态</dt><dd>{{ agentUpgradeStatus(selectedServer) }}</dd></div>
               <div v-if="selectedServer.agent_upgrade_status === 'failed'"><dt>失败原因</dt><dd>{{ selectedServer.agent_upgrade_error || '升级失败' }}</dd></div>
@@ -267,7 +282,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             <n-alert v-if="selectedServer.agent_version_status === 'agent_newer'" type="warning" class="form-alert">
               当前 Agent {{ selectedServer.agent_version }} 高于 Panel {{ health?.version || 'dev' }}，请先升级 Panel；不支持自动降级 Agent。
             </n-alert>
-            <div v-if="state?.user?.role === 'admin' && bootstrapUpgradeCommand && selectedServer.agent_version_status === 'upgrade_available'" class="secret-field">
+            <div v-if="state?.user?.role === 'admin' && bootstrapUpgradeCommand && selectedServer.agent_can_self_upgrade && selectedServer.agent_version_status === 'upgrade_available'" class="secret-field">
               <strong>旧版 Agent 引导升级命令（无需 Token）</strong>
               <n-input :value="bootstrapUpgradeCommand" readonly />
               <n-button size="small" secondary @click="copyUpgradeCommand">{{ copiedUpgradeCommand ? '已复制' : '复制命令' }}</n-button>

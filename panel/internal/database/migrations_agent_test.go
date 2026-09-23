@@ -141,21 +141,26 @@ func TestOpenMigratesAgentLastSeenWithoutLosingData(t *testing.T) {
 		t.Fatalf("last_seen_at column count = %d, want 1", columnCount)
 	}
 	var serverID, desiredVersion, appliedVersion int64
-	var tokenHash, syncStatus, syncError, upgradeTarget, upgradeStatus, upgradeError string
+	var tokenHash, agentVersion, implementation, capabilitiesJSON string
+	var syncStatus, syncError, upgradeTarget, upgradeStatus, upgradeError string
+	var apiVersion int
 	var lastSeenAt, syncedAt sql.NullInt64
 	if err := db.QueryRow(
-		`SELECT agents.server_id, agents.token_hash, agents.last_seen_at,
+		`SELECT agents.server_id, agents.token_hash, agents.version, agents.last_seen_at,
+		 agents.implementation, agents.api_version, agents.capabilities_json,
 		 servers.desired_state_version, agents.applied_config_version,
 		 agents.config_sync_status, agents.config_sync_error, agents.config_synced_at,
 		 agents.upgrade_target_version, agents.upgrade_status, agents.upgrade_error
 		 FROM agents JOIN servers ON servers.id = agents.server_id WHERE agents.id = 9`,
 	).Scan(
-		&serverID, &tokenHash, &lastSeenAt, &desiredVersion, &appliedVersion,
+		&serverID, &tokenHash, &agentVersion, &lastSeenAt, &implementation, &apiVersion, &capabilitiesJSON,
+		&desiredVersion, &appliedVersion,
 		&syncStatus, &syncError, &syncedAt, &upgradeTarget, &upgradeStatus, &upgradeError,
 	); err != nil {
 		t.Fatalf("read migrated Agent: %v", err)
 	}
-	if serverID != 7 || tokenHash != "legacy-token-hash" || lastSeenAt.Valid ||
+	if serverID != 7 || tokenHash != "legacy-token-hash" || agentVersion != "v0.5.0" || lastSeenAt.Valid ||
+		implementation != "" || apiVersion != 0 || capabilitiesJSON != "[]" ||
 		desiredVersion != 1 || appliedVersion != 0 || syncStatus != "pending" || syncError != "" || syncedAt.Valid ||
 		upgradeTarget != "" || upgradeStatus != "" || upgradeError != "" {
 		t.Fatalf("migrated Agent = (%d, %q, %v, %d, %d, %q, %q, %v)",

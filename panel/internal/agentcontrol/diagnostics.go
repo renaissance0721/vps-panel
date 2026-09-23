@@ -103,8 +103,12 @@ func (s *Service) ResolveDiagnostics(connection *Connection, result diagnostic.R
 }
 
 func ParseCapabilities(value string) map[string]bool {
+	normalized, err := ParseCapabilityHeader(value)
+	if err != nil {
+		return map[string]bool{}
+	}
 	capabilities := make(map[string]bool)
-	for _, capability := range splitCapabilities(value) {
+	for _, capability := range normalized {
 		capabilities[capability] = true
 	}
 	return capabilities

@@ -16,8 +16,13 @@ func (s *server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	registered, err := s.agents.RegisterAgent(
-		r.Context(), request.EnrollmentToken, request.AgentVersion, request.ExistingConfig,
+	registered, err := s.agents.RegisterAgentWithMetadata(
+		r.Context(), request.EnrollmentToken, agentcontrol.Metadata{
+			Implementation: request.AgentImplementation,
+			Version:        request.AgentVersion,
+			APIVersion:     request.AgentAPIVersion,
+			Capabilities:   request.AgentCapabilities,
+		}, request.ExistingConfig,
 	)
 	if err != nil {
 		writeServerError(w, err)

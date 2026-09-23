@@ -10,10 +10,18 @@ const (
 	AgentVersionUpgradeAvailable = "upgrade_available"
 	AgentVersionUpToDate         = "up_to_date"
 	AgentVersionNewer            = "agent_newer"
+	AgentVersionNotApplicable    = "not_applicable"
 )
 
 func IsFormalReleaseVersion(value string) bool {
 	return version.IsFormal(value)
+}
+
+func AgentVersionStatusForMetadata(metadata Metadata, panelVersion string) string {
+	if metadata.APIVersion == CurrentAPIVersion && metadata.Implementation != OfficialImplementation {
+		return AgentVersionNotApplicable
+	}
+	return AgentVersionStatus(metadata.Version, panelVersion)
 }
 
 func AgentVersionStatus(agentVersion, panelVersion string) string {

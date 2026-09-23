@@ -313,6 +313,12 @@ h1 {
   font-weight: 600;
 }
 
+.agent-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .outbound-preference-buttons {
   display: flex;
   flex-wrap: wrap;

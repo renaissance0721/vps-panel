@@ -280,6 +280,12 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "Enrollment Token 无效、已使用或已过期")
 	case errors.Is(err, agentcontrol.ErrInvalidAgentVersion):
 		writeError(w, http.StatusBadRequest, "Agent 版本不能为空且不能超过 64 个字符")
+	case errors.Is(err, agentcontrol.ErrUnsupportedAgentAPI):
+		writeError(w, http.StatusBadRequest, "不支持该 Agent API 版本")
+	case errors.Is(err, agentcontrol.ErrInvalidAgentMetadata):
+		writeError(w, http.StatusBadRequest, "Agent 身份元数据无效")
+	case errors.Is(err, agentcontrol.ErrAgentImplementationMismatch):
+		writeError(w, http.StatusConflict, "Agent implementation 与注册信息不一致")
 	case errors.Is(err, serverstore.ErrInvalidTrafficConfig):
 		writeError(w, http.StatusBadRequest, "月流量设置无效")
 	case errors.Is(err, serverstore.ErrInvalidTrafficTarget):
@@ -300,6 +306,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "Agent 版本未知或为开发版本，不能一键升级")
 	case errors.Is(err, agentcontrol.ErrInvalidUpgrade):
 		writeError(w, http.StatusBadRequest, "Agent 升级请求无效")
+	case errors.Is(err, agentcontrol.ErrAgentUpgradeUnsupported):
+		writeError(w, http.StatusConflict, "该 Agent 不支持官方自动升级")
 	case errors.Is(err, relaystore.ErrTargetUnavailable):
 		writeError(w, http.StatusConflict, "中转目标地址不可用，请设置目标 Proxy 的手动入口地址或等待目标服务器上报公网 IPv4")
 	default:

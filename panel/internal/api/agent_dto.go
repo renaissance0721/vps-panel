@@ -6,9 +6,12 @@ import (
 )
 
 type agentRegistrationRequest struct {
-	EnrollmentToken string `json:"enrollment_token"`
-	AgentVersion    string `json:"agent_version"`
-	ExistingConfig  bool   `json:"existing_config"`
+	EnrollmentToken     string   `json:"enrollment_token"`
+	AgentVersion        string   `json:"agent_version"`
+	ExistingConfig      bool     `json:"existing_config"`
+	AgentImplementation string   `json:"agent_implementation"`
+	AgentAPIVersion     int      `json:"agent_api_version"`
+	AgentCapabilities   []string `json:"agent_capabilities"`
 }
 
 type agentRegistrationResponse struct {

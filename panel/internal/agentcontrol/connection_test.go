@@ -56,3 +56,26 @@ func TestAgentUpgradeNotificationRejectsReconnectedNewerAgent(t *testing.T) {
 		t.Fatal("stale Agent connection remained current after reconnect")
 	}
 }
+
+func TestAgentUpgradeNotificationRequiresOfficialSelfUpgradeIdentity(t *testing.T) {
+	const serverID = int64(8)
+	for _, connection := range []*Connection{
+		{Implementation: "io.github.matthewlu070111.boardray", APIVersion: 1, Version: "v0.1.0", Capabilities: map[string]bool{CapabilitySelfUpgrade: true}},
+		{Implementation: OfficialImplementation, APIVersion: 1, Version: "v0.1.0", Capabilities: map[string]bool{}},
+	} {
+		service := &Service{connections: map[int64]*Connection{serverID: connection}}
+		if err := service.NotifyAgentUpgrade(serverID, "v0.2.0"); !errors.Is(err, ErrAgentUpgradeUnsupported) {
+			t.Fatalf("NotifyAgentUpgrade(%+v) = %v", connection, err)
+		}
+	}
+	official := &Connection{
+		Implementation: OfficialImplementation,
+		APIVersion:     CurrentAPIVersion,
+		Version:        "v0.2.0",
+		Capabilities:   map[string]bool{CapabilitySelfUpgrade: true},
+	}
+	service := &Service{connections: map[int64]*Connection{serverID: official}}
+	if err := service.NotifyAgentUpgrade(serverID, "v0.2.0"); !errors.Is(err, ErrAgentAlreadyCurrent) {
+		t.Fatalf("official self-upgrade gate error = %v", err)
+	}
+}

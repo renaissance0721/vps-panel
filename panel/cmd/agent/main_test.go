@@ -38,7 +38,10 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion || request.ExistingConfig {
+		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion || request.ExistingConfig ||
+			request.AgentImplementation != agentcontrol.OfficialImplementation ||
+			request.AgentAPIVersion != agentcontrol.CurrentAPIVersion ||
+			len(request.AgentCapabilities) != len(agentCapabilities) {
 			t.Fatalf("registration request = %+v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -485,7 +488,7 @@ func TestAgentAdvertisesDiagnosticsAndReturnsMatchingRequestIDAfterUnknownMessag
 		if serveTestAgentConfig(w, r) {
 			return
 		}
-		if r.Header.Get("X-VPS-Panel-Agent-Capabilities") != diagnostic.CapabilityV1 {
+		if !strings.Contains(r.Header.Get("X-VPS-Panel-Agent-Capabilities"), diagnostic.CapabilityV1) {
 			handlerResult <- errors.New("Agent did not advertise diagnostics_v1")
 			return
 		}

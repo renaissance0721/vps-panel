@@ -89,6 +89,7 @@ export function visibilityLabel(value: ServerRecord['visibility']): string {
 }
 
 export function agentUpgradeStatus(value: ServerRecord) {
+  if (value.agent_version_status === 'not_applicable') return '不适用'
   if (value.agent_version_status === 'agent_newer') return 'Agent 版本高于 Panel'
   if (value.agent_upgrade_status === 'upgrading') return '升级中'
   if (value.agent_upgrade_status === 'failed') return '升级失败'
@@ -98,6 +99,16 @@ export function agentUpgradeStatus(value: ServerRecord) {
     case 'up_to_date': return '已是最新'
     default: return '版本未知或开发版本不可升级'
   }
+}
+
+export function agentImplementationLabel(implementation: string) {
+  if (implementation === 'vps-panel-agent') return 'VPS Panel Agent'
+  if (implementation === 'io.github.matthewlu070111.boardray') return 'BoardRay'
+  return implementation || '旧版 / 未声明'
+}
+
+export function agentAPILabel(apiVersion: number) {
+  return apiVersion === 0 ? 'Legacy' : `v${apiVersion}`
 }
 
 export function statusType(status: ServerRecord['status']): 'warning' | 'success' | 'default' {

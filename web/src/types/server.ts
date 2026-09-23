@@ -17,8 +17,12 @@ export type ServerRecord = {
   metrics: ServerMetrics | null
   created_at: string
   updated_at: string
+  agent_implementation: string
   agent_version: string
-  agent_version_status: 'unregistered' | 'unknown' | 'upgrade_available' | 'up_to_date' | 'agent_newer'
+  agent_api_version: number
+  agent_capabilities: string[]
+  agent_can_self_upgrade: boolean
+  agent_version_status: 'unregistered' | 'unknown' | 'upgrade_available' | 'up_to_date' | 'agent_newer' | 'not_applicable'
   agent_upgrade_target?: string
   agent_upgrade_status?: 'upgrading' | 'failed'
   agent_upgrade_error?: string

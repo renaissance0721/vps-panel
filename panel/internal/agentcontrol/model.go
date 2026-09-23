@@ -25,20 +25,24 @@ const (
 )
 
 var (
-	ErrInvalidEnrollment      = errors.New("invalid, used, or expired enrollment token")
-	ErrInvalidAgentVersion    = errors.New("agent version must be 1-64 characters")
-	ErrInvalidAgentToken      = errors.New("invalid agent token")
-	ErrArchived               = errors.New("server is archived")
-	ErrInvalidConfigResult    = errors.New("invalid Agent config result")
-	ErrConfigVersionAhead     = errors.New("Agent config result version is newer than desired state")
-	ErrAgentOffline           = errors.New("Agent is offline")
-	ErrAgentNotRegistered     = errors.New("Agent is not registered")
-	ErrDiagnosticsUnsupported = errors.New("Agent does not support diagnostics")
-	ErrDiagnosticsInProgress  = errors.New("a diagnostic request is already in progress")
-	ErrInvalidUpgrade         = errors.New("invalid Agent upgrade")
-	ErrAgentNewer             = errors.New("Agent is newer than Panel; downgrade is not supported")
-	ErrAgentAlreadyCurrent    = errors.New("Agent already runs the requested release")
-	ErrUnknownAgentVersion    = errors.New("Agent version is not a formal release")
+	ErrInvalidEnrollment           = errors.New("invalid, used, or expired enrollment token")
+	ErrInvalidAgentVersion         = errors.New("agent version must be 1-64 characters")
+	ErrInvalidAgentMetadata        = errors.New("invalid Agent metadata")
+	ErrUnsupportedAgentAPI         = errors.New("unsupported Agent API version")
+	ErrAgentImplementationMismatch = errors.New("Agent implementation does not match registration")
+	ErrInvalidAgentToken           = errors.New("invalid agent token")
+	ErrArchived                    = errors.New("server is archived")
+	ErrInvalidConfigResult         = errors.New("invalid Agent config result")
+	ErrConfigVersionAhead          = errors.New("Agent config result version is newer than desired state")
+	ErrAgentOffline                = errors.New("Agent is offline")
+	ErrAgentNotRegistered          = errors.New("Agent is not registered")
+	ErrDiagnosticsUnsupported      = errors.New("Agent does not support diagnostics")
+	ErrDiagnosticsInProgress       = errors.New("a diagnostic request is already in progress")
+	ErrInvalidUpgrade              = errors.New("invalid Agent upgrade")
+	ErrAgentNewer                  = errors.New("Agent is newer than Panel; downgrade is not supported")
+	ErrAgentAlreadyCurrent         = errors.New("Agent already runs the requested release")
+	ErrUnknownAgentVersion         = errors.New("Agent version is not a formal release")
+	ErrAgentUpgradeUnsupported     = errors.New("Agent does not support official self-upgrade")
 
 	ErrServerNotFound = errors.New("server not found")
 )
@@ -50,8 +54,9 @@ type RegisteredAgent struct {
 }
 
 type Agent struct {
-	ID       int64
-	ServerID int64
+	ID             int64
+	ServerID       int64
+	Implementation string
 }
 
 type AgentUpgrade struct {

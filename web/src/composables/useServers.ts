@@ -274,7 +274,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   async function upgradeAgent(value: ServerRecord) {
-    if (!panelReleaseVersion.value || value.status !== 'online' || value.agent_version_status !== 'upgrade_available') return
+    if (!value.agent_can_self_upgrade || !panelReleaseVersion.value || value.status !== 'online' || value.agent_version_status !== 'upgrade_available') return
     if (!window.confirm(`确定将 Agent 升级到 ${panelReleaseVersion.value} 吗？升级会短暂断开连接，但不会重新注册。`)) return
     await submit(async () => {
       await api(`/api/servers/${value.id}/agent-upgrade`, { method: 'POST' })

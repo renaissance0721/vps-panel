@@ -49,7 +49,12 @@ func TestAgentUpgradeRequiresAdminOnlineFormalVersionAndUsesTypedMessage(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "v0.11.0", false)
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgentWithMetadata(t.Context(), created.EnrollmentToken, agentcontrol.Metadata{
+		Implementation: agentcontrol.OfficialImplementation,
+		Version:        "v0.11.0",
+		APIVersion:     agentcontrol.CurrentAPIVersion,
+		Capabilities:   []string{agentcontrol.CapabilitySelfUpgrade},
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +78,10 @@ func TestAgentUpgradeRequiresAdminOnlineFormalVersionAndUsesTypedMessage(t *test
 	defer panel.Close()
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+registered.Token)
+	header.Set("X-VPS-Panel-Agent-Implementation", agentcontrol.OfficialImplementation)
 	header.Set("X-VPS-Panel-Agent-Version", "v0.11.0")
+	header.Set("X-VPS-Panel-Agent-API", "1")
+	header.Set("X-VPS-Panel-Agent-Capabilities", agentcontrol.CapabilitySelfUpgrade)
 	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("connect Agent = %v, response = %+v", err, response)
@@ -128,6 +136,61 @@ func TestAgentUpgradeRequiresAdminOnlineFormalVersionAndUsesTypedMessage(t *test
 	if finalAgentID != agentID || finalServerID != serverID || finalTokenHash != tokenHash {
 		t.Fatalf("Agent identity changed after upgrade: before %d/%d/%q, after %d/%d/%q",
 			agentID, serverID, tokenHash, finalAgentID, finalServerID, finalTokenHash)
+	}
+}
+
+func TestThirdPartyAgentCannotUseOfficialUpgradeAndServerMetadataIsExplicit(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := serverstore.NewService(db)
+	handler := NewHandlerWithVersion(db, t.TempDir(), "v0.12.0")
+	initialization := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialization.Code != http.StatusCreated {
+		t.Fatalf("initialize = %d, %s", initialization.Code, initialization.Body.String())
+	}
+	cookie := initialization.Result().Cookies()[0]
+	created, err := service.Create(t.Context(), "BoardRay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := agentcontrol.NewService(db, time.Now)
+	metadata := agentcontrol.Metadata{
+		Implementation: "io.github.matthewlu070111.boardray",
+		Version:        "v0.4.2",
+		APIVersion:     agentcontrol.CurrentAPIVersion,
+		Capabilities:   []string{agentcontrol.CapabilitySelfUpgrade, agentcontrol.CapabilityMetrics},
+	}
+	registered, err := agents.RegisterAgentWithMetadata(t.Context(), created.EnrollmentToken, metadata, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agents.SetAgentConnectedMetadata(t.Context(), registered.ID, created.ID, metadata); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/servers/" + strconv.FormatInt(created.ID, 10)
+	response := performRequest(t, handler, http.MethodGet, path, nil, cookie)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"agent_implementation":"io.github.matthewlu070111.boardray"`) ||
+		!strings.Contains(response.Body.String(), `"agent_api_version":1`) ||
+		!strings.Contains(response.Body.String(), `"agent_capabilities":["metrics","self_upgrade"]`) ||
+		!strings.Contains(response.Body.String(), `"agent_can_self_upgrade":false`) ||
+		!strings.Contains(response.Body.String(), `"agent_version_status":"not_applicable"`) {
+		t.Fatalf("third-party server metadata = %d, %s", response.Code, response.Body.String())
+	}
+	upgrade := performRequest(t, handler, http.MethodPost, path+"/agent-upgrade", nil, cookie)
+	if upgrade.Code != http.StatusConflict || !strings.Contains(upgrade.Body.String(), "不支持官方自动升级") {
+		t.Fatalf("third-party upgrade = %d, %s", upgrade.Code, upgrade.Body.String())
+	}
+	var target, status string
+	if err := db.QueryRow(
+		`SELECT upgrade_target_version, upgrade_status FROM agents WHERE server_id = ?`, created.ID,
+	).Scan(&target, &status); err != nil || target != "" || status != "" {
+		t.Fatalf("third-party upgrade state = (%q, %q, %v)", target, status, err)
 	}
 }
 

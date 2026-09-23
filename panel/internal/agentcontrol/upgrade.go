@@ -35,13 +35,22 @@ func (s *Service) PrepareAgentUpgrade(ctx context.Context, serverID int64, targe
 		return AgentUpgrade{}, ErrAgentOffline
 	}
 	var agentID int64
-	var currentVersion string
+	var implementation, currentVersion, capabilitiesJSON string
+	var apiVersion int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT id, version FROM agents WHERE server_id = ?`, serverID,
-	).Scan(&agentID, &currentVersion); errors.Is(err, sql.ErrNoRows) {
+		`SELECT id, implementation, version, api_version, capabilities_json
+		 FROM agents WHERE server_id = ?`, serverID,
+	).Scan(&agentID, &implementation, &currentVersion, &apiVersion, &capabilitiesJSON); errors.Is(err, sql.ErrNoRows) {
 		return AgentUpgrade{}, ErrAgentNotRegistered
 	} else if err != nil {
 		return AgentUpgrade{}, fmt.Errorf("read Agent for upgrade: %w", err)
+	}
+	capabilities, err := DecodeCapabilities(capabilitiesJSON)
+	if err != nil {
+		return AgentUpgrade{}, err
+	}
+	if !CanSelfUpgrade(implementation, apiVersion, capabilities) {
+		return AgentUpgrade{}, ErrAgentUpgradeUnsupported
 	}
 	comparison, ok := version.Compare(currentVersion, targetVersion)
 	if !ok {

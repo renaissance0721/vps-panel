@@ -48,7 +48,10 @@ type Server struct {
 	TrafficResetDay          int
 	TrafficResetTime         string
 	LastSeenAt               *time.Time
+	AgentImplementation      string
 	AgentVersion             string
+	AgentAPIVersion          int
+	AgentCapabilities        []string
 	AgentUpgradeTarget       string
 	AgentUpgradeStatus       string
 	AgentUpgradeError        string

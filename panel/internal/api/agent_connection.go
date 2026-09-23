@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,15 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	metadata, err := agentMetadataFromHeaders(r)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	if err := agentcontrol.ValidateImplementationMatch(agent.Implementation, metadata.Implementation); err != nil {
+		writeServerError(w, err)
+		return
+	}
 
 	connection, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -28,28 +38,27 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer connection.CloseNow()
 	connection.SetReadLimit(64 << 10)
 	currentConnection := &agentcontrol.Connection{
-		Socket:       connection,
-		Version:      strings.TrimSpace(r.Header.Get("X-VPS-Panel-Agent-Version")),
-		Capabilities: agentcontrol.ParseCapabilities(r.Header.Get("X-VPS-Panel-Agent-Capabilities")),
-	}
-	previous := s.agents.TrackConnection(agent.ServerID, currentConnection)
-	if previous != nil {
-		previous.Socket.CloseNow()
+		Socket:         connection,
+		Implementation: metadata.Implementation,
+		Version:        metadata.Version,
+		APIVersion:     metadata.APIVersion,
+		Capabilities:   metadata.CapabilitySet(),
 	}
 
 	statusContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err = s.agents.SetAgentConnectedVersion(
-		statusContext, agent.ID, agent.ServerID, r.Header.Get("X-VPS-Panel-Agent-Version"),
-	)
+	err = s.agents.SetAgentConnectedMetadata(statusContext, agent.ID, agent.ServerID, metadata)
 	cancel()
 	if err != nil {
-		s.agents.UntrackConnection(agent.ServerID, currentConnection)
 		if errors.Is(err, agentcontrol.ErrArchived) || errors.Is(err, agentcontrol.ErrServerNotFound) {
 			return
 		}
 		log.Printf("set agent %d server %d online: %v", agent.ID, agent.ServerID, err)
 		_ = connection.Close(websocket.StatusInternalError, "server status update failed")
 		return
+	}
+	previous := s.agents.TrackConnection(agent.ServerID, currentConnection)
+	if previous != nil {
+		previous.Socket.CloseNow()
 	}
 	log.Printf("agent %d connected to server %d", agent.ID, agent.ServerID)
 
@@ -184,6 +193,27 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("agent %d disconnected from server %d", agent.ID, agent.ServerID)
+}
+
+func agentMetadataFromHeaders(r *http.Request) (agentcontrol.Metadata, error) {
+	apiVersion := 0
+	if raw := strings.TrimSpace(r.Header.Get("X-VPS-Panel-Agent-API")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return agentcontrol.Metadata{}, agentcontrol.ErrInvalidAgentMetadata
+		}
+		apiVersion = parsed
+	}
+	capabilities, err := agentcontrol.ParseCapabilityHeader(r.Header.Get("X-VPS-Panel-Agent-Capabilities"))
+	if err != nil {
+		return agentcontrol.Metadata{}, err
+	}
+	return agentcontrol.NormalizeMetadata(agentcontrol.Metadata{
+		Implementation: r.Header.Get("X-VPS-Panel-Agent-Implementation"),
+		Version:        r.Header.Get("X-VPS-Panel-Agent-Version"),
+		APIVersion:     apiVersion,
+		Capabilities:   capabilities,
+	})
 }
 
 func (s *server) reportCurrentSystemInfo(serverID, agentID int64, connection *agentcontrol.Connection, report serverstore.SystemInfoReport) (bool, bool, error) {

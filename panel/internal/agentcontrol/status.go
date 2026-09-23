@@ -23,6 +23,23 @@ func (s *Service) SetAgentConnectedVersion(ctx context.Context, agentID, serverI
 	if utf8.RuneCountInString(agentVersion) > 64 {
 		return ErrInvalidAgentVersion
 	}
+	return s.setAgentConnected(ctx, agentID, serverID, Metadata{Version: agentVersion}, false)
+}
+
+func (s *Service) SetAgentConnectedMetadata(ctx context.Context, agentID, serverID int64, metadata Metadata) error {
+	metadata, err := NormalizeMetadata(metadata)
+	if err != nil {
+		return err
+	}
+	return s.setAgentConnected(ctx, agentID, serverID, metadata, true)
+}
+
+func (s *Service) setAgentConnected(
+	ctx context.Context,
+	agentID, serverID int64,
+	metadata Metadata,
+	persistMetadata bool,
+) error {
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -30,17 +47,39 @@ func (s *Service) SetAgentConnectedVersion(ctx context.Context, agentID, serverI
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx,
-		`UPDATE agents SET last_seen_at = ?,
-		 version = CASE WHEN ? = '' THEN version ELSE ? END,
-		 upgrade_target_version = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_target_version END,
-		 upgrade_status = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_status END,
-		 upgrade_error = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_error END,
-		 updated_at = ? WHERE id = ? AND server_id = ?`,
-		now, agentVersion, agentVersion,
-		agentVersion, agentVersion, agentVersion, agentVersion, agentVersion, agentVersion,
-		now, agentID, serverID,
-	)
+	var result sql.Result
+	if persistMetadata {
+		capabilitiesJSON, encodeErr := EncodeCapabilities(metadata.Capabilities)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		result, err = tx.ExecContext(ctx,
+			`UPDATE agents SET last_seen_at = ?,
+				implementation = CASE WHEN implementation = '' THEN ? ELSE implementation END,
+				version = CASE WHEN ? = '' THEN version ELSE ? END,
+				api_version = ?, capabilities_json = ?,
+				upgrade_target_version = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_target_version END,
+				upgrade_status = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_status END,
+				upgrade_error = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_error END,
+				updated_at = ?
+			 WHERE id = ? AND server_id = ? AND (implementation = '' OR implementation = ?)`,
+			now, metadata.Implementation, metadata.Version, metadata.Version, metadata.APIVersion, capabilitiesJSON,
+			metadata.Version, metadata.Version, metadata.Version, metadata.Version, metadata.Version, metadata.Version,
+			now, agentID, serverID, metadata.Implementation,
+		)
+	} else {
+		result, err = tx.ExecContext(ctx,
+			`UPDATE agents SET last_seen_at = ?,
+				version = CASE WHEN ? = '' THEN version ELSE ? END,
+				upgrade_target_version = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_target_version END,
+				upgrade_status = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_status END,
+				upgrade_error = CASE WHEN ? != '' AND upgrade_target_version = ? THEN '' ELSE upgrade_error END,
+				updated_at = ? WHERE id = ? AND server_id = ?`,
+			now, metadata.Version, metadata.Version,
+			metadata.Version, metadata.Version, metadata.Version, metadata.Version, metadata.Version, metadata.Version,
+			now, agentID, serverID,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("update connected Agent: %w", err)
 	}
@@ -49,6 +88,18 @@ func (s *Service) SetAgentConnectedVersion(ctx context.Context, agentID, serverI
 		return fmt.Errorf("read connected Agent count: %w", err)
 	}
 	if count != 1 {
+		if persistMetadata {
+			var implementation string
+			readErr := tx.QueryRowContext(ctx,
+				`SELECT implementation FROM agents WHERE id = ? AND server_id = ?`, agentID, serverID,
+			).Scan(&implementation)
+			if readErr == nil && implementation != metadata.Implementation {
+				return ErrAgentImplementationMismatch
+			}
+			if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
+				return fmt.Errorf("read connected Agent implementation: %w", readErr)
+			}
+		}
 		return ErrInvalidAgentToken
 	}
 

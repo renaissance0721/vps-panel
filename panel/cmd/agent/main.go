@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 )
 
@@ -47,10 +48,26 @@ const (
 	maximumReconnectDelay = 30 * time.Second
 )
 
+var agentCapabilities = []string{
+	agentcontrol.CapabilityProxyVLESSACME,
+	agentcontrol.CapabilityProxyVLESSManual,
+	agentcontrol.CapabilityProxyVLESSReality,
+	agentcontrol.CapabilityProxyShadowsocks,
+	agentcontrol.CapabilityRelayRealm,
+	agentcontrol.CapabilityOutboundPreference,
+	agentcontrol.CapabilityMetrics,
+	agentcontrol.CapabilityClientTraffic,
+	agentcontrol.CapabilityDiagnosticsV1,
+	agentcontrol.CapabilitySelfUpgrade,
+}
+
 type registrationRequest struct {
-	EnrollmentToken string `json:"enrollment_token"`
-	AgentVersion    string `json:"agent_version"`
-	ExistingConfig  bool   `json:"existing_config"`
+	EnrollmentToken     string   `json:"enrollment_token"`
+	AgentVersion        string   `json:"agent_version"`
+	ExistingConfig      bool     `json:"existing_config"`
+	AgentImplementation string   `json:"agent_implementation"`
+	AgentAPIVersion     int      `json:"agent_api_version"`
+	AgentCapabilities   []string `json:"agent_capabilities"`
 }
 
 type registrationResponse struct {
@@ -196,9 +213,12 @@ func registerAgent(
 	}
 
 	body, err := json.Marshal(registrationRequest{
-		EnrollmentToken: enrollmentToken,
-		AgentVersion:    agentVersion,
-		ExistingConfig:  existingConfig,
+		EnrollmentToken:     enrollmentToken,
+		AgentVersion:        agentVersion,
+		ExistingConfig:      existingConfig,
+		AgentImplementation: agentcontrol.OfficialImplementation,
+		AgentAPIVersion:     agentcontrol.CurrentAPIVersion,
+		AgentCapabilities:   agentCapabilities,
 	})
 	if err != nil {
 		return config{}, fmt.Errorf("encode registration request: %w", err)
@@ -374,7 +394,9 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
 	header.Set("X-VPS-Panel-Agent-Version", agentVersion)
-	header.Set("X-VPS-Panel-Agent-Capabilities", diagnostic.CapabilityV1)
+	header.Set("X-VPS-Panel-Agent-Implementation", agentcontrol.OfficialImplementation)
+	header.Set("X-VPS-Panel-Agent-API", fmt.Sprintf("%d", agentcontrol.CurrentAPIVersion))
+	header.Set("X-VPS-Panel-Agent-Capabilities", strings.Join(agentCapabilities, ","))
 	connection, response, err := dialAgentWebSocket(
 		ctx,
 		value.PanelURL+"/api/agent/ws",

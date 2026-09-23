@@ -22,11 +22,8 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
-			 (SELECT last_seen_at FROM agents WHERE agents.server_id = servers.id),
-			 (SELECT version FROM agents WHERE agents.server_id = servers.id),
-			 (SELECT upgrade_target_version FROM agents WHERE agents.server_id = servers.id),
-			 (SELECT upgrade_status FROM agents WHERE agents.server_id = servers.id),
-			 (SELECT upgrade_error FROM agents WHERE agents.server_id = servers.id),
+		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
+		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -36,6 +33,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 metrics.traffic_adjustment_bytes, metrics.cycle_started_at, metrics.updated_at,
 		 servers.created_at, servers.updated_at
 		 FROM servers
+		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
 		 WHERE servers.id = ?`, id,

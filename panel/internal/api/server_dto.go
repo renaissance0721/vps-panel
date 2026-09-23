@@ -57,7 +57,11 @@ type serverResponse struct {
 	Metrics                  *metricsResponse    `json:"metrics"`
 	CreatedAt                time.Time           `json:"created_at"`
 	UpdatedAt                time.Time           `json:"updated_at"`
+	AgentImplementation      string              `json:"agent_implementation"`
 	AgentVersion             string              `json:"agent_version"`
+	AgentAPIVersion          int                 `json:"agent_api_version"`
+	AgentCapabilities        []string            `json:"agent_capabilities"`
+	AgentCanSelfUpgrade      bool                `json:"agent_can_self_upgrade"`
 	AgentVersionStatus       string              `json:"agent_version_status"`
 	AgentUpgradeTarget       string              `json:"agent_upgrade_target,omitempty"`
 	AgentUpgradeStatus       string              `json:"agent_upgrade_status,omitempty"`
@@ -117,11 +121,20 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		LastSeenAt:               value.LastSeenAt,
 		CreatedAt:                value.CreatedAt,
 		UpdatedAt:                value.UpdatedAt,
+		AgentImplementation:      value.AgentImplementation,
 		AgentVersion:             value.AgentVersion,
-		AgentVersionStatus:       agentcontrol.AgentVersionStatus(value.AgentVersion, panelVersion),
-		AgentUpgradeTarget:       value.AgentUpgradeTarget,
-		AgentUpgradeStatus:       value.AgentUpgradeStatus,
-		AgentUpgradeError:        value.AgentUpgradeError,
+		AgentAPIVersion:          value.AgentAPIVersion,
+		AgentCapabilities:        append([]string{}, value.AgentCapabilities...),
+		AgentCanSelfUpgrade:      value.AgentVersion != "" && agentcontrol.CanSelfUpgrade(value.AgentImplementation, value.AgentAPIVersion, value.AgentCapabilities),
+		AgentVersionStatus: agentcontrol.AgentVersionStatusForMetadata(agentcontrol.Metadata{
+			Implementation: value.AgentImplementation,
+			Version:        value.AgentVersion,
+			APIVersion:     value.AgentAPIVersion,
+			Capabilities:   value.AgentCapabilities,
+		}, panelVersion),
+		AgentUpgradeTarget: value.AgentUpgradeTarget,
+		AgentUpgradeStatus: value.AgentUpgradeStatus,
+		AgentUpgradeError:  value.AgentUpgradeError,
 	}
 	if value.SystemInfo != nil {
 		response.SystemInfo = &systemInfoResponse{

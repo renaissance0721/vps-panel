@@ -108,10 +108,11 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasExpiration := len(request.ExpiresAt) != 0
 	hasName := request.Name != nil
 	hasOutboundPreference := request.OutboundPreference != nil
+	hasBlockChinaInbound := request.BlockChinaInbound != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic, hasOutboundPreference} {
+	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
@@ -153,6 +154,34 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		}
 		if err := s.agents.NotifyConfigChanged(id, version); err != nil {
 			log.Printf("notify Agent of outbound preference change: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
+		return
+	}
+	if hasBlockChinaInbound {
+		current, err := s.servers.Get(r.Context(), id)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if *request.BlockChinaInbound && !current.BlockChinaInbound && !agentcontrol.DeclaresCapability(agentcontrol.Metadata{
+			Implementation: current.AgentImplementation,
+			Version:        current.AgentVersion,
+			APIVersion:     current.AgentAPIVersion,
+			Capabilities:   current.AgentCapabilities,
+		}, agentcontrol.CapabilityFirewallCNBlock) {
+			writeError(w, http.StatusConflict, "当前 Agent 不支持中国 IP 入站限制")
+			return
+		}
+		updated, version, changed, err := s.servers.UpdateBlockChinaInbound(r.Context(), id, *request.BlockChinaInbound)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if changed {
+			if err := s.agents.NotifyConfigChanged(id, version); err != nil {
+				log.Printf("notify Agent of China inbound block change: %v", err)
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -72,6 +73,50 @@ func (s *Service) UpdateOutboundPreference(ctx context.Context, id int64, prefer
 	}
 	updated, err := s.Get(ctx, id)
 	return updated, version, err
+}
+
+func (s *Service) UpdateBlockChinaInbound(ctx context.Context, id int64, enabled bool) (Server, int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Server{}, 0, false, fmt.Errorf("begin China inbound block update: %w", err)
+	}
+	defer tx.Rollback()
+	var current bool
+	var version int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT block_china_inbound, desired_state_version FROM servers
+		 WHERE id = ? AND archived_at IS NULL`, id,
+	).Scan(&current, &version)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Server{}, 0, false, ErrNotFound
+		}
+		return Server{}, 0, false, fmt.Errorf("read China inbound block setting: %w", err)
+	}
+	if current == enabled {
+		_ = tx.Rollback()
+		updated, getErr := s.Get(ctx, id)
+		return updated, version, false, getErr
+	}
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE servers SET block_china_inbound = ?, desired_state_version = desired_state_version + 1, updated_at = ?
+		 WHERE id = ?`, enabled, now, id,
+	); err != nil {
+		return Server{}, 0, false, fmt.Errorf("update China inbound block setting: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+		now, id,
+	); err != nil {
+		return Server{}, 0, false, fmt.Errorf("mark Agent config pending: %w", err)
+	}
+	version++
+	if err := tx.Commit(); err != nil {
+		return Server{}, 0, false, fmt.Errorf("commit China inbound block update: %w", err)
+	}
+	updated, err := s.Get(ctx, id)
+	return updated, version, true, err
 }
 
 func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *time.Time) (Server, error) {

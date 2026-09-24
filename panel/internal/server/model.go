@@ -40,6 +40,7 @@ type Server struct {
 	Status                   string
 	Visibility               string
 	OutboundPreference       string
+	BlockChinaInbound        bool
 	AccessUserIDs            []int64
 	ArchivedAt               *time.Time
 	ExpiresAt                *time.Time

@@ -32,6 +32,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerOutboundPreference(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerBlockChinaInbound(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerExpiration(ctx, db); err != nil {
 		return err
 	}
@@ -152,6 +155,24 @@ func migrateServerOutboundPreference(ctx context.Context, db *sql.DB) error {
 			 CHECK (outbound_preference IN ('auto', 'prefer_ipv4', 'prefer_ipv6'))`,
 		); err != nil {
 			return fmt.Errorf("add servers.outbound_preference: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateServerBlockChinaInbound(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'block_china_inbound'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect servers.block_china_inbound: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN block_china_inbound INTEGER NOT NULL DEFAULT 0
+			 CHECK (block_china_inbound IN (0, 1))`,
+		); err != nil {
+			return fmt.Errorf("add servers.block_china_inbound: %w", err)
 		}
 	}
 	return nil

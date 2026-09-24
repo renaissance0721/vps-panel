@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,7 +42,8 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion || request.ExistingConfig ||
 			request.AgentImplementation != agentcontrol.OfficialImplementation ||
 			request.AgentAPIVersion != agentcontrol.CurrentAPIVersion ||
-			len(request.AgentCapabilities) != len(agentCapabilities) {
+			len(request.AgentCapabilities) != len(agentCapabilities) ||
+			!slices.Contains(request.AgentCapabilities, agentcontrol.CapabilityFirewallCNBlock) {
 			t.Fatalf("registration request = %+v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")

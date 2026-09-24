@@ -65,6 +65,7 @@ type AgentUpgrade struct {
 
 type DesiredState struct {
 	Version            int64
+	BlockChinaInbound  bool
 	OutboundPreference string
 	Proxies            []proxystore.DesiredProxy
 	Relays             []relaystore.DesiredRelay

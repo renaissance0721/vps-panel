@@ -4,6 +4,7 @@ export type ServerRecord = {
   status: 'pending' | 'online' | 'offline'
   visibility: 'public' | 'private'
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'
+  block_china_inbound: boolean
   access_user_ids: number[]
   archived_at?: string
   expires_at: string | null

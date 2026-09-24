@@ -22,6 +22,7 @@ const (
 	CapabilityClientTraffic      = "client_traffic"
 	CapabilityDiagnosticsV1      = "diagnostics_v1"
 	CapabilitySelfUpgrade        = "self_upgrade"
+	CapabilityFirewallCNBlock    = "firewall.cn_block"
 
 	maxImplementationLength = 128
 	maxCapabilities         = 64
@@ -102,6 +103,10 @@ func SupportsCapability(value Metadata, capability string) bool {
 	if value.Implementation == "" && value.APIVersion == 0 {
 		return true
 	}
+	return DeclaresCapability(value, capability)
+}
+
+func DeclaresCapability(value Metadata, capability string) bool {
 	if value.Implementation == "" || value.APIVersion != CurrentAPIVersion {
 		return false
 	}

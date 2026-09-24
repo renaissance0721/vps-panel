@@ -12,6 +12,7 @@ export const agentCapabilities = {
   relayRealm: 'relay.realm',
   outboundPreference: 'outbound_preference',
   diagnosticsV1: 'diagnostics_v1',
+  firewallCNBlock: 'firewall.cn_block',
 } as const
 
 export function agentSupportsCapability(server: AgentMetadata, capability: string): boolean {
@@ -20,6 +21,14 @@ export function agentSupportsCapability(server: AgentMetadata, capability: strin
   if (implementation === '' && apiVersion === 0) return true
   if (implementation === '' || apiVersion !== 1) return false
   return (server.agent_capabilities ?? []).includes(capability)
+}
+
+export function agentDeclaresCapability(server: AgentMetadata, capability: string): boolean {
+  const implementation = server.agent_implementation ?? ''
+  const apiVersion = server.agent_api_version ?? 0
+  return implementation !== ''
+    && apiVersion === 1
+    && (server.agent_capabilities ?? []).includes(capability)
 }
 
 export function canBulkUpgradeAgent(server: ServerRecord): boolean {

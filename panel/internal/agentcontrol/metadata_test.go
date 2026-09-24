@@ -68,3 +68,21 @@ func TestSupportsCapabilityKeepsLegacyCompatibilityAndEnforcesV1(t *testing.T) {
 		t.Fatal("undeclared API v1 capability was allowed")
 	}
 }
+
+func TestDeclaresCapabilityHasNoLegacyFallback(t *testing.T) {
+	if DeclaresCapability(Metadata{}, CapabilityFirewallCNBlock) {
+		t.Fatal("Legacy Agent declared the China firewall capability")
+	}
+	identified := Metadata{
+		Implementation: "third-party-agent",
+		APIVersion:     CurrentAPIVersion,
+		Capabilities:   []string{CapabilityFirewallCNBlock},
+	}
+	if !DeclaresCapability(identified, CapabilityFirewallCNBlock) {
+		t.Fatal("explicit API v1 China firewall capability was rejected")
+	}
+	identified.Capabilities = nil
+	if DeclaresCapability(identified, CapabilityFirewallCNBlock) {
+		t.Fatal("undeclared China firewall capability was allowed")
+	}
+}

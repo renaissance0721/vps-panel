@@ -25,9 +25,10 @@ const (
 )
 
 type desiredState struct {
-	Version int64             `json:"version"`
-	Xray    desiredXrayState  `json:"xray"`
-	Realm   desiredRealmState `json:"realm"`
+	Version           int64             `json:"version"`
+	BlockChinaInbound bool              `json:"block_china_inbound"`
+	Xray              desiredXrayState  `json:"xray"`
+	Realm             desiredRealmState `json:"realm"`
 }
 
 type desiredXrayState struct {
@@ -102,19 +103,24 @@ type configSynchronizer struct {
 	applyState            func(context.Context, desiredState) error
 	renewCertificates     func(context.Context) error
 	diagnoseState         func(context.Context, desiredState) []diagnostic.Check
+	chinaFirewall         *chinaInboundFirewall
 	now                   func() time.Time
 	mu                    sync.Mutex
 	lastSuccessfulVersion int64
+	lastSuccessfulState   desiredState
+	hasSuccessfulState    bool
 }
 
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
 	xray := newXrayManager()
 	realm := newRealmManager()
+	chinaFirewall := newChinaInboundFirewall()
 	runner := newAgentDiagnosticRunner(xray, realm)
-	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, now: time.Now, applyState: func(ctx context.Context, state desiredState) error {
+	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, applyState: func(ctx context.Context, state desiredState) error {
 		xrayErr := xray.apply(ctx, state)
 		realmErr := realm.apply(ctx, state.Realm)
-		return errors.Join(xrayErr, realmErr)
+		chinaFirewallErr := chinaFirewall.apply(ctx, state)
+		return errors.Join(xrayErr, realmErr, chinaFirewallErr)
 	}}
 }
 
@@ -158,6 +164,9 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	if applyErr != nil {
 		result.Status = "failed"
 		result.Message = desiredStateErrorMessage(applyErr)
+	} else {
+		s.lastSuccessfulState = state
+		s.hasSuccessfulState = true
 	}
 	reportContext, cancelReport := context.WithTimeout(ctx, configRequestTimeout)
 	err = s.report(reportContext, result)
@@ -179,6 +188,15 @@ func (s *configSynchronizer) renew(ctx context.Context) error {
 		return nil
 	}
 	return s.renewCertificates(ctx)
+}
+
+func (s *configSynchronizer) refreshChinaPrefixes(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.chinaFirewall == nil || !s.hasSuccessfulState || !s.lastSuccessfulState.BlockChinaInbound {
+		return nil
+	}
+	return s.chinaFirewall.refresh(ctx, s.lastSuccessfulState)
 }
 
 func (s *configSynchronizer) fetch(ctx context.Context) (desiredState, error) {
@@ -252,6 +270,8 @@ func desiredStateErrorMessage(err error) string {
 		errManagedRealmConflict,
 		errManagedRealmArch,
 		errManagedRealmFirewall,
+		errManagedChinaInboundRequiresNFT,
+		errManagedChinaInboundFirewall,
 	} {
 		if err.Error() == publicError.Error() || errors.Is(err, publicError) {
 			return publicError.Error()

@@ -46,7 +46,8 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
-		Version: state.Version,
+		Version:           state.Version,
+		BlockChinaInbound: state.BlockChinaInbound,
 		Xray: agentDesiredXrayState{
 			Enabled:            len(state.Proxies) > 0,
 			OutboundPreference: state.OutboundPreference,

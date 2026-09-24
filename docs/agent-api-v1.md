@@ -42,7 +42,7 @@ The implementation must match the value saved at registration. A legacy record w
 
 ## Existing protocol operations
 
-- Desired state: `GET /api/agent/config` returns the desired-state `version` plus Xray and Realm configuration. `config_changed` tells an online Agent to fetch a newer version.
+- Desired state: `GET /api/agent/config` returns the desired-state `version`, the Server-level `block_china_inbound` flag, plus Xray and Realm configuration. `config_changed` tells an online Agent to fetch a newer version.
 - Config result: `POST /api/agent/config/result` reports the applied desired-state version and `success` or `failed` status.
 - Heartbeat: WebSocket `heartbeat` refreshes liveness.
 - System information: WebSocket `system_info` reports hostname, OS, kernel, architecture, addresses, and public IPv4.
@@ -67,9 +67,12 @@ metrics
 client_traffic
 diagnostics_v1
 self_upgrade
+firewall.cn_block
 ```
 
 Unknown but syntactically valid capabilities are retained. For an explicitly identified API v1 Agent, the Panel uses declared capabilities to control Proxy and Relay creation or enablement, IPv4/IPv6 outbound preference, and diagnostics UI availability. Disabling, deleting, and restoring outbound preference to `auto` remain available. Legacy Agents keep the previous compatibility behavior because their capabilities are unknown rather than empty.
+
+`firewall.cn_block` is intentionally stricter: an Agent must identify as API v1 and explicitly declare the capability before the Panel allows the Server setting to change from disabled to enabled. Legacy Agents are not assumed to support it. Disabling the setting remains available.
 
 Official automatic upgrade is available to an identified v1 Agent only when `implementation` is `vps-panel-agent` and `self_upgrade` is declared. A third-party Agent never receives the official `agent_upgrade` message, regardless of its version string.
 

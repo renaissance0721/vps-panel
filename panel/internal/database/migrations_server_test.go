@@ -37,7 +37,8 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	defer db.Close()
 	var visibility, outboundPreference string
-	if err := db.QueryRow(`SELECT visibility, outbound_preference FROM servers WHERE id = 1`).Scan(&visibility, &outboundPreference); err != nil {
+	var blockChinaInbound bool
+	if err := db.QueryRow(`SELECT visibility, outbound_preference, block_china_inbound FROM servers WHERE id = 1`).Scan(&visibility, &outboundPreference, &blockChinaInbound); err != nil {
 		t.Fatal(err)
 	}
 	if visibility != "public" {
@@ -45,6 +46,9 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if outboundPreference != "auto" {
 		t.Fatalf("existing server outbound preference = %q, want auto", outboundPreference)
+	}
+	if blockChinaInbound {
+		t.Fatal("existing server block_china_inbound = true, want false")
 	}
 	for _, table := range []string{"user_server_order", "user_proxy_order", "user_relay_order"} {
 		var name string

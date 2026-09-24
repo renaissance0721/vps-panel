@@ -69,6 +69,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - VLESS / Shadowsocks Client 分享 URI
 - Proxy / Relay 二维码，本地浏览器生成
 - Server Xray 出站 IPv4 / IPv6 偏好
+- Server 级禁止中国 IP 访问受管 Proxy / Relay 入站
 - 整站 ZIP 备份 / 恢复
 - 一键诊断
 - 账号级列表顺序持久化与拖拽排序
@@ -101,6 +102,7 @@ panel/
 │   └── agent/                  官方 Agent
 │       ├── xray*.go            Xray 生命周期 / renderer / apply
 │       ├── realm*.go           Realm 生命周期 / renderer / apply
+│       ├── china_firewall.go   中国 IP 入站限制
 │       ├── acme.go             ACME
 │       ├── client_traffic.go   Client 流量上报
 │       ├── diagnostics.go      Agent 侧诊断
@@ -182,6 +184,7 @@ name
 status = pending | online | offline
 visibility = public | private
 outbound_preference = auto | prefer_ipv4 | prefer_ipv6
+block_china_inbound = 0 | 1
 desired_state_version
 archived_at
 expires_at
@@ -252,6 +255,7 @@ vps-panel-agent
 - Client 流量上报
 - Xray 管理
 - Realm 管理
+- 受管 Proxy / Relay 入站的中国 IP 限制
 - ACME
 - 一键诊断
 - 官方 Agent 自升级
@@ -543,7 +547,7 @@ X-VPS-Panel-Agent-API: 1
 X-VPS-Panel-Agent-Capabilities: diagnostics_v1
 ```
 
-Agent 注册与 WebSocket 会保存并刷新 `implementation`、`version`、`api_version` 和完整 capability list。明确声明 API v1 的 Agent 会按 capability 限制 Proxy、Relay 和出站偏好；诊断执行仍以当前在线连接的 `diagnostics_v1` 为最终依据。Legacy Agent（`implementation=""`、`api_version=0`）保持兼容模式，不做严格 capability enforcement。
+Agent 注册与 WebSocket 会保存并刷新 `implementation`、`version`、`api_version` 和完整 capability list。明确声明 API v1 的 Agent 会按 capability 限制 Proxy、Relay 和出站偏好；诊断执行仍以当前在线连接的 `diagnostics_v1` 为最终依据。Legacy Agent（`implementation=""`、`api_version=0`）保持兼容模式，但全新的 `firewall.cn_block` 必须由 API v1 Agent 显式声明，Legacy 不自动视为支持。
 
 ## 5.3 当前消息类型
 
@@ -894,6 +898,12 @@ Realm apply：
 - 清理 current / previous config
 - 清理 Realm-owned 防火墙规则
 - 保留 binary / marker / service 文件供再次启用
+
+## 11.1 禁止中国 IP 入站
+
+Server 的 `block_china_inbound` 只限制 desired state 中 VPS Panel 管理的 VLESS、Shadowsocks 和 Realm listener 端口。Agent 从 APNIC delegated 数据提取 CN（不含 HK / MO / TW）的 IPv4 / IPv6 前缀，缓存到 `/var/lib/vps-panel/agent/firewall/cn-prefixes.json`，并使用独立拥有的 `inet vps_panel_cn_block` nftables 表和 interval set 应用规则。
+
+该功能不扫描、不检测也不修改 SSH 或其他系统服务端口，不 flush 系统 ruleset，也不接管用户、UFW 或 Docker 的规则。启用必须由 API v1 Agent 显式声明 `firewall.cn_block`；Legacy Agent 不自动视为支持。
 
 ---
 
@@ -1476,6 +1486,7 @@ Sidebar 变为滑出菜单，并显示 backdrop / mobile header。
 排序
 名称 + public/private
 状态
+禁止中国 IP 入站
 本周期流量
 到期时间
 操作
@@ -2096,6 +2107,7 @@ bash -n <script>
 | QR | 已实现 | 浏览器本地生成 |
 | Subscription | 未实现 | 无订阅 URL / Clash / sing-box 批量输出 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |
+| 禁止中国 IP 入站 | 已实现 | APNIC CN prefix + nftables set，仅受管 Proxy / Relay listener |
 | ZIP backup / restore | 已实现 | admin-only，同域名校验 |
 | 一键诊断 | 已实现 | `diagnostics_v1` |
 | Panel URL 自动迁移 | 未实现 | 仍需同域名迁移或人工改 Agent |
@@ -2279,6 +2291,7 @@ Panel
                 ├── Xray
                 ├── ACME
                 ├── Realm
+                ├── China Inbound Firewall
                 └── Diagnostics
                     │
                     ▼

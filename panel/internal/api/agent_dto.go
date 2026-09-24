@@ -21,9 +21,10 @@ type agentRegistrationResponse struct {
 }
 
 type agentDesiredStateResponse struct {
-	Version int64                  `json:"version"`
-	Xray    agentDesiredXrayState  `json:"xray"`
-	Realm   agentDesiredRealmState `json:"realm"`
+	Version           int64                  `json:"version"`
+	BlockChinaInbound bool                   `json:"block_china_inbound"`
+	Xray              agentDesiredXrayState  `json:"xray"`
+	Realm             agentDesiredRealmState `json:"realm"`
 }
 
 type agentDesiredXrayState struct {

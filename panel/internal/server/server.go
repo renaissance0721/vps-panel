@@ -136,7 +136,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		arguments = append(arguments, userID)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -178,7 +178,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference,
+		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -227,7 +227,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &accessUserIDs, &archivedAt, &expiresAt,
+		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &accessUserIDs, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,

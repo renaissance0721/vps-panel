@@ -123,6 +123,46 @@ func TestUpdateOutboundPreferenceBumpsDesiredStateAndMarksAgentPending(t *testin
 	}
 }
 
+func TestUpdateBlockChinaInboundChangesDesiredStateOnlyWhenNeeded(t *testing.T) {
+	service, db := newTestService(t)
+	created, err := service.Create(t.Context(), "China inbound block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := service.RegisterAgent(t.Context(), created.EnrollmentToken, "v0.29.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE agents SET config_sync_status = 'success', config_sync_error = '' WHERE id = ?`, registered.ID); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, version, changed, err := service.UpdateBlockChinaInbound(t.Context(), created.ID, false)
+	if err != nil || changed || version != 1 || unchanged.BlockChinaInbound {
+		t.Fatalf("no-op update = (%+v, %d, %t, %v)", unchanged, version, changed, err)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT config_sync_status FROM agents WHERE id = ?`, registered.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "success" {
+		t.Fatalf("no-op config status = %q, want success", status)
+	}
+	updated, version, changed, err := service.UpdateBlockChinaInbound(t.Context(), created.ID, true)
+	if err != nil || !changed || version != 2 || !updated.BlockChinaInbound {
+		t.Fatalf("enabled update = (%+v, %d, %t, %v)", updated, version, changed, err)
+	}
+	state, err := service.GetDesiredState(t.Context(), registered.ID, registered.ServerID)
+	if err != nil || !state.BlockChinaInbound || state.Version != 2 {
+		t.Fatalf("desired state = (%+v, %v)", state, err)
+	}
+	if err := db.QueryRow(`SELECT config_sync_status FROM agents WHERE id = ?`, registered.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("changed config status = %q, want pending", status)
+	}
+}
+
 func TestUpdateExpirationSetsModifiesClearsAndReturnsFromQueries(t *testing.T) {
 	service, _ := newTestService(t)
 	created, err := service.Create(context.Background(), "Expiration")

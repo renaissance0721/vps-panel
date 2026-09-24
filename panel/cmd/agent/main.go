@@ -59,6 +59,7 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilityClientTraffic,
 	agentcontrol.CapabilityDiagnosticsV1,
 	agentcontrol.CapabilitySelfUpgrade,
+	agentcontrol.CapabilityFirewallCNBlock,
 }
 
 type registrationRequest struct {
@@ -436,6 +437,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	upgradeInProgress := false
 	certificateRenewed := make(chan error, 1)
 	renewalInProgress := false
+	chinaPrefixesRefreshed := make(chan error, 1)
+	chinaRefreshInProgress := false
 	disconnected := make(chan error, 1)
 	go func() {
 		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested, diagnosticRequested)
@@ -463,6 +466,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	defer configTicker.Stop()
 	certificateTicker := time.NewTicker(12 * time.Hour)
 	defer certificateTicker.Stop()
+	chinaPrefixesTicker := time.NewTicker(12 * time.Hour)
+	defer chinaPrefixesTicker.Stop()
 	clientTrafficTicker := time.NewTicker(agentClientTrafficInterval)
 	defer clientTrafficTicker.Stop()
 	publicIPv4Ticker := time.NewTicker(publicIPv4RefreshInterval)
@@ -537,6 +542,21 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			renewalInProgress = false
 			if err != nil && ctx.Err() == nil {
 				log.Printf("renew managed certificates: %v", err)
+			}
+		case <-chinaPrefixesTicker.C:
+			if chinaRefreshInProgress {
+				continue
+			}
+			chinaRefreshInProgress = true
+			go func() {
+				refreshContext, cancel := context.WithTimeout(connectionContext, configApplyTimeout)
+				chinaPrefixesRefreshed <- configSync.refreshChinaPrefixes(refreshContext)
+				cancel()
+			}()
+		case err := <-chinaPrefixesRefreshed:
+			chinaRefreshInProgress = false
+			if err != nil && ctx.Err() == nil {
+				log.Printf("refresh China inbound prefixes: %v", err)
 			}
 		case <-clientTrafficTicker.C:
 			trafficContext, cancel := context.WithTimeout(ctx, 10*time.Second)

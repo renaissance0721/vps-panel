@@ -645,6 +645,18 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     })
   }
 
+  async function setBlockChinaInbound(server: ServerRecord, enabled: boolean) {
+    if (submitting.value || server.archived_at || server.block_china_inbound === enabled) return
+    await submit(async () => {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${server.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ block_china_inbound: enabled }),
+      })
+      servers.value = servers.value.map((value) => value.id === server.id ? response.server : value)
+      if (selectedServer.value?.id === server.id) selectedServer.value = response.server
+    })
+  }
+
   function openExpirationModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     expirationInput.value = selectedServer.value.expires_at
@@ -929,6 +941,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     closeNameModal,
     saveServerName,
     setOutboundPreference,
+    setBlockChinaInbound,
     openExpirationModal,
     closeExpirationModal,
     saveExpiration,

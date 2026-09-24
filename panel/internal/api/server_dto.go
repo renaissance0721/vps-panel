@@ -27,6 +27,7 @@ type updateServerAccessRequest struct {
 type updateServerRequest struct {
 	Name                     *string         `json:"name"`
 	OutboundPreference       *string         `json:"outbound_preference"`
+	BlockChinaInbound        *bool           `json:"block_china_inbound"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`
 	MonthlyTrafficLimitBytes json.RawMessage `json:"monthly_traffic_limit_bytes"`
 	TrafficCountMode         *string         `json:"traffic_count_mode"`
@@ -44,6 +45,7 @@ type serverResponse struct {
 	Status                   string              `json:"status"`
 	Visibility               string              `json:"visibility"`
 	OutboundPreference       string              `json:"outbound_preference"`
+	BlockChinaInbound        bool                `json:"block_china_inbound"`
 	AccessUserIDs            []int64             `json:"access_user_ids"`
 	ArchivedAt               *time.Time          `json:"archived_at,omitempty"`
 	ExpiresAt                *time.Time          `json:"expires_at"`
@@ -110,6 +112,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		Status:                   value.Status,
 		Visibility:               value.Visibility,
 		OutboundPreference:       value.OutboundPreference,
+		BlockChinaInbound:        value.BlockChinaInbound,
 		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
 		ArchivedAt:               value.ArchivedAt,
 		ExpiresAt:                value.ExpiresAt,

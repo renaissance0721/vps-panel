@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   agentAPILabel,
   agentCapabilities,
+  agentDeclaresCapability,
   agentImplementationLabel,
   agentSupportsCapability,
   canBulkUpgradeAgent,
@@ -85,6 +86,18 @@ test('Agent capability helper 保持 Legacy 兼容并严格限制 API v1', () =>
   }, agentCapabilities.diagnosticsV1), false)
 })
 
+test('中国入站防火墙 capability 只接受 API v1 显式声明', () => {
+  assert.equal(agentDeclaresCapability({
+    agent_implementation: '', agent_api_version: 0, agent_capabilities: [],
+  }, agentCapabilities.firewallCNBlock), false)
+  assert.equal(agentDeclaresCapability({
+    agent_implementation: 'vps-panel-agent', agent_api_version: 1, agent_capabilities: ['firewall.cn_block'],
+  }, agentCapabilities.firewallCNBlock), true)
+  assert.equal(agentDeclaresCapability({
+    agent_implementation: 'third-party-agent', agent_api_version: 1, agent_capabilities: ['metrics'],
+  }, agentCapabilities.firewallCNBlock), false)
+})
+
 test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
   assert.deepEqual(agentCapabilities, {
     proxyVLESSReality: 'proxy.vless.reality',
@@ -94,7 +107,26 @@ test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
     relayRealm: 'relay.realm',
     outboundPreference: 'outbound_preference',
     diagnosticsV1: 'diagnostics_v1',
+    firewallCNBlock: 'firewall.cn_block',
   })
+})
+
+test('正常服务器列表提供严格受 capability 控制的中国入站开关', async () => {
+  const list = await readFile(new URL('../src/components/server/ServerList.vue', import.meta.url), 'utf8')
+  const composable = await readFile(new URL('../src/composables/useServers.ts', import.meta.url), 'utf8')
+  const types = await readFile(new URL('../src/types/server.ts', import.meta.url), 'utf8')
+  assert.match(types, /block_china_inbound: boolean/)
+  assert.match(list, /禁止中国 IP 入站/)
+  assert.match(list, /仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口，不影响 SSH 和其他服务。/)
+  assert.match(list, /agentDeclaresCapability\(value, agentCapabilities\.firewallCNBlock\)/)
+  assert.match(list, /服务器尚未注册支持该功能的 Agent/)
+  assert.match(list, /当前 Agent 不支持中国 IP 入站限制，请先升级 Agent/)
+  assert.match(list, /已配置禁止中国 IP 入站，但当前 Agent 不支持该功能，无法确认规则仍然生效/)
+  assert.match(list, /!value\.block_china_inbound && !chinaInboundSupported\(value\)/)
+  assert.match(composable, /JSON\.stringify\(\{ block_china_inbound: enabled \}\)/)
+  const requestIndex = composable.indexOf("await api<{ server: ServerRecord }>(`/api/servers/${server.id}`")
+  const updateIndex = composable.indexOf('servers.value = servers.value.map', requestIndex)
+  assert.ok(requestIndex >= 0 && updateIndex > requestIndex, '成功响应前不应乐观更新开关状态')
 })
 
 test('服务器详情按 capability 控制诊断和出站偏好且始终允许系统默认', async () => {

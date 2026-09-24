@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,6 +38,48 @@ func TestParseAPNICChinaPrefixesFiltersAndConvertsRanges(t *testing.T) {
 	wantIPv6 := []string{"2400:3200::/32"}
 	if !reflect.DeepEqual(ipv4, wantIPv4) || !reflect.DeepEqual(ipv6, wantIPv6) {
 		t.Fatalf("parsed prefixes = (%v, %v), want (%v, %v)", ipv4, ipv6, wantIPv4, wantIPv6)
+	}
+}
+
+func TestChinaPrefixesHTTPClientUsesIPv4ProxyAndHTTPSRedirects(t *testing.T) {
+	dialErr := errors.New("dial stopped")
+	var network, address string
+	client := newChinaPrefixesHTTPClient(func(_ context.Context, value, destination string) (net.Conn, error) {
+		network, address = value, destination
+		return nil, dialErr
+	})
+	if client.Timeout != 30*time.Second {
+		t.Fatalf("APNIC client timeout = %v, want 30s", client.Timeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("APNIC client transport = %T, want *http.Transport", client.Transport)
+	}
+	if reflect.ValueOf(transport.Proxy).Pointer() != reflect.ValueOf(http.ProxyFromEnvironment).Pointer() {
+		t.Fatal("APNIC client does not preserve ProxyFromEnvironment")
+	}
+	if _, err := transport.DialContext(t.Context(), "tcp", "ftp.apnic.net:443"); !errors.Is(err, dialErr) {
+		t.Fatalf("APNIC dial error = %v, want %v", err, dialErr)
+	}
+	if network != "tcp4" || address != "ftp.apnic.net:443" {
+		t.Fatalf("APNIC dial = (%q, %q), want (tcp4, ftp.apnic.net:443)", network, address)
+	}
+
+	for _, test := range []struct {
+		scheme  string
+		wantErr bool
+	}{
+		{scheme: "https"},
+		{scheme: "http", wantErr: true},
+	} {
+		request, err := http.NewRequest(http.MethodGet, test.scheme+"://ftp.apnic.net/delegated", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = client.CheckRedirect(request, nil)
+		if (err != nil) != test.wantErr {
+			t.Fatalf("%s redirect error = %v, want error %t", test.scheme, err, test.wantErr)
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"math/bits"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -51,15 +52,8 @@ type chinaInboundFirewall struct {
 }
 
 func newChinaInboundFirewall() *chinaInboundFirewall {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-			if request.URL.Scheme != "https" {
-				return errors.New("APNIC redirect must use HTTPS")
-			}
-			return nil
-		},
-	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	client := newChinaPrefixesHTTPClient(dialer.DialContext)
 	manager := &chinaInboundFirewall{
 		cachePath:  chinaPrefixesCachePath,
 		now:        time.Now,
@@ -89,6 +83,24 @@ func newChinaInboundFirewall() *chinaInboundFirewall {
 		return value, nil
 	}
 	return manager
+}
+
+func newChinaPrefixesHTTPClient(dialContext func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
+	transport.DialContext = func(ctx context.Context, _ string, address string) (net.Conn, error) {
+		return dialContext(ctx, "tcp4", address)
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			if request.URL.Scheme != "https" {
+				return errors.New("APNIC redirect must use HTTPS")
+			}
+			return nil
+		},
+	}
 }
 
 func (f *chinaInboundFirewall) apply(ctx context.Context, state desiredState) error {

@@ -51,7 +51,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Server 归档、彻底删除、Agent 重新绑定
 - Agent 一次性 Enrollment + 长期 Token
 - Agent WebSocket 在线状态、Heartbeat、静态系统信息、动态指标
-- Agent 原地升级
+- Agent 单台原地升级，以及管理员批量升级所有当前可升级的官方 Agent
 - Agent API v1 identity metadata 与 capability 持久化
 - Proxy / Relay / 出站偏好 capability enforcement 与 diagnostics UI 控制
 - Server 到期日期
@@ -1201,6 +1201,8 @@ agent_token
 ## 16.3 Agent 自动升级
 
 正式版本 Panel 可以要求官方 Agent 升级到同版本。
+
+管理员批量升级由前端编排：固定最多同时升级 3 台，重复调用现有单 Agent 升级接口并通过 Server 列表轮询确认结果。批量进度不是新的后端 Task Runner，也不单独持久化。
 
 流程：
 

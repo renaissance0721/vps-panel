@@ -13,6 +13,7 @@ export const NAlert = container('NAlert')
 export const NTag = container('NTag')
 export const NEmpty = container('NEmpty')
 export const NSpin = container('NSpin')
+export const NProgress = container('NProgress')
 export const NConfigProvider = container('NConfigProvider')
 export const NModal = defineComponent({
   inheritAttrs: false,

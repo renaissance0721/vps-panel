@@ -7,6 +7,7 @@ import {
   agentCapabilities,
   agentImplementationLabel,
   agentSupportsCapability,
+  canBulkUpgradeAgent,
   formatServerExpiration,
 } from '../src/server.ts'
 
@@ -16,6 +17,21 @@ test('服务器列表到期时间只显示日期', () => {
 
 test('服务器未设置到期时间时显示不限', () => {
   assert.equal(formatServerExpiration(null), '不限')
+})
+
+test('批量 Agent 升级候选只使用服务端能力判断和当前升级状态', () => {
+  const eligible = {
+    status: 'online',
+    agent_can_self_upgrade: true,
+    agent_version_status: 'upgrade_available',
+  }
+  assert.equal(canBulkUpgradeAgent(eligible), true)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, status: 'offline' }), false)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, agent_can_self_upgrade: false }), false)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, agent_version_status: 'up_to_date' }), false)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, agent_version_status: 'agent_newer' }), false)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, agent_upgrade_status: 'upgrading' }), false)
+  assert.equal(canBulkUpgradeAgent({ ...eligible, agent_upgrade_status: 'failed' }), true)
 })
 
 test('服务器详情展示 Agent 原地升级状态和 bootstrap 命令', async () => {

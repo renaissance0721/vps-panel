@@ -22,6 +22,15 @@ export function agentSupportsCapability(server: AgentMetadata, capability: strin
   return (server.agent_capabilities ?? []).includes(capability)
 }
 
+export function canBulkUpgradeAgent(server: ServerRecord): boolean {
+  return (
+    server.status === 'online'
+    && server.agent_can_self_upgrade === true
+    && server.agent_version_status === 'upgrade_available'
+    && server.agent_upgrade_status !== 'upgrading'
+  )
+}
+
 export function formatExpirationDate(value: string): string {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',

@@ -16,8 +16,17 @@ import ServerNameForm from '../components/server/ServerNameForm.vue'
 import ServerExpirationForm from '../components/server/ServerExpirationForm.vue'
 import ServerTrafficForm from '../components/server/ServerTrafficForm.vue'
 import ServerTrafficAdjustmentForm from '../components/server/ServerTrafficAdjustmentForm.vue'
+import AgentBulkUpgradeModal from '../components/server/AgentBulkUpgradeModal.vue'
 const props = defineProps<{ model: ServersViewState; active: boolean }>()
-const { serverListMode } = toRefs(props.model)
+const {
+  serverListMode,
+  state,
+  panelReleaseVersion,
+  bulkUpgradeCandidates,
+  bulkUpgradeProgress,
+  bulkUpgradeHasBatch,
+  openBulkAgentUpgrade,
+} = toRefs(props.model)
 </script>
 
 <template>
@@ -39,6 +48,21 @@ const { serverListMode } = toRefs(props.model)
             >
               已移除
             </n-button>
+            <n-button
+              v-if="state?.user?.role === 'admin' && serverListMode === 'active'"
+              size="small"
+              type="primary"
+              :secondary="!bulkUpgradeHasBatch"
+              :disabled="!bulkUpgradeHasBatch && (!panelReleaseVersion || bulkUpgradeCandidates.length === 0)"
+              @click="openBulkAgentUpgrade"
+            >
+              <template v-if="bulkUpgradeHasBatch">
+                升级进度 {{ bulkUpgradeProgress.handledCount }} / {{ bulkUpgradeProgress.total }}
+              </template>
+              <template v-else-if="!panelReleaseVersion">开发版本不可批量升级</template>
+              <template v-else-if="bulkUpgradeCandidates.length === 0">暂无可升级 Agent</template>
+              <template v-else>一键升级 Agent（{{ bulkUpgradeCandidates.length }}）</template>
+            </n-button>
           </div>
 
           <ServerForm :model="model" /><ServerList :model="model" /></template>
@@ -48,4 +72,5 @@ const { serverListMode } = toRefs(props.model)
 <ServerExpirationForm :model="model" />
 <ServerTrafficForm :model="model" />
 <ServerTrafficAdjustmentForm :model="model" />
+<AgentBulkUpgradeModal :model="model" />
 </template>

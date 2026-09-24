@@ -60,6 +60,35 @@ async function render(path, model, extra = {}) {
 
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status }) }
 
+function bulkUpgradeServer(id, overrides = {}) {
+  return serverRecord({
+    id,
+    name: `服务器 ${id}`,
+    status: 'online',
+    agent_can_self_upgrade: true,
+    agent_version: 'v0.19.0',
+    agent_version_status: 'upgrade_available',
+    ...overrides,
+  })
+}
+
+function bulkUpgradeItem(server, overrides = {}) {
+  return {
+    serverId: server.id,
+    serverName: server.name,
+    fromVersion: server.agent_version,
+    targetVersion: 'v0.20.0',
+    status: 'upgrading',
+    error: '',
+    startedAt: 100,
+    ...overrides,
+  }
+}
+
+function flushPromises() {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
 test('共享 HTTP 客户端保持 Cookie、no-store、JSON、204 和错误语义', async t => {
   let options
   t.mock.method(globalThis, 'fetch', async (_url, init) => { options = init; return json({ ok: true }) })
@@ -122,6 +151,138 @@ test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Mo
   const form = await render('components/server/ServerTrafficForm.vue', model)
   assert.match(form, /月流量额度格式无效/)
   assert.match(form, /type="number"/)
+})
+
+test('批量升级入口仅管理员可见，开发版本入口禁用且不能启动', async t => {
+  const { model } = serverModel()
+  model.servers.value = [bulkUpgradeServer(7)]
+  let output = await render('views/ServersView.vue', model, { active: true })
+  assert.match(output, /一键升级 Agent（1）/)
+
+  model.state.value.user.role = 'vip'
+  output = await render('views/ServersView.vue', model, { active: true })
+  assert.doesNotMatch(output, /一键升级 Agent/)
+
+  model.state.value.user.role = 'admin'
+  model.health.value = { status: 'ok', database: 'ok', version: 'dev' }
+  output = await render('views/ServersView.vue', model, { active: true })
+  const devButton = output.match(/<button[^>]*disabled[^>]*>[\s\S]*?开发版本不可批量升级[\s\S]*?<\/button>/)?.[0] ?? ''
+  assert.match(devButton, /disabled/)
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('开发版不应发送请求') })
+  await model.startBulkAgentUpgrade()
+  assert.equal(model.bulkUpgradeItems.value.length, 0)
+})
+
+test('批量升级固定最多并发三台，already_current 成功且单台 POST 失败不终止队列', async t => {
+  const servers = [7, 8, 9, 10, 11].map(bulkUpgradeServer)
+  const pending = new Map()
+  const postIDs = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'POST') {
+      const id = Number(url.match(/servers\/(\d+)/)?.[1])
+      postIDs.push(id)
+      return await new Promise(resolve => pending.set(id, resolve))
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : servers })
+  })
+  const { model } = serverModel()
+  await model.startBulkAgentUpgrade()
+  assert.deepEqual(postIDs, [7, 8, 9])
+  assert.equal(model.bulkUpgradeItems.value.filter(item => item.status === 'starting').length, 3)
+  assert.equal(model.bulkUpgradeItems.value.filter(item => item.status === 'waiting').length, 2)
+
+  pending.get(8)(json({ error: 'Agent 已离线' }, 409))
+  pending.get(9)(json({ status: 'already_current', version: 'v0.20.0' }))
+  await flushPromises()
+  assert.deepEqual(postIDs, [7, 8, 9, 10, 11])
+  assert.equal(model.bulkUpgradeItems.value.find(item => item.serverId === 8).status, 'failed')
+  assert.equal(model.bulkUpgradeItems.value.find(item => item.serverId === 8).error, 'Agent 已离线')
+  assert.equal(model.bulkUpgradeItems.value.find(item => item.serverId === 9).status, 'success')
+  assert.equal(model.bulkUpgradeItems.value.filter(item => ['starting', 'upgrading'].includes(item.status)).length, 3)
+
+  for (const id of [7, 10, 11]) pending.get(id)(json({ status: 'upgrading', version: 'v0.20.0' }, 202))
+  await flushPromises()
+  assert.equal(model.bulkUpgradeItems.value.filter(item => item.status === 'upgrading').length, 3)
+  model.resetSession()
+})
+
+test('批量轮询根据服务端真实状态确认成功、失败、消失和超时，升级中离线继续等待', () => {
+  const { model } = serverModel()
+  const server = bulkUpgradeServer(7, { status: 'offline', agent_upgrade_status: 'upgrading' })
+  model.bulkUpgradePhase.value = 'running'
+  model.bulkUpgradeItems.value = [bulkUpgradeItem(server)]
+  model.servers.value = [server]
+  model.reconcileBulkAgentUpgrade(1_000)
+  assert.equal(model.bulkUpgradeItems.value[0].status, 'upgrading')
+
+  model.servers.value = [bulkUpgradeServer(7, {
+    agent_version: 'v0.20.0',
+    agent_version_status: 'up_to_date',
+  })]
+  model.reconcileBulkAgentUpgrade(2_000)
+  assert.equal(model.bulkUpgradeItems.value[0].status, 'success')
+  assert.equal(model.bulkUpgradePhase.value, 'done')
+
+  model.resetBulkAgentUpgrade()
+  const failed = bulkUpgradeServer(8, {
+    name: '德国',
+    agent_upgrade_status: 'failed',
+    agent_upgrade_error: 'download Agent upgrade: context deadline exceeded',
+  })
+  model.bulkUpgradePhase.value = 'running'
+  model.bulkUpgradeItems.value = [bulkUpgradeItem(failed)]
+  model.servers.value = [failed]
+  model.reconcileBulkAgentUpgrade(2_000)
+  assert.equal(model.bulkUpgradeItems.value[0].status, 'failed')
+  assert.equal(model.bulkUpgradeItems.value[0].error, 'download Agent upgrade: context deadline exceeded')
+
+  model.resetBulkAgentUpgrade()
+  model.bulkUpgradePhase.value = 'running'
+  model.bulkUpgradeItems.value = [bulkUpgradeItem(bulkUpgradeServer(9, { name: '已删除' }))]
+  model.servers.value = []
+  model.reconcileBulkAgentUpgrade(2_000)
+  assert.equal(model.bulkUpgradeItems.value[0].error, '服务器已不存在或当前账号无权访问')
+
+  model.resetBulkAgentUpgrade()
+  const slow = bulkUpgradeServer(10, { status: 'offline', agent_upgrade_status: 'upgrading' })
+  model.bulkUpgradePhase.value = 'running'
+  model.bulkUpgradeItems.value = [bulkUpgradeItem(slow)]
+  model.servers.value = [slow]
+  model.reconcileBulkAgentUpgrade(180_100)
+  assert.equal(model.bulkUpgradeItems.value[0].status, 'timeout')
+  assert.equal(model.bulkUpgradeItems.value[0].error, '等待 Agent 升级完成超时')
+  assert.equal(model.bulkUpgradePhase.value, 'done')
+})
+
+test('批量升级 Modal 展示实时计数和失败原因，运行中关闭继续而完成后关闭重置', async () => {
+  const { model } = serverModel()
+  model.bulkUpgradeModalOpen.value = true
+  model.bulkUpgradePhase.value = 'running'
+  model.bulkUpgradeTargetVersion.value = 'v0.20.0'
+  model.bulkUpgradeItems.value = [
+    bulkUpgradeItem(bulkUpgradeServer(7, { name: '东京' }), { status: 'success' }),
+    bulkUpgradeItem(bulkUpgradeServer(8, { name: '德国' }), { status: 'failed', error: 'download Agent upgrade: context deadline exceeded' }),
+    bulkUpgradeItem(bulkUpgradeServer(9, { name: '伦敦' })),
+    bulkUpgradeItem(bulkUpgradeServer(10, { name: '香港' }), { status: 'waiting', startedAt: undefined }),
+  ]
+  let output = await render('components/server/AgentBulkUpgradeModal.vue', model)
+  for (const text of ['目标版本', '1 / 4 已成功升级', '已处理 2 / 4', '成功 1', '失败 1', '升级中 1', '等待 1', '德国', 'download Agent upgrade: context deadline exceeded', '关闭窗口（升级继续）']) {
+    assert.match(output, new RegExp(text))
+  }
+
+  model.closeBulkAgentUpgrade()
+  assert.equal(model.bulkUpgradeModalOpen.value, false)
+  assert.equal(model.bulkUpgradeItems.value.length, 4)
+
+  model.bulkUpgradeModalOpen.value = true
+  model.bulkUpgradePhase.value = 'done'
+  output = await render('components/server/AgentBulkUpgradeModal.vue', model)
+  assert.match(output, /批量升级完成/)
+  assert.match(output, /未升级成功/)
+  assert.match(output, /德国/)
+  model.closeBulkAgentUpgrade()
+  assert.equal(model.bulkUpgradeItems.value.length, 0)
+  assert.equal(model.bulkUpgradePhase.value, 'confirm')
 })
 
 test('服务器名称保存后详情保持打开且列表使用新名称', async t => {

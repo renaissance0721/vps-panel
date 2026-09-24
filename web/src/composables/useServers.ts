@@ -1,5 +1,7 @@
 import {
   computed,
+  getCurrentScope,
+  onScopeDispose,
   ref,
   type Ref,
   type UnwrapNestedRefs,
@@ -41,6 +43,7 @@ import {
   statusLabel,
   formatExpirationDate,
   formatServerExpiration,
+  canBulkUpgradeAgent,
 } from '../server'
 import {
   formatTrafficLimitInput,
@@ -49,6 +52,37 @@ import {
   useTrafficForm,
   type TrafficLimitUnit,
 } from '../traffic'
+
+const bulkAgentUpgradeConcurrency = 3
+const bulkAgentUpgradePollMs = 2_000
+const bulkAgentUpgradeTimeoutMs = 180_000
+
+type BulkAgentUpgradeStatus =
+  | 'waiting'
+  | 'starting'
+  | 'upgrading'
+  | 'success'
+  | 'failed'
+  | 'timeout'
+
+type BulkAgentUpgradeItem = {
+  serverId: number
+  serverName: string
+  fromVersion: string
+  targetVersion: string
+  status: BulkAgentUpgradeStatus
+  error: string
+  startedAt?: number
+}
+
+type AgentUpgradeResponse = {
+  status: 'upgrading' | 'already_current'
+  version: string
+}
+
+function isBulkAgentUpgradeActive(item: BulkAgentUpgradeItem): boolean {
+  return item.status === 'starting' || item.status === 'upgrading'
+}
 
 export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]>, health: Ref<Health | null>, submitting: Ref<boolean>, error: Ref<string>, submit: (action: () => Promise<void>) => Promise<void>) {
   const servers = ref<ServerRecord[]>([])
@@ -80,7 +114,15 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const nameFormError = ref('')
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
+  const bulkUpgradeModalOpen = ref(false)
+  const bulkUpgradePhase = ref<'confirm' | 'running' | 'done'>('confirm')
+  const bulkUpgradeItems = ref<BulkAgentUpgradeItem[]>([])
+  const bulkUpgradeTargetVersion = ref('')
+  const bulkUpgradeStarting = ref(false)
+  const bulkUpgradeError = ref('')
   let diagnosticRequest = 0
+  let bulkUpgradeRunID = 0
+  let bulkUpgradeTimer: ReturnType<typeof setTimeout> | undefined
 
   let serverLoadPromise: Promise<void> | null = null
 
@@ -122,6 +164,44 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       ? `curl -fsSL ${window.location.origin}/upgrade-agent.sh | sh`
       : '',
   )
+
+  const bulkUpgradeCandidates = computed(() => servers.value.filter(canBulkUpgradeAgent))
+  const bulkUpgradeSkippedSummary = computed(() => {
+    const counts = new Map<string, number>()
+    for (const server of servers.value) {
+      if (canBulkUpgradeAgent(server)) continue
+      let label = '其他不可升级'
+      if (server.agent_upgrade_status === 'upgrading') label = '正在升级'
+      else if (server.agent_version_status === 'up_to_date') label = '已是最新版'
+      else if (server.agent_version_status === 'unregistered') label = '尚未注册'
+      else if (server.status !== 'online') label = '离线'
+      else if (!server.agent_can_self_upgrade) label = '不支持官方自动升级'
+      counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+    return [...counts].map(([label, count]) => ({ label, count }))
+  })
+  const bulkUpgradeProgress = computed(() => {
+    const result = {
+      total: bulkUpgradeItems.value.length,
+      successCount: 0,
+      failedCount: 0,
+      timeoutCount: 0,
+      runningCount: 0,
+      waitingCount: 0,
+      handledCount: 0,
+    }
+    for (const item of bulkUpgradeItems.value) {
+      if (item.status === 'success') result.successCount++
+      else if (item.status === 'failed') result.failedCount++
+      else if (item.status === 'timeout') result.timeoutCount++
+      else if (item.status === 'waiting') result.waitingCount++
+      else result.runningCount++
+    }
+    result.handledCount = result.successCount + result.failedCount + result.timeoutCount
+    return result
+  })
+  const bulkUpgradeRunning = computed(() => bulkUpgradePhase.value === 'running')
+  const bulkUpgradeHasBatch = computed(() => bulkUpgradeItems.value.length > 0)
 
   async function loadServers() {
     if (serverLoadPromise) return serverLoadPromise
@@ -280,6 +360,176 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       await api(`/api/servers/${value.id}/agent-upgrade`, { method: 'POST' })
       await loadServers()
     })
+  }
+
+  function openBulkAgentUpgrade() {
+    if (state.value?.user?.role !== 'admin') return
+    if (!bulkUpgradeHasBatch.value) {
+      bulkUpgradePhase.value = 'confirm'
+      bulkUpgradeTargetVersion.value = panelReleaseVersion.value
+      bulkUpgradeError.value = ''
+    }
+    bulkUpgradeModalOpen.value = true
+  }
+
+  async function startBulkAgentUpgrade() {
+    if (
+      state.value?.user?.role !== 'admin'
+      || bulkUpgradeStarting.value
+      || bulkUpgradeRunning.value
+      || !panelReleaseVersion.value
+    ) return
+    bulkUpgradeStarting.value = true
+    bulkUpgradeError.value = ''
+    try {
+      await loadServers()
+      const candidates = servers.value.filter(canBulkUpgradeAgent)
+      if (candidates.length === 0) {
+        bulkUpgradeError.value = '当前没有可升级 Agent'
+        return
+      }
+      const targetVersion = panelReleaseVersion.value
+      if (!targetVersion) {
+        bulkUpgradeError.value = '开发版本不可批量升级'
+        return
+      }
+      bulkUpgradeRunID++
+      const runID = bulkUpgradeRunID
+      bulkUpgradeTargetVersion.value = targetVersion
+      bulkUpgradeItems.value = candidates.map((server) => ({
+        serverId: server.id,
+        serverName: server.name,
+        fromVersion: server.agent_version,
+        targetVersion,
+        status: 'waiting',
+        error: '',
+      }))
+      bulkUpgradePhase.value = 'running'
+      fillBulkUpgradeSlots(runID)
+      scheduleBulkUpgradePoll(runID)
+    } catch (reason) {
+      bulkUpgradeError.value = reason instanceof Error ? reason.message : '无法刷新服务器状态'
+    } finally {
+      bulkUpgradeStarting.value = false
+    }
+  }
+
+  function fillBulkUpgradeSlots(runID: number) {
+    if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value) return
+    const active = bulkUpgradeItems.value.filter(isBulkAgentUpgradeActive).length
+    const available = bulkAgentUpgradeConcurrency - active
+    if (available <= 0) return
+    for (const item of bulkUpgradeItems.value.filter((value) => value.status === 'waiting').slice(0, available)) {
+      void startBulkUpgradeItem(item, runID)
+    }
+  }
+
+  async function startBulkUpgradeItem(item: BulkAgentUpgradeItem, runID: number) {
+    item.status = 'starting'
+    item.startedAt = Date.now()
+    try {
+      const response = await api<AgentUpgradeResponse>(`/api/servers/${item.serverId}/agent-upgrade`, {
+        method: 'POST',
+      })
+      if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value || !isBulkAgentUpgradeActive(item)) return
+      if (response.status === 'already_current') {
+        item.status = 'success'
+        item.error = ''
+      } else if (response.status === 'upgrading') {
+        item.status = 'upgrading'
+      } else {
+        item.status = 'failed'
+        item.error = 'Agent 升级响应无效'
+      }
+    } catch (reason) {
+      if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value || !isBulkAgentUpgradeActive(item)) return
+      item.status = 'failed'
+      item.error = reason instanceof Error ? reason.message : '无法启动 Agent 升级'
+    }
+    advanceBulkAgentUpgrade(runID)
+  }
+
+  function reconcileBulkAgentUpgrade(now = Date.now()) {
+    if (!bulkUpgradeRunning.value) return
+    for (const item of bulkUpgradeItems.value) {
+      if (item.status !== 'starting' && item.status !== 'upgrading') continue
+      const server = servers.value.find((value) => value.id === item.serverId)
+      if (!server) {
+        item.status = 'failed'
+        item.error = '服务器已不存在或当前账号无权访问'
+        continue
+      }
+      if (item.status === 'upgrading' && server.agent_upgrade_status === 'failed') {
+        item.status = 'failed'
+        item.error = server.agent_upgrade_error || 'Agent 升级失败'
+        continue
+      }
+      if (
+        server.agent_version === item.targetVersion
+        && server.agent_upgrade_status !== 'upgrading'
+      ) {
+        item.status = 'success'
+        item.error = ''
+        continue
+      }
+      if (item.status === 'starting' && server.agent_upgrade_status === 'upgrading') {
+        item.status = 'upgrading'
+      }
+      if (item.startedAt !== undefined && now - item.startedAt >= bulkAgentUpgradeTimeoutMs) {
+        item.status = 'timeout'
+        item.error = '等待 Agent 升级完成超时'
+      }
+    }
+    advanceBulkAgentUpgrade(bulkUpgradeRunID)
+  }
+
+  function advanceBulkAgentUpgrade(runID: number) {
+    if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value) return
+    if (bulkUpgradeProgress.value.handledCount === bulkUpgradeProgress.value.total) {
+      bulkUpgradePhase.value = 'done'
+      stopBulkUpgradePolling()
+      return
+    }
+    fillBulkUpgradeSlots(runID)
+  }
+
+  function scheduleBulkUpgradePoll(runID: number) {
+    if (bulkUpgradeTimer !== undefined || runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value) return
+    bulkUpgradeTimer = setTimeout(async () => {
+      bulkUpgradeTimer = undefined
+      if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value) return
+      try {
+        await loadServers()
+      } catch {
+        // A temporary refresh failure is not an Agent upgrade failure.
+      }
+      if (runID !== bulkUpgradeRunID || !bulkUpgradeRunning.value) return
+      reconcileBulkAgentUpgrade()
+      scheduleBulkUpgradePoll(runID)
+    }, bulkAgentUpgradePollMs)
+  }
+
+  function stopBulkUpgradePolling() {
+    if (bulkUpgradeTimer !== undefined) {
+      clearTimeout(bulkUpgradeTimer)
+      bulkUpgradeTimer = undefined
+    }
+  }
+
+  function closeBulkAgentUpgrade() {
+    bulkUpgradeModalOpen.value = false
+    if (!bulkUpgradeRunning.value) resetBulkAgentUpgrade()
+  }
+
+  function resetBulkAgentUpgrade() {
+    bulkUpgradeRunID++
+    stopBulkUpgradePolling()
+    bulkUpgradeModalOpen.value = false
+    bulkUpgradeItems.value = []
+    bulkUpgradePhase.value = 'confirm'
+    bulkUpgradeTargetVersion.value = ''
+    bulkUpgradeStarting.value = false
+    bulkUpgradeError.value = ''
   }
 
   async function copyUpgradeCommand() {
@@ -572,6 +822,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
 
   function resetSession() {
     diagnosticRequest++
+    resetBulkAgentUpgrade()
     servers.value = []
     archivedServers.value = []
     selectedServer.value = null
@@ -589,6 +840,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticError.value = ''
     expirationInput.value = ''
   }
+
+  if (getCurrentScope()) onScopeDispose(resetBulkAgentUpgrade)
 
   async function handleMissingServer() {
     if (!serverModalOpen.value) return
@@ -628,6 +881,17 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     expirationInput,
     trafficAdjustmentInput,
     trafficAdjustmentUnit,
+    bulkUpgradeModalOpen,
+    bulkUpgradePhase,
+    bulkUpgradeItems,
+    bulkUpgradeTargetVersion,
+    bulkUpgradeStarting,
+    bulkUpgradeError,
+    bulkUpgradeCandidates,
+    bulkUpgradeSkippedSummary,
+    bulkUpgradeProgress,
+    bulkUpgradeRunning,
+    bulkUpgradeHasBatch,
     trafficModalOpen,
     trafficFormError,
     trafficLimitInput,
@@ -652,6 +916,11 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     ensureAccessCurrentUser,
     saveServerAccess,
     upgradeAgent,
+    openBulkAgentUpgrade,
+    startBulkAgentUpgrade,
+    reconcileBulkAgentUpgrade,
+    closeBulkAgentUpgrade,
+    resetBulkAgentUpgrade,
     copyUpgradeCommand,
     archiveServer,
     regenerateEnrollment,

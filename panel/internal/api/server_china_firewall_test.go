@@ -146,6 +146,100 @@ func TestServerChinaInboundBlockRejectsAgentsWithoutDeclaredCapability(t *testin
 	}
 }
 
+func TestServerResponseIncludesAgentConfigSyncState(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	servers := serverstore.NewService(db)
+	created, err := servers.Create(t.Context(), "Config state API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	cookie := initializeChinaFirewallAdmin(t, handler)
+	path := "/api/servers/" + strconv.FormatInt(created.ID, 10)
+
+	readServer := func() serverResponse {
+		t.Helper()
+		response := performRequest(t, handler, http.MethodGet, path, nil, cookie)
+		if response.Code != http.StatusOK {
+			t.Fatalf("get Server = %d %s", response.Code, response.Body.String())
+		}
+		var payload struct {
+			Server serverResponse `json:"server"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Server
+	}
+
+	unregistered := readServer()
+	if unregistered.DesiredStateVersion != 1 || unregistered.AgentAppliedConfigVersion != 0 ||
+		unregistered.AgentConfigSyncStatus != "" || unregistered.AgentConfigSyncError != "" ||
+		unregistered.AgentConfigSyncedAt != nil {
+		t.Fatalf("unregistered config state = %+v", unregistered)
+	}
+
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgentWithMetadata(t.Context(), created.EnrollmentToken, agentcontrol.Metadata{
+		Implementation: agentcontrol.OfficialImplementation,
+		Version:        "v0.31.0",
+		APIVersion:     agentcontrol.CurrentAPIVersion,
+		Capabilities:   []string{agentcontrol.CapabilityFirewallCNBlock},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE servers SET desired_state_version = 4 WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	syncedAt := time.Date(2026, 9, 24, 12, 34, 56, 0, time.UTC)
+	for _, test := range []struct {
+		name      string
+		applied   int64
+		status    string
+		syncError string
+		syncedAt  any
+	}{
+		{name: "pending", applied: 3, status: agentcontrol.ConfigSyncPending},
+		{name: "success", applied: 4, status: agentcontrol.ConfigSyncSuccess, syncedAt: syncedAt.Unix()},
+		{name: "failed", applied: 3, status: agentcontrol.ConfigSyncFailed, syncError: "managed China inbound firewall requires nftables", syncedAt: syncedAt.Unix()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE agents SET applied_config_version = ?, config_sync_status = ?,
+				config_sync_error = ?, config_synced_at = ? WHERE id = ?`,
+				test.applied, test.status, test.syncError, test.syncedAt, registered.ID,
+			); err != nil {
+				t.Fatal(err)
+			}
+			value := readServer()
+			if value.DesiredStateVersion != 4 || value.AgentAppliedConfigVersion != test.applied ||
+				value.AgentConfigSyncStatus != test.status || value.AgentConfigSyncError != test.syncError {
+				t.Fatalf("config state = %+v", value)
+			}
+			if test.syncedAt == nil {
+				if value.AgentConfigSyncedAt != nil {
+					t.Fatalf("synced at = %v, want nil", value.AgentConfigSyncedAt)
+				}
+			} else if value.AgentConfigSyncedAt == nil || !value.AgentConfigSyncedAt.Equal(syncedAt) {
+				t.Fatalf("synced at = %v, want %v", value.AgentConfigSyncedAt, syncedAt)
+			}
+		})
+	}
+
+	listResponse := performRequest(t, handler, http.MethodGet, "/api/servers", nil, cookie)
+	var listPayload struct {
+		Servers []serverResponse `json:"servers"`
+	}
+	if listResponse.Code != http.StatusOK || json.Unmarshal(listResponse.Body.Bytes(), &listPayload) != nil ||
+		len(listPayload.Servers) != 1 || listPayload.Servers[0].AgentConfigSyncStatus != agentcontrol.ConfigSyncFailed {
+		t.Fatalf("list response = %d %s", listResponse.Code, listResponse.Body.String())
+	}
+}
+
 func initializeChinaFirewallAdmin(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
 	response := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{

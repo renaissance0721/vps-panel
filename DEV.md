@@ -1494,7 +1494,6 @@ Sidebar 变为滑出菜单，并显示 backdrop / mobile header。
 排序
 名称 + public/private
 状态
-禁止中国 IP 入站
 本周期流量
 到期时间
 操作
@@ -1519,6 +1518,7 @@ Server 的详细 IP、系统信息、Agent 版本、资源使用等放在详情 
 - 到期日期
 - Agent / system info
 - CPU / RAM / Disk / Uptime
+- 中国 IP 入站限制：开关、desired/apply 状态和最近配置错误；使用 APNIC IPv4 / IPv6 数据且不影响 SSH
 - 流量设置
 - Xray 出站偏好
 - Agent 升级

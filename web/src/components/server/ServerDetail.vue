@@ -13,6 +13,7 @@ import {
   NDrawer,
   NDrawerContent,
   NSpin,
+  NSwitch,
   NTag,
 } from 'naive-ui'
 import type {
@@ -25,6 +26,9 @@ import type {
 import {
   agentAPILabel,
   agentCapabilities,
+  chinaInboundApplyState,
+  chinaInboundSupported,
+  chinaInboundUnsupportedReason,
   agentImplementationLabel,
   agentSupportsCapability,
 } from '../../server'
@@ -56,6 +60,7 @@ const props = defineProps<{
     | 'formatBytes'
     | 'formatUptime'
     | 'setOutboundPreference'
+    | 'setBlockChinaInbound'
     | 'regenerateEnrollment'
     | 'permanentlyDeleteServer'
     | 'createdServer'
@@ -94,6 +99,7 @@ const {
   formatBytes,
   formatUptime,
   setOutboundPreference,
+  setBlockChinaInbound,
   regenerateEnrollment,
   permanentlyDeleteServer,
   createdServer,
@@ -109,6 +115,19 @@ const {
 
 const diagnosticsSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.diagnosticsV1))
 const outboundPreferenceSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.outboundPreference))
+const chinaInboundState = computed(() => selectedServer.value ? chinaInboundApplyState(selectedServer.value) : null)
+const chinaInboundSwitchDisabled = computed(() => {
+  const server = selectedServer.value
+  return server === null || !!server.archived_at || submitting.value ||
+    (!server.block_china_inbound && !chinaInboundSupported(server))
+})
+const chinaInboundSwitchTitle = computed(() => {
+  const server = selectedServer.value
+  if (!server) return ''
+  if (server.archived_at) return '已移除服务器不能修改设置。'
+  if (!server.block_china_inbound && !chinaInboundSupported(server)) return chinaInboundUnsupportedReason(server)
+  return '仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。'
+})
 
 const diagnosticGroupDefinitions = [
   { title: 'Agent', prefixes: ['agent.'] },
@@ -366,6 +385,45 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             </dl>
               </section>
             </div>
+
+            <section class="server-detail-section server-detail-section--wide">
+              <div class="section-heading">
+                <h3 class="system-info-title">中国 IP 入站限制</h3>
+                <n-switch
+                  :value="selectedServer.block_china_inbound"
+                  :disabled="chinaInboundSwitchDisabled"
+                  :title="chinaInboundSwitchTitle"
+                  @update:value="setBlockChinaInbound(selectedServer, $event)"
+                />
+              </div>
+              <dl class="server-details">
+                <div>
+                  <dt>状态</dt>
+                  <dd>
+                    <n-tag :type="chinaInboundState?.type ?? 'default'" size="small">
+                      {{ chinaInboundState?.label }}
+                    </n-tag>
+                    <small
+                      v-if="chinaInboundState && chinaInboundState.key !== 'failed' && chinaInboundState.key !== 'unsupported_enabled'"
+                      class="outbound-preference-note"
+                    >
+                      {{ chinaInboundState.detail }}
+                    </small>
+                  </dd>
+                </div>
+              </dl>
+              <n-alert v-if="chinaInboundState?.key === 'unsupported_enabled'" type="warning" class="form-alert">
+                {{ chinaInboundState.detail }}
+              </n-alert>
+              <n-alert v-else-if="chinaInboundState?.key === 'failed'" type="error" class="form-alert">
+                <strong>配置应用失败</strong>
+                <p>{{ chinaInboundState.detail }}</p>
+                <p v-if="selectedServer.agent_config_sync_error">{{ selectedServer.agent_config_sync_error }}</p>
+              </n-alert>
+              <small class="secondary-text">
+                仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。支持 IPv4 和 IPv6。数据来源：APNIC。SSH 和其他服务不受影响。
+              </small>
+            </section>
 
             <section class="server-detail-section server-detail-section--wide"><ServerTraffic :model="model" /></section>
 <div v-if="state?.user?.role === 'admin'" class="server-modal-actions">

@@ -44,6 +44,7 @@ import {
   formatExpirationDate,
   formatServerExpiration,
   canBulkUpgradeAgent,
+  chinaInboundConfigNeedsPolling,
 } from '../server'
 import {
   formatTrafficLimitInput,
@@ -56,6 +57,8 @@ import {
 const bulkAgentUpgradeConcurrency = 3
 const bulkAgentUpgradePollMs = 2_000
 const bulkAgentUpgradeTimeoutMs = 180_000
+const chinaInboundConfigPollMs = 2_000
+const chinaInboundConfigPollTimeoutMs = 30_000
 
 type BulkAgentUpgradeStatus =
   | 'waiting'
@@ -123,6 +126,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   let diagnosticRequest = 0
   let bulkUpgradeRunID = 0
   let bulkUpgradeTimer: ReturnType<typeof setTimeout> | undefined
+  let chinaInboundConfigPollTimer: ReturnType<typeof setTimeout> | undefined
+  let chinaInboundConfigPollServerID: number | null = null
+  let chinaInboundConfigPollDeadline = 0
 
   let serverLoadPromise: Promise<void> | null = null
 
@@ -221,6 +227,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
           selectedServer.value = selected
         } else {
           selectedServer.value = null
+          stopChinaInboundConfigPolling()
           createdServer.value = null
           serverModalOpen.value = false
           accessModalOpen.value = false
@@ -268,6 +275,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
 
   function viewServer(value: ServerRecord) {
     diagnosticRequest++
+    stopChinaInboundConfigPolling()
     selectedServer.value = value
     createdServer.value = null
     copiedCommand.value = false
@@ -578,6 +586,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
 
   function closeServerDetails() {
     diagnosticRequest++
+    stopChinaInboundConfigPolling()
     selectedServer.value = null
     createdServer.value = null
     copiedCommand.value = false
@@ -653,8 +662,54 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
         body: JSON.stringify({ block_china_inbound: enabled }),
       })
       servers.value = servers.value.map((value) => value.id === server.id ? response.server : value)
-      if (selectedServer.value?.id === server.id) selectedServer.value = response.server
+      if (selectedServer.value?.id === server.id) {
+        selectedServer.value = response.server
+        startChinaInboundConfigPolling(response.server)
+      }
     })
+  }
+
+  function stopChinaInboundConfigPolling() {
+    if (chinaInboundConfigPollTimer !== undefined) clearTimeout(chinaInboundConfigPollTimer)
+    chinaInboundConfigPollTimer = undefined
+    chinaInboundConfigPollServerID = null
+    chinaInboundConfigPollDeadline = 0
+  }
+
+  function startChinaInboundConfigPolling(server: ServerRecord) {
+    stopChinaInboundConfigPolling()
+    if (!serverModalOpen.value || selectedServer.value?.id !== server.id || !chinaInboundConfigNeedsPolling(server)) return
+    chinaInboundConfigPollServerID = server.id
+    chinaInboundConfigPollDeadline = Date.now() + chinaInboundConfigPollTimeoutMs
+    chinaInboundConfigPollTimer = setTimeout(pollChinaInboundConfig, chinaInboundConfigPollMs)
+  }
+
+  async function pollChinaInboundConfig() {
+    chinaInboundConfigPollTimer = undefined
+    const serverID = chinaInboundConfigPollServerID
+    const current = selectedServer.value
+    if (serverID === null || !serverModalOpen.value || current?.id !== serverID ||
+      Date.now() >= chinaInboundConfigPollDeadline || !chinaInboundConfigNeedsPolling(current)) {
+      stopChinaInboundConfigPolling()
+      return
+    }
+    try {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`)
+      if (chinaInboundConfigPollServerID !== serverID || !serverModalOpen.value || selectedServer.value?.id !== serverID) {
+        stopChinaInboundConfigPolling()
+        return
+      }
+      selectedServer.value = response.server
+      servers.value = servers.value.map((value) => value.id === serverID ? response.server : value)
+      if (Date.now() >= chinaInboundConfigPollDeadline || !chinaInboundConfigNeedsPolling(response.server)) {
+        stopChinaInboundConfigPolling()
+        return
+      }
+      chinaInboundConfigPollTimer = setTimeout(pollChinaInboundConfig, chinaInboundConfigPollMs)
+    } catch (reason) {
+      stopChinaInboundConfigPolling()
+      if (reason instanceof APIError && reason.status === 404) await handleMissingServer()
+    }
   }
 
   function openExpirationModal() {
@@ -835,6 +890,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function resetSession() {
     diagnosticRequest++
     resetBulkAgentUpgrade()
+    stopChinaInboundConfigPolling()
     servers.value = []
     archivedServers.value = []
     selectedServer.value = null
@@ -853,10 +909,14 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     expirationInput.value = ''
   }
 
-  if (getCurrentScope()) onScopeDispose(resetBulkAgentUpgrade)
+  if (getCurrentScope()) onScopeDispose(() => {
+    resetBulkAgentUpgrade()
+    stopChinaInboundConfigPolling()
+  })
 
   async function handleMissingServer() {
     if (!serverModalOpen.value) return
+    stopChinaInboundConfigPolling()
     serverModalOpen.value = false
     nameModalOpen.value = false
     selectedServer.value = null

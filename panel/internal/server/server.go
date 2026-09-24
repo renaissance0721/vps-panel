@@ -81,17 +81,18 @@ func (s *Service) CreateForUser(
 
 	return CreatedServer{
 		Server: Server{
-			ID:                 serverID,
-			Name:               name,
-			Status:             StatusPending,
-			Visibility:         visibility,
-			OutboundPreference: OutboundAuto,
-			AccessUserIDs:      userIDs,
-			TrafficCountMode:   TrafficSingle,
-			TrafficResetDay:    defaultTrafficResetDay,
-			TrafficResetTime:   defaultTrafficResetTime,
-			CreatedAt:          now,
-			UpdatedAt:          now,
+			ID:                  serverID,
+			Name:                name,
+			Status:              StatusPending,
+			Visibility:          visibility,
+			OutboundPreference:  OutboundAuto,
+			DesiredStateVersion: 1,
+			AccessUserIDs:       userIDs,
+			TrafficCountMode:    TrafficSingle,
+			TrafficResetDay:     defaultTrafficResetDay,
+			TrafficResetTime:    defaultTrafficResetTime,
+			CreatedAt:           now,
+			UpdatedAt:           now,
 		},
 		EnrollmentToken:     enrollment.Token,
 		EnrollmentExpiresAt: enrollment.ExpiresAt,
@@ -137,12 +138,14 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
+		 servers.desired_state_version,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
+		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -179,12 +182,14 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
+		 servers.desired_state_version,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
+		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
 		 system_info.agent_version, system_info.reported_at,
@@ -219,6 +224,8 @@ func scanServer(row rowScanner) (Server, error) {
 	var implementation, storedAgentVersion, capabilitiesJSON sql.NullString
 	var apiVersion sql.NullInt64
 	var upgradeTarget, upgradeStatus, upgradeError sql.NullString
+	var appliedConfigVersion, configSyncedAt sql.NullInt64
+	var configSyncStatus, configSyncError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, publicIPv4, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
@@ -227,10 +234,11 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &accessUserIDs, &archivedAt, &expiresAt,
+		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion, &accessUserIDs, &archivedAt, &expiresAt,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,
+		&appliedConfigVersion, &configSyncStatus, &configSyncError, &configSyncedAt,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
@@ -266,6 +274,13 @@ func scanServer(row rowScanner) (Server, error) {
 	value.AgentUpgradeTarget = upgradeTarget.String
 	value.AgentUpgradeStatus = upgradeStatus.String
 	value.AgentUpgradeError = upgradeError.String
+	value.AgentAppliedConfigVersion = appliedConfigVersion.Int64
+	value.AgentConfigSyncStatus = configSyncStatus.String
+	value.AgentConfigSyncError = configSyncError.String
+	if configSyncedAt.Valid {
+		syncedAt := time.Unix(configSyncedAt.Int64, 0).UTC()
+		value.AgentConfigSyncedAt = &syncedAt
+	}
 	if reportedAt.Valid {
 		info := SystemInfo{
 			Hostname:     hostname.String,

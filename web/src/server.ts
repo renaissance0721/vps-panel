@@ -31,6 +31,69 @@ export function agentDeclaresCapability(server: AgentMetadata, capability: strin
     && (server.agent_capabilities ?? []).includes(capability)
 }
 
+export type ChinaInboundApplyState = {
+  key: 'readonly' | 'not_enabled' | 'unsupported' | 'unsupported_enabled' | 'waiting_enable' | 'waiting_disable' | 'applying' | 'disabling' | 'applied_enabled' | 'applied_disabled' | 'failed'
+  label: string
+  type: 'default' | 'success' | 'warning' | 'error'
+  detail: string
+}
+
+export function chinaInboundSupported(server: AgentMetadata): boolean {
+  return agentDeclaresCapability(server, agentCapabilities.firewallCNBlock)
+}
+
+export function chinaInboundUnsupportedReason(server: ServerRecord): string {
+  if (server.agent_version_status === 'unregistered') return '服务器尚未注册支持该功能的 Agent。'
+  if (server.agent_api_version === 0) return '当前 Agent 不支持中国 IP 入站限制，请先升级 Agent。'
+  return '当前 Agent 不支持中国 IP 入站限制。'
+}
+
+export function chinaInboundApplyState(server: ServerRecord): ChinaInboundApplyState {
+  if (server.archived_at) {
+    return { key: 'readonly', label: '只读', type: 'default', detail: '服务器已移除，仅显示最后保存的设置和配置同步记录。' }
+  }
+  if (server.agent_version_status === 'unregistered') {
+    return server.block_china_inbound
+      ? { key: 'waiting_enable', label: '等待 Agent', type: 'warning', detail: '已配置开启，但服务器尚未注册 Agent，尚未应用。' }
+      : { key: 'not_enabled', label: '未启用', type: 'default', detail: '服务器尚未注册支持该功能的 Agent。' }
+  }
+  if (!chinaInboundSupported(server)) {
+    return server.block_china_inbound
+      ? { key: 'unsupported_enabled', label: '无法确认', type: 'warning', detail: '已配置禁止中国 IP 入站，但当前 Agent 不支持该功能，无法确认规则仍然生效。' }
+      : { key: 'unsupported', label: '当前 Agent 不支持', type: 'default', detail: chinaInboundUnsupportedReason(server) }
+  }
+  const currentVersionApplied = server.agent_config_sync_status === 'success'
+    && server.agent_applied_config_version >= server.desired_state_version
+  if (currentVersionApplied) {
+    return server.block_china_inbound
+      ? { key: 'applied_enabled', label: '已生效', type: 'success', detail: server.status === 'online' ? '当前配置已由 Agent 成功应用。' : 'Agent 当前离线，以上为最近一次成功应用状态。' }
+      : { key: 'applied_disabled', label: '已关闭', type: 'default', detail: server.status === 'online' ? '关闭配置已由 Agent 成功应用。' : 'Agent 当前离线，以上为最近一次成功应用状态。' }
+  }
+  if (server.agent_config_sync_status === 'failed') {
+    return {
+      key: 'failed',
+      label: '配置应用失败',
+      type: 'error',
+      detail: server.block_china_inbound
+        ? '最近一次服务器配置应用失败，无法确认中国 IP 入站限制已生效。'
+        : '最近一次服务器配置应用失败，无法确认中国 IP 入站限制已关闭。',
+    }
+  }
+  if (server.status !== 'online') {
+    return server.block_china_inbound
+      ? { key: 'waiting_enable', label: '等待 Agent 上线', type: 'warning', detail: '设置已保存，Agent 上线后会自动应用。' }
+      : { key: 'waiting_disable', label: '等待 Agent 上线关闭', type: 'warning', detail: '关闭设置已保存，Agent 上线后会自动应用。' }
+  }
+  return server.block_china_inbound
+    ? { key: 'applying', label: '应用中', type: 'warning', detail: '设置已保存，正在等待 Agent 应用当前配置。' }
+    : { key: 'disabling', label: '关闭中', type: 'warning', detail: '关闭设置已保存，正在等待 Agent 应用当前配置。' }
+}
+
+export function chinaInboundConfigNeedsPolling(server: ServerRecord): boolean {
+  const state = chinaInboundApplyState(server)
+  return state.key === 'applying' || state.key === 'disabling'
+}
+
 export function canBulkUpgradeAgent(server: ServerRecord): boolean {
   return (
     server.status === 'online'

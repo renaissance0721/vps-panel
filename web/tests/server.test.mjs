@@ -9,6 +9,9 @@ import {
   agentImplementationLabel,
   agentSupportsCapability,
   canBulkUpgradeAgent,
+  chinaInboundApplyState,
+  chinaInboundConfigNeedsPolling,
+  chinaInboundSupported,
   formatServerExpiration,
 } from '../src/server.ts'
 
@@ -111,22 +114,72 @@ test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
   })
 })
 
-test('正常服务器列表提供严格受 capability 控制的中国入站开关', async () => {
+test('中国 IP 入站限制按 desired/apply 状态和 capability 准确展示', () => {
+  const server = overrides => ({
+    status: 'online', archived_at: null, block_china_inbound: true,
+    desired_state_version: 21, agent_applied_config_version: 20,
+    agent_config_sync_status: 'pending', agent_config_sync_error: '', agent_config_synced_at: null,
+    agent_implementation: 'vps-panel-agent', agent_api_version: 1,
+    agent_capabilities: ['firewall.cn_block'], agent_version_status: 'up_to_date',
+    ...overrides,
+  })
+  assert.equal(chinaInboundApplyState(server({ agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '已生效')
+  assert.equal(chinaInboundApplyState(server({ block_china_inbound: false, agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '已关闭')
+  assert.equal(chinaInboundApplyState(server({})).label, '应用中')
+  assert.equal(chinaInboundApplyState(server({ block_china_inbound: false })).label, '关闭中')
+  assert.equal(chinaInboundApplyState(server({ status: 'offline' })).label, '等待 Agent 上线')
+  assert.equal(chinaInboundApplyState(server({ status: 'offline', block_china_inbound: false })).label, '等待 Agent 上线关闭')
+  assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'failed' })).label, '配置应用失败')
+
+  const legacyDisabled = server({
+    block_china_inbound: false, agent_implementation: '', agent_api_version: 0,
+    agent_capabilities: [], agent_version_status: 'unknown',
+  })
+  assert.equal(chinaInboundSupported(legacyDisabled), false)
+  assert.equal(chinaInboundApplyState(legacyDisabled).label, '当前 Agent 不支持')
+  assert.equal(chinaInboundApplyState({ ...legacyDisabled, block_china_inbound: true }).label, '无法确认')
+  const missingCapability = server({ block_china_inbound: false, agent_capabilities: [] })
+  assert.equal(chinaInboundSupported(missingCapability), false)
+  assert.equal(chinaInboundApplyState(missingCapability).label, '当前 Agent 不支持')
+  assert.equal(chinaInboundApplyState(server({ archived_at: '2026-09-24T00:00:00Z' })).label, '只读')
+
+  assert.equal(chinaInboundConfigNeedsPolling(server({})), true)
+  assert.equal(chinaInboundConfigNeedsPolling(server({ block_china_inbound: false })), true)
+  assert.equal(chinaInboundConfigNeedsPolling(server({ agent_applied_config_version: 21, agent_config_sync_status: 'success' })), false)
+  assert.equal(chinaInboundConfigNeedsPolling(server({ agent_config_sync_status: 'failed' })), false)
+  assert.equal(chinaInboundConfigNeedsPolling(server({ status: 'offline' })), false)
+})
+
+test('中国 IP 入站开关只出现在详情并保留原 PATCH API', async () => {
   const list = await readFile(new URL('../src/components/server/ServerList.vue', import.meta.url), 'utf8')
+  const detail = await readFile(new URL('../src/components/server/ServerDetail.vue', import.meta.url), 'utf8')
   const composable = await readFile(new URL('../src/composables/useServers.ts', import.meta.url), 'utf8')
   const types = await readFile(new URL('../src/types/server.ts', import.meta.url), 'utf8')
   assert.match(types, /block_china_inbound: boolean/)
-  assert.match(list, /禁止中国 IP 入站/)
-  assert.match(list, /仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口，不影响 SSH 和其他服务。/)
-  assert.match(list, /agentDeclaresCapability\(value, agentCapabilities\.firewallCNBlock\)/)
-  assert.match(list, /服务器尚未注册支持该功能的 Agent/)
-  assert.match(list, /当前 Agent 不支持中国 IP 入站限制，请先升级 Agent/)
-  assert.match(list, /已配置禁止中国 IP 入站，但当前 Agent 不支持该功能，无法确认规则仍然生效/)
-  assert.match(list, /!value\.block_china_inbound && !chinaInboundSupported\(value\)/)
+  assert.doesNotMatch(list, /禁止中国 IP 入站|NSwitch|setBlockChinaInbound/)
+  for (const column of ['排序', '名称', '状态', '本周期流量', '到期时间', '操作']) assert.match(list, new RegExp(column))
+  assert.match(detail, /中国 IP 入站限制/)
+  assert.match(detail, /Proxy 和 Relay/)
+  assert.match(detail, /IPv4 和 IPv6/)
+  assert.match(detail, /APNIC/)
+  assert.match(detail, /SSH 和其他服务不受影响/)
+  assert.match(detail, /!server\.block_china_inbound && !chinaInboundSupported\(server\)/)
   assert.match(composable, /JSON\.stringify\(\{ block_china_inbound: enabled \}\)/)
   const requestIndex = composable.indexOf("await api<{ server: ServerRecord }>(`/api/servers/${server.id}`")
   const updateIndex = composable.indexOf('servers.value = servers.value.map', requestIndex)
   assert.ok(requestIndex >= 0 && updateIndex > requestIndex, '成功响应前不应乐观更新开关状态')
+})
+
+test('中国 IP 入站配置轮询只读取当前 Server 并在各终止条件清理', async () => {
+  const source = await readFile(new URL('../src/composables/useServers.ts', import.meta.url), 'utf8')
+  assert.match(source, /chinaInboundConfigPollMs = 2_000/)
+  assert.match(source, /chinaInboundConfigPollTimeoutMs = 30_000/)
+  assert.match(source, /api<\{ server: ServerRecord \}>\(`\/api\/servers\/\$\{serverID\}`\)/)
+  assert.match(source, /startChinaInboundConfigPolling\(response\.server\)/)
+  assert.match(source, /!chinaInboundConfigNeedsPolling\(response\.server\)/)
+  assert.match(source, /function closeServerDetails\(\)[\s\S]*?stopChinaInboundConfigPolling\(\)/)
+  assert.match(source, /function resetSession\(\)[\s\S]*?stopChinaInboundConfigPolling\(\)/)
+  assert.match(source, /onScopeDispose\(\(\) => \{[\s\S]*?stopChinaInboundConfigPolling\(\)/)
 })
 
 test('服务器详情按 capability 控制诊断和出站偏好且始终允许系统默认', async () => {

@@ -35,31 +35,36 @@ var (
 )
 
 type Server struct {
-	ID                       int64
-	Name                     string
-	Status                   string
-	Visibility               string
-	OutboundPreference       string
-	BlockChinaInbound        bool
-	AccessUserIDs            []int64
-	ArchivedAt               *time.Time
-	ExpiresAt                *time.Time
-	MonthlyTrafficLimitBytes *int64
-	TrafficCountMode         string
-	TrafficResetDay          int
-	TrafficResetTime         string
-	LastSeenAt               *time.Time
-	AgentImplementation      string
-	AgentVersion             string
-	AgentAPIVersion          int
-	AgentCapabilities        []string
-	AgentUpgradeTarget       string
-	AgentUpgradeStatus       string
-	AgentUpgradeError        string
-	SystemInfo               *SystemInfo
-	Metrics                  *Metrics
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                        int64
+	Name                      string
+	Status                    string
+	Visibility                string
+	OutboundPreference        string
+	BlockChinaInbound         bool
+	DesiredStateVersion       int64
+	AccessUserIDs             []int64
+	ArchivedAt                *time.Time
+	ExpiresAt                 *time.Time
+	MonthlyTrafficLimitBytes  *int64
+	TrafficCountMode          string
+	TrafficResetDay           int
+	TrafficResetTime          string
+	LastSeenAt                *time.Time
+	AgentImplementation       string
+	AgentVersion              string
+	AgentAPIVersion           int
+	AgentCapabilities         []string
+	AgentUpgradeTarget        string
+	AgentUpgradeStatus        string
+	AgentUpgradeError         string
+	AgentAppliedConfigVersion int64
+	AgentConfigSyncStatus     string
+	AgentConfigSyncError      string
+	AgentConfigSyncedAt       *time.Time
+	SystemInfo                *SystemInfo
+	Metrics                   *Metrics
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 type CreatedServer struct {

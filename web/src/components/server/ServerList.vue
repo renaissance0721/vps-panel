@@ -7,20 +7,11 @@ import {
   NCard,
   NEmpty,
   NButton,
-  NSwitch,
   NTag,
 } from 'naive-ui'
 import type {
   ServersViewState,
 } from '../../composables/useServers'
-import {
-  agentCapabilities,
-  agentDeclaresCapability,
-} from '../../server'
-import type {
-  ServerRecord,
-} from '../../types/server'
-
 const props = defineProps<{
   model: Pick<ServersViewState,
     | 'serverListMode'
@@ -36,7 +27,6 @@ const props = defineProps<{
     | 'submitting'
     | 'viewServer'
     | 'archiveServer'
-    | 'setBlockChinaInbound'
     | 'archivedServers'
     | 'formatTime'
   >
@@ -55,27 +45,12 @@ const {
   submitting,
   viewServer,
   archiveServer,
-  setBlockChinaInbound,
   archivedServers,
   formatTime,
 } = toRefs(props.model)
 const draggedID = ref<number | null>(null)
 const dropTargetID = ref<number | null>(null)
 const draggedArchived = ref(false)
-
-function chinaInboundSupported(value: ServerRecord): boolean {
-  return agentDeclaresCapability(value, agentCapabilities.firewallCNBlock)
-}
-
-function chinaInboundTitle(value: ServerRecord): string {
-  if (value.block_china_inbound && !chinaInboundSupported(value)) {
-    return '已配置禁止中国 IP 入站，但当前 Agent 不支持该功能，无法确认规则仍然生效'
-  }
-  if (value.agent_version_status === 'unregistered') return '服务器尚未注册支持该功能的 Agent'
-  if (value.agent_api_version === 0) return '当前 Agent 不支持中国 IP 入站限制，请先升级 Agent'
-  if (!chinaInboundSupported(value)) return '当前 Agent 不支持中国 IP 入站限制'
-  return '仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口，不影响 SSH 和其他服务。'
-}
 
 function startDrag(event: DragEvent, id: number, archived: boolean) {
   if (serverReorderingID.value !== null || !event.dataTransfer) return
@@ -115,7 +90,6 @@ async function dropServer(id: number, archived: boolean) {
                     <th class="reorder-cell" aria-label="排序"></th>
                     <th>名称</th>
                     <th>状态</th>
-                    <th title="仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口，不影响 SSH 和其他服务。">禁止中国 IP 入站</th>
                     <th>本周期流量</th>
                     <th>到期时间</th>
                     <th>操作</th>
@@ -152,14 +126,6 @@ async function dropServer(id: number, archived: boolean) {
                           流量已用完
                         </n-tag>
                       </div>
-                    </td>
-                    <td>
-                      <n-switch
-                        :value="value.block_china_inbound"
-                        :disabled="submitting || (!value.block_china_inbound && !chinaInboundSupported(value))"
-                        :title="chinaInboundTitle(value)"
-                        @update:value="setBlockChinaInbound(value, $event)"
-                      />
                     </td>
                     <td>{{ trafficUsageLabel(value) }}</td>
                     <td>{{ formatServerExpiration(value.expires_at) }}</td>

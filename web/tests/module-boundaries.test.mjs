@@ -35,11 +35,15 @@ after(async () => {
 function serverRecord(overrides = {}) {
   return {
     id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
-    archived_at: null, expires_at: null, outbound_preference: 'auto', monthly_traffic_limit_bytes: null,
+    archived_at: null, expires_at: null, outbound_preference: 'auto', block_china_inbound: false,
+    desired_state_version: 1, monthly_traffic_limit_bytes: null,
     traffic_count_mode: 'single', traffic_reset_day: 1, traffic_reset_time: '00:00',
     traffic_used_bytes: 0, last_seen_at: null, system_info: null, metrics: null,
     created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z',
-    agent_version: '', agent_version_status: 'unregistered', ...overrides,
+    agent_implementation: '', agent_version: '', agent_api_version: 0, agent_capabilities: [],
+    agent_version_status: 'unregistered', agent_applied_config_version: 0,
+    agent_config_sync_status: '', agent_config_sync_error: '', agent_config_synced_at: null,
+    ...overrides,
   }
 }
 
@@ -307,6 +311,57 @@ test('服务器名称保存后详情保持打开且列表使用新名称', async
   const detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /server-detail-grid/)
   for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
+})
+
+test('服务器详情展示中国 IP 入站限制状态并允许历史开启状态关闭', async () => {
+  const { model } = serverModel()
+  const supported = {
+    agent_implementation: 'vps-panel-agent', agent_version: 'v0.31.0', agent_api_version: 1,
+    agent_capabilities: ['firewall.cn_block'], agent_version_status: 'up_to_date',
+  }
+  for (const [overrides, label] of [
+    [{ ...supported, status: 'online', block_china_inbound: true, desired_state_version: 2, agent_applied_config_version: 2, agent_config_sync_status: 'success' }, '已生效'],
+    [{ ...supported, status: 'online', block_china_inbound: false, desired_state_version: 2, agent_applied_config_version: 2, agent_config_sync_status: 'success' }, '已关闭'],
+    [{ ...supported, status: 'online', block_china_inbound: true, desired_state_version: 3, agent_applied_config_version: 2, agent_config_sync_status: 'pending' }, '应用中'],
+    [{ ...supported, status: 'offline', block_china_inbound: true, desired_state_version: 3, agent_applied_config_version: 2, agent_config_sync_status: 'pending' }, '等待 Agent 上线'],
+  ]) {
+    model.viewServer(serverRecord(overrides))
+    const output = await render('components/server/ServerDetail.vue', model)
+    assert.match(output, new RegExp(label))
+    assert.match(output, /中国 IP 入站限制/)
+    assert.match(output, /Proxy 和 Relay/)
+    assert.match(output, /APNIC/)
+    assert.match(output, /SSH 和其他服务不受影响/)
+  }
+
+  model.viewServer(serverRecord({ ...supported, status: 'online', block_china_inbound: true, agent_config_sync_status: 'failed', agent_config_sync_error: 'managed China inbound firewall requires nftables' }))
+  const failed = await render('components/server/ServerDetail.vue', model)
+  assert.match(failed, /配置应用失败/)
+  assert.match(failed, /managed China inbound firewall requires nftables/)
+
+  model.viewServer(serverRecord())
+  const unsupportedOff = await render('components/server/ServerDetail.vue', model)
+  const disabledSwitch = unsupportedOff.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  assert.match(disabledSwitch, /disabled/)
+  assert.match(unsupportedOff, /未启用/)
+
+  model.viewServer(serverRecord({ ...supported, status: 'online', agent_config_sync_status: 'success', agent_applied_config_version: 1 }))
+  const supportedOff = await render('components/server/ServerDetail.vue', model)
+  const supportedSwitch = supportedOff.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  assert.doesNotMatch(supportedSwitch, /disabled/)
+
+  model.viewServer(serverRecord({ block_china_inbound: true, agent_version_status: 'unknown' }))
+  const unsupportedOn = await render('components/server/ServerDetail.vue', model)
+  const enabledSwitch = unsupportedOn.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  assert.doesNotMatch(enabledSwitch, /disabled/)
+  assert.match(unsupportedOn, /无法确认/)
+  assert.match(unsupportedOn, /仍然生效/)
+
+  model.viewServer(serverRecord({ ...supported, archived_at: '2026-09-24T00:00:00Z' }))
+  const archived = await render('components/server/ServerDetail.vue', model)
+  const archivedSwitch = archived.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  assert.match(archivedSwitch, /disabled/)
+  assert.match(archived, /只读/)
 })
 
 test('服务器一键诊断请求固定 API 并按模块展示结构化结果', async t => {

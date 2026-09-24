@@ -5,6 +5,7 @@ export type ServerRecord = {
   visibility: 'public' | 'private'
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'
   block_china_inbound: boolean
+  desired_state_version: number
   access_user_ids: number[]
   archived_at?: string
   expires_at: string | null
@@ -27,6 +28,10 @@ export type ServerRecord = {
   agent_upgrade_target?: string
   agent_upgrade_status?: 'upgrading' | 'failed'
   agent_upgrade_error?: string
+  agent_applied_config_version: number
+  agent_config_sync_status: '' | 'pending' | 'success' | 'failed'
+  agent_config_sync_error: string
+  agent_config_synced_at: string | null
 }
 
 export type ServerSystemInfo = {

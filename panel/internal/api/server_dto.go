@@ -40,34 +40,39 @@ type updateTrafficAdjustmentRequest struct {
 }
 
 type serverResponse struct {
-	ID                       int64               `json:"id"`
-	Name                     string              `json:"name"`
-	Status                   string              `json:"status"`
-	Visibility               string              `json:"visibility"`
-	OutboundPreference       string              `json:"outbound_preference"`
-	BlockChinaInbound        bool                `json:"block_china_inbound"`
-	AccessUserIDs            []int64             `json:"access_user_ids"`
-	ArchivedAt               *time.Time          `json:"archived_at,omitempty"`
-	ExpiresAt                *time.Time          `json:"expires_at"`
-	MonthlyTrafficLimitBytes *int64              `json:"monthly_traffic_limit_bytes"`
-	TrafficCountMode         string              `json:"traffic_count_mode"`
-	TrafficResetDay          int                 `json:"traffic_reset_day"`
-	TrafficResetTime         string              `json:"traffic_reset_time"`
-	TrafficUsedBytes         int64               `json:"traffic_used_bytes"`
-	LastSeenAt               *time.Time          `json:"last_seen_at"`
-	SystemInfo               *systemInfoResponse `json:"system_info"`
-	Metrics                  *metricsResponse    `json:"metrics"`
-	CreatedAt                time.Time           `json:"created_at"`
-	UpdatedAt                time.Time           `json:"updated_at"`
-	AgentImplementation      string              `json:"agent_implementation"`
-	AgentVersion             string              `json:"agent_version"`
-	AgentAPIVersion          int                 `json:"agent_api_version"`
-	AgentCapabilities        []string            `json:"agent_capabilities"`
-	AgentCanSelfUpgrade      bool                `json:"agent_can_self_upgrade"`
-	AgentVersionStatus       string              `json:"agent_version_status"`
-	AgentUpgradeTarget       string              `json:"agent_upgrade_target,omitempty"`
-	AgentUpgradeStatus       string              `json:"agent_upgrade_status,omitempty"`
-	AgentUpgradeError        string              `json:"agent_upgrade_error,omitempty"`
+	ID                        int64               `json:"id"`
+	Name                      string              `json:"name"`
+	Status                    string              `json:"status"`
+	Visibility                string              `json:"visibility"`
+	OutboundPreference        string              `json:"outbound_preference"`
+	BlockChinaInbound         bool                `json:"block_china_inbound"`
+	DesiredStateVersion       int64               `json:"desired_state_version"`
+	AccessUserIDs             []int64             `json:"access_user_ids"`
+	ArchivedAt                *time.Time          `json:"archived_at,omitempty"`
+	ExpiresAt                 *time.Time          `json:"expires_at"`
+	MonthlyTrafficLimitBytes  *int64              `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode          string              `json:"traffic_count_mode"`
+	TrafficResetDay           int                 `json:"traffic_reset_day"`
+	TrafficResetTime          string              `json:"traffic_reset_time"`
+	TrafficUsedBytes          int64               `json:"traffic_used_bytes"`
+	LastSeenAt                *time.Time          `json:"last_seen_at"`
+	SystemInfo                *systemInfoResponse `json:"system_info"`
+	Metrics                   *metricsResponse    `json:"metrics"`
+	CreatedAt                 time.Time           `json:"created_at"`
+	UpdatedAt                 time.Time           `json:"updated_at"`
+	AgentImplementation       string              `json:"agent_implementation"`
+	AgentVersion              string              `json:"agent_version"`
+	AgentAPIVersion           int                 `json:"agent_api_version"`
+	AgentCapabilities         []string            `json:"agent_capabilities"`
+	AgentCanSelfUpgrade       bool                `json:"agent_can_self_upgrade"`
+	AgentVersionStatus        string              `json:"agent_version_status"`
+	AgentUpgradeTarget        string              `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeStatus        string              `json:"agent_upgrade_status,omitempty"`
+	AgentUpgradeError         string              `json:"agent_upgrade_error,omitempty"`
+	AgentAppliedConfigVersion int64               `json:"agent_applied_config_version"`
+	AgentConfigSyncStatus     string              `json:"agent_config_sync_status"`
+	AgentConfigSyncError      string              `json:"agent_config_sync_error"`
+	AgentConfigSyncedAt       *time.Time          `json:"agent_config_synced_at"`
 }
 
 type systemInfoResponse struct {
@@ -113,6 +118,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		Visibility:               value.Visibility,
 		OutboundPreference:       value.OutboundPreference,
 		BlockChinaInbound:        value.BlockChinaInbound,
+		DesiredStateVersion:      value.DesiredStateVersion,
 		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
 		ArchivedAt:               value.ArchivedAt,
 		ExpiresAt:                value.ExpiresAt,
@@ -135,9 +141,13 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 			APIVersion:     value.AgentAPIVersion,
 			Capabilities:   value.AgentCapabilities,
 		}, panelVersion),
-		AgentUpgradeTarget: value.AgentUpgradeTarget,
-		AgentUpgradeStatus: value.AgentUpgradeStatus,
-		AgentUpgradeError:  value.AgentUpgradeError,
+		AgentUpgradeTarget:        value.AgentUpgradeTarget,
+		AgentUpgradeStatus:        value.AgentUpgradeStatus,
+		AgentUpgradeError:         value.AgentUpgradeError,
+		AgentAppliedConfigVersion: value.AgentAppliedConfigVersion,
+		AgentConfigSyncStatus:     value.AgentConfigSyncStatus,
+		AgentConfigSyncError:      value.AgentConfigSyncError,
+		AgentConfigSyncedAt:       value.AgentConfigSyncedAt,
 	}
 	if value.SystemInfo != nil {
 		response.SystemInfo = &systemInfoResponse{

@@ -1,5 +1,5 @@
 export type RelayNetwork = 'tcp' | 'udp' | 'tcp,udp'
-export type RelayTargetType = 'proxy' | 'manual'
+export type RelayTargetType = 'proxy' | 'landing' | 'manual'
 
 export function relayNetworkLabel(network: RelayNetwork) {
   if (network === 'tcp') return 'TCP'
@@ -10,11 +10,15 @@ export function relayNetworkLabel(network: RelayNetwork) {
 export function relayTargetLabel(value: {
   target_type: RelayTargetType
   target_proxy_name: string
+  target_landing_name: string
   target_host: string
   target_port: number
 }) {
   if (value.target_type === 'proxy') {
     return `${value.target_proxy_name} · ${value.target_port}`
+  }
+  if (value.target_type === 'landing') {
+    return `${value.target_landing_name} · ${relayEndpointLabel(value.target_host, value.target_port)}`
   }
   return relayEndpointLabel(value.target_host, value.target_port)
 }

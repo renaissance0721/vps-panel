@@ -65,6 +65,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Realm 托管
 - Relay TCP / UDP / TCP+UDP 中转
 - Relay 绑定目标 Proxy / 手动地址
+- 导入外部 VLESS / Shadowsocks Landing，并作为 Relay 目标生成中转 URI
 - Relay 可选择目标 Proxy 的某个 Client 用于派生分享 URI
 - VLESS / Shadowsocks Client 分享 URI
 - Proxy / Relay 二维码，本地浏览器生成
@@ -384,7 +385,7 @@ Realm 是 Agent 本地执行 Relay 的实现，不是用户层业务资源名称
 Relay 当前支持：
 
 ```text
-target_type = proxy | manual
+target_type = proxy | landing | manual
 network = tcp | udp | tcp,udp
 entry_host_mode = auto | manual
 ```
@@ -393,6 +394,13 @@ entry_host_mode = auto | manual
 
 - 数据库存 `target_proxy_id`
 - desired state 生成时实时解析目标 Proxy 地址与端口
+
+目标为已导入 Landing：
+
+- `landing_nodes` 保存 owner、public/private、协议、解析后的 Host/Port 和敏感原始 URI
+- private 仅 owner 可见和使用，admin 不绕过；public 可由所有登录用户使用，但仍仅 owner 可编辑或删除
+- Relay 数据库存 `target_landing_id`，desired state 仍只向 Agent 下发解析后的 Host/Port/Network
+- 最终中转 URI 由后端读取当前原始 URI并只替换 Relay 入口 endpoint；普通 Landing / Relay API 不返回原始 URI
 
 目标为手动地址：
 
@@ -2104,6 +2112,7 @@ bash -n <script>
 | Client traffic/quota/expiry | 已实现 | 周期、预警、耗尽、恢复 |
 | Realm / Relay | 已实现 | v2.9.4，TCP/UDP |
 | Relay target Client | 已实现 | 分享元数据，不是 L4 独占认证 |
+| 外部 Landing | 已实现 | VLESS / Shadowsocks 导入、public/private、Relay 目标与中转 URI |
 | QR | 已实现 | 浏览器本地生成 |
 | Subscription | 未实现 | 无订阅 URL / Clash / sing-box 批量输出 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |
@@ -2193,7 +2202,6 @@ Agent：
 - Proxy / Relay 批量操作
 - 配置历史 / rollback UI
 - 拓扑图
-- 外部只读节点
 
 ---
 
@@ -2277,6 +2285,7 @@ Panel
 │   ├── VLESS TLS / REALITY
 │   ├── Shadowsocks 2022
 │   └── Client
+├── Landing
 ├── Relay
 ├── Share / QR
 └── Backup / Restore
@@ -2306,7 +2315,7 @@ Server
 ├── Proxy
 │   └── Client
 └── Relay
-    ├── target = Proxy | host:port
+    ├── target = Proxy | Landing | host:port
     └── target_client_id = 分享元数据（可空）
 ```
 
@@ -2321,7 +2330,7 @@ Server
 - [x] SQLite 单体。
 - [x] admin / vip 两级。
 - [x] admin 不绕过 private Server。
-- [x] Server / Proxy / Client / Relay 是当前核心模型。
+- [x] Server / Proxy / Client / Landing / Relay 是当前核心模型。
 - [x] VLESS 固定 TCP + XTLS Vision，TLS / REALITY 二选一。
 - [x] `client_udp443` 是 Client 分享选项，不是服务端 flow。
 - [x] Shadowsocks 使用同一个 Xray / Proxy / Client 模型。

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -58,6 +59,10 @@ func (s *server) clientForUser(ctx context.Context, user auth.User, id int64) (p
 	return value, nil
 }
 
+func (s *server) landingForUser(ctx context.Context, user auth.User, id int64) (landingstore.Landing, error) {
+	return s.landings.Get(ctx, id, user.ID)
+}
+
 func (s *server) relayForUser(ctx context.Context, user auth.User, id int64) (relaystore.Relay, error) {
 	value, err := s.relays.Get(ctx, id)
 	if err != nil {
@@ -76,6 +81,17 @@ func (s *server) relayForUser(ctx context.Context, user auth.User, id int64) (re
 		}
 		if _, err := s.proxyForUser(ctx, user, *value.TargetProxyID); err != nil {
 			if errors.Is(err, proxystore.ErrNotFound) {
+				return relaystore.Relay{}, relaystore.ErrNotFound
+			}
+			return relaystore.Relay{}, err
+		}
+	}
+	if value.TargetType == relaystore.TargetLanding {
+		if value.TargetLandingID == nil {
+			return relaystore.Relay{}, relaystore.ErrNotFound
+		}
+		if _, err := s.landingForUser(ctx, user, *value.TargetLandingID); err != nil {
+			if errors.Is(err, landingstore.ErrNotFound) {
 				return relaystore.Relay{}, relaystore.ErrNotFound
 			}
 			return relaystore.Relay{}, err

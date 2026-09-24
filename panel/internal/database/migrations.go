@@ -68,6 +68,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateRelayTargetClient(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateRelayLandingTarget(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateProxyProtocols(ctx, db); err != nil {
 		return err
 	}
@@ -79,6 +82,105 @@ func migrate(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func migrateRelayLandingTarget(ctx context.Context, db *sql.DB) error {
+	var tableSQL string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'relays'`,
+	).Scan(&tableSQL); err != nil {
+		return fmt.Errorf("inspect relays table: %w", err)
+	}
+	var columnCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('relays') WHERE name = 'target_landing_id'`,
+	).Scan(&columnCount); err != nil {
+		return fmt.Errorf("inspect relays.target_landing_id: %w", err)
+	}
+	if columnCount != 0 && strings.Contains(strings.ToLower(tableSQL), "'landing'") {
+		if _, err := db.ExecContext(ctx,
+			`CREATE INDEX IF NOT EXISTS idx_relays_target_landing_id ON relays(target_landing_id)`,
+		); err != nil {
+			return fmt.Errorf("create relays target landing index: %w", err)
+		}
+		return nil
+	}
+
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open relay landing migration connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for relay landing migration: %w", err)
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin relay landing migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE relays_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
+			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
+				CHECK (entry_host_mode IN ('auto', 'manual')),
+			entry_host TEXT NOT NULL DEFAULT '',
+			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'landing', 'manual')),
+			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			target_client_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
+			target_landing_id INTEGER NULL REFERENCES landing_nodes(id) ON DELETE RESTRICT,
+			target_host TEXT NOT NULL DEFAULT '',
+			target_port INTEGER CHECK (target_port BETWEEN 1 AND 65535),
+			network TEXT NOT NULL CHECK (network IN ('tcp', 'udp', 'tcp,udp')),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK (
+				(target_type = 'proxy' AND target_proxy_id IS NOT NULL AND target_landing_id IS NULL AND target_host = '' AND target_port IS NULL)
+				OR
+				(target_type = 'landing' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_landing_id IS NOT NULL AND target_host = '' AND target_port IS NULL)
+				OR
+				(target_type = 'manual' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_landing_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
+			)
+		)`,
+		`INSERT INTO relays_new
+			(id, server_id, name, listen_address, listen_port, entry_host_mode, entry_host,
+			 target_type, target_proxy_id, target_client_id, target_landing_id, target_host,
+			 target_port, network, enabled, created_at, updated_at)
+		 SELECT id, server_id, name, listen_address, listen_port, entry_host_mode, entry_host,
+			 target_type, target_proxy_id, target_client_id, NULL, target_host,
+			 target_port, network, enabled, created_at, updated_at FROM relays`,
+		`DROP TABLE relays`,
+		`ALTER TABLE relays_new RENAME TO relays`,
+		`CREATE INDEX idx_relays_server_id ON relays(server_id)`,
+		`CREATE INDEX idx_relays_target_proxy_id ON relays(target_proxy_id)`,
+		`CREATE INDEX idx_relays_target_landing_id ON relays(target_landing_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate relay landing target: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit relay landing migration: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after relay landing migration: %w", err)
+	}
+	rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check relay landing foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("relay landing migration left invalid foreign keys")
+	}
+	return rows.Err()
 }
 
 func migrateAgentMetadata(ctx context.Context, db *sql.DB) error {

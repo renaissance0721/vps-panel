@@ -8,6 +8,7 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
@@ -19,6 +20,7 @@ type server struct {
 	authService  *auth.Service
 	servers      *serverstore.Service
 	proxies      *proxystore.Service
+	landings     *landingstore.Service
 	relays       *relaystore.Service
 	orders       *listorder.Store
 	webRoot      string
@@ -50,6 +52,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		authService:  auth.NewService(db),
 		servers:      serverstore.NewService(db),
 		proxies:      proxystore.NewService(db),
+		landings:     landingstore.NewService(db),
 		relays:       relaystore.NewService(db),
 		orders:       listorder.NewStore(db),
 		webRoot:      webRoot,
@@ -103,11 +106,17 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("DELETE /api/clients/{id}", s.requireAuthentication(s.deleteProxyClient))
 	mux.HandleFunc("POST /api/clients/{id}/traffic/reset", s.requireAuthentication(s.resetProxyClientTraffic))
 	mux.HandleFunc("GET /api/clients/{id}/share", s.requireAuthentication(s.getProxyClientShare))
+	mux.HandleFunc("GET /api/landings", s.requireAuthentication(s.listLandings))
+	mux.HandleFunc("POST /api/landings", s.requireAuthentication(s.createLanding))
+	mux.HandleFunc("GET /api/landings/{id}", s.requireAuthentication(s.getLanding))
+	mux.HandleFunc("PATCH /api/landings/{id}", s.requireAuthentication(s.updateLanding))
+	mux.HandleFunc("DELETE /api/landings/{id}", s.requireAuthentication(s.deleteLanding))
 	mux.HandleFunc("GET /api/relays", s.requireAuthentication(s.listRelays))
 	mux.HandleFunc("POST /api/relays", s.requireAuthentication(s.createRelay))
 	mux.HandleFunc("POST /api/relays/{id}/reorder", s.requireAuthentication(s.reorderRelay))
 	mux.HandleFunc("GET /api/relays/{id}", s.requireAuthentication(s.getRelay))
 	mux.HandleFunc("GET /api/relays/{id}/clients", s.requireAuthentication(s.getRelayClients))
+	mux.HandleFunc("GET /api/relays/{id}/landing-share", s.requireAuthentication(s.getRelayLandingShare))
 	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAuthentication(s.updateRelay))
 	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAuthentication(s.deleteRelay))
 	mux.HandleFunc("GET /install-agent.sh", s.installAgent)

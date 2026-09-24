@@ -45,6 +45,15 @@ func (s *Service) BumpForProxyTarget(ctx context.Context, proxyID, excludeServer
 		 ORDER BY relays.server_id`, proxyID, excludeServerID)
 }
 
+func (s *Service) BumpForLandingTarget(ctx context.Context, landingID int64) ([]Mutation, error) {
+	return s.bumpDependencies(ctx,
+		`SELECT DISTINCT relays.server_id FROM relays
+		 JOIN servers ON servers.id = relays.server_id
+		 WHERE relays.target_type = 'landing' AND relays.target_landing_id = ?
+		   AND servers.archived_at IS NULL
+		 ORDER BY relays.server_id`, landingID)
+}
+
 func (s *Service) BumpForAutoTargetServer(ctx context.Context, targetServerID int64) ([]Mutation, error) {
 	return s.bumpDependencies(ctx,
 		`SELECT DISTINCT relays.server_id FROM relays
@@ -106,6 +115,12 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 	}
 	if count != 1 {
 		return 0, ErrServerNotFound
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+		now.Unix(), serverID,
+	); err != nil {
+		return 0, fmt.Errorf("mark Agent config sync pending: %w", err)
 	}
 	var version int64
 	if err := tx.QueryRowContext(ctx,

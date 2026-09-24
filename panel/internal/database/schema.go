@@ -150,6 +150,21 @@ func schemaStatements() []string {
 			PRIMARY KEY (user_id, proxy_id),
 			UNIQUE (user_id, position)
 		)`,
+		`CREATE TABLE IF NOT EXISTS landing_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id),
+			name TEXT NOT NULL,
+			visibility TEXT NOT NULL DEFAULT 'private'
+				CHECK (visibility IN ('private', 'public')),
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+			uri TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_landing_nodes_owner_user_id ON landing_nodes(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_landing_nodes_visibility ON landing_nodes(visibility)`,
 		`CREATE TABLE IF NOT EXISTS relays (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -159,9 +174,10 @@ func schemaStatements() []string {
 			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
 				CHECK (entry_host_mode IN ('auto', 'manual')),
 			entry_host TEXT NOT NULL DEFAULT '',
-			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'manual')),
+			target_type TEXT NOT NULL CHECK (target_type IN ('proxy', 'landing', 'manual')),
 			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
 			target_client_id INTEGER NULL REFERENCES clients(id) ON DELETE SET NULL,
+			target_landing_id INTEGER NULL REFERENCES landing_nodes(id) ON DELETE RESTRICT,
 			target_host TEXT NOT NULL DEFAULT '',
 			target_port INTEGER CHECK (target_port BETWEEN 1 AND 65535),
 			network TEXT NOT NULL CHECK (network IN ('tcp', 'udp', 'tcp,udp')),
@@ -169,9 +185,11 @@ func schemaStatements() []string {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			CHECK (
-				(target_type = 'proxy' AND target_proxy_id IS NOT NULL AND target_host = '' AND target_port IS NULL)
+				(target_type = 'proxy' AND target_proxy_id IS NOT NULL AND target_landing_id IS NULL AND target_host = '' AND target_port IS NULL)
 				OR
-				(target_type = 'manual' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
+				(target_type = 'landing' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_landing_id IS NOT NULL AND target_host = '' AND target_port IS NULL)
+				OR
+				(target_type = 'manual' AND target_proxy_id IS NULL AND target_client_id IS NULL AND target_landing_id IS NULL AND target_host != '' AND target_port IS NOT NULL)
 			)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,

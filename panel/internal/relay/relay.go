@@ -49,10 +49,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO relays
 		 (server_id, name, listen_address, listen_port, entry_host_mode, entry_host,
-		  target_type, target_proxy_id, target_client_id, target_host, target_port, network, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  target_type, target_proxy_id, target_client_id, target_landing_id, target_host, target_port, network, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		value.ServerID, value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
-		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), value.TargetHost, nullablePort(value), value.Network,
+		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
@@ -96,10 +96,10 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	}
 	_, err = tx.ExecContext(ctx,
 		`UPDATE relays SET name = ?, listen_address = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?,
-		 target_type = ?, target_proxy_id = ?, target_client_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
+		 target_type = ?, target_proxy_id = ?, target_client_id = ?, target_landing_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
 		 WHERE id = ?`,
 		value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
-		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), value.TargetHost, nullablePort(value), value.Network,
+		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), id,
 	)
 	if err != nil {
@@ -146,7 +146,9 @@ func list(ctx context.Context, query interface {
 	rows, err := query.QueryContext(ctx,
 		`SELECT relays.id, relays.server_id, source.name, COALESCE(source_info.public_ipv4, ''),
 		 relays.name, relays.listen_address, relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type,
-		 relays.target_proxy_id, relays.target_client_id, target_client.name, relays.target_host, relays.target_port,
+		 relays.target_proxy_id, relays.target_client_id, target_client.name, relays.target_landing_id,
+		 target_landing.name, target_landing.protocol, target_landing.visibility, target_landing.host, target_landing.port,
+		 relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
 		 target_proxy.name, target_proxy.listen_port, target_proxy.entry_host_mode,
 		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at
@@ -155,6 +157,7 @@ func list(ctx context.Context, query interface {
 		 LEFT JOIN server_system_info AS source_info ON source_info.server_id = source.id
 		 LEFT JOIN proxies AS target_proxy ON target_proxy.id = relays.target_proxy_id
 		 LEFT JOIN clients AS target_client ON target_client.id = relays.target_client_id
+		 LEFT JOIN landing_nodes AS target_landing ON target_landing.id = relays.target_landing_id
 		 LEFT JOIN servers AS target_server ON target_server.id = target_proxy.server_id
 		 LEFT JOIN server_system_info AS target_info ON target_info.server_id = target_server.id `+condition,
 		arguments...,
@@ -166,14 +169,17 @@ func list(ctx context.Context, query interface {
 	values := make([]Relay, 0)
 	for rows.Next() {
 		var value Relay
-		var targetProxyID, targetClientID, storedTargetPort, proxyPort, targetArchived sql.NullInt64
-		var targetProxyName, targetClientName, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
+		var targetProxyID, targetClientID, targetLandingID, storedTargetPort, proxyPort, landingPort, targetArchived sql.NullInt64
+		var targetProxyName, targetClientName, targetLandingName, targetLandingProtocol, targetLandingVisibility sql.NullString
+		var targetLandingHost, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.ServerID, &value.ServerName, &value.ServerPublicIPv4,
 			&value.Name, &value.ListenAddress, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType,
-			&targetProxyID, &targetClientID, &targetClientName, &value.TargetHost, &storedTargetPort,
+			&targetProxyID, &targetClientID, &targetClientName, &targetLandingID,
+			&targetLandingName, &targetLandingProtocol, &targetLandingVisibility, &targetLandingHost, &landingPort,
+			&value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
 			&targetProxyName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
 		); err != nil {
@@ -200,8 +206,19 @@ func list(ctx context.Context, query interface {
 			value.TargetClientID = &id
 			value.TargetClientName = targetClientName.String
 		}
+		if targetLandingID.Valid {
+			id := targetLandingID.Int64
+			value.TargetLandingID = &id
+		}
 		if value.TargetType == TargetManual {
 			value.TargetPort = int(storedTargetPort.Int64)
+			value.TargetAddressReady = true
+		} else if value.TargetType == TargetLanding && targetLandingID.Valid && landingPort.Valid {
+			value.TargetLandingName = targetLandingName.String
+			value.TargetLandingProtocol = targetLandingProtocol.String
+			value.TargetLandingVisibility = targetLandingVisibility.String
+			value.TargetHost = targetLandingHost.String
+			value.TargetPort = int(landingPort.Int64)
 			value.TargetAddressReady = true
 		} else if targetProxyID.Valid && proxyPort.Valid && !targetArchived.Valid {
 			value.TargetProxyName = targetProxyName.String
@@ -225,16 +242,16 @@ func getForMutation(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id int64) (Relay, error) {
 	var value Relay
-	var targetProxyID, targetClientID, targetPort sql.NullInt64
+	var targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
 	var enabled int
 	err := query.QueryRowContext(ctx,
 		`SELECT relays.id, relays.server_id, relays.name, relays.listen_address,
-		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id, relays.target_client_id,
+		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id, relays.target_client_id, relays.target_landing_id,
 		 relays.target_host, relays.target_port, relays.network, relays.enabled
 		 FROM relays JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(&value.ID, &value.ServerID, &value.Name, &value.ListenAddress,
-		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID, &targetClientID,
+		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID, &targetClientID, &targetLandingID,
 		&value.TargetHost, &targetPort, &value.Network, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Relay{}, ErrNotFound
@@ -249,6 +266,10 @@ func getForMutation(ctx context.Context, query interface {
 	if targetClientID.Valid {
 		id := targetClientID.Int64
 		value.TargetClientID = &id
+	}
+	if targetLandingID.Valid {
+		id := targetLandingID.Int64
+		value.TargetLandingID = &id
 	}
 	if targetPort.Valid {
 		value.TargetPort = int(targetPort.Int64)

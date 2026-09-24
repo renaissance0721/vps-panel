@@ -253,6 +253,18 @@ h1 {
   margin-bottom: 20px;
 }
 
+.relay-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.relay-inline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .proxy-table {
   min-width: 1080px;
 }
@@ -876,6 +888,10 @@ h1 {
   .proxy-toolbar,
   .relay-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .relay-toolbar-actions {
+    justify-content: flex-end;
   }
 
   .mobile-header button {

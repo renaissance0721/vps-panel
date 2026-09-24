@@ -20,7 +20,8 @@ func normalizeCreate(input CreateInput) (Relay, error) {
 		ServerID: input.ServerID, Name: input.Name, ListenAddress: listenAddress,
 		ListenPort: input.ListenPort, EntryHostMode: input.EntryHostMode, EntryHost: input.EntryHost,
 		TargetType:    input.TargetType,
-		TargetProxyID: input.TargetProxyID, TargetClientID: input.TargetClientID, TargetHost: input.TargetHost,
+		TargetProxyID: input.TargetProxyID, TargetClientID: input.TargetClientID, TargetLandingID: input.TargetLandingID,
+		TargetHost: input.TargetHost,
 		TargetPort: input.TargetPort, Network: input.Network, Enabled: input.Enabled,
 	})
 }
@@ -65,6 +66,10 @@ func ValidateUpdateInput(value Relay, input UpdateInput) (Relay, error) {
 		value.TargetClientID = &id
 	} else if targetProxyChanged {
 		value.TargetClientID = nil
+	}
+	if input.TargetLandingID != nil {
+		id := *input.TargetLandingID
+		value.TargetLandingID = &id
 	}
 	if input.TargetHost != nil {
 		value.TargetHost = *input.TargetHost
@@ -118,9 +123,19 @@ func normalizeRelay(value Relay) (Relay, error) {
 		}
 		value.TargetHost = ""
 		value.TargetPort = 0
+		value.TargetLandingID = nil
+	case TargetLanding:
+		if value.TargetLandingID == nil || *value.TargetLandingID <= 0 {
+			return Relay{}, ErrInvalidTarget
+		}
+		value.TargetProxyID = nil
+		value.TargetClientID = nil
+		value.TargetHost = ""
+		value.TargetPort = 0
 	case TargetManual:
 		value.TargetProxyID = nil
 		value.TargetClientID = nil
+		value.TargetLandingID = nil
 		host, err := normalizeHost(value.TargetHost)
 		if err != nil || !validPort(value.TargetPort) {
 			return Relay{}, ErrInvalidTarget
@@ -135,7 +150,21 @@ func normalizeRelay(value Relay) (Relay, error) {
 func validateTarget(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, value *Relay) error {
-	if value.TargetType != TargetProxy {
+	if value.TargetType == TargetManual {
+		value.TargetAddressReady = true
+		return nil
+	}
+	if value.TargetType == TargetLanding {
+		var landingID int64
+		err := query.QueryRowContext(ctx,
+			`SELECT id FROM landing_nodes WHERE id = ?`, *value.TargetLandingID,
+		).Scan(&landingID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLandingNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("validate relay target landing: %w", err)
+		}
 		value.TargetAddressReady = true
 		return nil
 	}

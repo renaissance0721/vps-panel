@@ -51,7 +51,8 @@ func TestInstallAgentScript(t *testing.T) {
 		"RestartSec=3",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system",
+		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /var/lib/vps-panel/agent /etc/systemd/system",
+		"install -d -m 0700 /var/lib/vps-panel/agent",
 		"systemctl enable",
 		"systemctl restart",
 		`systemctl restart "${SERVICE_NAME}.service"`,
@@ -75,6 +76,16 @@ func TestInstallAgentScript(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "Restart=always") {
 		t.Fatal("installer restarts a deliberately stopped Agent")
+	}
+	for _, weakened := range []string{
+		"ProtectSystem=false",
+		"\nReadWritePaths=/var/lib\n",
+		"\nReadWritePaths=/var/lib/vps-panel\n",
+		"/var/lib/vps-panel/agent/firewall",
+	} {
+		if strings.Contains(response.Body.String(), weakened) {
+			t.Fatalf("installer contains an unwanted sandbox setting %q", weakened)
+		}
 	}
 	registrationIndex := strings.Index(response.Body.String(), `"$download_path" register --server "$server_url" --token "$enrollment_token"`)
 	stagingIndex := strings.Index(response.Body.String(), `staged_binary=$(mktemp "${AGENT_DIR}/.vps-panel-agent.XXXXXX")`)

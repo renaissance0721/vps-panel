@@ -101,7 +101,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /etc/systemd/system
+ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /var/lib/vps-panel/agent /etc/systemd/system
 
 [Install]
 WantedBy=multi-user.target
@@ -219,6 +219,7 @@ install -d -m 0700 "$CONFIG_DIR"
 install -d -m 0755 "$AGENT_DIR"
 install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm /opt/vps-panel/acme
 install -d -m 0700 /var/lib/vps-panel/acme
+install -d -m 0700 /var/lib/vps-panel/agent
 install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm
 staged_binary=$(mktemp "${AGENT_DIR}/.vps-panel-agent.XXXXXX")
 install -m 0755 "$download_path" "$staged_binary"

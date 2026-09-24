@@ -52,6 +52,7 @@ func TestUpgradeAgentScriptMatchesInstallerAndPreparesSandbox(t *testing.T) {
 	for _, command := range []string{
 		`install -d -m 0755 "$AGENT_DIR"`,
 		`install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm`,
+		`install -d -m 0700 /var/lib/vps-panel/agent`,
 		`install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm`,
 	} {
 		if !strings.Contains(directoryCommands, command) || !strings.Contains(installer, command) {
@@ -61,6 +62,16 @@ func TestUpgradeAgentScriptMatchesInstallerAndPreparesSandbox(t *testing.T) {
 	if strings.Index(upgrade, directoryCommands) >= strings.Index(upgrade, "changed=true\ninstall -m 0755") ||
 		strings.Index(upgrade, directoryCommands) >= strings.LastIndex(upgrade, "\nrestart_service\nchanged=false") {
 		t.Fatal("sandbox directories must exist before binary/service replacement and restart")
+	}
+	for _, unwanted := range []string{
+		"ProtectSystem=false",
+		"\nReadWritePaths=/var/lib\n",
+		"\nReadWritePaths=/var/lib/vps-panel\n",
+		"/var/lib/vps-panel/agent/firewall",
+	} {
+		if strings.Contains(upgrade, unwanted) {
+			t.Fatalf("upgrade script contains an unwanted sandbox setting %q", unwanted)
+		}
 	}
 	for _, required := range []string{
 		`systemctl status "${SERVICE_NAME}.service" --no-pager --lines=0 >&2 || true`,

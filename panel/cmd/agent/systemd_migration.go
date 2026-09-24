@@ -16,6 +16,7 @@ const (
 	agentSystemdMigrationRestartCommand = "_migrate-systemd-sandbox"
 	agentSystemdMigrationOutputMax      = 4 << 10
 	agentSystemdMigrationTimeout        = 10 * time.Second
+	agentSystemdSandboxDropIn           = "[Service]\nReadWritePaths=/opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /var/lib/vps-panel/agent\n"
 	agentRealmSandboxDropIn             = "[Service]\nReadWritePaths=/opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme\n"
 	agentLegacyRealmSandboxDropIn       = "[Service]\nReadWritePaths=/opt/vps-panel/realm /etc/vps-panel/realm\n"
 )
@@ -53,7 +54,7 @@ func migrateAgentSystemdSandbox() (bool, error) {
 	if err != nil {
 		return false, failAgentSystemdMigration(backup, err)
 	}
-	if hasAgentRealmWritablePaths(writablePaths) && ready {
+	if hasAgentWritablePaths(writablePaths) && ready {
 		return false, nil
 	}
 	if err := scheduleAgentMigrationRestart(backup); err != nil {
@@ -79,7 +80,7 @@ func failAgentSystemdMigration(backup string, migrationErr error) error {
 }
 
 func agentSystemdDirectoriesReady() (bool, error) {
-	for _, directory := range []string{"/opt/vps-panel/agent", "/opt/vps-panel/xray", "/etc/vps-panel/xray", "/opt/vps-panel/realm", "/etc/vps-panel/realm", "/opt/vps-panel/acme", "/var/lib/vps-panel/acme"} {
+	for _, directory := range []string{"/opt/vps-panel/agent", "/opt/vps-panel/xray", "/etc/vps-panel/xray", "/opt/vps-panel/realm", "/etc/vps-panel/realm", "/opt/vps-panel/acme", "/var/lib/vps-panel/acme", "/var/lib/vps-panel/agent"} {
 		info, err := os.Stat(rootedPath(agentSystemdMigrationRoot, directory))
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -106,6 +107,7 @@ func prepareAgentSystemdDirectories() error {
 		{"/etc/vps-panel/xray", 0o700},
 		{"/etc/vps-panel/realm", 0o700},
 		{"/var/lib/vps-panel/acme", 0o700},
+		{"/var/lib/vps-panel/agent", 0o700},
 	} {
 		path := rootedPath(agentSystemdMigrationRoot, entry.path)
 		if err := os.MkdirAll(path, entry.mode); err != nil {
@@ -235,7 +237,7 @@ func prepareStagedAgentSystemdSandbox(executable string) error {
 	if err != nil {
 		return err
 	}
-	if hasAgentRealmWritablePaths(writablePaths) && ready {
+	if hasAgentWritablePaths(writablePaths) && ready {
 		return nil
 	}
 	unit := fmt.Sprintf("vps-panel-agent-bootstrap-%d", time.Now().UnixNano())
@@ -262,12 +264,13 @@ func currentAgentSystemdWritablePaths(ctx context.Context) (string, error) {
 	return string(output), nil
 }
 
-func hasAgentRealmWritablePaths(value string) bool {
+func hasAgentWritablePaths(value string) bool {
 	required := map[string]bool{
-		"/opt/vps-panel/realm":    false,
-		"/etc/vps-panel/realm":    false,
-		"/opt/vps-panel/acme":     false,
-		"/var/lib/vps-panel/acme": false,
+		"/opt/vps-panel/realm":     false,
+		"/etc/vps-panel/realm":     false,
+		"/opt/vps-panel/acme":      false,
+		"/var/lib/vps-panel/acme":  false,
+		"/var/lib/vps-panel/agent": false,
 	}
 	for _, field := range strings.Fields(value) {
 		path := strings.TrimLeft(field, "-+!")
@@ -276,7 +279,8 @@ func hasAgentRealmWritablePaths(value string) bool {
 		}
 	}
 	return required["/opt/vps-panel/realm"] && required["/etc/vps-panel/realm"] &&
-		required["/opt/vps-panel/acme"] && required["/var/lib/vps-panel/acme"]
+		required["/opt/vps-panel/acme"] && required["/var/lib/vps-panel/acme"] &&
+		required["/var/lib/vps-panel/agent"]
 }
 
 func runSystemdMigrationCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
@@ -374,7 +378,7 @@ func applyAgentSystemdSandboxMigration() (bool, error) {
 		return false, err
 	}
 	createdDropIn := false
-	if !hasAgentRealmWritablePaths(writablePaths) {
+	if !hasAgentWritablePaths(writablePaths) {
 		if err := os.MkdirAll(filepath.Dir(agentSystemdDropInPath), 0o755); err != nil {
 			return false, fmt.Errorf("prepare Agent systemd drop-in directory: %w", err)
 		}
@@ -382,10 +386,10 @@ func applyAgentSystemdSandboxMigration() (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("read Agent systemd drop-in: %w", err)
 		}
-		if exists && string(existing) != agentRealmSandboxDropIn && string(existing) != agentLegacyRealmSandboxDropIn {
+		if exists && string(existing) != agentSystemdSandboxDropIn && string(existing) != agentRealmSandboxDropIn && string(existing) != agentLegacyRealmSandboxDropIn {
 			return false, errors.New("Agent Realm systemd drop-in conflicts with existing configuration")
 		}
-		if _, err := installServiceFile(agentSystemdDropInPath, []byte(agentRealmSandboxDropIn), 0o644); err != nil {
+		if _, err := installServiceFile(agentSystemdDropInPath, []byte(agentSystemdSandboxDropIn), 0o644); err != nil {
 			return false, fmt.Errorf("write Agent systemd sandbox drop-in: %w", err)
 		}
 		createdDropIn = !exists
@@ -397,8 +401,8 @@ func applyAgentSystemdSandboxMigration() (bool, error) {
 	if err != nil {
 		return createdDropIn, err
 	}
-	if !hasAgentRealmWritablePaths(writablePaths) {
-		return createdDropIn, errors.New("verify Agent systemd sandbox: Realm writable paths are still unavailable")
+	if !hasAgentWritablePaths(writablePaths) {
+		return createdDropIn, errors.New("verify Agent systemd sandbox: required writable paths are still unavailable")
 	}
 	ready, err := agentSystemdDirectoriesReady()
 	if err != nil {

@@ -38,6 +38,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerExpiration(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerRenewal(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateAgentEnrollmentPurpose(ctx, db); err != nil {
 		return err
 	}
@@ -587,6 +590,32 @@ func migrateServerExpiration(ctx context.Context, db *sql.DB) error {
 	if columnCount == 0 {
 		if _, err := db.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN expires_at INTEGER`); err != nil {
 			return fmt.Errorf("add server expires_at column: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateServerRenewal(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"renewal_period_months", "renewal_period_months INTEGER CHECK (renewal_period_months IS NULL OR renewal_period_months IN (1, 3, 6, 12, 24, 36))"},
+		{"auto_renew", "auto_renew INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew IN (0, 1))"},
+		{"renewal_anchor_day", "renewal_anchor_day INTEGER CHECK (renewal_anchor_day IS NULL OR renewal_anchor_day BETWEEN 1 AND 31)"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect servers.%s column: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE servers ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add servers.%s column: %w", column.name, err)
 		}
 	}
 	return nil

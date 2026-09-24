@@ -54,7 +54,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Agent 单台原地升级，以及管理员批量升级所有当前可升级的官方 Agent
 - Agent API v1 identity metadata 与 capability 持久化
 - Proxy / Relay / 出站偏好 capability enforcement 与 diagnostics UI 控制
-- Server 到期日期
+- Server 到期与续费设置
 - Server 月流量统计、额度、重置周期、手动校准
 - Panel ↔ Agent desired-state 配置同步
 - Xray 托管
@@ -189,6 +189,9 @@ block_china_inbound = 0 | 1
 desired_state_version
 archived_at
 expires_at
+renewal_period_months = NULL | 1 | 3 | 6 | 12 | 24 | 36
+auto_renew = 0 | 1
+renewal_anchor_day = NULL | 1..31
 monthly_traffic_limit_bytes
 traffic_count_mode = single | bidirectional
 traffic_reset_day
@@ -230,6 +233,15 @@ UTC+8
 数据库时间戳继续使用 UTC / Unix Timestamp。
 
 如果月重置日为 29 / 30 / 31，而当月不存在该日期，使用该月最后一天同一时间。
+
+### Server 到期与续费
+
+- `expires_at` 仍表示 Asia/Shanghai 当天 23:59:59。
+- 续费周期固定支持 1 / 3 / 6 / 12 / 24 / 36 个月，也可以不设置。
+- 自动续费仅按周期顺延 Panel 中记录的到期日期，不调用 VPS 商家 API，也不代表商家已付款。
+- 月末和闰年按 `renewal_anchor_day` 计算目标月份的有效日期，避免经过短月份后续费日漂移。
+- Panel 启动时会追赶停机期间错过的周期，之后每小时检查一次。
+- 已移除的 Server 保留续费配置，但不会自动续费。
 
 ---
 
@@ -1515,7 +1527,7 @@ Server 的详细 IP、系统信息、Agent 版本、资源使用等放在详情 
 
 - 基本信息
 - access 范围
-- 到期日期
+- 到期日期、续费周期和自动续费
 - Agent / system info
 - CPU / RAM / Disk / Uptime
 - 中国 IP 入站限制：开关、desired/apply 状态和最近配置错误；使用 APNIC IPv4 / IPv6 数据且不影响 SSH

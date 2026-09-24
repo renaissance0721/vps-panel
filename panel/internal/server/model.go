@@ -32,6 +32,8 @@ var (
 	ErrInvalidVisibility         = errors.New("invalid server visibility")
 	ErrInvalidServerAccess       = errors.New("invalid server access list")
 	ErrInvalidOutboundPreference = errors.New("invalid server outbound preference")
+	ErrInvalidRenewalPeriod      = errors.New("invalid server renewal period")
+	ErrAutoRenewRequirements     = errors.New("automatic renewal requires expiration and renewal period")
 )
 
 type Server struct {
@@ -45,6 +47,8 @@ type Server struct {
 	AccessUserIDs             []int64
 	ArchivedAt                *time.Time
 	ExpiresAt                 *time.Time
+	RenewalPeriodMonths       *int
+	AutoRenew                 bool
 	MonthlyTrafficLimitBytes  *int64
 	TrafficCountMode          string
 	TrafficResetDay           int

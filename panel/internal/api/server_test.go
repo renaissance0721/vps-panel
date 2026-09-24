@@ -89,6 +89,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.ExpiresAt != nil {
 		t.Fatalf("new server expires_at = %v, want null", created.Server.ExpiresAt)
 	}
+	if created.Server.RenewalPeriodMonths != nil || created.Server.AutoRenew {
+		t.Fatalf("new server renewal settings = (%v, %t), want null and false", created.Server.RenewalPeriodMonths, created.Server.AutoRenew)
+	}
 	if created.Server.MonthlyTrafficLimitBytes != nil || created.Server.TrafficCountMode != "single" ||
 		created.Server.TrafficResetDay != 1 || created.Server.TrafficResetTime != "00:00" ||
 		created.Server.TrafficUsedBytes != 0 {
@@ -248,7 +251,9 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("clear traffic adjustment = (%d, %q)", clearAdjustmentResponse.Code, clearAdjustmentResponse.Body.String())
 	}
 	updateExpirationResponse := performRequest(
-		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,
+		t, handler, http.MethodPatch, serverPath, map[string]any{
+			"expires_at": "2026-10-31", "renewal_period_months": 1, "auto_renew": true,
+		}, sessionCookie,
 	)
 	if updateExpirationResponse.Code != http.StatusOK {
 		t.Fatalf("update expiration status = %d, body = %q", updateExpirationResponse.Code, updateExpirationResponse.Body.String())
@@ -259,13 +264,17 @@ func TestServerAPILifecycle(t *testing.T) {
 	if err := json.Unmarshal(updateExpirationResponse.Body.Bytes(), &expirationUpdated); err != nil {
 		t.Fatalf("decode updated expiration: %v", err)
 	}
-	expectedExpiration := time.Date(2026, 12, 31, 15, 59, 59, 0, time.UTC)
-	if expirationUpdated.Server.ExpiresAt == nil || !expirationUpdated.Server.ExpiresAt.Equal(expectedExpiration) {
-		t.Fatalf("Asia/Shanghai expiration = %v, want %v", expirationUpdated.Server.ExpiresAt, expectedExpiration)
+	expectedRenewalExpiration := time.Date(2026, 10, 31, 15, 59, 59, 0, time.UTC)
+	if expirationUpdated.Server.ExpiresAt == nil || !expirationUpdated.Server.ExpiresAt.Equal(expectedRenewalExpiration) ||
+		expirationUpdated.Server.RenewalPeriodMonths == nil || *expirationUpdated.Server.RenewalPeriodMonths != 1 ||
+		!expirationUpdated.Server.AutoRenew {
+		t.Fatalf("Asia/Shanghai expiration = %v, want %v", expirationUpdated.Server.ExpiresAt, expectedRenewalExpiration)
 	}
 	getWithExpiration := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getWithExpiration.Code != http.StatusOK ||
-		!strings.Contains(getWithExpiration.Body.String(), `"expires_at":"2026-12-31T15:59:59Z"`) {
+		!strings.Contains(getWithExpiration.Body.String(), `"expires_at":"2026-10-31T15:59:59Z"`) ||
+		!strings.Contains(getWithExpiration.Body.String(), `"renewal_period_months":1`) ||
+		!strings.Contains(getWithExpiration.Body.String(), `"auto_renew":true`) {
 		t.Fatalf("get server expiration = (%d, %q)", getWithExpiration.Code, getWithExpiration.Body.String())
 	}
 	for _, invalidExpiration := range []any{
@@ -276,6 +285,14 @@ func TestServerAPILifecycle(t *testing.T) {
 		)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid expiration %v status = %d, body = %q", invalidExpiration, response.Code, response.Body.String())
+		}
+	}
+	for _, invalidPeriod := range []int{0, 2, 4, 7, 18, 25, 35, 37, -1} {
+		response := performRequest(
+			t, handler, http.MethodPatch, serverPath, map[string]any{"renewal_period_months": invalidPeriod}, sessionCookie,
+		)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("invalid renewal period %d status = %d, body = %q", invalidPeriod, response.Code, response.Body.String())
 		}
 	}
 	missingExpiration := performRequest(
@@ -296,12 +313,26 @@ func TestServerAPILifecycle(t *testing.T) {
 	if clearExpirationResponse.Code != http.StatusOK || !strings.Contains(clearExpirationResponse.Body.String(), `"expires_at":null`) {
 		t.Fatalf("clear expiration = (%d, %q)", clearExpirationResponse.Code, clearExpirationResponse.Body.String())
 	}
+	if !strings.Contains(clearExpirationResponse.Body.String(), `"renewal_period_months":null`) ||
+		!strings.Contains(clearExpirationResponse.Body.String(), `"auto_renew":false`) {
+		t.Fatalf("clear expiration did not normalize renewal settings: %q", clearExpirationResponse.Body.String())
+	}
+	for _, payload := range []map[string]any{
+		{"auto_renew": true},
+		{"renewal_period_months": 1, "auto_renew": true},
+	} {
+		response := performRequest(t, handler, http.MethodPatch, serverPath, payload, sessionCookie)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "自动续费需要设置到期日期和续费周期") {
+			t.Fatalf("invalid automatic renewal %v = (%d, %q)", payload, response.Code, response.Body.String())
+		}
+	}
 	setExpirationAgain := performRequest(
 		t, handler, http.MethodPatch, serverPath, map[string]any{"expires_at": "2026-12-31"}, sessionCookie,
 	)
 	if setExpirationAgain.Code != http.StatusOK {
 		t.Fatalf("restore expiration status = %d, body = %q", setExpirationAgain.Code, setExpirationAgain.Body.String())
 	}
+	expectedExpiration := time.Date(2026, 12, 31, 15, 59, 59, 0, time.UTC)
 	regenerateResponse := performRequest(
 		t, handler, http.MethodPost, serverPath+"/enrollment", nil, sessionCookie,
 	)

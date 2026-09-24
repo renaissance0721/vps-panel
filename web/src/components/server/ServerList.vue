@@ -24,6 +24,7 @@ const props = defineProps<{
     | 'trafficWarningLevel'
     | 'trafficUsageLabel'
     | 'formatServerExpiration'
+    | 'renewalPeriodLabel'
     | 'submitting'
     | 'viewServer'
     | 'archiveServer'
@@ -42,6 +43,7 @@ const {
   trafficWarningLevel,
   trafficUsageLabel,
   formatServerExpiration,
+  renewalPeriodLabel,
   submitting,
   viewServer,
   archiveServer,
@@ -128,7 +130,12 @@ async function dropServer(id: number, archived: boolean) {
                       </div>
                     </td>
                     <td>{{ trafficUsageLabel(value) }}</td>
-                    <td>{{ formatServerExpiration(value.expires_at) }}</td>
+                    <td>
+                      <div>{{ formatServerExpiration(value.expires_at) }}</div>
+                      <small v-if="value.expires_at && value.renewal_period_months" class="secondary-text">
+                        {{ renewalPeriodLabel(value.renewal_period_months) }}<template v-if="value.auto_renew"> · 自动续费</template>
+                      </small>
+                    </td>
                     <td class="server-actions">
                       <n-button
                         size="small"

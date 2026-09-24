@@ -60,7 +60,8 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	}
 	for table, columns := range map[string][]string{
 		"servers": {
-			"visibility", "desired_state_version", "monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
+			"visibility", "desired_state_version", "renewal_period_months", "auto_renew", "renewal_anchor_day",
+			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
 		},
 		"agents": {
 			"applied_config_version", "config_sync_status", "config_sync_error", "config_synced_at",

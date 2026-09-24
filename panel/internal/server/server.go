@@ -140,7 +140,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
-		 servers.archived_at, servers.expires_at,
+		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
@@ -184,7 +184,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
-		 servers.archived_at, servers.expires_at,
+		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
@@ -220,7 +220,7 @@ type rowScanner interface {
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var accessUserIDs string
-	var archivedAt, expiresAt, monthlyTrafficLimit, lastSeenAt sql.NullInt64
+	var archivedAt, expiresAt, renewalPeriod, renewalAnchorDay, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var implementation, storedAgentVersion, capabilitiesJSON sql.NullString
 	var apiVersion sql.NullInt64
 	var upgradeTarget, upgradeStatus, upgradeError sql.NullString
@@ -235,6 +235,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var createdAt, updatedAt int64
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion, &accessUserIDs, &archivedAt, &expiresAt,
+		&renewalPeriod, &value.AutoRenew, &renewalAnchorDay,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,
@@ -253,6 +254,10 @@ func scanServer(row rowScanner) (Server, error) {
 	if expiresAt.Valid {
 		expiresTime := time.Unix(expiresAt.Int64, 0).UTC()
 		value.ExpiresAt = &expiresTime
+	}
+	if renewalPeriod.Valid {
+		period := int(renewalPeriod.Int64)
+		value.RenewalPeriodMonths = &period
 	}
 	if monthlyTrafficLimit.Valid && monthlyTrafficLimit.Int64 > 0 {
 		limit := monthlyTrafficLimit.Int64

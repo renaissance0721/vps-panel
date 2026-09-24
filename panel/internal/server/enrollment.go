@@ -20,7 +20,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
-		 servers.archived_at, servers.expires_at,
+		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,

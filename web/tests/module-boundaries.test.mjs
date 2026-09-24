@@ -35,7 +35,8 @@ after(async () => {
 function serverRecord(overrides = {}) {
   return {
     id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
-    archived_at: null, expires_at: null, outbound_preference: 'auto', block_china_inbound: false,
+    archived_at: null, expires_at: null, renewal_period_months: null, auto_renew: false,
+    outbound_preference: 'auto', block_china_inbound: false,
     desired_state_version: 1, monthly_traffic_limit_bytes: null,
     traffic_count_mode: 'single', traffic_reset_day: 1, traffic_reset_time: '00:00',
     traffic_used_bytes: 0, last_seen_at: null, system_info: null, metrics: null,
@@ -155,6 +156,71 @@ test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Mo
   const form = await render('components/server/ServerTrafficForm.vue', model)
   assert.match(form, /月流量额度格式无效/)
   assert.match(form, /type="number"/)
+})
+
+test('Server 到期与续费表单初始化、保存和列表摘要保持紧凑', async t => {
+  const initial = serverRecord({
+    expires_at: '2026-10-31T15:59:59Z', renewal_period_months: 1, auto_renew: false,
+  })
+  const updated = { ...initial, auto_renew: true }
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, init })
+    if (init?.method === 'PATCH') return json({ server: updated })
+    return json({ servers: url.includes('?archived=true') ? [] : [updated] })
+  })
+  const { model } = serverModel()
+  model.servers.value = [initial]
+  model.viewServer(initial)
+  model.openExpirationModal()
+  assert.equal(model.expirationInput.value, '2026-10-31')
+  assert.equal(model.renewalPeriodInput.value, 1)
+  assert.equal(model.autoRenewInput.value, false)
+
+  let form = await render('components/server/ServerExpirationForm.vue', model)
+  for (const label of ['不设置', '月付', '季付', '半年付', '年付', '两年付', '三年付']) assert.match(form, new RegExp(label))
+  assert.match(form, /自动续费/)
+  assert.match(form, /不会向 VPS 商家付款/)
+
+  model.autoRenewInput.value = true
+  await model.saveExpiration()
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    expires_at: '2026-10-31', renewal_period_months: 1, auto_renew: true,
+  })
+
+  model.servers.value = [updated]
+  const list = await render('components/server/ServerList.vue', model)
+  assert.match(list, /2026-10-31/)
+  assert.match(list, /月付[\s\S]*?· 自动续费/)
+  assert.equal((list.match(/<th(?:\s|>)/g) ?? []).length, 6)
+
+  model.viewServer(serverRecord())
+  model.openExpirationModal()
+  form = await render('components/server/ServerExpirationForm.vue', model)
+  assert.match(form, /<button[^>]*disabled[^>]*role="switch"/)
+})
+
+test('Server 详情自动续费开关校验前置条件且归档状态只读', async t => {
+  const active = serverRecord({
+    expires_at: '2026-10-31T15:59:59Z', renewal_period_months: 1, auto_renew: false,
+  })
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    calls.push(init)
+    return json({ server: { ...active, auto_renew: true } })
+  })
+  const { model } = serverModel()
+  model.servers.value = [active]
+  model.viewServer(active)
+  await model.setAutoRenew(active, true)
+  assert.deepEqual(JSON.parse(calls[0].body), { auto_renew: true })
+
+  const archived = { ...active, archived_at: '2026-11-01T00:00:00Z' }
+  model.viewServer(archived)
+  const detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /续费周期/)
+  assert.match(detail, /<button[^>]*disabled[^>]*role="switch"/)
+  assert.doesNotMatch(detail, /aria-label="修改到期日期"/)
 })
 
 test('批量升级入口仅管理员可见，开发版本入口禁用且不能启动', async t => {
@@ -341,18 +407,18 @@ test('服务器详情展示中国 IP 入站限制状态并允许历史开启状�
 
   model.viewServer(serverRecord())
   const unsupportedOff = await render('components/server/ServerDetail.vue', model)
-  const disabledSwitch = unsupportedOff.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  const disabledSwitch = [...unsupportedOff.matchAll(/<button[^>]*role="switch"[^>]*>/g)].at(-1)?.[0] ?? ''
   assert.match(disabledSwitch, /disabled/)
   assert.match(unsupportedOff, /未启用/)
 
   model.viewServer(serverRecord({ ...supported, status: 'online', agent_config_sync_status: 'success', agent_applied_config_version: 1 }))
   const supportedOff = await render('components/server/ServerDetail.vue', model)
-  const supportedSwitch = supportedOff.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  const supportedSwitch = [...supportedOff.matchAll(/<button[^>]*role="switch"[^>]*>/g)].at(-1)?.[0] ?? ''
   assert.doesNotMatch(supportedSwitch, /disabled/)
 
   model.viewServer(serverRecord({ block_china_inbound: true, agent_version_status: 'unknown' }))
   const unsupportedOn = await render('components/server/ServerDetail.vue', model)
-  const enabledSwitch = unsupportedOn.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
+  const enabledSwitch = [...unsupportedOn.matchAll(/<button[^>]*role="switch"[^>]*>/g)].at(-1)?.[0] ?? ''
   assert.doesNotMatch(enabledSwitch, /disabled/)
   assert.match(unsupportedOn, /无法确认/)
   assert.match(unsupportedOn, /仍然生效/)

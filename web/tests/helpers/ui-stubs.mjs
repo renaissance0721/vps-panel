@@ -32,6 +32,11 @@ export const NInput = defineComponent({
   props: ['value'],
   setup: (props, { attrs }) => () => h('input', { ...attrs, value: props.value }),
 })
+export const NSelect = defineComponent({
+  props: ['value', 'options'],
+  setup: (props, { attrs }) => () => h('select', attrs,
+    (props.options ?? []).map(option => h('option', { value: option.value }, option.label))),
+})
 export const NSwitch = defineComponent({
   props: ['value'],
   setup: (props, { attrs }) => () => h('button', { ...attrs, role: 'switch', 'aria-checked': props.value }, String(props.value)),

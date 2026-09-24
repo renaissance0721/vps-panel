@@ -1,3 +1,5 @@
+export type RenewalPeriodMonths = 1 | 3 | 6 | 12 | 24 | 36
+
 export type ServerRecord = {
   id: number
   name: string
@@ -9,6 +11,8 @@ export type ServerRecord = {
   access_user_ids: number[]
   archived_at?: string
   expires_at: string | null
+  renewal_period_months: RenewalPeriodMonths | null
+  auto_renew: boolean
   monthly_traffic_limit_bytes: number | null
   traffic_count_mode: 'single' | 'bidirectional'
   traffic_reset_day: number

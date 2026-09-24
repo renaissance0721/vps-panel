@@ -21,6 +21,7 @@ import type {
   ServerRecord,
   CreatedServer,
   DiagnosticReport,
+  RenewalPeriodMonths,
 } from '../types/server'
 import {
   formatTime,
@@ -43,6 +44,7 @@ import {
   statusLabel,
   formatExpirationDate,
   formatServerExpiration,
+  renewalPeriodLabel,
   canBulkUpgradeAgent,
   chinaInboundConfigNeedsPolling,
 } from '../server'
@@ -112,6 +114,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const copiedCommand = ref(false)
   const copiedUpgradeCommand = ref(false)
   const expirationInput = ref('')
+  const renewalPeriodInput = ref<RenewalPeriodMonths | 0>(0)
+  const autoRenewInput = ref(false)
   const nameModalOpen = ref(false)
   const nameInput = ref('')
   const nameFormError = ref('')
@@ -289,6 +293,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     expirationInput.value = ''
+    renewalPeriodInput.value = 0
+    autoRenewInput.value = false
     serverModalOpen.value = true
   }
 
@@ -592,6 +598,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     copiedCommand.value = false
     expirationModalOpen.value = false
     expirationInput.value = ''
+    renewalPeriodInput.value = 0
+    autoRenewInput.value = false
     trafficModalOpen.value = false
     resetTrafficForm()
     trafficAdjustmentModalOpen.value = false
@@ -717,12 +725,16 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     expirationInput.value = selectedServer.value.expires_at
       ? formatExpirationDate(selectedServer.value.expires_at)
       : ''
+    renewalPeriodInput.value = selectedServer.value.renewal_period_months ?? 0
+    autoRenewInput.value = selectedServer.value.auto_renew
     expirationModalOpen.value = true
   }
 
   function closeExpirationModal() {
     expirationModalOpen.value = false
     expirationInput.value = ''
+    renewalPeriodInput.value = 0
+    autoRenewInput.value = false
   }
 
   async function saveExpiration() {
@@ -731,25 +743,48 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       error.value = '请选择有效的到期日期'
       return
     }
-    await updateExpiration(value)
+    const renewalPeriod = renewalPeriodInput.value || null
+    await updateRenewalSettings(value, renewalPeriod, renewalPeriod !== null && autoRenewInput.value)
   }
 
   async function clearExpiration() {
-    await updateExpiration(null)
+    await updateRenewalSettings(null, null, false)
   }
 
-  async function updateExpiration(expiresAt: string | null) {
+  async function updateRenewalSettings(
+    expiresAt: string | null,
+    renewalPeriodMonths: RenewalPeriodMonths | null,
+    autoRenew: boolean,
+  ) {
     if (!selectedServer.value) return
     const serverID = selectedServer.value.id
     await submit(async () => {
       const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
         method: 'PATCH',
-        body: JSON.stringify({ expires_at: expiresAt }),
+        body: JSON.stringify({
+          expires_at: expiresAt,
+          renewal_period_months: renewalPeriodMonths,
+          auto_renew: autoRenew,
+        }),
       })
       selectedServer.value = response.server
       expirationModalOpen.value = false
       expirationInput.value = ''
+      renewalPeriodInput.value = 0
+      autoRenewInput.value = false
       await loadServers()
+    })
+  }
+
+  async function setAutoRenew(server: ServerRecord, enabled: boolean) {
+    if (submitting.value || server.archived_at || !server.expires_at || !server.renewal_period_months) return
+    await submit(async () => {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${server.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ auto_renew: enabled }),
+      })
+      servers.value = servers.value.map((value) => value.id === server.id ? response.server : value)
+      if (selectedServer.value?.id === server.id) selectedServer.value = response.server
     })
   }
 
@@ -907,6 +942,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     expirationInput.value = ''
+    renewalPeriodInput.value = 0
+    autoRenewInput.value = false
   }
 
   if (getCurrentScope()) onScopeDispose(() => {
@@ -951,6 +988,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     copiedCommand,
     copiedUpgradeCommand,
     expirationInput,
+    renewalPeriodInput,
+    autoRenewInput,
     trafficAdjustmentInput,
     trafficAdjustmentUnit,
     bulkUpgradeModalOpen,
@@ -1006,7 +1045,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     closeExpirationModal,
     saveExpiration,
     clearExpiration,
-    updateExpiration,
+    updateRenewalSettings,
+    setAutoRenew,
     openTrafficAdjustmentModal,
     closeTrafficAdjustmentModal,
     resetTrafficAdjustmentForm,
@@ -1038,6 +1078,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     statusLabel,
     formatExpirationDate,
     formatServerExpiration,
+    renewalPeriodLabel,
     trafficWarningLevel,
     resetSession,
     handleMissingServer,

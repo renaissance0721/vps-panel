@@ -42,6 +42,11 @@ func schemaStatements() []string {
 			desired_state_version INTEGER NOT NULL DEFAULT 1,
 			archived_at INTEGER,
 			expires_at INTEGER,
+			renewal_period_months INTEGER
+				CHECK (renewal_period_months IS NULL OR renewal_period_months IN (1, 3, 6, 12, 24, 36)),
+			auto_renew INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew IN (0, 1)),
+			renewal_anchor_day INTEGER
+				CHECK (renewal_anchor_day IS NULL OR renewal_anchor_day BETWEEN 1 AND 31),
 			monthly_traffic_limit_bytes INTEGER CHECK (monthly_traffic_limit_bytes >= 0),
 			traffic_count_mode TEXT NOT NULL DEFAULT 'single'
 				CHECK (traffic_count_mode IN ('single', 'bidirectional')),

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/backup"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 const defaultHealthcheckURL = "http://127.0.0.1:8080/api/health"
@@ -68,7 +70,20 @@ func run() error {
 	}
 
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	var renewalWG sync.WaitGroup
+	renewals := serverstore.NewService(db)
+	if err := renewals.ApplyAutomaticRenewals(shutdownContext); err != nil {
+		log.Printf("automatic server renewal failed: %v", err)
+	}
+	renewalWG.Add(1)
+	go func() {
+		defer renewalWG.Done()
+		runAutomaticRenewalLoop(shutdownContext, renewals)
+	}()
+	defer func() {
+		stop()
+		renewalWG.Wait()
+	}()
 
 	serverError := make(chan error, 1)
 	go func() {
@@ -97,6 +112,21 @@ func run() error {
 	}
 
 	return nil
+}
+
+func runAutomaticRenewalLoop(ctx context.Context, renewals *serverstore.Service) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := renewals.ApplyAutomaticRenewals(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("automatic server renewal failed: %v", err)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func openDatabase(dataDir string) (*sql.DB, error) {

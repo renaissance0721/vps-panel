@@ -47,6 +47,8 @@ const props = defineProps<{
     | 'openNameModal'
     | 'formatExpirationDate'
     | 'openExpirationModal'
+    | 'renewalPeriodLabel'
+    | 'setAutoRenew'
     | 'formatTime'
     | 'state'
     | 'panelReleaseVersion'
@@ -86,6 +88,8 @@ const {
   openNameModal,
   formatExpirationDate,
   openExpirationModal,
+  renewalPeriodLabel,
+  setAutoRenew,
   formatTime,
   state,
   panelReleaseVersion,
@@ -246,6 +250,18 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                   >
                     ✎
                   </n-button>
+                </dd>
+              </div>
+              <div><dt>续费周期</dt><dd>{{ renewalPeriodLabel(selectedServer.renewal_period_months) }}</dd></div>
+              <div>
+                <dt>自动续费</dt>
+                <dd>
+                  <n-switch
+                    :value="selectedServer.auto_renew"
+                    :disabled="!!selectedServer.archived_at || submitting || !selectedServer.expires_at || !selectedServer.renewal_period_months"
+                    :title="!selectedServer.expires_at || !selectedServer.renewal_period_months ? '请先设置到期日期和续费周期' : '仅顺延 Panel 中记录的到期日期，不会向 VPS 商家付款。'"
+                    @update:value="setAutoRenew(selectedServer, $event)"
+                  />
                 </dd>
               </div>
               <div>

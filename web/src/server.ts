@@ -120,6 +120,18 @@ export function formatServerExpiration(value: string | null): string {
   return value ? formatExpirationDate(value) : '不限'
 }
 
+export function renewalPeriodLabel(value: ServerRecord['renewal_period_months']): string {
+  switch (value) {
+    case 1: return '月付'
+    case 3: return '季付'
+    case 6: return '半年付'
+    case 12: return '年付'
+    case 24: return '两年付'
+    case 36: return '三年付'
+    default: return '不设置'
+  }
+}
+
 export function formatPercent(value: number) {
   return `${value.toFixed(1).replace(/\.0$/, '')}%`
 }

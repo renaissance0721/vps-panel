@@ -235,3 +235,70 @@ func TestOpenAddsServerExpirationWithoutLosingExistingData(t *testing.T) {
 		t.Fatalf("server_metrics table count = %d, want 1", metricsTableCount)
 	}
 }
+
+func TestOpenAddsServerRenewalColumnsWithoutChangingExistingData(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL,
+			archived_at INTEGER,
+			expires_at INTEGER,
+			desired_state_version INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers
+			(id, name, status, archived_at, expires_at, desired_state_version, created_at, updated_at)
+		 VALUES (1, 'Renewal Legacy', 'offline', 77, 123456, 9, 1, 2)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migration error = %v", err)
+	}
+	defer db.Close()
+	var name string
+	var archivedAt, expiresAt, period, anchor sql.NullInt64
+	var autoRenew bool
+	var desiredStateVersion int64
+	if err := db.QueryRow(
+		`SELECT name, archived_at, expires_at, desired_state_version,
+		 renewal_period_months, auto_renew, renewal_anchor_day
+		 FROM servers WHERE id = 1`,
+	).Scan(&name, &archivedAt, &expiresAt, &desiredStateVersion, &period, &autoRenew, &anchor); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Renewal Legacy" || archivedAt.Int64 != 77 || expiresAt.Int64 != 123456 ||
+		desiredStateVersion != 9 || period.Valid || autoRenew || anchor.Valid {
+		t.Fatalf("migrated server = (%q, %v, %v, %d, %v, %t, %v)",
+			name, archivedAt, expiresAt, desiredStateVersion, period, autoRenew, anchor)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	for _, column := range []string{"renewal_period_months", "auto_renew", "renewal_anchor_day"} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = ?`, column,
+		).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("servers.%s count = %d, want 1", column, count)
+		}
+	}
+}

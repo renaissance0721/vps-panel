@@ -106,13 +106,16 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	hasExpiration := len(request.ExpiresAt) != 0
+	hasRenewalPeriod := len(request.RenewalPeriodMonths) != 0
+	hasAutoRenew := request.AutoRenew != nil
+	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
 	hasName := request.Name != nil
 	hasOutboundPreference := request.OutboundPreference != nil
 	hasBlockChinaInbound := request.BlockChinaInbound != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasExpiration, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
+	for _, present := range []bool{hasName, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
@@ -214,8 +217,15 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
-	var expiresAt *time.Time
-	if string(request.ExpiresAt) != "null" {
+	update := serverstore.RenewalSettingsUpdate{
+		ExpiresAtSet:     hasExpiration,
+		RenewalPeriodSet: hasRenewalPeriod,
+		AutoRenewSet:     hasAutoRenew,
+	}
+	if hasAutoRenew {
+		update.AutoRenew = *request.AutoRenew
+	}
+	if hasExpiration && string(request.ExpiresAt) != "null" {
 		var value string
 		if json.Unmarshal(request.ExpiresAt, &value) != nil {
 			writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
@@ -227,9 +237,17 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, shanghaiLocation).UTC()
-		expiresAt = &parsed
+		update.ExpiresAt = &parsed
 	}
-	updated, err := s.servers.UpdateExpiration(r.Context(), id, expiresAt)
+	if hasRenewalPeriod && string(request.RenewalPeriodMonths) != "null" {
+		var value int
+		if json.Unmarshal(request.RenewalPeriodMonths, &value) != nil {
+			writeError(w, http.StatusBadRequest, "续费周期无效")
+			return
+		}
+		update.RenewalPeriodMonths = &value
+	}
+	updated, err := s.servers.UpdateRenewalSettings(r.Context(), id, update)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -332,6 +350,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器访问账号无效")
 	case errors.Is(err, serverstore.ErrInvalidOutboundPreference):
 		writeError(w, http.StatusBadRequest, "服务器出站优先级无效")
+	case errors.Is(err, serverstore.ErrInvalidRenewalPeriod):
+		writeError(w, http.StatusBadRequest, "续费周期无效")
+	case errors.Is(err, serverstore.ErrAutoRenewRequirements):
+		writeError(w, http.StatusBadRequest, "自动续费需要设置到期日期和续费周期")
 	case errors.Is(err, serverstore.ErrNotFound), errors.Is(err, agentcontrol.ErrServerNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, agentcontrol.ErrInvalidEnrollment):

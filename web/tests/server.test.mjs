@@ -13,6 +13,7 @@ import {
   chinaInboundConfigNeedsPolling,
   chinaInboundSupported,
   formatServerExpiration,
+  renewalPeriodLabel,
 } from '../src/server.ts'
 
 test('服务器列表到期时间只显示日期', () => {
@@ -21,6 +22,35 @@ test('服务器列表到期时间只显示日期', () => {
 
 test('服务器未设置到期时间时显示不限', () => {
   assert.equal(formatServerExpiration(null), '不限')
+})
+
+test('服务器续费周期使用固定中文标签', () => {
+  assert.equal(renewalPeriodLabel(null), '不设置')
+  assert.equal(renewalPeriodLabel(1), '月付')
+  assert.equal(renewalPeriodLabel(3), '季付')
+  assert.equal(renewalPeriodLabel(6), '半年付')
+  assert.equal(renewalPeriodLabel(12), '年付')
+  assert.equal(renewalPeriodLabel(24), '两年付')
+  assert.equal(renewalPeriodLabel(36), '三年付')
+})
+
+test('Server 续费字段只在到期 cell 展示，不增加独立列', async () => {
+  const [types, form, detail, list, composable] = await Promise.all([
+    'types/server.ts', 'components/server/ServerExpirationForm.vue',
+    'components/server/ServerDetail.vue', 'components/server/ServerList.vue',
+    'composables/useServers.ts',
+  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
+  assert.match(types, /renewal_period_months: RenewalPeriodMonths \| null/)
+  assert.match(types, /auto_renew: boolean/)
+  assert.doesNotMatch(types, /renewal_anchor_day/)
+  assert.equal((form.match(/label: '(?:月付|季付|半年付|年付|两年付|三年付)'/g) ?? []).length, 6)
+  assert.match(form, /自动续费/)
+  assert.match(form, /请先设置到期日期和续费周期/)
+  assert.match(detail, /setAutoRenew\(selectedServer, \$event\)/)
+  assert.match(list, /renewalPeriodLabel\(value\.renewal_period_months\)/)
+  assert.doesNotMatch(list, /<th>续费周期<\/th>/)
+  assert.match(composable, /renewal_period_months: renewalPeriodMonths/)
+  assert.match(composable, /auto_renew: autoRenew/)
 })
 
 test('批量 Agent 升级候选只使用服务端能力判断和当前升级状态', () => {

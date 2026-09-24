@@ -29,6 +29,8 @@ type updateServerRequest struct {
 	OutboundPreference       *string         `json:"outbound_preference"`
 	BlockChinaInbound        *bool           `json:"block_china_inbound"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`
+	RenewalPeriodMonths      json.RawMessage `json:"renewal_period_months"`
+	AutoRenew                *bool           `json:"auto_renew"`
 	MonthlyTrafficLimitBytes json.RawMessage `json:"monthly_traffic_limit_bytes"`
 	TrafficCountMode         *string         `json:"traffic_count_mode"`
 	TrafficResetDay          *int            `json:"traffic_reset_day"`
@@ -50,6 +52,8 @@ type serverResponse struct {
 	AccessUserIDs             []int64             `json:"access_user_ids"`
 	ArchivedAt                *time.Time          `json:"archived_at,omitempty"`
 	ExpiresAt                 *time.Time          `json:"expires_at"`
+	RenewalPeriodMonths       *int                `json:"renewal_period_months"`
+	AutoRenew                 bool                `json:"auto_renew"`
 	MonthlyTrafficLimitBytes  *int64              `json:"monthly_traffic_limit_bytes"`
 	TrafficCountMode          string              `json:"traffic_count_mode"`
 	TrafficResetDay           int                 `json:"traffic_reset_day"`
@@ -122,6 +126,8 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
 		ArchivedAt:               value.ArchivedAt,
 		ExpiresAt:                value.ExpiresAt,
+		RenewalPeriodMonths:      value.RenewalPeriodMonths,
+		AutoRenew:                value.AutoRenew,
 		MonthlyTrafficLimitBytes: value.MonthlyTrafficLimitBytes,
 		TrafficCountMode:         value.TrafficCountMode,
 		TrafficResetDay:          value.TrafficResetDay,

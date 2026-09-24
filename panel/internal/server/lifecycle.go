@@ -120,26 +120,10 @@ func (s *Service) UpdateBlockChinaInbound(ctx context.Context, id int64, enabled
 }
 
 func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *time.Time) (Server, error) {
-	var expiresAtValue any
-	if expiresAt != nil {
-		expiresAtValue = expiresAt.UTC().Truncate(time.Second).Unix()
-	}
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE servers SET expires_at = ?, updated_at = ?
-		 WHERE id = ? AND archived_at IS NULL`,
-		expiresAtValue, s.now().UTC().Truncate(time.Second).Unix(), id,
-	)
-	if err != nil {
-		return Server{}, fmt.Errorf("update server expiration: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return Server{}, fmt.Errorf("read updated server expiration count: %w", err)
-	}
-	if count != 1 {
-		return Server{}, ErrNotFound
-	}
-	return s.Get(ctx, id)
+	return s.UpdateRenewalSettings(ctx, id, RenewalSettingsUpdate{
+		ExpiresAtSet: true,
+		ExpiresAt:    expiresAt,
+	})
 }
 
 func (s *Service) Archive(ctx context.Context, id int64) error {

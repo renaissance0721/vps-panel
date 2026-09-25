@@ -84,13 +84,15 @@ async function dropProxy(id: number) {
     {{ error }}
   </n-alert>
 
-  <n-card title="受管节点" :bordered="true">
-    <div class="proxy-toolbar">
-      <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或安全层" />
-      <n-button type="primary" :disabled="servers.length === 0" @click="openCreateProxy">
-        新增代理节点
-      </n-button>
-    </div>
+  <n-card class="managed-node-card" title="受管节点" :bordered="true">
+    <template #header-extra>
+      <div class="proxy-header-actions">
+        <n-input v-model:value="search" class="proxy-header-search" clearable placeholder="搜索名称、服务器、入口地址或安全层" />
+        <n-button type="primary" :disabled="servers.length === 0" @click="openCreateProxy">
+          新增代理节点
+        </n-button>
+      </div>
+    </template>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载代理节点…</span></div>
     <n-empty v-else-if="filteredProxies.length === 0" description="当前没有代理节点" />
     <div v-else class="server-table-wrap">
@@ -131,3 +133,38 @@ async function dropProxy(id: number) {
     </div>
   </n-card>
 </template>
+
+<style scoped>
+.managed-node-card :deep(.n-card-header) {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.managed-node-card :deep(.n-card-header__extra) {
+  min-width: 0;
+}
+
+.proxy-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.proxy-header-search {
+  width: min(360px, 35vw);
+}
+
+@media (max-width: 720px) {
+  .proxy-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .proxy-header-search {
+    flex: 1 1 220px;
+    width: min(280px, 55vw);
+    min-width: 180px;
+  }
+}
+</style>

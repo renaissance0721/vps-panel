@@ -109,6 +109,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("GET /api/landings", s.requireAuthentication(s.listLandings))
 	mux.HandleFunc("POST /api/landings", s.requireAuthentication(s.createLanding))
 	mux.HandleFunc("GET /api/landings/{id}", s.requireAuthentication(s.getLanding))
+	mux.HandleFunc("GET /api/landings/{id}/share", s.requireAuthentication(s.getLandingShare))
 	mux.HandleFunc("PATCH /api/landings/{id}", s.requireAuthentication(s.updateLanding))
 	mux.HandleFunc("DELETE /api/landings/{id}", s.requireAuthentication(s.deleteLanding))
 	mux.HandleFunc("GET /api/relays", s.requireAuthentication(s.listRelays))

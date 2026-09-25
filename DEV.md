@@ -65,7 +65,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Realm 托管
 - Relay TCP / UDP / TCP+UDP 中转
 - Relay 绑定目标 Proxy / 手动地址
-- 代理节点页支持管理外部 VLESS / Shadowsocks 节点；内部仍使用 Landing 模型。外部节点支持 private/public，可作为 Relay 目标
+- 代理节点页支持管理完整的外部 VLESS / Shadowsocks 节点；可按需查看、复制原始 URI、生成二维码并作为 Relay 目标，内部仍使用 Landing 模型
 - Relay 可选择目标 Proxy 的某个 Client 用于派生分享 URI
 - VLESS / Shadowsocks Client 分享 URI
 - Proxy / Relay 二维码，本地浏览器生成
@@ -410,10 +410,12 @@ entry_host_mode = auto | manual
 目标为外部节点（内部 `target_type = landing`）：
 
 - `landing_nodes` 保存 owner、public/private、协议、解析后的 Host/Port 和敏感原始 URI
-- private 仅 owner 可见和使用，admin 不绕过；public 可由所有登录用户使用，但仍仅 owner 可编辑或删除
+- private 仅 owner 可见和获取完整 URI，admin 不绕过；public 允许所有登录用户获取完整可连接 URI，但仍仅 owner 可编辑或删除
 - Relay 数据库存 `target_landing_id`，desired state 仍只向 Agent 下发解析后的 Host/Port/Network
-- 最终中转 URI 由后端读取当前原始 URI并只替换 Relay 入口 endpoint；普通 Landing / Relay API 不返回原始 URI
+- `GET /api/landings/{id}/share` 按权限返回原始 URI；`GET /api/landings` 等普通列表不批量返回 credential
+- 最终中转 URI 由后端读取当前原始 URI并只替换 Relay 入口 endpoint，与外部节点直接分享的原始 URI 明确分开
 - 内部 `landing` 在用户 UI 中统一显示为“外部节点”
+- 公开外部节点意味着其他登录用户能够获得其完整可连接 URI
 
 目标为手动地址：
 
@@ -2125,7 +2127,7 @@ bash -n <script>
 | Client traffic/quota/expiry | 已实现 | 周期、预警、耗尽、恢复 |
 | Realm / Relay | 已实现 | v2.9.4，TCP/UDP |
 | Relay target Client | 已实现 | 分享元数据，不是 L4 独占认证 |
-| 外部节点（内部 Landing） | 已实现 | 代理节点页管理 VLESS / Shadowsocks 导入、public/private、Relay 目标与中转 URI |
+| 外部节点（内部 Landing） | 已实现 | 原始 URI 按需查看/复制/二维码、public/private、Relay 目标与中转 URI |
 | QR | 已实现 | 浏览器本地生成 |
 | Subscription | 未实现 | 无订阅 URL / Clash / sing-box 批量输出 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |

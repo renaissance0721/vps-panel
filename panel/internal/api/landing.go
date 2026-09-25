@@ -33,6 +33,11 @@ type landingResponse struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+type landingShareResponse struct {
+	Landing landingResponse `json:"landing"`
+	URI     string          `json:"uri"`
+}
+
 func (s *server) listLandings(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.landings.List(r.Context(), user.ID)
 	if err != nil {
@@ -72,6 +77,24 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request, user auth.Us
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"landing": toLandingResponse(value)})
+}
+
+func (s *server) getLandingShare(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "外部节点 ID 无效")
+	if !ok {
+		return
+	}
+	value, err := s.landingForUser(r.Context(), user, id)
+	if err != nil {
+		writeLandingError(w, err)
+		return
+	}
+	uri, err := s.landings.GetURI(r.Context(), id, user.ID)
+	if err != nil {
+		writeLandingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, landingShareResponse{Landing: toLandingResponse(value), URI: uri})
 }
 
 func (s *server) updateLanding(w http.ResponseWriter, r *http.Request, user auth.User) {

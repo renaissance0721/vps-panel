@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ func TestLandingAPIAccessAndSecretRedaction(t *testing.T) {
 	defer db.Close()
 	for _, target := range []struct{ method, path string }{
 		{http.MethodGet, "/api/landings"}, {http.MethodPost, "/api/landings"},
-		{http.MethodGet, "/api/landings/1"}, {http.MethodPatch, "/api/landings/1"},
+		{http.MethodGet, "/api/landings/1"}, {http.MethodGet, "/api/landings/1/share"}, {http.MethodPatch, "/api/landings/1"},
 		{http.MethodDelete, "/api/landings/1"}, {http.MethodGet, "/api/relays/1/landing-share"},
 	} {
 		response := performRequest(t, handler, target.method, target.path, nil, nil)
@@ -108,10 +109,59 @@ func TestLandingAPIAccessAndSecretRedaction(t *testing.T) {
 	memberPrivate := createLandingForAPI(t, handler, accounts.memberCookie, createLandingRequest{
 		Name: "Member Private", URI: "vless://member-uuid@example.com:443",
 	})
-	adminBypass := performRequest(t, handler, http.MethodGet,
-		"/api/landings/"+strconv.FormatInt(memberPrivate.ID, 10), nil, accounts.adminCookie)
-	if adminBypass.Code != http.StatusNotFound {
-		t.Fatalf("admin bypassed member private landing = %d, %s", adminBypass.Code, adminBypass.Body.String())
+	for _, suffix := range []string{"", "/share"} {
+		adminBypass := performRequest(t, handler, http.MethodGet,
+			"/api/landings/"+strconv.FormatInt(memberPrivate.ID, 10)+suffix, nil, accounts.adminCookie)
+		if adminBypass.Code != http.StatusNotFound {
+			t.Fatalf("admin bypassed member private landing%s = %d, %s", suffix, adminBypass.Code, adminBypass.Body.String())
+		}
+	}
+}
+
+func TestLandingShareReturnsOriginalURIWithExistingAccessRules(t *testing.T) {
+	db, handler, accounts := setupAccessTest(t)
+	defer db.Close()
+
+	privateURI := "vless://private-uuid@private.example.com:443?security=reality&type=tcp&sni=www.example.com&pbk=abc&sid=def#US%20LAX"
+	private := createLandingForAPI(t, handler, accounts.adminCookie, createLandingRequest{URI: privateURI})
+	publicURI := "ss://aes-256-gcm:public-password@public.example.com:8388?mode=tcp#Public%20SS"
+	public := createLandingForAPI(t, handler, accounts.adminCookie, createLandingRequest{
+		Name: "Public SS", Visibility: "public", URI: publicURI,
+	})
+
+	readShare := func(cookie *http.Cookie, id int64) (*httptest.ResponseRecorder, landingShareResponse) {
+		t.Helper()
+		response := performRequest(t, handler, http.MethodGet, "/api/landings/"+strconv.FormatInt(id, 10)+"/share", nil, cookie)
+		var share landingShareResponse
+		if response.Code == http.StatusOK {
+			if err := json.Unmarshal(response.Body.Bytes(), &share); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return response, share
+	}
+
+	ownerPrivate, privateShare := readShare(accounts.adminCookie, private.ID)
+	if ownerPrivate.Code != http.StatusOK || privateShare.URI != privateURI || privateShare.Landing.ID != private.ID || !privateShare.Landing.OwnedByMe {
+		t.Fatalf("owner private share = %d, %+v", ownerPrivate.Code, privateShare)
+	}
+	memberPrivate, _ := readShare(accounts.memberCookie, private.ID)
+	if memberPrivate.Code != http.StatusNotFound || !strings.Contains(memberPrivate.Body.String(), "外部节点不存在") {
+		t.Fatalf("member private share = %d, %s", memberPrivate.Code, memberPrivate.Body.String())
+	}
+	memberPublic, publicShare := readShare(accounts.memberCookie, public.ID)
+	if memberPublic.Code != http.StatusOK || publicShare.URI != publicURI || publicShare.Landing.ID != public.ID || publicShare.Landing.OwnedByMe {
+		t.Fatalf("member public share = %d, %+v", memberPublic.Code, publicShare)
+	}
+	missing, _ := readShare(accounts.adminCookie, 999999)
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), "外部节点不存在") {
+		t.Fatalf("missing share = %d, %s", missing.Code, missing.Body.String())
+	}
+
+	list := performRequest(t, handler, http.MethodGet, "/api/landings", nil, accounts.adminCookie)
+	if list.Code != http.StatusOK || strings.Contains(list.Body.String(), `"uri"`) ||
+		strings.Contains(list.Body.String(), "private-uuid") || strings.Contains(list.Body.String(), "public-password") {
+		t.Fatalf("landing list leaked share credentials = %d, %s", list.Code, list.Body.String())
 	}
 }
 

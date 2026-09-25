@@ -244,7 +244,6 @@ h1 {
   margin-bottom: 20px;
 }
 
-.proxy-toolbar,
 .relay-toolbar {
   display: grid;
   grid-template-columns: minmax(240px, 420px) auto;
@@ -878,7 +877,6 @@ h1 {
     margin-left: 0;
   }
 
-  .proxy-toolbar,
   .relay-toolbar {
     grid-template-columns: 1fr;
   }

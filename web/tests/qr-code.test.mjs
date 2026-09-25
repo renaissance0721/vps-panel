@@ -7,7 +7,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import QRCode from 'qrcode'
 
-let loader, QRCodeModal, RelaysView
+let loader, QRCodeModal, RelaysView, ExternalNodeManager
 
 before(async () => {
   loader = await createServer({
@@ -20,6 +20,7 @@ before(async () => {
   })
   ;({ default: QRCodeModal } = await loader.ssrLoadModule('/src/components/share/QRCodeModal.vue'))
   ;({ default: RelaysView } = await loader.ssrLoadModule('/src/views/RelaysView.vue'))
+  ;({ default: ExternalNodeManager } = await loader.ssrLoadModule('/src/components/proxy/ExternalNodeManager.vue'))
 })
 
 after(async () => { await loader?.close() })
@@ -149,4 +150,64 @@ test('Relay 二维码直接使用已加载的 URI，不再请求 API；不兼容
   })
   assert.match(manual.html, /手动目标不支持自动生成客户端节点链接/)
   assert.doesNotMatch(manual.html, />二维码<\/button>/)
+})
+
+test('外部节点按需加载原始 URI，可复制并按协议生成二维码参数', async t => {
+  const owner = {
+    id: 1, name: 'Owner VLESS', visibility: 'private', protocol: 'vless', host: 'owner.example.com', port: 443,
+    owned_by_me: true, created_at: '2026-09-25T00:00:00Z', updated_at: '2026-09-25T00:00:00Z',
+  }
+  const shared = { ...owner, id: 2, name: 'Public VLESS', visibility: 'public', owned_by_me: false }
+  const uri = 'vless://uuid@owner.example.com:443?security=reality&pbk=abc#US%20LAX'
+  const response = { landing: shared, uri }
+  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(response), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  }))
+  const rendered = await renderWithBindings(ExternalNodeManager, {}, model => {
+    model.loading.value = false
+    model.landings.value = [owner, shared]
+  })
+  assert.equal([...rendered.html.matchAll(/>查看<\/button>/g)].length, 2)
+  assert.equal([...rendered.html.matchAll(/>编辑<\/button>/g)].length, 1)
+  assert.equal([...rendered.html.matchAll(/>删除<\/button>/g)].length, 1)
+  assert.match(rendered.html, /公开节点 · 仅所有者可编辑/)
+
+  await rendered.bindings.showExternalNode(shared)
+  assert.equal(fetch.mock.calls.length, 1)
+  assert.equal(fetch.mock.calls[0].arguments[0], '/api/landings/2/share')
+  assert.equal(rendered.bindings.selectedShare.value.uri, uri)
+  assert.equal(rendered.bindings.detailOpen.value, true)
+
+  let copied = ''
+  let resetCopied
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { clipboard: { writeText: async value => { copied = value } } },
+  })
+  t.mock.method(globalThis, 'setTimeout', callback => {
+    resetCopied = callback
+    return 1
+  })
+  try {
+    await rendered.bindings.copyExternalNodeURI()
+    assert.equal(copied, uri)
+    assert.equal(rendered.bindings.copiedShareURI.value, true)
+    resetCopied()
+    assert.equal(rendered.bindings.copiedShareURI.value, false)
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator)
+    else delete globalThis.navigator
+  }
+
+  rendered.bindings.showExternalNodeQRCode()
+  assert.equal(rendered.bindings.qrURI.value, uri)
+  assert.equal(rendered.bindings.qrTitle.value, 'Public VLESS')
+  assert.equal(rendered.bindings.qrSubtitle.value, 'VLESS · 外部节点')
+  rendered.bindings.selectedShare.value = {
+    landing: { ...shared, protocol: 'shadowsocks', name: 'Public SS' },
+    uri: 'ss://aes-256-gcm:password@ss.example.com:8388#Public',
+  }
+  rendered.bindings.showExternalNodeQRCode()
+  assert.equal(rendered.bindings.qrSubtitle.value, 'Shadowsocks · 外部节点')
 })

@@ -8,6 +8,9 @@ export type ServerRecord = {
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'
   block_china_inbound: boolean
   desired_state_version: number
+  decommissioning_at: string | null
+  decommission_status: '' | 'pending' | 'failed'
+  decommission_error: string
   access_user_ids: number[]
   archived_at?: string
   expires_at: string | null

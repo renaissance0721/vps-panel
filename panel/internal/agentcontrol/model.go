@@ -65,8 +65,11 @@ type AgentUpgrade struct {
 
 type DesiredState struct {
 	Version            int64
+	Decommission       bool
 	BlockChinaInbound  bool
 	OutboundPreference string
+	XrayPurge          bool
+	RealmPurge         bool
 	Proxies            []proxystore.DesiredProxy
 	Relays             []relaystore.DesiredRelay
 }

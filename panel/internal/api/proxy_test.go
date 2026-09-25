@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 )
 
@@ -52,6 +53,10 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 	if err := json.Unmarshal(registration.Body.Bytes(), &registered); err != nil {
 		t.Fatal(err)
 	}
+	setAgentCapabilities(t, db, createdServer.Server.ID, "vps-panel-agent", []string{
+		agentcontrol.CapabilityManagedRuntimePurge,
+		agentcontrol.CapabilityProxyVLESSReality,
+	})
 
 	creation := performRequest(t, handler, http.MethodPost, "/api/proxies", createProxyRequest{
 		ServerID: createdServer.Server.ID, Name: "Reality", ListenPort: 443, Security: "reality",

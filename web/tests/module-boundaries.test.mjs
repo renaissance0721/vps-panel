@@ -36,6 +36,7 @@ function serverRecord(overrides = {}) {
   return {
     id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
     archived_at: null, expires_at: null, renewal_period_months: null, auto_renew: false,
+    decommissioning_at: null, decommission_status: '', decommission_error: '',
     outbound_preference: 'auto', block_china_inbound: false,
     desired_state_version: 1, monthly_traffic_limit_bytes: null,
     traffic_count_mode: 'single', traffic_reset_day: 1, traffic_reset_time: '00:00',

@@ -662,6 +662,8 @@ Agent 另有约 30 秒 REST 轮询兜底，所以 WebSocket 丢通知不会永�
 
 > Panel 数据库删除成功只表示“目标状态已改变”；真正远端运行态清理，以 Agent apply 结果为准。
 
+删除 Client 只会从对应 Xray 配置移除 credential，不影响其他 Client。删除非最后一个 Proxy / Relay 会重新生成 Xray / Realm 配置；删除最后一条 row 时，desired state 的 `purge` 会让 Agent 完整删除对应受管运行时、service unit、配置和防火墙规则。禁用最后一条 row 只会停止服务并保留受管安装，不等同于 purge。
+
 禁止：
 
 - 任意 Shell API
@@ -1257,6 +1259,14 @@ agent_token
 ```
 
 bootstrap 保留原 Agent config，不重新注册。
+
+## 16.4 Server 退役与强制移除
+
+正常删除 Server 是 desired-state 驱动的 decommission：Panel 先保留 Agent 身份并标记 `pending`，Agent 依次 purge 受管 Xray、Realm、Proxy / Realm / 中国入站防火墙与 ACME 状态，准备并在成功上报后启动 detached self-uninstall；Panel 收到当前版本的成功结果后才 archive Server、撤销 Agent 身份。清理失败会保留 Agent 和 Server，并用同一 desired version 自动重试。
+
+管理员 `DELETE /api/servers/{id}/force` 只强制移除 Panel 管理关系、撤销 Agent 并关闭连接，不能保证远端 VPS 已清理。`DELETE /api/servers/{id}/permanent` 仍只永久删除已经 archived 的数据库历史。
+
+自动退役严格要求 Agent API v1 显式声明 `managed_runtime_purge` 与 `self_decommission`；删除最后一个 Proxy / Relay 严格要求 `managed_runtime_purge`。这些 destructive capability 不使用 Legacy fallback。
 
 ---
 
@@ -2114,7 +2124,7 @@ bash -n <script>
 | --- | --- | --- |
 | admin / vip | 已实现 | 唯一初始 admin + 邀请 vip |
 | Server public/private | 已实现 | admin 不绕过 private |
-| Server archive / rebind | 已实现 | Enrollment 可覆盖已有 Agent 配置 |
+| Server decommission / force remove / rebind | 已实现 | 清理成功后归档；force remove 不保证远端清理；Enrollment 可覆盖已有 Agent 配置 |
 | Agent WS / heartbeat | 已实现 | 10s 心跳，自动重连 |
 | system_info | 已实现 | 静态信息 + public IPv4 |
 | metrics | 已实现 | CPU/RAM/Disk/Uptime/NIC |

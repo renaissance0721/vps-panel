@@ -139,7 +139,7 @@ func TestOverviewCountsOnlyAccessibleActiveResourcesAndExposesSafeAccountSummary
 			}
 		}
 	}
-	archived := performRequest(t, handler, http.MethodDelete, "/api/servers/"+strconv.FormatInt(e.Server.ID, 10), nil, accounts.adminCookie)
+	archived := performRequest(t, handler, http.MethodDelete, "/api/servers/"+strconv.FormatInt(e.Server.ID, 10)+"/force", nil, accounts.adminCookie)
 	if archived.Code != http.StatusNoContent {
 		t.Fatalf("archive E = %d, %s", archived.Code, archived.Body.String())
 	}
@@ -299,7 +299,7 @@ func TestListReorderAPIIsPerUserPersistentAndDoesNotChangeBusinessState(t *testi
 	if got := orderListIDs(t, handler, accounts.memberCookie, "/api/relays", "relays"); len(got) != 3 {
 		t.Fatalf("hidden-target Relay leaked into list: %v", got)
 	}
-	archived := performRequest(t, handler, http.MethodDelete, "/api/servers/"+strconv.FormatInt(private.Server.ID, 10), nil, accounts.adminCookie)
+	archived := performRequest(t, handler, http.MethodDelete, "/api/servers/"+strconv.FormatInt(private.Server.ID, 10)+"/force", nil, accounts.adminCookie)
 	if archived.Code != http.StatusNoContent {
 		t.Fatalf("archive private Server = %d, %s", archived.Code, archived.Body.String())
 	}

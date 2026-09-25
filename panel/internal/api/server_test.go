@@ -369,7 +369,7 @@ func TestServerAPILifecycle(t *testing.T) {
 		t.Fatalf("get server after regenerate = (%d, %q), token must not be returned", getAfterRegenerate.Code, getAfterRegenerate.Body.String())
 	}
 
-	deleteResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, sessionCookie)
+	deleteResponse := performRequest(t, handler, http.MethodDelete, serverPath+"/force", nil, sessionCookie)
 	if deleteResponse.Code != http.StatusNoContent {
 		t.Fatalf("delete server status = %d, body = %q", deleteResponse.Code, deleteResponse.Body.String())
 	}
@@ -504,8 +504,8 @@ func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 		t.Fatalf("VIP enrollment status = %d, want %d", vipEnrollmentResponse.Code, http.StatusForbidden)
 	}
 	archiveResponse := performRequest(t, handler, http.MethodDelete, serverPath, nil, vipCookie)
-	if archiveResponse.Code != http.StatusNoContent {
-		t.Fatalf("VIP archive status = %d, body = %q", archiveResponse.Code, archiveResponse.Body.String())
+	if archiveResponse.Code != http.StatusConflict {
+		t.Fatalf("VIP decommission status = %d, body = %q", archiveResponse.Code, archiveResponse.Body.String())
 	}
 
 	for _, request := range []struct {
@@ -513,12 +513,17 @@ func TestAgentRebindAndPermanentDeleteRequireAdmin(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, serverPath + "/enrollment"},
+		{http.MethodDelete, serverPath + "/force"},
 		{http.MethodDelete, serverPath + "/permanent"},
 	} {
 		response := performRequest(t, handler, request.method, request.path, nil, vipCookie)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("VIP %s %s status = %d, want %d", request.method, request.path, response.Code, http.StatusForbidden)
 		}
+	}
+	forceResponse := performRequest(t, handler, http.MethodDelete, serverPath+"/force", nil, adminCookie)
+	if forceResponse.Code != http.StatusNoContent {
+		t.Fatalf("admin force remove status = %d, body = %q", forceResponse.Code, forceResponse.Body.String())
 	}
 
 	rebindResponse := performRequest(t, handler, http.MethodPost, serverPath+"/enrollment", nil, adminCookie)

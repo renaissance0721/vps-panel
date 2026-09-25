@@ -210,16 +210,9 @@ func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) 
 		return Mutation{}, fmt.Errorf("begin client deletion: %w", err)
 	}
 	defer tx.Rollback()
-	value, serverID, err := getClientForMutation(ctx, tx, id)
+	_, serverID, err := getClientForMutation(ctx, tx, id)
 	if err != nil {
 		return Mutation{}, err
-	}
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM clients WHERE proxy_id = ?`, value.ProxyID).Scan(&count); err != nil {
-		return Mutation{}, fmt.Errorf("count proxy clients: %w", err)
-	}
-	if count <= 1 {
-		return Mutation{}, ErrLastClient
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM clients WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete client: %w", err)
@@ -355,6 +348,7 @@ func summarizeClient(value Client) ClientSummary {
 
 func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, int64, error) {
 	var serverID int64
+	var decommissionStatus string
 	var value Client
 	var credentialJSON, configJSON string
 	var udp443, enabled, effectiveEnabled int
@@ -368,7 +362,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json, proxies.server_id,
+		 proxies.protocol, proxies.config_json, proxies.server_id, servers.decommission_status,
 		 COALESCE(metrics.cycle_uplink_bytes, 0), COALESCE(metrics.cycle_downlink_bytes, 0)
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
@@ -378,7 +372,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
 		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID,
+		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID, &decommissionStatus,
 		&cycleUplink, &cycleDownlink,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -386,6 +380,9 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 	}
 	if err != nil {
 		return Client{}, 0, fmt.Errorf("read client: %w", err)
+	}
+	if decommissionStatus != "" {
+		return Client{}, 0, ErrServerDecommissioning
 	}
 	credential, err := decodeCredential(value.Protocol, credentialJSON)
 	if err != nil {

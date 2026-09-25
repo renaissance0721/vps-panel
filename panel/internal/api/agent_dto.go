@@ -22,6 +22,7 @@ type agentRegistrationResponse struct {
 
 type agentDesiredStateResponse struct {
 	Version           int64                  `json:"version"`
+	Decommission      bool                   `json:"decommission"`
 	BlockChinaInbound bool                   `json:"block_china_inbound"`
 	Xray              agentDesiredXrayState  `json:"xray"`
 	Realm             agentDesiredRealmState `json:"realm"`
@@ -29,12 +30,14 @@ type agentDesiredStateResponse struct {
 
 type agentDesiredXrayState struct {
 	Enabled            bool                      `json:"enabled"`
+	Purge              bool                      `json:"purge"`
 	OutboundPreference string                    `json:"outbound_preference"`
 	Proxies            []proxystore.DesiredProxy `json:"proxies"`
 }
 
 type agentDesiredRealmState struct {
 	Enabled bool                      `json:"enabled"`
+	Purge   bool                      `json:"purge"`
 	Relays  []relaystore.DesiredRelay `json:"relays"`
 }
 

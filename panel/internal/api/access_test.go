@@ -123,7 +123,7 @@ func TestServerAccessScopesListsMutationsAndAdminOperations(t *testing.T) {
 			t.Fatalf("%s server list leaked %q: %s", test.name, test.notWant, response.Body.String())
 		}
 	}
-	adminPrivatePath := "/api/servers/" + strconv.FormatInt(adminServer.Server.ID, 10)
+	adminPrivatePath := "/api/servers/" + strconv.FormatInt(adminServer.Server.ID, 10) + "/force"
 	if response := performRequest(t, handler, http.MethodDelete, adminPrivatePath, nil, accounts.adminCookie); response.Code != http.StatusNoContent {
 		t.Fatalf("archive private server = %d, %s", response.Code, response.Body.String())
 	}

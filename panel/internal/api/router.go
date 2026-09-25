@@ -88,6 +88,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("PATCH /api/servers/{id}", s.requireAuthentication(s.updateServerExpiration))
 	mux.HandleFunc("PATCH /api/servers/{id}/access", s.requireAuthentication(s.updateServerAccess))
 	mux.HandleFunc("DELETE /api/servers/{id}", s.requireAuthentication(s.deleteServer))
+	mux.HandleFunc("DELETE /api/servers/{id}/force", s.requireAdmin(s.forceRemoveServer))
 	mux.HandleFunc("PATCH /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.updateTrafficAdjustment))
 	mux.HandleFunc("DELETE /api/servers/{id}/traffic-adjustment", s.requireAuthentication(s.clearTrafficAdjustment))
 	mux.HandleFunc("POST /api/servers/{id}/enrollment", s.requireAdmin(s.createEnrollment))

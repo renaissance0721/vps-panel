@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,6 +98,93 @@ func TestConfigSynchronizerReportsSuccessOnceAndRetriesFailure(t *testing.T) {
 	}
 	if synchronizer.lastSuccessfulVersion != 2 {
 		t.Fatalf("last successful version = %d, want 2", synchronizer.lastSuccessfulVersion)
+	}
+}
+
+func TestDecommissionReportsSuccessBeforeStartingSelfUninstall(t *testing.T) {
+	var events []string
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agent/config":
+			_ = json.NewEncoder(w).Encode(desiredState{
+				Version: 9, Decommission: true,
+				Xray: desiredXrayState{Purge: true}, Realm: desiredRealmState{Purge: true},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agent/config/result":
+			var result configResult
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			if result.Status != "success" || result.Version != 9 {
+				t.Errorf("decommission result = %+v", result)
+			}
+			events = append(events, "report")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer panel.Close()
+	helper := filepath.Join(t.TempDir(), "helper")
+	if err := os.WriteFile(helper, []byte("helper"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startOpenRCSelfUninstallProcess
+	startOpenRCSelfUninstallProcess = func(path string, arguments ...string) error {
+		if path != helper || len(arguments) != 1 || arguments[0] != "_self-uninstall" {
+			t.Fatalf("self-uninstall activation = %q %v", path, arguments)
+		}
+		events = append(events, "activate")
+		return nil
+	}
+	defer func() { startOpenRCSelfUninstallProcess = previousStart }()
+
+	synchronizer := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "token"}, panel.Client())
+	synchronizer.applyDecommission = func(_ context.Context, _ desiredState) error {
+		events = append(events, "purge")
+		return nil
+	}
+	synchronizer.prepareSelfUninstall = func() (*preparedSelfUninstall, error) {
+		events = append(events, "prepare")
+		return &preparedSelfUninstall{helperPath: helper, environment: hostEnvironment{InitSystem: initSystemOpenRC}}, nil
+	}
+	if err := synchronizer.sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"purge", "prepare", "report", "activate"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("decommission order = %v, want %v", events, want)
+	}
+}
+
+func TestDecommissionFailureReportsFailedAndDoesNotPrepareSelfUninstall(t *testing.T) {
+	results := make(chan configResult, 1)
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(desiredState{
+				Version: 4, Decommission: true,
+				Xray: desiredXrayState{Purge: true}, Realm: desiredRealmState{Purge: true},
+			})
+			return
+		}
+		var result configResult
+		_ = json.NewDecoder(r.Body).Decode(&result)
+		results <- result
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer panel.Close()
+	synchronizer := newConfigSynchronizer(config{PanelURL: panel.URL}, panel.Client())
+	synchronizer.applyDecommission = func(context.Context, desiredState) error {
+		return fmt.Errorf("%w: private path and command output", errManagedRuntimePurge)
+	}
+	synchronizer.prepareSelfUninstall = func() (*preparedSelfUninstall, error) {
+		t.Fatal("failed cleanup prepared self-uninstall")
+		return nil, nil
+	}
+	if err := synchronizer.sync(t.Context()); !errors.Is(err, errManagedRuntimePurge) {
+		t.Fatalf("sync error = %v", err)
+	}
+	result := <-results
+	if result.Status != "failed" || result.Message != errManagedRuntimePurge.Error() {
+		t.Fatalf("failed decommission result = %+v", result)
 	}
 }
 

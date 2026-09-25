@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,8 +60,8 @@ func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
 		t.Fatalf("decode desired state: %v", err)
 	}
-	if state.Version != 1 || state.Xray.Enabled || state.Xray.OutboundPreference != serverstore.OutboundAuto || state.Xray.Proxies == nil || len(state.Xray.Proxies) != 0 ||
-		state.Realm.Enabled || state.Realm.Relays == nil || len(state.Realm.Relays) != 0 {
+	if state.Version != 1 || state.Decommission || state.Xray.Enabled || !state.Xray.Purge || state.Xray.OutboundPreference != serverstore.OutboundAuto || state.Xray.Proxies == nil || len(state.Xray.Proxies) != 0 ||
+		state.Realm.Enabled || !state.Realm.Purge || state.Realm.Relays == nil || len(state.Realm.Relays) != 0 {
 		t.Fatalf("initial desired state = %+v", state)
 	}
 }
@@ -96,13 +97,164 @@ func TestAgentConfigIncludesOnlyEnabledTypedRelays(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
 		t.Fatal(err)
 	}
-	if !state.Realm.Enabled || len(state.Realm.Relays) != 1 {
+	if !state.Realm.Enabled || state.Realm.Purge || len(state.Realm.Relays) != 1 {
 		t.Fatalf("Realm desired state = %+v", state.Realm)
 	}
 	relay := state.Realm.Relays[0]
 	if relay.ListenAddress != "0.0.0.0" || relay.ListenPort != 9502 || relay.TargetHost != "relay.example.com" ||
 		relay.TargetPort != 443 || relay.Network != "tcp,udp" {
 		t.Fatalf("typed Relay = %+v", relay)
+	}
+}
+
+func TestAgentConfigPurgeUsesRowExistenceIncludingDisabledRows(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	created, err := serverstore.NewService(db).Create(t.Context(), "Disabled managed rows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "v0.20.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO proxies
+		(server_id, name, protocol, listen_port, enabled, config_json, created_at, updated_at)
+		VALUES (?, 'Disabled Proxy', 'vless', 443, 0, '{}', 1, 1)`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO relays
+		(server_id, name, listen_address, listen_port, target_type, target_host, target_port, network, enabled, created_at, updated_at)
+		VALUES (?, 'Disabled Relay', '0.0.0.0', 9502, 'manual', 'example.com', 443, 'tcp', 0, 1, 1)`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, agent.Token)
+	var state agentDesiredStateResponse
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil {
+		t.Fatalf("disabled rows desired state = %d, %s", response.Code, response.Body.String())
+	}
+	if state.Xray.Enabled || state.Xray.Purge || state.Realm.Enabled || state.Realm.Purge {
+		t.Fatalf("disabled rows must disable without purge: %+v", state)
+	}
+	if _, err := db.Exec(`DELETE FROM proxies WHERE server_id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM relays WHERE server_id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, agent.Token)
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil {
+		t.Fatalf("empty desired state = %d, %s", response.Code, response.Body.String())
+	}
+	if state.Xray.Enabled || !state.Xray.Purge || state.Realm.Enabled || !state.Realm.Purge {
+		t.Fatalf("empty rows must request purge: %+v", state)
+	}
+}
+
+func TestServerDecommissionWaitsForCurrentAgentCleanupResult(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	servers := serverstore.NewService(db)
+	created, err := servers.Create(t.Context(), "Decommission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := agentcontrol.NewService(db, time.Now).RegisterAgentWithMetadata(t.Context(), created.EnrollmentToken, agentcontrol.Metadata{
+		Implementation: agentcontrol.OfficialImplementation,
+		Version:        "v0.20.0",
+		APIVersion:     agentcontrol.CurrentAPIVersion,
+		Capabilities: []string{
+			agentcontrol.CapabilityManagedRuntimePurge,
+			agentcontrol.CapabilitySelfDecommission,
+		},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	initialized := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	cookie := initialized.Result().Cookies()[0]
+	path := "/api/servers/" + strconv.FormatInt(created.ID, 10)
+	response := performRequest(t, handler, http.MethodDelete, path, nil, cookie)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("request decommission = %d, %s", response.Code, response.Body.String())
+	}
+
+	var desiredVersion int64
+	var decommissionStatus string
+	var archivedAt sql.NullInt64
+	var agentCount int
+	if err := db.QueryRow(`SELECT desired_state_version, decommission_status, archived_at FROM servers WHERE id = ?`, created.ID).
+		Scan(&desiredVersion, &decommissionStatus, &archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agents WHERE server_id = ?`, created.ID).Scan(&agentCount); err != nil {
+		t.Fatal(err)
+	}
+	if desiredVersion != 2 || decommissionStatus != serverstore.DecommissionPending || archivedAt.Valid || agentCount != 1 {
+		t.Fatalf("pending state = version %d status %q archived %v agents %d", desiredVersion, decommissionStatus, archivedAt.Valid, agentCount)
+	}
+
+	config := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, agent.Token)
+	var state agentDesiredStateResponse
+	if config.Code != http.StatusOK || json.Unmarshal(config.Body.Bytes(), &state) != nil {
+		t.Fatalf("decommission desired state = %d, %s", config.Code, config.Body.String())
+	}
+	if !state.Decommission || state.BlockChinaInbound || state.Xray.Enabled || !state.Xray.Purge || len(state.Xray.Proxies) != 0 ||
+		state.Realm.Enabled || !state.Realm.Purge || len(state.Realm.Relays) != 0 {
+		t.Fatalf("decommission desired state = %+v", state)
+	}
+
+	failed := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": desiredVersion, "status": "failed", "message": "managed runtime purge failed",
+	}, agent.Token)
+	if failed.Code != http.StatusNoContent {
+		t.Fatalf("failed decommission result = %d, %s", failed.Code, failed.Body.String())
+	}
+	if err := db.QueryRow(`SELECT decommission_status, archived_at FROM servers WHERE id = ?`, created.ID).
+		Scan(&decommissionStatus, &archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agents WHERE server_id = ?`, created.ID).Scan(&agentCount); err != nil {
+		t.Fatal(err)
+	}
+	if decommissionStatus != serverstore.DecommissionFailed || archivedAt.Valid || agentCount != 1 {
+		t.Fatalf("failed state = status %q archived %v agents %d", decommissionStatus, archivedAt.Valid, agentCount)
+	}
+
+	stale := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": desiredVersion - 1, "status": "success", "message": "",
+	}, agent.Token)
+	if stale.Code != http.StatusNoContent {
+		t.Fatalf("stale success = %d, %s", stale.Code, stale.Body.String())
+	}
+	if err := db.QueryRow(`SELECT archived_at FROM servers WHERE id = ?`, created.ID).Scan(&archivedAt); err != nil || archivedAt.Valid {
+		t.Fatalf("stale success archived server: %v, %v", archivedAt.Valid, err)
+	}
+
+	success := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": desiredVersion, "status": "success", "message": "",
+	}, agent.Token)
+	if success.Code != http.StatusNoContent {
+		t.Fatalf("successful decommission result = %d, %s", success.Code, success.Body.String())
+	}
+	if err := db.QueryRow(`SELECT archived_at FROM servers WHERE id = ?`, created.ID).Scan(&archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agents WHERE server_id = ?`, created.ID).Scan(&agentCount); err != nil {
+		t.Fatal(err)
+	}
+	if !archivedAt.Valid || agentCount != 0 {
+		t.Fatalf("completed state = archived %v agents %d", archivedAt.Valid, agentCount)
 	}
 }
 

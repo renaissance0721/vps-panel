@@ -117,6 +117,10 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
+	return s.DeleteWithManagedPurge(ctx, id, true)
+}
+
+func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) (Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -126,6 +130,15 @@ func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
 	value, err := getForMutation(ctx, tx, id)
 	if err != nil {
 		return Mutation{}, err
+	}
+	var relayCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM relays WHERE server_id = ?`, value.ServerID,
+	).Scan(&relayCount); err != nil {
+		return Mutation{}, fmt.Errorf("count server relays: %w", err)
+	}
+	if relayCount == 1 && !allowManagedPurge {
+		return Mutation{}, ErrManagedRuntimePurgeUnsupported
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete relay: %w", err)
@@ -244,20 +257,24 @@ func getForMutation(ctx context.Context, query interface {
 	var value Relay
 	var targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
 	var enabled int
+	var decommissionStatus string
 	err := query.QueryRowContext(ctx,
 		`SELECT relays.id, relays.server_id, relays.name, relays.listen_address,
 		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id, relays.target_client_id, relays.target_landing_id,
-		 relays.target_host, relays.target_port, relays.network, relays.enabled
+		 relays.target_host, relays.target_port, relays.network, relays.enabled, servers.decommission_status
 		 FROM relays JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.id = ? AND servers.archived_at IS NULL`, id,
 	).Scan(&value.ID, &value.ServerID, &value.Name, &value.ListenAddress,
 		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID, &targetClientID, &targetLandingID,
-		&value.TargetHost, &targetPort, &value.Network, &enabled)
+		&value.TargetHost, &targetPort, &value.Network, &enabled, &decommissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Relay{}, ErrNotFound
 	}
 	if err != nil {
 		return Relay{}, fmt.Errorf("read relay: %w", err)
+	}
+	if decommissionStatus != "" {
+		return Relay{}, ErrServerDecommissioning
 	}
 	if targetProxyID.Valid {
 		id := targetProxyID.Int64
@@ -282,14 +299,18 @@ func ensureActiveServer(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, serverID int64) error {
 	var exists int
+	var decommissionStatus string
 	err := query.QueryRowContext(ctx,
-		`SELECT 1 FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
-	).Scan(&exists)
+		`SELECT 1, decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
+	).Scan(&exists, &decommissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrServerNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("validate relay server: %w", err)
+	}
+	if decommissionStatus != "" {
+		return ErrServerDecommissioning
 	}
 	return nil
 }

@@ -211,11 +211,23 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	if !ok {
 		return
 	}
-	if _, err := s.proxyForUser(r.Context(), user, id); err != nil {
+	value, err := s.proxyForUser(r.Context(), user, id)
+	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
-	mutation, err := s.proxies.Delete(r.Context(), id)
+	server, err := s.servers.Get(r.Context(), value.ServerID)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	allowManagedPurge := server.AgentVersion == "" || agentcontrol.DeclaresCapability(agentcontrol.Metadata{
+		Implementation: server.AgentImplementation,
+		Version:        server.AgentVersion,
+		APIVersion:     server.AgentAPIVersion,
+		Capabilities:   server.AgentCapabilities,
+	}, agentcontrol.CapabilityManagedRuntimePurge)
+	mutation, err := s.proxies.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -238,6 +250,10 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "客户端不存在")
 	case errors.Is(err, proxystore.ErrServerNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在或已移除")
+	case errors.Is(err, proxystore.ErrServerDecommissioning):
+		writeError(w, http.StatusConflict, "服务器正在退役，不能继续修改配置")
+	case errors.Is(err, proxystore.ErrManagedRuntimePurgeUnsupported):
+		writeError(w, http.StatusConflict, "当前 Agent 不支持受管运行时清理，请先升级 Agent")
 	case errors.Is(err, proxystore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, proxystore.ErrInvalidPort):
@@ -272,8 +288,6 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "Shadowsocks 客户端不支持 UDP 443 流控选项")
 	case errors.Is(err, proxystore.ErrInvalidShadowsocksUpdate):
 		writeError(w, http.StatusBadRequest, "Shadowsocks 不支持 TLS 或 REALITY 配置")
-	case errors.Is(err, proxystore.ErrLastClient):
-		writeError(w, http.StatusConflict, "代理节点必须至少保留一个客户端")
 	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
 		writeError(w, http.StatusConflict, "连接地址不可用，请手动填写入口地址或等待服务器上报公网 IPv4")
 	case errors.Is(err, proxystore.ErrInvalidClientTrafficConfig):

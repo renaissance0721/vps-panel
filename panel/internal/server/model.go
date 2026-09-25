@@ -9,6 +9,8 @@ const (
 	StatusPending           = "pending"
 	StatusOnline            = "online"
 	StatusOffline           = "offline"
+	DecommissionPending     = "pending"
+	DecommissionFailed      = "failed"
 	VisibilityPublic        = "public"
 	VisibilityPrivate       = "private"
 	OutboundAuto            = "auto"
@@ -34,6 +36,9 @@ var (
 	ErrInvalidOutboundPreference = errors.New("invalid server outbound preference")
 	ErrInvalidRenewalPeriod      = errors.New("invalid server renewal period")
 	ErrAutoRenewRequirements     = errors.New("automatic renewal requires expiration and renewal period")
+	ErrDecommissioning           = errors.New("server is decommissioning")
+	ErrAgentNotRegistered        = errors.New("server Agent is not registered")
+	ErrDecommissionUnsupported   = errors.New("server Agent does not support automatic decommission")
 )
 
 type Server struct {
@@ -44,6 +49,9 @@ type Server struct {
 	OutboundPreference        string
 	BlockChinaInbound         bool
 	DesiredStateVersion       int64
+	DecommissioningAt         *time.Time
+	DecommissionStatus        string
+	DecommissionError         string
 	AccessUserIDs             []int64
 	ArchivedAt                *time.Time
 	ExpiresAt                 *time.Time

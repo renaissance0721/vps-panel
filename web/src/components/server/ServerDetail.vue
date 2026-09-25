@@ -63,6 +63,8 @@ const props = defineProps<{
     | 'formatUptime'
     | 'setOutboundPreference'
     | 'setBlockChinaInbound'
+    | 'archiveServer'
+    | 'forceRemoveServer'
     | 'regenerateEnrollment'
     | 'permanentlyDeleteServer'
     | 'createdServer'
@@ -104,6 +106,8 @@ const {
   formatUptime,
   setOutboundPreference,
   setBlockChinaInbound,
+  archiveServer,
+  forceRemoveServer,
   regenerateEnrollment,
   permanentlyDeleteServer,
   createdServer,
@@ -119,16 +123,18 @@ const {
 
 const diagnosticsSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.diagnosticsV1))
 const outboundPreferenceSupported = computed(() => selectedServer.value !== null && agentSupportsCapability(selectedServer.value, agentCapabilities.outboundPreference))
+const serverReadOnly = computed(() => selectedServer.value === null || !!selectedServer.value.archived_at || !!selectedServer.value.decommission_status)
 const chinaInboundState = computed(() => selectedServer.value ? chinaInboundApplyState(selectedServer.value) : null)
 const chinaInboundSwitchDisabled = computed(() => {
   const server = selectedServer.value
-  return server === null || !!server.archived_at || submitting.value ||
+  return server === null || !!server.archived_at || !!server.decommission_status || submitting.value ||
     (!server.block_china_inbound && !chinaInboundSupported(server))
 })
 const chinaInboundSwitchTitle = computed(() => {
   const server = selectedServer.value
   if (!server) return ''
   if (server.archived_at) return '已移除服务器不能修改设置。'
+  if (server.decommission_status) return '服务器正在退役，不能继续修改配置。'
   if (!server.block_china_inbound && !chinaInboundSupported(server)) return chinaInboundUnsupportedReason(server)
   return '仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。'
 })
@@ -206,11 +212,18 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             closable
             @close="serverModalOpen = false"
           >
+            <n-alert v-if="selectedServer.decommission_status === 'pending'" type="warning" class="form-alert" title="正在退役">
+              {{ selectedServer.status === 'offline' ? '等待 Agent 上线清理。' : 'Agent 正在清理 VPS Panel 管理的资源。' }}
+            </n-alert>
+            <n-alert v-else-if="selectedServer.decommission_status === 'failed'" type="error" class="form-alert" title="退役失败">
+              <p>{{ selectedServer.decommission_error || '退役清理失败' }}</p>
+              <p>Agent 将自动重试清理。</p>
+            </n-alert>
             <div class="server-detail-grid">
               <section class="server-detail-section">
                 <h3 class="system-info-title">基本信息</h3>
             <dl class="server-details">
-              <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting" @click="openNameModal">✎</n-button></dd></div>
+              <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting || !!selectedServer.decommission_status" @click="openNameModal">✎</n-button></dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div>
                 <dt>访问范围</dt>
@@ -227,7 +240,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                     text
                     title="修改访问范围"
                     aria-label="修改访问范围"
-                    :disabled="submitting"
+                    :disabled="submitting || !!selectedServer.decommission_status"
                     @click="openAccessModal"
                   >
                     ✎
@@ -245,7 +258,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                     text
                     title="修改到期日期"
                     aria-label="修改到期日期"
-                    :disabled="submitting"
+                    :disabled="submitting || !!selectedServer.decommission_status"
                     @click="openExpirationModal"
                   >
                     ✎
@@ -258,7 +271,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 <dd>
                   <n-switch
                     :value="selectedServer.auto_renew"
-                    :disabled="!!selectedServer.archived_at || submitting || !selectedServer.expires_at || !selectedServer.renewal_period_months"
+                    :disabled="serverReadOnly || submitting || !selectedServer.expires_at || !selectedServer.renewal_period_months"
                     :title="!selectedServer.expires_at || !selectedServer.renewal_period_months ? '请先设置到期日期和续费周期' : '仅顺延 Panel 中记录的到期日期，不会向 VPS 商家付款。'"
                     @update:value="setAutoRenew(selectedServer, $event)"
                   />
@@ -297,7 +310,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 type="primary"
                 secondary
                 :loading="submitting || selectedServer.agent_upgrade_status === 'upgrading'"
-                :disabled="!panelReleaseVersion || selectedServer.status !== 'online' || selectedServer.agent_upgrade_status === 'upgrading'"
+                :disabled="!panelReleaseVersion || selectedServer.status !== 'online' || selectedServer.agent_upgrade_status === 'upgrading' || !!selectedServer.decommission_status"
                 @click="upgradeAgent(selectedServer)"
               >
                 {{ panelReleaseVersion ? `升级 Agent 到 ${panelReleaseVersion}` : '开发版本不可升级' }}
@@ -390,9 +403,9 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 <dt>当前出站</dt>
                 <dd>
                   <span class="outbound-preference-buttons">
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="!!selectedServer.archived_at || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="!!selectedServer.archived_at || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="!!selectedServer.archived_at || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="serverReadOnly || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
+                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
                   </span>
                   <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
                   <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
@@ -444,9 +457,29 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             <section class="server-detail-section server-detail-section--wide"><ServerTraffic :model="model" /></section>
 <div v-if="state?.user?.role === 'admin'" class="server-modal-actions">
               <n-button
+                v-if="!selectedServer.archived_at"
+                type="error"
+                secondary
+                :disabled="submitting || !!selectedServer.decommission_status"
+                @click="archiveServer(selectedServer)"
+              >
+                {{ selectedServer.decommission_status ? '正在退役' : '开始退役' }}
+              </n-button>
+              <n-button
+                v-if="!selectedServer.archived_at"
+                type="error"
+                text
+                :disabled="submitting"
+                @click="forceRemoveServer(selectedServer)"
+              >
+                强制从 Panel 移除
+              </n-button>
+              <n-button
+                v-if="!selectedServer.archived_at"
                 type="primary"
                 secondary
                 :loading="submitting"
+                :disabled="!!selectedServer.decommission_status"
                 @click="regenerateEnrollment(selectedServer)"
               >
                 重新生成 Agent 安装令牌

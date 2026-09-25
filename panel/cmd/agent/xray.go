@@ -81,6 +81,9 @@ type xrayManager struct {
 	runCommand        func(context.Context, string, ...string) ([]byte, error)
 	probeListener     func(context.Context, int) error
 	reconcileFirewall func(context.Context, []firewallRule) error
+	purgeFirewall     func(context.Context) error
+	removePath        func(string) error
+	removeAll         func(string) error
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
@@ -109,6 +112,9 @@ func newXrayManager() *xrayManager {
 		runCommand:        runXrayCommand,
 		probeListener:     probeXrayListener,
 		reconcileFirewall: firewall.reconcileRules,
+		purgeFirewall:     firewall.purge,
+		removePath:        os.Remove,
+		removeAll:         os.RemoveAll,
 		wait:              waitForXray,
 		healthAttempts:    6,
 		healthCheckDelay:  500 * time.Millisecond,
@@ -117,6 +123,12 @@ func newXrayManager() *xrayManager {
 }
 
 func (m *xrayManager) apply(ctx context.Context, state desiredState) error {
+	if state.Xray.Purge && state.Xray.Enabled {
+		return errUnsupportedManagedConfig
+	}
+	if state.Xray.Purge {
+		return m.purge(ctx)
+	}
 	if !state.Xray.Enabled && len(state.Xray.Proxies) != 0 {
 		return errUnsupportedManagedConfig
 	}
@@ -127,6 +139,79 @@ func (m *xrayManager) apply(ctx context.Context, state desiredState) error {
 		return m.disable(ctx)
 	}
 	return m.enable(ctx, state.Xray.Proxies, state.Xray.OutboundPreference)
+}
+
+func (m *xrayManager) purge(ctx context.Context) error {
+	managed, err := regularFileExists(m.markerPath)
+	if err != nil {
+		return fmt.Errorf("%w: inspect managed Xray marker: %v", errManagedRuntimePurge, err)
+	}
+	if !managed {
+		m.acmeDomains = nil
+		if err := m.purgeManagedFirewall(ctx); err != nil {
+			return fmt.Errorf("%w: clear managed Xray firewall: %v", errManagedRuntimePurge, err)
+		}
+		return nil
+	}
+	if m.unitPath == "" {
+		return fmt.Errorf("%w: %v", errManagedRuntimePurge, errUnsupportedInitSystem)
+	}
+	unitExists, err := pathExists(m.unitPath)
+	if err != nil {
+		return fmt.Errorf("%w: inspect managed Xray service: %v", errManagedRuntimePurge, err)
+	}
+	if unitExists {
+		if err := m.serviceManager().Stop(ctx); err != nil {
+			return fmt.Errorf("%w: stop managed Xray: %v", errManagedRuntimePurge, err)
+		}
+		if err := m.serviceManager().Disable(ctx); err != nil {
+			return fmt.Errorf("%w: disable managed Xray: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if err := m.purgeManagedFirewall(ctx); err != nil {
+		return fmt.Errorf("%w: clear managed Xray firewall: %v", errManagedRuntimePurge, err)
+	}
+	if unitExists {
+		if err := m.remove(m.unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: remove managed Xray service: %v", errManagedRuntimePurge, err)
+		}
+		if err := m.serviceManager().DaemonReload(ctx); err != nil {
+			return fmt.Errorf("%w: reload services after Xray purge: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if err := m.removeTree(m.configDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Xray config: %v", errManagedRuntimePurge, err)
+	}
+	if err := m.removeTree(m.installDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Xray runtime: %v", errManagedRuntimePurge, err)
+	}
+	m.acmeDomains = nil
+	log.Print("Managed Xray purge complete")
+	return nil
+}
+
+func (m *xrayManager) purgeManagedFirewall(ctx context.Context) error {
+	if m.purgeFirewall != nil {
+		return m.purgeFirewall(ctx)
+	}
+	if m.reconcileFirewall != nil {
+		return m.reconcileFirewall(ctx, nil)
+	}
+	return nil
+}
+
+func (m *xrayManager) remove(path string) error {
+	if m.removePath != nil {
+		return m.removePath(path)
+	}
+	return os.Remove(path)
+}
+
+func (m *xrayManager) removeTree(path string) error {
+	if m.removeAll != nil {
+		return m.removeAll(path)
+	}
+	return os.RemoveAll(path)
 }
 
 func (m *xrayManager) disable(ctx context.Context) error {

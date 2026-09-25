@@ -12,17 +12,19 @@ const (
 	CurrentAPIVersion      = 1
 	OfficialImplementation = "vps-panel-agent"
 
-	CapabilityProxyVLESSACME     = "proxy.vless.tls.acme"
-	CapabilityProxyVLESSManual   = "proxy.vless.tls.manual"
-	CapabilityProxyVLESSReality  = "proxy.vless.reality"
-	CapabilityProxyShadowsocks   = "proxy.shadowsocks"
-	CapabilityRelayRealm         = "relay.realm"
-	CapabilityOutboundPreference = "outbound_preference"
-	CapabilityMetrics            = "metrics"
-	CapabilityClientTraffic      = "client_traffic"
-	CapabilityDiagnosticsV1      = "diagnostics_v1"
-	CapabilitySelfUpgrade        = "self_upgrade"
-	CapabilityFirewallCNBlock    = "firewall.cn_block"
+	CapabilityProxyVLESSACME      = "proxy.vless.tls.acme"
+	CapabilityProxyVLESSManual    = "proxy.vless.tls.manual"
+	CapabilityProxyVLESSReality   = "proxy.vless.reality"
+	CapabilityProxyShadowsocks    = "proxy.shadowsocks"
+	CapabilityRelayRealm          = "relay.realm"
+	CapabilityOutboundPreference  = "outbound_preference"
+	CapabilityMetrics             = "metrics"
+	CapabilityClientTraffic       = "client_traffic"
+	CapabilityDiagnosticsV1       = "diagnostics_v1"
+	CapabilitySelfUpgrade         = "self_upgrade"
+	CapabilityFirewallCNBlock     = "firewall.cn_block"
+	CapabilityManagedRuntimePurge = "managed_runtime_purge"
+	CapabilitySelfDecommission    = "self_decommission"
 
 	maxImplementationLength = 128
 	maxCapabilities         = 64

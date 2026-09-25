@@ -141,7 +141,24 @@ test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
     outboundPreference: 'outbound_preference',
     diagnosticsV1: 'diagnostics_v1',
     firewallCNBlock: 'firewall.cn_block',
+    managedRuntimePurge: 'managed_runtime_purge',
+    selfDecommission: 'self_decommission',
   })
+})
+
+test('Server 退役 UI 区分 pending、failed 和管理员强制移除', async () => {
+  const [types, composable, list, detail] = await Promise.all([
+    'types/server.ts', 'composables/useServers.ts', 'components/server/ServerList.vue', 'components/server/ServerDetail.vue',
+  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
+  assert.match(types, /decommission_status: '' \| 'pending' \| 'failed'/)
+  assert.match(composable, /Panel 会先让 Agent 清理所有 VPS Panel 管理的代理服务、中转服务、防火墙和证书状态/)
+  assert.match(composable, /强制移除不会清理远端 VPS。远端可能继续运行 Xray、Realm、Agent 和监听端口。/)
+  assert.match(composable, /\/api\/servers\/\$\{value\.id\}\/force/)
+  assert.match(list, /等待 Agent 上线清理/)
+  assert.match(list, /正在退役/)
+  assert.match(list, /退役失败/)
+  assert.match(detail, /Agent 将自动重试清理/)
+  assert.match(detail, /强制从 Panel 移除/)
 })
 
 test('中国 IP 入站限制按 desired/apply 状态和 capability 准确展示', () => {

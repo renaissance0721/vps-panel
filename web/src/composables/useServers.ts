@@ -556,14 +556,26 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   async function archiveServer(value: ServerRecord) {
+    if (value.decommission_status || value.archived_at) return
     if (
       !window.confirm(
-        `确定移除服务器“${value.name}”吗？\n\n移除后将从服务器列表隐藏，并立即撤销当前 Agent 凭据，但服务器资料和历史数据会保留。之后可以重新生成 Agent 安装令牌恢复。`,
+        `删除服务器“${value.name}”\n\nPanel 会先让 Agent 清理所有 VPS Panel 管理的代理服务、中转服务、防火墙和证书状态，然后 Agent 会自行卸载。清理成功后服务器才会进入归档。\n\n确认后将开始退役。`,
       )
     )
       return
     await submit(async () => {
       await api(`/api/servers/${value.id}`, { method: 'DELETE' })
+      if (createdServer.value?.server.id === value.id) createdServer.value = null
+      await loadServers()
+    })
+  }
+
+  async function forceRemoveServer(value: ServerRecord) {
+    if (state.value?.user?.role !== 'admin' || value.archived_at) return
+    if (!window.confirm(`确定强制从 Panel 移除服务器“${value.name}”吗？`)) return
+    if (!window.confirm('强制移除不会清理远端 VPS。远端可能继续运行 Xray、Realm、Agent 和监听端口。\n\n仍然强制移除？')) return
+    await submit(async () => {
+      await api(`/api/servers/${value.id}/force`, { method: 'DELETE' })
       if (selectedServer.value?.id === value.id) selectedServer.value = null
       if (createdServer.value?.server.id === value.id) createdServer.value = null
       await loadServers()
@@ -1034,6 +1046,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     resetBulkAgentUpgrade,
     copyUpgradeCommand,
     archiveServer,
+    forceRemoveServer,
     regenerateEnrollment,
     closeServerDetails,
     openNameModal,

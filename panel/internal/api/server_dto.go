@@ -49,6 +49,9 @@ type serverResponse struct {
 	OutboundPreference        string              `json:"outbound_preference"`
 	BlockChinaInbound         bool                `json:"block_china_inbound"`
 	DesiredStateVersion       int64               `json:"desired_state_version"`
+	DecommissioningAt         *time.Time          `json:"decommissioning_at"`
+	DecommissionStatus        string              `json:"decommission_status"`
+	DecommissionError         string              `json:"decommission_error"`
 	AccessUserIDs             []int64             `json:"access_user_ids"`
 	ArchivedAt                *time.Time          `json:"archived_at,omitempty"`
 	ExpiresAt                 *time.Time          `json:"expires_at"`
@@ -123,6 +126,9 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		OutboundPreference:       value.OutboundPreference,
 		BlockChinaInbound:        value.BlockChinaInbound,
 		DesiredStateVersion:      value.DesiredStateVersion,
+		DecommissioningAt:        value.DecommissioningAt,
+		DecommissionStatus:       value.DecommissionStatus,
+		DecommissionError:        value.DecommissionError,
 		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
 		ArchivedAt:               value.ArchivedAt,
 		ExpiresAt:                value.ExpiresAt,

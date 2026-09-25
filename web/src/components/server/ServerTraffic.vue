@@ -44,7 +44,7 @@ const {
                 <n-button
                   size="tiny"
                   secondary
-                  :disabled="submitting"
+                  :disabled="submitting || !!selectedServer.decommission_status"
                   @click="openTrafficModal"
                 >
                   修改设置
@@ -52,7 +52,7 @@ const {
                 <n-button
                   size="tiny"
                   secondary
-                  :disabled="submitting"
+                  :disabled="submitting || !!selectedServer.decommission_status"
                   @click="openTrafficAdjustmentModal"
                 >
                   校准本周期流量

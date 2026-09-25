@@ -143,7 +143,7 @@ func ListDesired(ctx context.Context, query interface {
 func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) (int64, error) {
 	result, err := tx.ExecContext(ctx,
 		`UPDATE servers SET desired_state_version = desired_state_version + 1, updated_at = ?
-		 WHERE id = ? AND archived_at IS NULL`, now.Unix(), serverID,
+		 WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`, now.Unix(), serverID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("bump desired state version: %w", err)
@@ -153,6 +153,12 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 		return 0, fmt.Errorf("read desired state update count: %w", err)
 	}
 	if count != 1 {
+		var status string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
+		).Scan(&status); err == nil && status != "" {
+			return 0, ErrServerDecommissioning
+		}
 		return 0, ErrServerNotFound
 	}
 	if _, err := tx.ExecContext(ctx,

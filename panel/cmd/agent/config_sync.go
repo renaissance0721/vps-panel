@@ -17,7 +17,11 @@ import (
 
 const unsupportedManagedConfigMessage = "managed proxy configuration is not supported by this Agent version"
 
-var errUnsupportedManagedConfig = errors.New(unsupportedManagedConfigMessage)
+var (
+	errUnsupportedManagedConfig = errors.New(unsupportedManagedConfigMessage)
+	errManagedRuntimePurge      = errors.New("managed runtime purge failed")
+	errAgentSelfUninstallLaunch = errors.New("Agent self-uninstall launch failed")
+)
 
 const (
 	configRequestTimeout = 10 * time.Second
@@ -26,6 +30,7 @@ const (
 
 type desiredState struct {
 	Version           int64             `json:"version"`
+	Decommission      bool              `json:"decommission"`
 	BlockChinaInbound bool              `json:"block_china_inbound"`
 	Xray              desiredXrayState  `json:"xray"`
 	Realm             desiredRealmState `json:"realm"`
@@ -33,6 +38,7 @@ type desiredState struct {
 
 type desiredXrayState struct {
 	Enabled            bool           `json:"enabled"`
+	Purge              bool           `json:"purge"`
 	OutboundPreference string         `json:"outbound_preference"`
 	Proxies            []desiredProxy `json:"proxies"`
 }
@@ -79,6 +85,7 @@ type desiredClient struct {
 
 type desiredRealmState struct {
 	Enabled bool           `json:"enabled"`
+	Purge   bool           `json:"purge"`
 	Relays  []desiredRelay `json:"relays"`
 }
 
@@ -101,6 +108,8 @@ type configSynchronizer struct {
 	config                config
 	client                *http.Client
 	applyState            func(context.Context, desiredState) error
+	applyDecommission     func(context.Context, desiredState) error
+	prepareSelfUninstall  func() (*preparedSelfUninstall, error)
 	renewCertificates     func(context.Context) error
 	diagnoseState         func(context.Context, desiredState) []diagnostic.Check
 	chinaFirewall         *chinaInboundFirewall
@@ -115,12 +124,34 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 	xray := newXrayManager()
 	realm := newRealmManager()
 	chinaFirewall := newChinaInboundFirewall()
+	acme := xray.acme
 	runner := newAgentDiagnosticRunner(xray, realm)
-	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, applyState: func(ctx context.Context, state desiredState) error {
+	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
 		xrayErr := xray.apply(ctx, state)
 		realmErr := realm.apply(ctx, state.Realm)
 		chinaFirewallErr := chinaFirewall.apply(ctx, state)
 		return errors.Join(xrayErr, realmErr, chinaFirewallErr)
+	}, applyDecommission: func(ctx context.Context, state desiredState) error {
+		if state.BlockChinaInbound || state.Xray.Enabled || !state.Xray.Purge || len(state.Xray.Proxies) != 0 ||
+			state.Realm.Enabled || !state.Realm.Purge || len(state.Realm.Relays) != 0 {
+			return errUnsupportedManagedConfig
+		}
+		if err := xray.purge(ctx); err != nil {
+			return err
+		}
+		if err := realm.purge(ctx); err != nil {
+			return err
+		}
+		if err := chinaFirewall.purge(ctx); err != nil {
+			return err
+		}
+		if acme != nil {
+			if err := acme.purge(ctx); err != nil {
+				return err
+			}
+		}
+		log.Print("Managed firewall cleanup complete")
+		return nil
 	}}
 }
 
@@ -158,13 +189,25 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	}
 
 	applyContext, cancelApply := context.WithTimeout(ctx, configApplyTimeout)
-	applyErr := s.applyState(applyContext, state)
+	var applyErr error
+	var prepared *preparedSelfUninstall
+	if state.Decommission {
+		applyErr = s.applyDecommission(applyContext, state)
+		if applyErr == nil {
+			prepared, applyErr = s.prepareSelfUninstall()
+			if applyErr != nil {
+				applyErr = fmt.Errorf("%w: %v", errAgentSelfUninstallLaunch, applyErr)
+			}
+		}
+	} else {
+		applyErr = s.applyState(applyContext, state)
+	}
 	cancelApply()
 	result := configResult{Version: state.Version, Status: "success"}
 	if applyErr != nil {
 		result.Status = "failed"
 		result.Message = desiredStateErrorMessage(applyErr)
-	} else {
+	} else if !state.Decommission {
 		s.lastSuccessfulState = state
 		s.hasSuccessfulState = true
 	}
@@ -172,10 +215,20 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	err = s.report(reportContext, result)
 	cancelReport()
 	if err != nil {
+		if prepared != nil {
+			prepared.cleanup()
+		}
 		return err
 	}
 	if applyErr != nil {
 		return applyErr
+	}
+	if prepared != nil {
+		if err := prepared.activate(); err != nil {
+			prepared.cleanup()
+			return fmt.Errorf("%w: %v", errAgentSelfUninstallLaunch, err)
+		}
+		log.Print("Agent self-uninstall scheduled")
 	}
 	s.lastSuccessfulVersion = state.Version
 	return nil
@@ -272,6 +325,8 @@ func desiredStateErrorMessage(err error) string {
 		errManagedRealmFirewall,
 		errManagedChinaInboundRequiresNFT,
 		errManagedChinaInboundFirewall,
+		errManagedRuntimePurge,
+		errAgentSelfUninstallLaunch,
 	} {
 		if err.Error() == publicError.Error() || errors.Is(err, publicError) {
 			return publicError.Error()

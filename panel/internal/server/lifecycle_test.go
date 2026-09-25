@@ -6,7 +6,54 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 )
+
+func TestRequestDecommissionRequiresRegisteredAgentAndBothStrictCapabilities(t *testing.T) {
+	t.Run("unregistered", func(t *testing.T) {
+		service, _ := newTestService(t)
+		created, err := service.Create(t.Context(), "Unregistered")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.RequestDecommission(t.Context(), created.ID); !errors.Is(err, ErrAgentNotRegistered) {
+			t.Fatalf("RequestDecommission() error = %v, want ErrAgentNotRegistered", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name         string
+		metadata     agentcontrol.Metadata
+		wantRejected bool
+	}{
+		{name: "legacy", metadata: agentcontrol.Metadata{Version: "v0.19.0"}, wantRejected: true},
+		{name: "missing managed purge", metadata: agentcontrol.Metadata{Implementation: "third-party", Version: "v0.20.0", APIVersion: 1, Capabilities: []string{agentcontrol.CapabilitySelfDecommission}}, wantRejected: true},
+		{name: "missing self decommission", metadata: agentcontrol.Metadata{Implementation: "third-party", Version: "v0.20.0", APIVersion: 1, Capabilities: []string{agentcontrol.CapabilityManagedRuntimePurge}}, wantRejected: true},
+		{name: "both declared", metadata: agentcontrol.Metadata{Implementation: "third-party", Version: "v0.20.0", APIVersion: 1, Capabilities: []string{agentcontrol.CapabilityManagedRuntimePurge, agentcontrol.CapabilitySelfDecommission}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, db := newTestService(t)
+			created, err := service.Create(t.Context(), test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := agentcontrol.NewService(db, time.Now).RegisterAgentWithMetadata(t.Context(), created.EnrollmentToken, test.metadata, false); err != nil {
+				t.Fatal(err)
+			}
+			version, err := service.RequestDecommission(t.Context(), created.ID)
+			if test.wantRejected {
+				if !errors.Is(err, ErrDecommissionUnsupported) {
+					t.Fatalf("RequestDecommission() = (%d, %v), want ErrDecommissionUnsupported", version, err)
+				}
+				return
+			}
+			if err != nil || version != 2 {
+				t.Fatalf("RequestDecommission() = (%d, %v), want version 2", version, err)
+			}
+		})
+	}
+}
 
 func TestArchiveKeepsServerAndRemovesUnusedEnrollment(t *testing.T) {
 	service, db := newTestService(t)

@@ -26,6 +26,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerArchive(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerDecommission(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerAccess(ctx, db); err != nil {
 		return err
 	}
@@ -683,6 +686,32 @@ func migrateServerArchive(ctx context.Context, db *sql.DB) error {
 			`ALTER TABLE servers ADD COLUMN archived_at INTEGER`,
 		); err != nil {
 			return fmt.Errorf("add server archived_at column: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateServerDecommission(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"decommissioning_at", "decommissioning_at INTEGER"},
+		{"decommission_status", "decommission_status TEXT NOT NULL DEFAULT '' CHECK (decommission_status IN ('', 'pending', 'failed'))"},
+		{"decommission_error", "decommission_error TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect servers.%s: %w", column.name, err)
+		}
+		if count != 0 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE servers ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add servers.%s: %w", column.name, err)
 		}
 	}
 	return nil

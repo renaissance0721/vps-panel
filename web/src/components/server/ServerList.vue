@@ -26,8 +26,10 @@ const props = defineProps<{
     | 'formatServerExpiration'
     | 'renewalPeriodLabel'
     | 'submitting'
+    | 'state'
     | 'viewServer'
     | 'archiveServer'
+    | 'forceRemoveServer'
     | 'archivedServers'
     | 'formatTime'
   >
@@ -45,8 +47,10 @@ const {
   formatServerExpiration,
   renewalPeriodLabel,
   submitting,
+  state,
   viewServer,
   archiveServer,
+  forceRemoveServer,
   archivedServers,
   formatTime,
 } = toRefs(props.model)
@@ -113,6 +117,12 @@ async function dropServer(id: number, archived: boolean) {
                         <n-tag :type="statusType(value.status)" size="small">
                           {{ statusLabel(value.status) }}
                         </n-tag>
+                        <n-tag v-if="value.decommission_status === 'pending'" type="warning" size="small">
+                          {{ value.status === 'offline' ? '等待 Agent 上线清理' : '正在退役' }}
+                        </n-tag>
+                        <n-tag v-else-if="value.decommission_status === 'failed'" type="error" size="small">
+                          退役失败
+                        </n-tag>
                         <n-tag
                           v-if="trafficWarningLevel(value.traffic_used_bytes, value.monthly_traffic_limit_bytes) === 'warning'"
                           type="warning"
@@ -149,10 +159,20 @@ async function dropServer(id: number, archived: boolean) {
                         size="small"
                         type="error"
                         secondary
-                        :disabled="submitting"
+                        :disabled="submitting || !!value.decommission_status"
                         @click="archiveServer(value)"
                       >
-                        移除
+                        {{ value.decommission_status ? '正在退役' : '开始退役' }}
+                      </n-button>
+                      <n-button
+                        v-if="state?.user?.role === 'admin'"
+                        size="small"
+                        type="error"
+                        text
+                        :disabled="submitting"
+                        @click="forceRemoveServer(value)"
+                      >
+                        强制从 Panel 移除
                       </n-button>
                     </td>
                   </tr>

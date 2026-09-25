@@ -29,6 +29,14 @@ func (s *server) requireServerAccess(w http.ResponseWriter, r *http.Request, use
 	return true
 }
 
+func (s *server) requireMutableServer(w http.ResponseWriter, r *http.Request, serverID int64) bool {
+	if err := s.servers.EnsureMutable(r.Context(), serverID); err != nil {
+		writeServerError(w, err)
+		return false
+	}
+	return true
+}
+
 func (s *server) proxyForUser(ctx context.Context, user auth.User, id int64) (proxystore.Proxy, error) {
 	value, err := s.proxies.Get(ctx, id)
 	if err != nil {

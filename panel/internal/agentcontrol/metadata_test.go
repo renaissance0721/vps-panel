@@ -86,3 +86,23 @@ func TestDeclaresCapabilityHasNoLegacyFallback(t *testing.T) {
 		t.Fatal("undeclared China firewall capability was allowed")
 	}
 }
+
+func TestDestructiveCapabilitiesRequireExplicitAPIV1Declaration(t *testing.T) {
+	for _, capability := range []string{CapabilityManagedRuntimePurge, CapabilitySelfDecommission} {
+		if DeclaresCapability(Metadata{}, capability) {
+			t.Fatalf("Legacy Agent declared %q", capability)
+		}
+		metadata := Metadata{
+			Implementation: OfficialImplementation,
+			Version:        "v0.20.0",
+			APIVersion:     CurrentAPIVersion,
+		}
+		if DeclaresCapability(metadata, capability) {
+			t.Fatalf("API v1 Agent without %q was accepted", capability)
+		}
+		metadata.Capabilities = []string{capability}
+		if !DeclaresCapability(metadata, capability) {
+			t.Fatalf("API v1 Agent explicitly declaring %q was rejected", capability)
+		}
+	}
+}

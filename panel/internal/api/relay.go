@@ -372,11 +372,23 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 	if !ok {
 		return
 	}
-	if _, err := s.relayForUser(r.Context(), user, id); err != nil {
+	value, err := s.relayForUser(r.Context(), user, id)
+	if err != nil {
 		writeRelayError(w, err)
 		return
 	}
-	mutation, err := s.relays.Delete(r.Context(), id)
+	server, err := s.servers.Get(r.Context(), value.ServerID)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	allowManagedPurge := server.AgentVersion == "" || agentcontrol.DeclaresCapability(agentcontrol.Metadata{
+		Implementation: server.AgentImplementation,
+		Version:        server.AgentVersion,
+		APIVersion:     server.AgentAPIVersion,
+		Capabilities:   server.AgentCapabilities,
+	}, agentcontrol.CapabilityManagedRuntimePurge)
+	mutation, err := s.relays.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
 	if err != nil {
 		writeRelayError(w, err)
 		return
@@ -416,6 +428,10 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "中转规则不存在")
 	case errors.Is(err, relaystore.ErrServerNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在或已移除")
+	case errors.Is(err, relaystore.ErrServerDecommissioning):
+		writeError(w, http.StatusConflict, "服务器正在退役，不能继续修改配置")
+	case errors.Is(err, relaystore.ErrManagedRuntimePurgeUnsupported):
+		writeError(w, http.StatusConflict, "当前 Agent 不支持受管运行时清理，请先升级 Agent")
 	case errors.Is(err, relaystore.ErrProxyNotFound):
 		writeError(w, http.StatusNotFound, "目标代理节点不存在或已移除")
 	case errors.Is(err, relaystore.ErrLandingNotFound):

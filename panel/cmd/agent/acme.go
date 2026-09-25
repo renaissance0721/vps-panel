@@ -191,6 +191,55 @@ func (m *acmeManager) ensureCertificate(ctx context.Context, domain string) (pat
 	return paths, nil
 }
 
+func (m *acmeManager) purge(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reconcileFirewall != nil {
+		if err := m.reconcileFirewall(ctx, nil); err != nil {
+			return fmt.Errorf("%w: clear managed ACME firewall: %v", errManagedRuntimePurge, err)
+		}
+	}
+	marker := filepath.Join(m.installDir, ".managed-by-vps-panel")
+	managed, err := regularFileExists(marker)
+	if err != nil {
+		return fmt.Errorf("%w: inspect ACME ownership: %v", errManagedRuntimePurge, err)
+	}
+	if managed {
+		if err := os.RemoveAll(m.installDir); err != nil {
+			return fmt.Errorf("%w: remove managed ACME runtime: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if err := os.RemoveAll(m.homeDir); err != nil {
+		return fmt.Errorf("%w: remove managed ACME state: %v", errManagedRuntimePurge, err)
+	}
+	entries, err := os.ReadDir(m.certDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: inspect managed ACME certificates: %v", errManagedRuntimePurge, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		directory := filepath.Join(m.certDir, entry.Name())
+		owned, markerErr := regularFileExists(filepath.Join(directory, ".managed-by-vps-panel"))
+		if markerErr != nil {
+			return fmt.Errorf("%w: inspect managed ACME certificate ownership: %v", errManagedRuntimePurge, markerErr)
+		}
+		if owned {
+			if err := os.RemoveAll(directory); err != nil {
+				return fmt.Errorf("%w: remove managed ACME certificate: %v", errManagedRuntimePurge, err)
+			}
+		}
+	}
+	if err := os.Remove(m.certDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		remaining, readErr := os.ReadDir(m.certDir)
+		if readErr != nil || len(remaining) == 0 {
+			return fmt.Errorf("%w: remove managed ACME certificate directory: %v", errManagedRuntimePurge, err)
+		}
+	}
+	return nil
+}
+
 func (m *acmeManager) ensureManagedDomainDirectory(directory string) error {
 	if err := ensureSecureDirectory(m.certDir, 0o700); err != nil {
 		return fmt.Errorf("prepare managed certificate directory: %w", err)

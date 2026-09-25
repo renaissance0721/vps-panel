@@ -1,12 +1,11 @@
 package proxy
 
 import (
-	"errors"
 	"testing"
 )
 
-func TestClientLifecycleKeepsUUIDAndOneClient(t *testing.T) {
-	_, service, serverID := newTestService(t)
+func TestClientLifecycleKeepsUUIDAndAllowsDeletingLastClient(t *testing.T) {
+	db, service, serverID := newTestService(t)
 	proxyValue := createRealityProxy(t, service, serverID, 443, "Multi")
 	first, err := service.GetClient(t.Context(), proxyValue.Clients[0].ID)
 	if err != nil {
@@ -33,7 +32,17 @@ func TestClientLifecycleKeepsUUIDAndOneClient(t *testing.T) {
 	if _, err := service.DeleteClient(t.Context(), first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.DeleteClient(t.Context(), second.ID); !errors.Is(err, ErrLastClient) {
-		t.Fatalf("last client deletion error = %v", err)
+	if _, err := service.DeleteClient(t.Context(), second.ID); err != nil {
+		t.Fatalf("delete last client: %v", err)
+	}
+	var proxyCount, clientCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM proxies WHERE id = ?`, proxyValue.ID).Scan(&proxyCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM clients WHERE proxy_id = ?`, proxyValue.ID).Scan(&clientCount); err != nil {
+		t.Fatal(err)
+	}
+	if proxyCount != 1 || clientCount != 0 {
+		t.Fatalf("last Client delete counts = proxy %d, clients %d", proxyCount, clientCount)
 	}
 }

@@ -138,7 +138,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
-		 servers.desired_state_version,
+		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -182,7 +182,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
-		 servers.desired_state_version,
+		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
 		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
@@ -220,7 +220,7 @@ type rowScanner interface {
 func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var accessUserIDs string
-	var archivedAt, expiresAt, renewalPeriod, renewalAnchorDay, monthlyTrafficLimit, lastSeenAt sql.NullInt64
+	var decommissioningAt, archivedAt, expiresAt, renewalPeriod, renewalAnchorDay, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var implementation, storedAgentVersion, capabilitiesJSON sql.NullString
 	var apiVersion sql.NullInt64
 	var upgradeTarget, upgradeStatus, upgradeError sql.NullString
@@ -234,7 +234,8 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion, &accessUserIDs, &archivedAt, &expiresAt,
+		&value.ID, &value.Name, &value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
+		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,
 		&renewalPeriod, &value.AutoRenew, &renewalAnchorDay,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
@@ -246,6 +247,10 @@ func scanServer(row rowScanner) (Server, error) {
 		&createdAt, &updatedAt,
 	); err != nil {
 		return Server{}, err
+	}
+	if decommissioningAt.Valid {
+		decommissionTime := time.Unix(decommissioningAt.Int64, 0).UTC()
+		value.DecommissioningAt = &decommissionTime
 	}
 	if archivedAt.Valid {
 		archivedTime := time.Unix(archivedAt.Int64, 0).UTC()

@@ -79,6 +79,9 @@ func (s *server) updateServerAccess(w http.ResponseWriter, r *http.Request, user
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
+	if !s.requireMutableServer(w, r, id) {
+		return
+	}
 	var request updateServerAccessRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -99,6 +102,9 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if !s.requireServerAccess(w, r, user, id) {
+		return
+	}
+	if !s.requireMutableServer(w, r, id) {
 		return
 	}
 	var request updateServerRequest
@@ -276,6 +282,9 @@ func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request,
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
+	if !s.requireMutableServer(w, r, id) {
+		return
+	}
 	var request updateTrafficAdjustmentRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -300,6 +309,9 @@ func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, 
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
+	if !s.requireMutableServer(w, r, id) {
+		return
+	}
 	updated, err := s.servers.ClearTrafficAdjustment(r.Context(), id)
 	if err != nil {
 		writeServerError(w, err)
@@ -316,7 +328,26 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, user auth.
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
-	if err := s.servers.Archive(r.Context(), id); err != nil {
+	version, err := s.servers.RequestDecommission(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	if err := s.agents.NotifyConfigChanged(id, version); err != nil {
+		log.Printf("notify Agent of server decommission: %v", err)
+	}
+	writeNoContent(w)
+}
+
+func (s *server) forceRemoveServer(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
+		return
+	}
+	if err := s.servers.ForceArchive(r.Context(), id); err != nil {
 		writeServerError(w, err)
 		return
 	}
@@ -354,6 +385,12 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "续费周期无效")
 	case errors.Is(err, serverstore.ErrAutoRenewRequirements):
 		writeError(w, http.StatusBadRequest, "自动续费需要设置到期日期和续费周期")
+	case errors.Is(err, serverstore.ErrDecommissioning):
+		writeError(w, http.StatusConflict, "服务器正在退役，不能继续修改配置")
+	case errors.Is(err, serverstore.ErrAgentNotRegistered):
+		writeError(w, http.StatusConflict, "服务器尚未注册 Agent，无法自动清理；管理员可以强制从 Panel 移除")
+	case errors.Is(err, serverstore.ErrDecommissionUnsupported):
+		writeError(w, http.StatusConflict, "当前 Agent 不支持自动清理，请先升级 Agent，或由管理员强制从 Panel 移除")
 	case errors.Is(err, serverstore.ErrNotFound), errors.Is(err, agentcontrol.ErrServerNotFound):
 		writeError(w, http.StatusNotFound, "服务器不存在")
 	case errors.Is(err, agentcontrol.ErrInvalidEnrollment):

@@ -156,6 +156,10 @@ func (f *chinaInboundFirewall) disable(ctx context.Context) error {
 	return f.runBatch(ctx, command, []byte("delete table inet "+chinaFirewallTable+"\n"))
 }
 
+func (f *chinaInboundFirewall) purge(ctx context.Context) error {
+	return f.disable(ctx)
+}
+
 func (f *chinaInboundFirewall) inspectOwnedTable(ctx context.Context, command string) (bool, error) {
 	output, err := f.runCommand(ctx, command, "list", "tables")
 	if err != nil {

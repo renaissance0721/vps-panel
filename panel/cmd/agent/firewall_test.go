@@ -220,6 +220,53 @@ func TestNFTablesRefusesUnmanagedDedicatedTable(t *testing.T) {
 	}
 }
 
+func TestProxyFirewallPurgeDeletesOnlyOwnedDedicatedNFTTable(t *testing.T) {
+	deleted := false
+	firewall := &proxyFirewall{
+		owner: "proxy",
+		lookPath: func(name string) (string, error) {
+			if name == "nft" {
+				return "nft", nil
+			}
+			return "", errors.New("not installed")
+		},
+		runCommand: func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+			switch strings.Join(arguments, " ") {
+			case "list tables":
+				return []byte("table inet vps_panel_proxy\n"), nil
+			case "list chain inet vps_panel_proxy input":
+				return []byte(`counter comment "vps-panel-proxy-owner"`), nil
+			case "delete table inet vps_panel_proxy":
+				deleted = true
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected command: %v", arguments)
+			}
+		},
+	}
+	if err := firewall.purge(t.Context()); err != nil || !deleted {
+		t.Fatalf("owned table purge = (%t, %v)", deleted, err)
+	}
+
+	deleted = false
+	firewall.runCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+		switch strings.Join(arguments, " ") {
+		case "list tables":
+			return []byte("table inet vps_panel_proxy\n"), nil
+		case "list chain inet vps_panel_proxy input":
+			return []byte(`counter comment "user-owner"`), nil
+		case "delete table inet vps_panel_proxy":
+			deleted = true
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+	if err := firewall.purge(t.Context()); !errors.Is(err, errManagedProxyFirewall) || deleted {
+		t.Fatalf("unmanaged table purge = (%t, %v)", deleted, err)
+	}
+}
+
 func TestProxyFirewallAddFailureDoesNotRemoveStaleManagedRules(t *testing.T) {
 	removed := false
 	firewall := &proxyFirewall{

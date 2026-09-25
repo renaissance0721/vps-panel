@@ -812,6 +812,58 @@ func TestManagedXrayPreferenceChangeValidatesAndAppliesConfig(t *testing.T) {
 	}
 }
 
+func TestManagedXrayPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, []byte("current"), 0o600)
+	writeTestFile(t, manager.previousPath, []byte("previous"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("unit"), 0o644)
+	commands.active = true
+	firewallPurges := 0
+	manager.purgeFirewall = func(context.Context) error {
+		firewallPurges++
+		return nil
+	}
+	state := desiredState{Xray: desiredXrayState{Purge: true}}
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if commands.count("systemctl", "stop") != 1 || commands.count("systemctl", "disable") != 1 ||
+		commands.count("systemctl", "daemon-reload") != 1 || firewallPurges != 1 {
+		t.Fatalf("purge calls = %v, firewall purges = %d", commands.calls, firewallPurges)
+	}
+	for _, path := range []string{manager.installDir, manager.configDir, manager.unitPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("managed Xray path remained: %s (%v)", path, err)
+		}
+	}
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatalf("repeat purge: %v", err)
+	}
+	if firewallPurges != 2 {
+		t.Fatalf("repeat purge did not verify firewall cleanup: %d", firewallPurges)
+	}
+}
+
+func TestManagedXrayPurgePreservesRuntimeWithoutOwnershipMarker(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	writeTestFile(t, manager.binaryPath, []byte("user content"), 0o755)
+	writeTestFile(t, manager.configPath, []byte("user config"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("user unit"), 0o644)
+	manager.purgeFirewall = func(context.Context) error { return nil }
+	if err := manager.apply(t.Context(), desiredState{Xray: desiredXrayState{Purge: true}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{manager.binaryPath, manager.configPath, manager.unitPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unmanaged Xray path was removed: %s (%v)", path, err)
+		}
+	}
+	if len(commands.calls) != 0 {
+		t.Fatalf("unmanaged Xray purge changed service: %v", commands.calls)
+	}
+}
+
 func enabledXrayState() desiredState {
 	return desiredState{Xray: desiredXrayState{Enabled: true}}
 }

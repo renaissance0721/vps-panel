@@ -60,6 +60,8 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilityDiagnosticsV1,
 	agentcontrol.CapabilitySelfUpgrade,
 	agentcontrol.CapabilityFirewallCNBlock,
+	agentcontrol.CapabilityManagedRuntimePurge,
+	agentcontrol.CapabilitySelfDecommission,
 }
 
 type registrationRequest struct {
@@ -119,6 +121,9 @@ func run(arguments []string) error {
 	}
 	if len(arguments) > 0 && arguments[0] == "_apply-upgrade" {
 		return runApplyUpgrade(arguments[1:])
+	}
+	if len(arguments) == 1 && arguments[0] == "_self-uninstall" {
+		return runAgentSelfUninstall()
 	}
 	if len(arguments) > 0 && arguments[0] == agentSystemdMigrationRestartCommand {
 		return runAgentSystemdMigrationRestart(arguments[1:])

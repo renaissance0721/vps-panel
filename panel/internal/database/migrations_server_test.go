@@ -36,9 +36,12 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 		t.Fatalf("Open() migration error = %v", err)
 	}
 	defer db.Close()
-	var visibility, outboundPreference string
+	var visibility, outboundPreference, decommissionStatus, decommissionError string
 	var blockChinaInbound bool
-	if err := db.QueryRow(`SELECT visibility, outbound_preference, block_china_inbound FROM servers WHERE id = 1`).Scan(&visibility, &outboundPreference, &blockChinaInbound); err != nil {
+	var decommissioningAt sql.NullInt64
+	if err := db.QueryRow(`SELECT visibility, outbound_preference, block_china_inbound,
+		decommissioning_at, decommission_status, decommission_error FROM servers WHERE id = 1`).
+		Scan(&visibility, &outboundPreference, &blockChinaInbound, &decommissioningAt, &decommissionStatus, &decommissionError); err != nil {
 		t.Fatal(err)
 	}
 	if visibility != "public" {
@@ -49,6 +52,9 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if blockChinaInbound {
 		t.Fatal("existing server block_china_inbound = true, want false")
+	}
+	if decommissioningAt.Valid || decommissionStatus != "" || decommissionError != "" {
+		t.Fatalf("existing server decommission defaults = (%v, %q, %q)", decommissioningAt.Valid, decommissionStatus, decommissionError)
 	}
 	for _, table := range []string{"user_server_order", "user_proxy_order", "user_relay_order"} {
 		var name string

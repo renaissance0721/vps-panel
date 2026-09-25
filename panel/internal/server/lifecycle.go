@@ -3,9 +3,30 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 )
+
+func (s *Service) EnsureMutable(ctx context.Context, id int64) error {
+	var status string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, id,
+	).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read server lifecycle state: %w", err)
+	}
+	if status != "" {
+		return ErrDecommissioning
+	}
+	return nil
+}
 
 func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server, error) {
 	var err error
@@ -126,7 +147,172 @@ func (s *Service) UpdateExpiration(ctx context.Context, id int64, expiresAt *tim
 	})
 }
 
+func (s *Service) RequestDecommission(ctx context.Context, id int64) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin server decommission: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, id,
+	).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read server decommission state: %w", err)
+	}
+	if currentStatus != "" {
+		return 0, ErrDecommissioning
+	}
+
+	var implementation, version, capabilitiesJSON string
+	var apiVersion int
+	err = tx.QueryRowContext(ctx,
+		`SELECT implementation, version, api_version, capabilities_json FROM agents WHERE server_id = ?`, id,
+	).Scan(&implementation, &version, &apiVersion, &capabilitiesJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrAgentNotRegistered
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read server Agent metadata: %w", err)
+	}
+	capabilities, err := agentcontrol.DecodeCapabilities(capabilitiesJSON)
+	if err != nil {
+		return 0, err
+	}
+	metadata := agentcontrol.Metadata{
+		Implementation: implementation,
+		Version:        version,
+		APIVersion:     apiVersion,
+		Capabilities:   capabilities,
+	}
+	if !agentcontrol.DeclaresCapability(metadata, agentcontrol.CapabilityManagedRuntimePurge) ||
+		!agentcontrol.DeclaresCapability(metadata, agentcontrol.CapabilitySelfDecommission) {
+		return 0, ErrDecommissionUnsupported
+	}
+
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE servers
+		 SET decommissioning_at = ?, decommission_status = ?, decommission_error = '',
+		     desired_state_version = desired_state_version + 1, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`,
+		now, DecommissionPending, now, id,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("request server decommission: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read requested server decommission count: %w", err)
+	}
+	if count != 1 {
+		return 0, ErrDecommissioning
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+		now, id,
+	); err != nil {
+		return 0, fmt.Errorf("mark decommission config pending: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
+	); err != nil {
+		return 0, fmt.Errorf("remove unused Agent enrollments: %w", err)
+	}
+	var desiredVersion int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT desired_state_version FROM servers WHERE id = ?`, id,
+	).Scan(&desiredVersion); err != nil {
+		return 0, fmt.Errorf("read decommission desired state version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit server decommission: %w", err)
+	}
+	return desiredVersion, nil
+}
+
+func (s *Service) FinalizeDecommission(ctx context.Context, id, version int64, status, message string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin decommission result: %w", err)
+	}
+	defer tx.Rollback()
+
+	var desiredVersion int64
+	var decommissionStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT desired_state_version, decommission_status FROM servers
+		 WHERE id = ? AND archived_at IS NULL`, id,
+	).Scan(&desiredVersion, &decommissionStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("read decommission result state: %w", err)
+	}
+	if version != desiredVersion || (decommissionStatus != DecommissionPending && decommissionStatus != DecommissionFailed) {
+		return false, nil
+	}
+	now := s.now().UTC().Truncate(time.Second).Unix()
+	if status == agentcontrol.ConfigSyncFailed {
+		message = decommissionPublicError(message)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE servers SET decommission_status = ?, decommission_error = ?, updated_at = ? WHERE id = ?`,
+			DecommissionFailed, message, now, id,
+		); err != nil {
+			return false, fmt.Errorf("record decommission failure: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit decommission failure: %w", err)
+		}
+		return false, nil
+	}
+	if status != agentcontrol.ConfigSyncSuccess {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE servers
+		 SET status = ?, archived_at = ?, decommissioning_at = NULL,
+		     decommission_status = '', decommission_error = '', updated_at = ?
+		 WHERE id = ?`,
+		StatusOffline, now, now, id,
+	); err != nil {
+		return false, fmt.Errorf("archive decommissioned server: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
+		return false, fmt.Errorf("revoke decommissioned server Agent: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
+	); err != nil {
+		return false, fmt.Errorf("remove decommissioned server enrollments: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit decommission completion: %w", err)
+	}
+	return true, nil
+}
+
+func decommissionPublicError(message string) string {
+	switch strings.TrimSpace(message) {
+	case "managed runtime purge failed":
+		return "managed runtime purge failed"
+	case "Agent self-uninstall launch failed":
+		return "Agent self-uninstall launch failed"
+	default:
+		return "managed runtime purge failed"
+	}
+}
+
 func (s *Service) Archive(ctx context.Context, id int64) error {
+	return s.ForceArchive(ctx, id)
+}
+
+func (s *Service) ForceArchive(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin server archive: %w", err)
@@ -135,7 +321,8 @@ func (s *Service) Archive(ctx context.Context, id int64) error {
 
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	result, err := tx.ExecContext(ctx,
-		`UPDATE servers SET status = ?, archived_at = ?, updated_at = ?
+		`UPDATE servers SET status = ?, archived_at = ?, decommissioning_at = NULL,
+		 decommission_status = '', decommission_error = '', updated_at = ?
 		 WHERE id = ? AND archived_at IS NULL`,
 		StatusOffline, now, now, id,
 	)

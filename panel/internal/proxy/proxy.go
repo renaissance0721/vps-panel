@@ -319,6 +319,10 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
+	return s.DeleteWithManagedPurge(ctx, id, true)
+}
+
+func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) (Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -335,6 +339,15 @@ func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
 	}
 	if referenced {
 		return Mutation{}, ErrReferencedByRelay
+	}
+	var proxyCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM proxies WHERE server_id = ?`, value.ServerID,
+	).Scan(&proxyCount); err != nil {
+		return Mutation{}, fmt.Errorf("count server proxies: %w", err)
+	}
+	if proxyCount == 1 && !allowManagedPurge {
+		return Mutation{}, ErrManagedRuntimePurgeUnsupported
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM proxies WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete proxy: %w", err)
@@ -391,6 +404,21 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 func getProxyForMutation(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id int64) (Proxy, storedConfig, error) {
+	var decommissionStatus string
+	err := query.QueryRowContext(ctx,
+		`SELECT servers.decommission_status FROM proxies
+		 JOIN servers ON servers.id = proxies.server_id
+		 WHERE proxies.id = ? AND servers.archived_at IS NULL`, id,
+	).Scan(&decommissionStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Proxy{}, storedConfig{}, ErrNotFound
+	}
+	if err != nil {
+		return Proxy{}, storedConfig{}, fmt.Errorf("read proxy server lifecycle: %w", err)
+	}
+	if decommissionStatus != "" {
+		return Proxy{}, storedConfig{}, ErrServerDecommissioning
+	}
 	value, config, err := scanProxy(query.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
@@ -411,10 +439,16 @@ func getProxyForMutation(ctx context.Context, query interface {
 
 func ensureActiveServer(ctx context.Context, tx *sql.Tx, serverID int64) error {
 	var id int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM servers WHERE id = ? AND archived_at IS NULL`, serverID).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+	var decommissionStatus string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
+	).Scan(&id, &decommissionStatus); errors.Is(err, sql.ErrNoRows) {
 		return ErrServerNotFound
 	} else if err != nil {
 		return fmt.Errorf("read proxy server: %w", err)
+	}
+	if decommissionStatus != "" {
+		return ErrServerDecommissioning
 	}
 	return nil
 }

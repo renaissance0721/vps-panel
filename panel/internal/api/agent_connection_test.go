@@ -579,7 +579,7 @@ func TestArchiveClosesAgentWebSocketAndRevokesToken(t *testing.T) {
 	disconnected := connection.CloseRead(context.Background())
 
 	request, err := http.NewRequestWithContext(
-		t.Context(), http.MethodDelete, panel.URL+"/api/servers/"+strconv.FormatInt(created.ID, 10), nil,
+		t.Context(), http.MethodDelete, panel.URL+"/api/servers/"+strconv.FormatInt(created.ID, 10)+"/force", nil,
 	)
 	if err != nil {
 		t.Fatalf("create archive request: %v", err)

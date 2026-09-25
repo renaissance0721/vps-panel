@@ -169,6 +169,13 @@ func TestUnsupportedHistoricalProxyCanBeDisabledAndDeletedButNotReenabled(t *tes
 	if response := performRequest(t, fixture.handler, http.MethodDelete, keepDisabledPath, nil, fixture.cookie); response.Code != http.StatusNoContent {
 		t.Fatalf("delete unsupported proxy = %d, %s", response.Code, response.Body.String())
 	}
+	if response := performRequest(t, fixture.handler, http.MethodDelete, path, nil, fixture.cookie); response.Code != http.StatusConflict {
+		t.Fatalf("delete last unsupported proxy = %d, %s", response.Code, response.Body.String())
+	}
+	setAgentCapabilities(t, fixture.db, fixture.serverID, "third-party-agent", []string{agentcontrol.CapabilityManagedRuntimePurge})
+	if response := performRequest(t, fixture.handler, http.MethodDelete, path, nil, fixture.cookie); response.Code != http.StatusNoContent {
+		t.Fatalf("delete last purge-capable proxy = %d, %s", response.Code, response.Body.String())
+	}
 }
 
 func TestRelayCapabilityEnforcement(t *testing.T) {
@@ -197,8 +204,12 @@ func TestRelayCapabilityEnforcement(t *testing.T) {
 	if response := performRequest(t, legacy.handler, http.MethodPatch, path, updateRelayRequest{Enabled: &enabled}, legacy.cookie); response.Code != http.StatusConflict {
 		t.Fatalf("reenable unsupported Relay = %d, %s", response.Code, response.Body.String())
 	}
+	if response := performRequest(t, legacy.handler, http.MethodDelete, path, nil, legacy.cookie); response.Code != http.StatusConflict {
+		t.Fatalf("delete last unsupported Relay = %d, %s", response.Code, response.Body.String())
+	}
+	setAgentCapabilities(t, legacy.db, legacy.serverID, "third-party-agent", []string{agentcontrol.CapabilityManagedRuntimePurge})
 	if response := performRequest(t, legacy.handler, http.MethodDelete, path, nil, legacy.cookie); response.Code != http.StatusNoContent {
-		t.Fatalf("delete unsupported Relay = %d, %s", response.Code, response.Body.String())
+		t.Fatalf("delete last purge-capable Relay = %d, %s", response.Code, response.Body.String())
 	}
 }
 

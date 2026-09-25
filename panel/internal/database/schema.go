@@ -40,6 +40,10 @@ func schemaStatements() []string {
 			block_china_inbound INTEGER NOT NULL DEFAULT 0
 				CHECK (block_china_inbound IN (0, 1)),
 			desired_state_version INTEGER NOT NULL DEFAULT 1,
+			decommissioning_at INTEGER,
+			decommission_status TEXT NOT NULL DEFAULT ''
+				CHECK (decommission_status IN ('', 'pending', 'failed')),
+			decommission_error TEXT NOT NULL DEFAULT '',
 			archived_at INTEGER,
 			expires_at INTEGER,
 			renewal_period_months INTEGER

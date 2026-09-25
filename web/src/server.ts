@@ -13,6 +13,8 @@ export const agentCapabilities = {
   outboundPreference: 'outbound_preference',
   diagnosticsV1: 'diagnostics_v1',
   firewallCNBlock: 'firewall.cn_block',
+  managedRuntimePurge: 'managed_runtime_purge',
+  selfDecommission: 'self_decommission',
 } as const
 
 export function agentSupportsCapability(server: AgentMetadata, capability: string): boolean {

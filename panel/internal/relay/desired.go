@@ -41,7 +41,7 @@ func (s *Service) BumpForProxyTarget(ctx context.Context, proxyID, excludeServer
 		`SELECT DISTINCT relays.server_id FROM relays
 		 JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.target_type = 'proxy' AND relays.target_proxy_id = ?
-		   AND relays.server_id != ? AND servers.archived_at IS NULL
+		   AND relays.server_id != ? AND servers.archived_at IS NULL AND servers.decommission_status = ''
 		 ORDER BY relays.server_id`, proxyID, excludeServerID)
 }
 
@@ -50,7 +50,7 @@ func (s *Service) BumpForLandingTarget(ctx context.Context, landingID int64) ([]
 		`SELECT DISTINCT relays.server_id FROM relays
 		 JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.target_type = 'landing' AND relays.target_landing_id = ?
-		   AND servers.archived_at IS NULL
+		   AND servers.archived_at IS NULL AND servers.decommission_status = ''
 		 ORDER BY relays.server_id`, landingID)
 }
 
@@ -60,7 +60,7 @@ func (s *Service) BumpForAutoTargetServer(ctx context.Context, targetServerID in
 		 JOIN servers ON servers.id = relays.server_id
 		 JOIN proxies ON proxies.id = relays.target_proxy_id
 		 WHERE relays.target_type = 'proxy' AND proxies.server_id = ?
-		   AND proxies.entry_host_mode = 'auto' AND servers.archived_at IS NULL
+		   AND proxies.entry_host_mode = 'auto' AND servers.archived_at IS NULL AND servers.decommission_status = ''
 		 ORDER BY relays.server_id`, targetServerID)
 }
 
@@ -104,7 +104,7 @@ func (s *Service) bumpDependencies(ctx context.Context, statement string, argume
 func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) (int64, error) {
 	result, err := tx.ExecContext(ctx,
 		`UPDATE servers SET desired_state_version = desired_state_version + 1, updated_at = ?
-		 WHERE id = ? AND archived_at IS NULL`, now.Unix(), serverID,
+		 WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`, now.Unix(), serverID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("bump relay desired state version: %w", err)
@@ -114,6 +114,12 @@ func bumpVersion(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time)
 		return 0, fmt.Errorf("read relay desired state update: %w", err)
 	}
 	if count != 1 {
+		var status string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT decommission_status FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
+		).Scan(&status); err == nil && status != "" {
+			return 0, ErrServerDecommissioning
+		}
 		return 0, ErrServerNotFound
 	}
 	if _, err := tx.ExecContext(ctx,

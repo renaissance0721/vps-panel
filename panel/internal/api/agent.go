@@ -47,14 +47,17 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
 		Version:           state.Version,
+		Decommission:      state.Decommission,
 		BlockChinaInbound: state.BlockChinaInbound,
 		Xray: agentDesiredXrayState{
 			Enabled:            len(state.Proxies) > 0,
+			Purge:              state.XrayPurge,
 			OutboundPreference: state.OutboundPreference,
 			Proxies:            state.Proxies,
 		},
 		Realm: agentDesiredRealmState{
 			Enabled: len(state.Relays) > 0,
+			Purge:   state.RealmPurge,
 			Relays:  state.Relays,
 		},
 	})
@@ -80,6 +83,16 @@ func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request)
 	}); err != nil {
 		writeServerError(w, err)
 		return
+	}
+	finalized, err := s.servers.FinalizeDecommission(
+		r.Context(), agent.ServerID, request.Version, request.Status, request.Message,
+	)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	if finalized {
+		s.agents.CloseConnections(agent.ServerID)
 	}
 	writeNoContent(w)
 }
@@ -147,6 +160,9 @@ func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, user auth.
 		return
 	}
 	if !s.requireServerAccess(w, r, user, id) {
+		return
+	}
+	if !s.requireMutableServer(w, r, id) {
 		return
 	}
 	targetVersion := formalReleaseVersion(s.panelVersion)

@@ -103,6 +103,9 @@ type realmManager struct {
 	probeTCP          func(context.Context, string, int) error
 	probeUDP          func(string, int) error
 	reconcileFirewall func(context.Context, []firewallRule) error
+	purgeFirewall     func(context.Context) error
+	removePath        func(string) error
+	removeAll         func(string) error
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
@@ -145,6 +148,14 @@ func newRealmManager() *realmManager {
 			}
 			return nil
 		},
+		purgeFirewall: func(ctx context.Context) error {
+			if err := firewall.purge(ctx); err != nil {
+				return fmt.Errorf("%w: %v", errManagedRealmFirewall, err)
+			}
+			return nil
+		},
+		removePath:       os.Remove,
+		removeAll:        os.RemoveAll,
 		wait:             waitForXray,
 		healthAttempts:   6,
 		healthCheckDelay: 500 * time.Millisecond,
@@ -152,6 +163,12 @@ func newRealmManager() *realmManager {
 }
 
 func (m *realmManager) apply(ctx context.Context, state desiredRealmState) error {
+	if state.Purge && state.Enabled {
+		return errUnsupportedManagedConfig
+	}
+	if state.Purge {
+		return m.purge(ctx)
+	}
 	if !state.Enabled && len(state.Relays) != 0 {
 		return errUnsupportedManagedConfig
 	}
@@ -159,6 +176,77 @@ func (m *realmManager) apply(ctx context.Context, state desiredRealmState) error
 		return m.disable(ctx)
 	}
 	return m.enable(ctx, state.Relays)
+}
+
+func (m *realmManager) purge(ctx context.Context) error {
+	managed, err := regularFileExists(m.markerPath)
+	if err != nil {
+		return fmt.Errorf("%w: inspect managed Realm marker: %v", errManagedRuntimePurge, err)
+	}
+	if !managed {
+		if err := m.purgeManagedFirewall(ctx); err != nil {
+			return fmt.Errorf("%w: clear managed Realm firewall: %v", errManagedRuntimePurge, err)
+		}
+		return nil
+	}
+	if m.unitPath == "" {
+		return fmt.Errorf("%w: %v", errManagedRuntimePurge, errUnsupportedInitSystem)
+	}
+	unitExists, err := pathExists(m.unitPath)
+	if err != nil {
+		return fmt.Errorf("%w: inspect managed Realm service: %v", errManagedRuntimePurge, err)
+	}
+	if unitExists {
+		if err := m.serviceManager().Stop(ctx); err != nil {
+			return fmt.Errorf("%w: stop managed Realm: %v", errManagedRuntimePurge, err)
+		}
+		if err := m.serviceManager().Disable(ctx); err != nil {
+			return fmt.Errorf("%w: disable managed Realm: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if err := m.purgeManagedFirewall(ctx); err != nil {
+		return fmt.Errorf("%w: clear managed Realm firewall: %v", errManagedRuntimePurge, err)
+	}
+	if unitExists {
+		if err := m.remove(m.unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: remove managed Realm service: %v", errManagedRuntimePurge, err)
+		}
+		if err := m.serviceManager().DaemonReload(ctx); err != nil {
+			return fmt.Errorf("%w: reload services after Realm purge: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if err := m.removeTree(m.configDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Realm config: %v", errManagedRuntimePurge, err)
+	}
+	if err := m.removeTree(m.installDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Realm runtime: %v", errManagedRuntimePurge, err)
+	}
+	log.Print("Managed Realm purge complete")
+	return nil
+}
+
+func (m *realmManager) purgeManagedFirewall(ctx context.Context) error {
+	if m.purgeFirewall != nil {
+		return m.purgeFirewall(ctx)
+	}
+	if m.reconcileFirewall != nil {
+		return m.reconcileFirewall(ctx, nil)
+	}
+	return nil
+}
+
+func (m *realmManager) remove(path string) error {
+	if m.removePath != nil {
+		return m.removePath(path)
+	}
+	return os.Remove(path)
+}
+
+func (m *realmManager) removeTree(path string) error {
+	if m.removeAll != nil {
+		return m.removeAll(path)
+	}
+	return os.RemoveAll(path)
 }
 
 func (m *realmManager) disable(ctx context.Context) error {

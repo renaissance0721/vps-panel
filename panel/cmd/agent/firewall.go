@@ -82,6 +82,45 @@ func (f *proxyFirewall) reconcileRules(ctx context.Context, desiredRules []firew
 	return f.reconcileIPTables(ctx, command, desired, string(output))
 }
 
+func (f *proxyFirewall) purge(ctx context.Context) error {
+	desired := map[firewallRule]struct{}{}
+	var cleanupErrors []error
+	if command, ok := f.activeCommand(ctx, "ufw", []string{"status"}, "status: active"); ok {
+		if err := f.reconcileUFW(ctx, command, desired); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	if command, ok := f.activeCommand(ctx, "firewall-cmd", []string{"--state"}, "running"); ok {
+		if err := f.reconcileFirewalld(ctx, command, desired); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	if command, err := f.lookPath("nft"); err == nil {
+		table := "vps_panel_" + f.owner
+		tables, listErr := f.runCommand(ctx, command, "list", "tables")
+		if listErr != nil {
+			cleanupErrors = append(cleanupErrors, firewallError("list nftables tables", listErr))
+		} else if nftTablesContain(string(tables), "inet", table) {
+			chain, chainErr := f.runCommand(ctx, command, "list", "chain", "inet", table, "input")
+			if chainErr != nil {
+				cleanupErrors = append(cleanupErrors, firewallError("inspect managed nftables table "+table, chainErr))
+			} else if !f.hasNFTOwnership(string(chain)) {
+				cleanupErrors = append(cleanupErrors, firewallError("refuse unmanaged nftables table "+table, nil))
+			} else if _, deleteErr := f.runCommand(ctx, command, "delete", "table", "inet", table); deleteErr != nil {
+				cleanupErrors = append(cleanupErrors, firewallError("delete managed nftables table "+table, deleteErr))
+			}
+		}
+	}
+	if command, err := f.lookPath("iptables"); err == nil {
+		if output, listErr := f.runCommand(ctx, command, "-S", "INPUT"); listErr == nil {
+			if err := f.reconcileIPTables(ctx, command, desired, string(output)); err != nil {
+				cleanupErrors = append(cleanupErrors, err)
+			}
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
 func (f *proxyFirewall) activeNFT(ctx context.Context) (string, bool) {
 	command, err := f.lookPath("nft")
 	if err != nil {

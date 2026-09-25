@@ -32,7 +32,6 @@ import {
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
-import LandingManagerModal from '../components/relay/LandingManagerModal.vue'
 import {
   landingProtocolLabel,
   type LandingRecord,
@@ -125,7 +124,6 @@ const dropTargetID = ref<number | null>(null)
 const error = ref('')
 const search = ref('')
 const formOpen = ref(false)
-const landingManagerOpen = ref(false)
 const formMode = ref<'create' | 'edit'>('create')
 const editingID = ref<number | null>(null)
 const detailOpen = ref(false)
@@ -255,18 +253,6 @@ async function loadProxies() {
 async function loadLandings() {
   const response = await api<{ landings: LandingRecord[] }>('/api/landings')
   landings.value = response.landings
-}
-
-async function refreshLandingData(created: LandingRecord | null) {
-  try {
-    await Promise.all([loadLandings(), loadRelays()])
-    if (created && formOpen.value && targetType.value === 'landing') {
-      targetLandingID.value = created.id
-      onTargetLandingChange()
-    }
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法刷新落地和中转规则'
-  }
 }
 
 async function loadTargetClients(proxyID: number | null, selectedID: number | null = null) {
@@ -409,7 +395,7 @@ async function loadRelayClientShares(value: RelayRecord) {
     try {
       relayLandingShare.value = await api<RelayLandingShare>(`/api/relays/${value.id}/landing-share`)
     } catch (reason) {
-      relayShareError.value = reason instanceof Error ? reason.message : '无法加载落地节点链接'
+      relayShareError.value = reason instanceof Error ? reason.message : '无法加载外部节点中转链接'
     } finally {
       relayClientsLoading.value = false
     }
@@ -448,7 +434,7 @@ function showLandingQRCode() {
   if (!selectedRelay.value || !relayLandingShare.value?.network_compatible) return
   qrURI.value = relayLandingShare.value.uri
   qrTitle.value = selectedRelay.value.name
-  qrSubtitle.value = `${landingProtocolLabel(relayLandingShare.value.landing.protocol)} · 已导入落地中转`
+  qrSubtitle.value = `${landingProtocolLabel(relayLandingShare.value.landing.protocol)} · 外部节点中转`
   qrOpen.value = true
 }
 
@@ -556,7 +542,6 @@ import {
   <div class="relay-toolbar">
     <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或目标" />
     <div class="relay-toolbar-actions">
-      <n-button secondary @click="landingManagerOpen = true">管理落地</n-button>
       <n-button type="primary" :disabled="!hasRelayServer" :title="hasRelayServer ? undefined : '当前没有支持 Realm 中转的服务器'" @click="openCreate">
         新增中转
       </n-button>
@@ -623,7 +608,7 @@ import {
         </label>
         <label>
           <span>目标类型</span>
-          <select v-model="targetType" class="settings-input" @change="onTargetTypeChange"><option value="proxy">Panel Proxy</option><option value="landing">已导入落地</option><option value="manual">手动地址</option></select>
+          <select v-model="targetType" class="settings-input" @change="onTargetTypeChange"><option value="proxy">Panel Proxy</option><option value="landing">外部节点</option><option value="manual">手动地址</option></select>
         </label>
         <label v-if="targetType === 'proxy'">
           <span>目标 Proxy</span>
@@ -647,16 +632,15 @@ import {
           <p v-else>中转分享链接使用所选客户端的现有凭据；Relay 转发仍允许目标 Proxy 的其他有效凭据连接。</p>
         </template>
         <template v-else-if="targetType === 'landing'">
-          <div class="relay-inline-heading"><strong>目标落地</strong><n-button size="tiny" secondary attr-type="button" @click="landingManagerOpen = true">导入新落地</n-button></div>
           <label>
-            <span>选择落地</span>
+            <span>目标外部节点</span>
             <select v-model.number="targetLandingID" class="settings-input" @change="onTargetLandingChange">
               <option v-for="landing in landings" :key="landing.id" :value="landing.id">
                 {{ landing.name }} · {{ landingProtocolLabel(landing.protocol) }} · {{ relayEndpointLabel(landing.host, landing.port) }} · {{ landing.visibility === 'public' ? '公开' : '私有' }}
               </option>
             </select>
           </label>
-          <n-alert v-if="landings.length === 0" type="warning">请先通过“管理落地”导入 VLESS 或 Shadowsocks 节点</n-alert>
+          <n-alert v-if="landings.length === 0" type="warning">暂无可用外部节点，请先前往“代理节点 → 外部节点”导入。</n-alert>
           <p v-else>{{ landings.find((value) => value.id === targetLandingID)?.protocol === 'vless' ? 'VLESS 建议使用 TCP' : 'Shadowsocks 建议使用 TCP + UDP' }}</p>
         </template>
         <template v-else>
@@ -675,14 +659,14 @@ import {
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedRelay.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedRelay.server_name }}</dd></div>
         <div><dt>入口模式</dt><dd>{{ selectedRelay.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>客户端入口</dt><dd>{{ relayEndpointLabel(selectedRelay.entry_address, selectedRelay.listen_port) }}</dd></div>
-        <div><dt>监听地址</dt><dd>{{ relayEndpointLabel(selectedRelay.listen_address, selectedRelay.listen_port) }}</dd></div><div><dt>目标类型</dt><dd>{{ selectedRelay.target_type === 'proxy' ? 'Panel Proxy' : selectedRelay.target_type === 'landing' ? '导入落地' : '手动地址' }}</dd></div>
+        <div><dt>监听地址</dt><dd>{{ relayEndpointLabel(selectedRelay.listen_address, selectedRelay.listen_port) }}</dd></div><div><dt>目标类型</dt><dd>{{ selectedRelay.target_type === 'proxy' ? 'Panel Proxy' : selectedRelay.target_type === 'landing' ? '外部节点' : '手动地址' }}</dd></div>
         <div><dt>目标</dt><dd>{{ relayTargetLabel(selectedRelay) }}</dd></div><div><dt>Network</dt><dd>{{ relayNetworkLabel(selectedRelay.network) }}</dd></div>
-        <div v-if="selectedRelay.target_type === 'landing'"><dt>落地</dt><dd>{{ selectedRelay.target_landing_name }}</dd></div><div v-if="selectedRelay.target_type === 'landing'"><dt>落地协议</dt><dd>{{ selectedRelay.target_landing_protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</dd></div>
+        <div v-if="selectedRelay.target_type === 'landing'"><dt>外部节点</dt><dd>{{ selectedRelay.target_landing_name }}</dd></div><div v-if="selectedRelay.target_type === 'landing'"><dt>协议</dt><dd>{{ selectedRelay.target_landing_protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</dd></div>
         <div v-if="selectedRelay.target_type === 'landing'"><dt>可见性</dt><dd>{{ selectedRelay.target_landing_visibility === 'public' ? '公开' : '私有' }}</dd></div>
         <div><dt>状态</dt><dd>{{ selectedRelay.enabled ? '启用' : '禁用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ formatTime(selectedRelay.updated_at) }}</dd></div>
       </dl>
-      <h3>{{ selectedRelay.target_type === 'landing' ? '落地节点链接' : '目标客户端' }}</h3>
+      <h3>{{ selectedRelay.target_type === 'landing' ? '外部节点中转链接' : '目标客户端' }}</h3>
       <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
       <n-alert v-else-if="selectedRelay.target_type === 'proxy' && selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
       <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4</n-alert>
@@ -719,6 +703,5 @@ import {
       <div class="modal-actions"><n-button secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
     </n-card>
   </n-modal>
-  <LandingManagerModal v-model:show="landingManagerOpen" :landings="landings" @changed="refreshLandingData" />
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="setQRCodeOpen" />
 </template>

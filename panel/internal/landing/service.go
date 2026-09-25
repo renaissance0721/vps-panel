@@ -86,9 +86,9 @@ func (s *Service) Create(ctx context.Context, userID int64, input CreateInput) (
 		name = strings.TrimSpace(parsed.Fragment)
 		if name == "" {
 			if parsed.Protocol == ProtocolVLESS {
-				name = "VLESS 落地"
+				name = "VLESS 外部节点"
 			} else {
-				name = "Shadowsocks 落地"
+				name = "Shadowsocks 外部节点"
 			}
 		}
 	}

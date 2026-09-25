@@ -258,13 +258,6 @@ h1 {
   gap: 8px;
 }
 
-.relay-inline-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .proxy-table {
   min-width: 1080px;
 }

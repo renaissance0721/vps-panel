@@ -84,14 +84,13 @@ async function dropProxy(id: number) {
     {{ error }}
   </n-alert>
 
-  <div class="proxy-toolbar">
-    <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或安全层" />
-    <n-button type="primary" :disabled="servers.length === 0" @click="openCreateProxy">
-      新增代理节点
-    </n-button>
-  </div>
-
-  <n-card :bordered="true">
+  <n-card title="受管节点" :bordered="true">
+    <div class="proxy-toolbar">
+      <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或安全层" />
+      <n-button type="primary" :disabled="servers.length === 0" @click="openCreateProxy">
+        新增代理节点
+      </n-button>
+    </div>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载代理节点…</span></div>
     <n-empty v-else-if="filteredProxies.length === 0" description="当前没有代理节点" />
     <div v-else class="server-table-wrap">

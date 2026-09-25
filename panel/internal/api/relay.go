@@ -238,7 +238,7 @@ func (s *server) getRelayLandingShare(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	if value.TargetType != relaystore.TargetLanding || value.TargetLandingID == nil {
-		writeError(w, http.StatusBadRequest, "仅已导入落地中转支持生成落地节点链接")
+		writeError(w, http.StatusBadRequest, "仅外部节点中转支持生成外部节点中转链接")
 		return
 	}
 	if value.EntryAddress == "" {
@@ -264,7 +264,7 @@ func (s *server) getRelayLandingShare(w http.ResponseWriter, r *http.Request, us
 	}
 	compatible, notice := relayNetworkCompatibility(value.Network, landing.Protocol)
 	if landing.Protocol == landingstore.ProtocolVLESS && !compatible {
-		notice = "当前中转 Network 与该 VLESS 落地不兼容"
+		notice = "当前中转 Network 与该 VLESS 外部节点不兼容"
 	}
 	response := relayLandingShareResponse{URI: uri, NetworkCompatible: compatible, NetworkNotice: notice}
 	response.Landing.ID = landing.ID
@@ -419,7 +419,7 @@ func writeRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrProxyNotFound):
 		writeError(w, http.StatusNotFound, "目标代理节点不存在或已移除")
 	case errors.Is(err, relaystore.ErrLandingNotFound):
-		writeError(w, http.StatusNotFound, "目标落地不存在")
+		writeError(w, http.StatusNotFound, "目标外部节点不存在")
 	case errors.Is(err, relaystore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, relaystore.ErrInvalidListenIP):
@@ -433,7 +433,7 @@ func writeRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrEntryUnavailable):
 		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4")
 	case errors.Is(err, relaystore.ErrInvalidTarget):
-		writeError(w, http.StatusBadRequest, "目标必须是有效代理节点、已导入落地或 Host/IP 与端口")
+		writeError(w, http.StatusBadRequest, "目标必须是有效代理节点、外部节点或 Host/IP 与端口")
 	case errors.Is(err, relaystore.ErrInvalidTargetClient):
 		writeError(w, http.StatusBadRequest, "目标客户端必须属于所选目标 Proxy")
 	case errors.Is(err, relaystore.ErrInvalidNetwork):

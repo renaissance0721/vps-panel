@@ -44,7 +44,7 @@ func TestLandingServiceCreateDefaultsAndAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if public.Name != "Shadowsocks 落地" || public.Visibility != VisibilityPublic || public.Protocol != ProtocolSS {
+	if public.Name != "Shadowsocks 外部节点" || public.Visibility != VisibilityPublic || public.Protocol != ProtocolSS {
 		t.Fatalf("created public landing = %+v", public)
 	}
 	visible, err := service.Get(t.Context(), public.ID, otherID)
@@ -61,6 +61,33 @@ func TestLandingServiceCreateDefaultsAndAccess(t *testing.T) {
 	}
 	if err := service.Delete(t.Context(), public.ID, otherID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("non-owner delete error = %v", err)
+	}
+}
+
+func TestLandingServiceCreateNameSelection(t *testing.T) {
+	service, ownerID, _ := newLandingTestService(t)
+	tests := []struct {
+		name     string
+		input    CreateInput
+		expected string
+	}{
+		{"plain fragment", CreateInput{URI: "vless://uuid@example.com:443#US-LAX"}, "US-LAX"},
+		{"escaped fragment", CreateInput{URI: "vless://uuid@example.com:443#US%20Los%20Angeles"}, "US Los Angeles"},
+		{"unicode Shadowsocks fragment", CreateInput{URI: "ss://aes-256-gcm:password@example.com:8388#%E6%96%B0%E5%8A%A0%E5%9D%A1%20%E5%85%B1%E4%BA%AB"}, "新加坡 共享"},
+		{"VLESS fallback", CreateInput{URI: "vless://uuid@example.com:443"}, "VLESS 外部节点"},
+		{"Shadowsocks fallback", CreateInput{URI: "ss://aes-256-gcm:password@example.com:8388"}, "Shadowsocks 外部节点"},
+		{"explicit name wins", CreateInput{Name: "我的节点", URI: "vless://uuid@example.com:443#Ignored"}, "我的节点"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := service.Create(t.Context(), ownerID, test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.Name != test.expected {
+				t.Fatalf("name = %q, want %q", value.Name, test.expected)
+			}
+		})
 	}
 }
 

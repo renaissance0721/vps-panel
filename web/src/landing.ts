@@ -20,3 +20,17 @@ export function landingProtocolLabel(protocol: LandingProtocol) {
 export function landingVisibilityLabel(visibility: LandingVisibility) {
   return visibility === 'public' ? '公开' : '私有'
 }
+
+export function externalNodeNameFromURI(raw: string) {
+  const fragmentIndex = raw.lastIndexOf('#')
+  if (fragmentIndex < 0 || fragmentIndex === raw.length - 1) return ''
+  try {
+    return decodeURIComponent(raw.slice(fragmentIndex + 1)).trim()
+  } catch {
+    return ''
+  }
+}
+
+export function autofillExternalNodeName(currentName: string, raw: string) {
+  return currentName.trim() ? currentName : externalNodeNameFromURI(raw)
+}

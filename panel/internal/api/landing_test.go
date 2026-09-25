@@ -93,16 +93,16 @@ func TestLandingAPIAccessAndSecretRedaction(t *testing.T) {
 	changedProtocol := "vless://uuid@example.com:443"
 	protocolUpdate := performRequest(t, handler, http.MethodPatch, publicPath,
 		updateLandingRequest{URI: &changedProtocol}, accounts.adminCookie)
-	if protocolUpdate.Code != http.StatusConflict || !strings.Contains(protocolUpdate.Body.String(), "落地协议创建后不能修改") {
+	if protocolUpdate.Code != http.StatusConflict || !strings.Contains(protocolUpdate.Body.String(), "外部节点协议创建后不能修改") {
 		t.Fatalf("landing protocol update = %d, %s", protocolUpdate.Code, protocolUpdate.Body.String())
 	}
 
 	unsupported := performRequest(t, handler, http.MethodPost, "/api/landings", createLandingRequest{URI: "trojan://secret@example.com:443"}, accounts.adminCookie)
-	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "当前仅支持导入 VLESS 和 Shadowsocks 节点") {
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "当前仅支持导入 VLESS 和 Shadowsocks 外部节点") {
 		t.Fatalf("unsupported landing = %d, %s", unsupported.Code, unsupported.Body.String())
 	}
 	plugin := performRequest(t, handler, http.MethodPost, "/api/landings", createLandingRequest{URI: "ss://aes-256-gcm:password@example.com:8388?plugin=x"}, accounts.adminCookie)
-	if plugin.Code != http.StatusBadRequest || !strings.Contains(plugin.Body.String(), "当前暂不支持带 plugin 的 Shadowsocks 落地") {
+	if plugin.Code != http.StatusBadRequest || !strings.Contains(plugin.Body.String(), "当前暂不支持带 plugin 的 Shadowsocks 外部节点") {
 		t.Fatalf("plugin landing = %d, %s", plugin.Code, plugin.Body.String())
 	}
 	memberPrivate := createLandingForAPI(t, handler, accounts.memberCookie, createLandingRequest{
@@ -174,7 +174,7 @@ func TestLandingRelaySharePermissionsRewritesAndDependencyBumps(t *testing.T) {
 	}
 	incompatible := performRequest(t, handler, http.MethodGet, relayPath+"/landing-share", nil, accounts.memberCookie)
 	if incompatible.Code != http.StatusOK || json.Unmarshal(incompatible.Body.Bytes(), &shared) != nil || shared.NetworkCompatible ||
-		shared.NetworkNotice != "当前中转 Network 与该 VLESS 落地不兼容" {
+		shared.NetworkNotice != "当前中转 Network 与该 VLESS 外部节点不兼容" {
 		t.Fatalf("incompatible VLESS landing share = %d, %s", incompatible.Code, incompatible.Body.String())
 	}
 	tcp := "tcp"
@@ -225,7 +225,7 @@ func TestLandingRelaySharePermissionsRewritesAndDependencyBumps(t *testing.T) {
 	private := "private"
 	visibilityUpdate := performRequest(t, handler, http.MethodPatch, "/api/landings/"+strconv.FormatInt(landing.ID, 10),
 		updateLandingRequest{Visibility: &private}, accounts.adminCookie)
-	if visibilityUpdate.Code != http.StatusConflict || !strings.Contains(visibilityUpdate.Body.String(), "该落地正在被中转规则使用") {
+	if visibilityUpdate.Code != http.StatusConflict || !strings.Contains(visibilityUpdate.Body.String(), "该外部节点正在被中转使用") {
 		t.Fatalf("referenced visibility update = %d, %s", visibilityUpdate.Code, visibilityUpdate.Body.String())
 	}
 	deletion := performRequest(t, handler, http.MethodDelete, "/api/landings/"+strconv.FormatInt(landing.ID, 10), nil, accounts.adminCookie)
@@ -314,7 +314,7 @@ func TestLandingRelayShareShadowsocksUnavailableAndPrivateIDOR(t *testing.T) {
 	}
 	wrongTarget := performRequest(t, handler, http.MethodGet,
 		"/api/relays/"+strconv.FormatInt(manual.Relay.ID, 10)+"/landing-share", nil, accounts.adminCookie)
-	if wrongTarget.Code != http.StatusBadRequest || !strings.Contains(wrongTarget.Body.String(), "仅已导入落地中转") {
+	if wrongTarget.Code != http.StatusBadRequest || !strings.Contains(wrongTarget.Body.String(), "仅外部节点中转") {
 		t.Fatalf("manual landing share = %d, %s", wrongTarget.Code, wrongTarget.Body.String())
 	}
 }

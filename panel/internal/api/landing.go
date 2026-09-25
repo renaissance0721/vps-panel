@@ -62,7 +62,7 @@ func (s *server) createLanding(w http.ResponseWriter, r *http.Request, user auth
 }
 
 func (s *server) getLanding(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "落地 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "外部节点 ID 无效")
 	if !ok {
 		return
 	}
@@ -75,7 +75,7 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request, user auth.Us
 }
 
 func (s *server) updateLanding(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "落地 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "外部节点 ID 无效")
 	if !ok {
 		return
 	}
@@ -102,7 +102,7 @@ func (s *server) updateLanding(w http.ResponseWriter, r *http.Request, user auth
 }
 
 func (s *server) deleteLanding(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "落地 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "外部节点 ID 无效")
 	if !ok {
 		return
 	}
@@ -124,23 +124,23 @@ func toLandingResponse(value landingstore.Landing) landingResponse {
 func writeLandingError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, landingstore.ErrNotFound):
-		writeError(w, http.StatusNotFound, "落地不存在")
+		writeError(w, http.StatusNotFound, "外部节点不存在")
 	case errors.Is(err, landingstore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, landingstore.ErrInvalidVisibility):
 		writeError(w, http.StatusBadRequest, "可见性仅支持私有或公开")
 	case errors.Is(err, landingstore.ErrUnsupportedProtocol):
-		writeError(w, http.StatusBadRequest, "当前仅支持导入 VLESS 和 Shadowsocks 节点")
+		writeError(w, http.StatusBadRequest, "当前仅支持导入 VLESS 和 Shadowsocks 外部节点")
 	case errors.Is(err, landingstore.ErrUnsupportedVLESSTransport):
-		writeError(w, http.StatusBadRequest, "当前仅支持导入 TCP VLESS 落地")
+		writeError(w, http.StatusBadRequest, "当前仅支持导入 TCP VLESS 外部节点")
 	case errors.Is(err, landingstore.ErrUnsupportedSSPlugin):
-		writeError(w, http.StatusBadRequest, "当前暂不支持带 plugin 的 Shadowsocks 落地")
+		writeError(w, http.StatusBadRequest, "当前暂不支持带 plugin 的 Shadowsocks 外部节点")
 	case errors.Is(err, landingstore.ErrImmutableProtocol):
-		writeError(w, http.StatusConflict, "落地协议创建后不能修改")
+		writeError(w, http.StatusConflict, "外部节点协议创建后不能修改")
 	case errors.Is(err, landingstore.ErrReferencedByRelay):
-		writeError(w, http.StatusConflict, "该落地正在被中转规则使用，请先修改或删除相关中转")
+		writeError(w, http.StatusConflict, "该外部节点正在被中转使用，请先修改或删除相关中转")
 	case errors.Is(err, landingstore.ErrInvalidURI):
-		writeError(w, http.StatusBadRequest, "落地节点链接无效")
+		writeError(w, http.StatusBadRequest, "外部节点链接无效")
 	default:
 		writeInternalError(w)
 	}

@@ -25,12 +25,10 @@ test('Relay Network 和目标显示正确', () => {
   }), 'US Home · [2001:db8::20]:443')
 })
 
-test('中转支持管理和选择已导入落地并按协议推荐 Network', async () => {
+test('中转支持选择外部节点并按协议推荐 Network', async () => {
   const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
-  const manager = await readFile(new URL('../src/components/relay/LandingManagerModal.vue', import.meta.url), 'utf8')
-  assert.match(view, />管理落地</)
   assert.match(view, /value="proxy">Panel Proxy/)
-  assert.match(view, /value="landing">已导入落地/)
+  assert.match(view, /value="landing">外部节点/)
   assert.match(view, /value="manual">手动地址/)
   assert.match(view, /target_landing_id: targetLandingID\.value/)
   assert.match(view, /selected\.protocol === 'vless' \? 'tcp' : 'tcp,udp'/)
@@ -38,11 +36,9 @@ test('中转支持管理和选择已导入落地并按协议推荐 Network', asy
   assert.match(view, /relayLandingShare\.uri/)
   assert.match(view, /showLandingQRCode/)
   assert.match(view, /copyLandingURI/)
-  assert.match(manager, /visibility = ref<LandingVisibility>\('private'\)/)
-  assert.match(manager, /公开后，其他 Panel 用户可以使用此落地创建中转，并获取可实际连接的中转节点链接。/)
-  assert.match(manager, /value\.owned_by_me/)
-  assert.doesNotMatch(manager, /value\.uri/)
-  assert.doesNotMatch(manager, /landing\.uri/)
+  assert.match(view, /暂无可用外部节点，请先前往“代理节点 → 外部节点”导入。/)
+  assert.doesNotMatch(view, />管理落地</)
+  assert.doesNotMatch(view, />导入新落地</)
 })
 
 test('中转导航和 CRUD 页面保持 Modal 交互', async () => {

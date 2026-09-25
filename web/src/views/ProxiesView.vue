@@ -13,6 +13,7 @@ import ProxyForm from '../components/proxy/ProxyForm.vue'
 import ProxyDetail from '../components/proxy/ProxyDetail.vue'
 import ClientForm from '../components/proxy/ClientForm.vue'
 import ClientDetail from '../components/proxy/ClientDetail.vue'
+import ExternalNodeManager from '../components/proxy/ExternalNodeManager.vue'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
 const props = defineProps<{ servers: ServerOption[] }>()
 const model = reactive(useProxies(props))
@@ -20,6 +21,7 @@ const model = reactive(useProxies(props))
 
 <template>
 <ProxyList :model="model" />
+<ExternalNodeManager />
 <ProxyForm :model="model" />
 <ProxyDetail :model="model" />
 <ClientForm :model="model" />

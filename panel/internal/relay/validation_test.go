@@ -70,3 +70,16 @@ func TestRelayValidationRejectsUnsafeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayValidationAcceptsIPv4AndIPv6ListenAddresses(t *testing.T) {
+	for _, address := range []string{"0.0.0.0", "::"} {
+		value, err := normalizeCreate(CreateInput{
+			ServerID: 1, Name: "Relay", ListenAddress: address, ListenPort: 31821,
+			TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443,
+			Network: NetworkTCP, Enabled: true,
+		})
+		if err != nil || value.ListenAddress != address {
+			t.Fatalf("normalize listen address %q = %+v, %v", address, value, err)
+		}
+	}
+}

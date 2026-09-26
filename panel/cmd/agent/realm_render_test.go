@@ -62,7 +62,8 @@ func TestRenderedRealmStateRestoresProtocolAwareRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	listeners, rules, ok := parseRenderedRealmState(config)
-	if !ok || len(listeners) != 2 || len(rules) != 3 || !listeners[1].tcp || !listeners[1].udp {
+	if !ok || len(listeners) != 2 || len(rules) != 3 || listeners[1].address != "::" ||
+		listeners[1].port != 9502 || !listeners[1].tcp || !listeners[1].udp {
 		t.Fatalf("parsed Realm state = %+v, %+v, %v", listeners, rules, ok)
 	}
 }

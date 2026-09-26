@@ -62,15 +62,16 @@ func TestRelayAPIAuthenticationAndCRUD(t *testing.T) {
 	if response := performRequest(t, handler, http.MethodGet, path, nil, cookie); response.Code != http.StatusOK {
 		t.Fatalf("get relay = %d, %s", response.Code, response.Body.String())
 	}
-	name, enabled := "Disabled", false
-	update := performRequest(t, handler, http.MethodPatch, path, updateRelayRequest{Name: &name, Enabled: &enabled}, cookie)
+	name, listenAddress, enabled := "Disabled", "::", false
+	update := performRequest(t, handler, http.MethodPatch, path, updateRelayRequest{Name: &name, ListenAddress: &listenAddress, Enabled: &enabled}, cookie)
 	if update.Code != http.StatusOK {
 		t.Fatalf("update relay = %d, %s", update.Code, update.Body.String())
 	}
 	var updated struct {
 		Relay relayResponse `json:"relay"`
 	}
-	if json.Unmarshal(update.Body.Bytes(), &updated) != nil || updated.Relay.Name != name || updated.Relay.Enabled {
+	if json.Unmarshal(update.Body.Bytes(), &updated) != nil || updated.Relay.Name != name ||
+		updated.Relay.ListenAddress != "::" || updated.Relay.Enabled {
 		t.Fatalf("updated relay = %+v", updated.Relay)
 	}
 	list := performRequest(t, handler, http.MethodGet, "/api/relays", nil, cookie)

@@ -99,9 +99,12 @@ test('二维码生成失败显示局部错误', async t => {
 
 function relay(overrides = {}) {
   return {
-    id: 1, name: '中转', server_name: '源服务器', entry_host_mode: 'manual', entry_address: 'relay.example.com',
+    id: 1, server_id: 1, name: '中转', server_name: '源服务器', server_public_ipv4: '',
+    entry_host_mode: 'manual', entry_host: 'relay.example.com', entry_address: 'relay.example.com',
     listen_address: '0.0.0.0', listen_port: 9502, target_type: 'proxy', target_client_id: 8,
-    target_proxy_name: '目标代理', target_host: 'node.example.com', target_port: 443,
+    target_proxy_id: 2, target_landing_id: null, target_proxy_name: '目标代理', target_client_name: '手机',
+    target_landing_name: '', target_landing_protocol: '', target_landing_visibility: '',
+    target_host: 'node.example.com', target_port: 443,
     target_address_ready: true, network: 'tcp', enabled: true, created_at: '2026-09-18T00:00:00Z',
     updated_at: '2026-09-18T00:00:00Z', ...overrides,
   }
@@ -150,6 +153,71 @@ test('Relay 二维码直接使用已加载的 URI，不再请求 API；不兼容
   })
   assert.match(manual.html, /手动目标不支持自动生成客户端节点链接/)
   assert.doesNotMatch(manual.html, />二维码<\/button>/)
+})
+
+test('Relay 创建和编辑正确映射 IPv4、IPv6 并保留历史自定义监听地址', async t => {
+  const mutations = []
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    if (init.method === 'POST' || init.method === 'PATCH') {
+      const body = JSON.parse(init.body)
+      mutations.push({ url, method: init.method, body })
+      return new Response(JSON.stringify({
+        relay: relay({ id: init.method === 'POST' ? 10 : Number(url.split('/').at(-1)), ...body }),
+      }), { status: init.method === 'POST' ? 201 : 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/api/relays') {
+      return new Response(JSON.stringify({ relays: [] }), { headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected request: ${url}`)
+  })
+
+  const { html, bindings } = await renderWithBindings(RelaysView, { servers: [] }, model => {
+    model.loading.value = false
+    model.formOpen.value = true
+    model.enabled.value = false
+    model.serverID.value = 1
+    model.name.value = 'IPv6 Relay'
+    model.targetType.value = 'manual'
+    model.targetHost.value = 'target.example.com'
+  })
+  assert.match(html, /监听协议/)
+  assert.match(html, />IPv4<\/option>/)
+  assert.match(html, />IPv6<\/option>/)
+  assert.equal(bindings.listenFamily.value, 'ipv4')
+  assert.equal(bindings.selectedListenAddress(), '0.0.0.0')
+
+  bindings.listenFamily.value = 'ipv6'
+  await bindings.saveRelay()
+  assert.deepEqual(mutations[0], {
+    url: '/api/relays', method: 'POST', body: {
+      server_id: 1, name: 'IPv6 Relay', listen_address: '::', listen_port: 9502,
+      entry_host_mode: 'auto', entry_host: '', network: 'tcp', target_type: 'manual',
+      target_host: 'target.example.com', target_port: 443, enabled: false,
+    },
+  })
+
+  bindings.openEdit(relay({
+    id: 20, listen_address: '192.0.2.10', target_type: 'manual', target_proxy_id: null,
+    target_client_id: null, target_host: 'target.example.com', enabled: false,
+  }))
+  assert.equal(bindings.listenFamily.value, 'ipv4')
+  assert.equal(bindings.selectedListenAddress(), '192.0.2.10')
+  await bindings.saveRelay()
+  assert.equal(mutations[1].method, 'PATCH')
+  assert.equal(mutations[1].body.listen_address, '192.0.2.10')
+
+  bindings.openEdit(relay({
+    id: 21, listen_address: '2001:db8::10', target_type: 'manual', target_proxy_id: null,
+    target_client_id: null, target_host: 'target.example.com', enabled: false,
+  }))
+  assert.equal(bindings.listenFamily.value, 'ipv6')
+  assert.equal(bindings.selectedListenAddress(), '2001:db8::10')
+  await bindings.saveRelay()
+  assert.equal(mutations[2].body.listen_address, '2001:db8::10')
+
+  bindings.listenFamily.value = 'ipv4'
+  await bindings.saveRelay()
+  assert.equal(mutations[3].body.listen_address, '0.0.0.0')
 })
 
 test('外部节点按需加载原始 URI，可复制并按协议生成二维码参数', async t => {

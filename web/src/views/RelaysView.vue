@@ -111,6 +111,8 @@ type TargetClientOption = {
   status: ClientStatus
 }
 
+type RelayListenFamily = 'ipv4' | 'ipv6'
+
 const props = defineProps<{ servers: ServerOption[] }>()
 
 const relays = ref<RelayRecord[]>([])
@@ -139,6 +141,8 @@ const qrTitle = ref('')
 const qrSubtitle = ref('')
 const name = ref('')
 const serverID = ref<number | null>(null)
+const listenFamily = ref<RelayListenFamily>('ipv4')
+const originalListenAddress = ref('0.0.0.0')
 const listenPort = ref(9502)
 const entryHostMode = ref<'auto' | 'manual'>('auto')
 const entryHost = ref('')
@@ -301,10 +305,23 @@ function onTargetLandingChange() {
   if (selected) network.value = selected.protocol === 'vless' ? 'tcp' : 'tcp,udp'
 }
 
+function relayListenFamily(address: string): RelayListenFamily {
+  return address.includes(':') ? 'ipv6' : 'ipv4'
+}
+
+function selectedListenAddress() {
+  if (formMode.value === 'edit' && listenFamily.value === relayListenFamily(originalListenAddress.value)) {
+    return originalListenAddress.value
+  }
+  return listenFamily.value === 'ipv6' ? '::' : '0.0.0.0'
+}
+
 function resetForm() {
   editingID.value = null
   name.value = ''
   serverID.value = props.servers.find((server) => serverSupportsRealm(server.id))?.id ?? null
+  listenFamily.value = 'ipv4'
+  originalListenAddress.value = '0.0.0.0'
   listenPort.value = 9502
   entryHostMode.value = 'auto'
   entryHost.value = ''
@@ -333,6 +350,8 @@ function openEdit(value: RelayRecord) {
   editingID.value = value.id
   name.value = value.name
   serverID.value = value.server_id
+  listenFamily.value = relayListenFamily(value.listen_address)
+  originalListenAddress.value = value.listen_address
   listenPort.value = value.listen_port
   entryHostMode.value = value.entry_host_mode
   entryHost.value = value.entry_host
@@ -356,7 +375,7 @@ async function saveRelay() {
     const payload = {
       ...(formMode.value === 'create' ? { server_id: serverID.value } : {}),
       name: name.value,
-      ...(formMode.value === 'create' ? { listen_address: '0.0.0.0' } : {}),
+      listen_address: selectedListenAddress(),
       listen_port: listenPort.value,
       entry_host_mode: entryHostMode.value,
       entry_host: entryHost.value,
@@ -594,6 +613,14 @@ import {
           </select>
         </label>
         <label>
+          <span>监听协议</span>
+          <select v-model="listenFamily" class="settings-input">
+            <option value="ipv4">IPv4</option><option value="ipv6">IPv6</option>
+          </select>
+        </label>
+        <p>实际监听地址：{{ selectedListenAddress() }}</p>
+        <label><span>监听端口</span><input v-model.number="listenPort" class="settings-input" type="number" min="1" max="65535" /></label>
+        <label>
           <span>客户端入口</span>
           <select v-model="entryHostMode" class="settings-input">
             <option value="auto">自动检测公网 IPv4</option><option value="manual">手动填写</option>
@@ -601,7 +628,6 @@ import {
         </label>
         <label v-if="entryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="entryHost" placeholder="例如：1.2.3.4、2001:db8::1 或 relay.example.com" /></label>
         <p v-else>自动使用源服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
-        <label><span>监听端口</span><input v-model.number="listenPort" class="settings-input" type="number" min="1" max="65535" /></label>
         <label>
           <span>Network</span>
           <select v-model="network" class="settings-input"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="tcp,udp">TCP + UDP</option></select>

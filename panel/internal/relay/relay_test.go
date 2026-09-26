@@ -28,12 +28,22 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 		t.Fatalf("created relay = %+v, mutation = %+v", created, mutation)
 	}
 	desired, err := service.ListDesired(t.Context(), db, 1)
-	if err != nil || len(desired) != 1 || desired[0].TargetHost != "example.com" || desired[0].Network != NetworkTCP {
+	if err != nil || len(desired) != 1 || desired[0].ListenAddress != "0.0.0.0" ||
+		desired[0].TargetHost != "example.com" || desired[0].Network != NetworkTCP {
 		t.Fatalf("desired relays = %+v, %v", desired, err)
 	}
+	listenAddress := "::"
+	updated, mutation, err := service.Update(t.Context(), created.ID, UpdateInput{ListenAddress: &listenAddress})
+	if err != nil || updated.ListenAddress != "::" || mutation.Version != 3 {
+		t.Fatalf("updated IPv6 listener = %+v, mutation = %+v, error = %v", updated, mutation, err)
+	}
+	desired, err = service.ListDesired(t.Context(), db, 1)
+	if err != nil || len(desired) != 1 || desired[0].ListenAddress != "::" {
+		t.Fatalf("IPv6 desired relays = %+v, %v", desired, err)
+	}
 	name, enabled := "Updated", false
-	updated, mutation, err := service.Update(t.Context(), created.ID, UpdateInput{Name: &name, Enabled: &enabled})
-	if err != nil || updated.Name != name || updated.Enabled || mutation.Version != 3 {
+	updated, mutation, err = service.Update(t.Context(), created.ID, UpdateInput{Name: &name, Enabled: &enabled})
+	if err != nil || updated.Name != name || updated.Enabled || updated.ListenAddress != "::" || mutation.Version != 4 {
 		t.Fatalf("updated relay = %+v, mutation = %+v, error = %v", updated, mutation, err)
 	}
 	desired, err = service.ListDesired(t.Context(), db, 1)
@@ -41,7 +51,7 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 		t.Fatalf("disabled desired relays = %+v, %v", desired, err)
 	}
 	mutation, err = service.Delete(t.Context(), created.ID)
-	if err != nil || mutation.Version != 4 {
+	if err != nil || mutation.Version != 5 {
 		t.Fatalf("delete mutation = %+v, %v", mutation, err)
 	}
 	if _, err := service.Get(t.Context(), created.ID); !errors.Is(err, ErrNotFound) {

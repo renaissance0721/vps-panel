@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -204,6 +205,29 @@ func TestManagedRealmHealthFailureRollsBackConfigAndFirewall(t *testing.T) {
 	assertFileEquals(t, manager.configPath, old)
 	if commands.count("systemctl", "restart") != 2 || len(firewallCalls) != 1 || firewallCalls[0][0].port != 9400 || firewallCalls[0][0].protocol != "udp" {
 		t.Fatalf("rollback calls=%v firewall=%v", commands.calls, firewallCalls)
+	}
+}
+
+func TestProbeRealmTCPListenerUsesIPv6LoopbackForWildcard(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	defer listener.Close()
+	accepted := make(chan error, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err == nil {
+			err = connection.Close()
+		}
+		accepted <- err
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := probeRealmTCPListener(t.Context(), "::", port); err != nil {
+		t.Fatalf("probe IPv6 wildcard: %v", err)
+	}
+	if err := <-accepted; err != nil {
+		t.Fatalf("accept IPv6 health probe: %v", err)
 	}
 }
 

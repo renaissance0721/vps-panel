@@ -64,6 +64,7 @@ func TestServerAPILifecycle(t *testing.T) {
 	createRequest := jsonRequest(t, http.MethodPost, "/api/servers", map[string]string{"name": "JP Native 01"})
 	createRequest.Host = "panel.example.com"
 	createRequest.Header.Set("X-Forwarded-Proto", "https")
+	createRequest.Header.Set("Origin", "https://panel.example.com")
 	createRequest.AddCookie(sessionCookie)
 	createResponse := httptest.NewRecorder()
 	handler.ServeHTTP(createResponse, createRequest)
@@ -583,6 +584,9 @@ func performRequest(
 	request := jsonRequest(t, method, path, body)
 	if cookie != nil {
 		request.AddCookie(cookie)
+		if isUnsafeSessionMethod(method) {
+			request.Header.Set("Origin", requestBaseURL(request))
+		}
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

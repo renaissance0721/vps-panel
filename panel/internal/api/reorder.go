@@ -43,6 +43,9 @@ func (s *server) reorder(w http.ResponseWriter, r *http.Request, user auth.User,
 	if !ok {
 		return
 	}
+	if kind == listorder.Servers && !s.requireServerAccess(w, r, user, id) {
+		return
+	}
 	var request reorderRequest
 	if !decodeJSON(w, r, &request) {
 		return

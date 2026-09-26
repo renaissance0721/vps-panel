@@ -47,12 +47,17 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
 	created, err := s.servers.CreateForUser(r.Context(), request.Name, request.Visibility, request.UserIDs, user.ID)
 	if err != nil {
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
+	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, baseURL))
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request, user auth.User) {

@@ -1067,6 +1067,8 @@ diagnostics_v1
 - 最近一次 config sync 状态
 - 从 Panel 所在网络探测节点公网 TCP 入口
 
+Panel 只会主动连接安全校验后的公网地址。域名入口先解析全部地址；只要结果中包含 loopback、私网、链路本地、CGNAT 或其他非公网地址，本次 TCP 探测就会跳过。通过校验后直接连接已解析的 IP，不再用原 hostname 二次解析。
+
 ## 14.2 Agent 侧检查
 
 包括：
@@ -1873,6 +1875,8 @@ Panel 两种入口：
 
 不记录明文密码。
 
+登录失败使用进程内时间窗口限流，同时按 client IP + normalized username 和 client IP 总量计数。只有本机 loopback 反向代理传入的 `X-Forwarded-For` / `X-Real-IP` 会用于识别真实客户端地址。
+
 ## 25.2 Token
 
 以下原始 Token 数据库只保存 hash：
@@ -1883,6 +1887,8 @@ Panel 两种入口：
 - Agent Long-term Token
 
 原始值只在必要时显示一次。
+
+基于 Session Cookie 的 POST / PUT / PATCH / DELETE API 要求同源 `Origin`，缺失时回退校验 `Referer`；Agent Bearer API 不使用这项浏览器 Session 防护。
 
 ## 25.3 Agent secret
 
@@ -1928,6 +1934,10 @@ POST /api/agent/exec
 ```
 
 或任何等价的任意 shell / command runner。
+
+## 25.7 Panel URL
+
+域名部署生成 Agent 安装命令时固定使用配置中的 `PANEL_DOMAIN`，不使用请求 `Host`。直接 IP / `:80` 部署继续使用经过格式校验的当前请求地址。
 
 少数无法用 desired state 表达的操作必须是**专用、结构化、可校验**协议。
 

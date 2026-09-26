@@ -28,6 +28,7 @@ type server struct {
 	agents       *agentcontrol.Service
 	backup       BackupConfig
 	backupMu     sync.Mutex
+	loginLimiter *loginLimiter
 }
 
 type BackupConfig struct {
@@ -59,6 +60,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		panelVersion: panelVersion,
 		agents:       agentcontrol.NewService(db, time.Now),
 		backup:       backupConfig,
+		loginLimiter: newLoginLimiter(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)

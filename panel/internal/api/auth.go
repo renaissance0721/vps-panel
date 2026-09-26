@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 )
@@ -56,11 +57,23 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	ip := clientIP(r)
+	now := time.Now()
+	if allowed, retryAfter := s.loginLimiter.Allow(ip, request.Username, now); !allowed {
+		seconds := max(1, int((retryAfter+time.Second-1)/time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeError(w, http.StatusTooManyRequests, "登录尝试过于频繁，请稍后再试")
+		return
+	}
 	user, err := s.authService.Login(r.Context(), request.Username, request.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			s.loginLimiter.RecordFailure(ip, request.Username, now)
+		}
 		writeAuthError(w, err)
 		return
 	}
+	s.loginLimiter.Reset(ip, request.Username)
 	s.startSession(w, r, user, http.StatusOK)
 }
 
@@ -83,6 +96,10 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	if readSessionToken(r) != "" && !s.validateSessionRequestOrigin(r) {
+		writeError(w, http.StatusForbidden, "请求来源无效")
+		return
+	}
 	if err := s.authService.Logout(r.Context(), readSessionToken(r)); err != nil {
 		writeInternalError(w)
 		return
@@ -172,6 +189,10 @@ func (s *server) requireAuthentication(
 		}
 		if err != nil {
 			writeInternalError(w)
+			return
+		}
+		if isUnsafeSessionMethod(r.Method) && !s.validateSessionRequestOrigin(r) {
+			writeError(w, http.StatusForbidden, "请求来源无效")
 			return
 		}
 		next(w, r, user)

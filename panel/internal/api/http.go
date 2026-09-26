@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -23,6 +25,103 @@ func requestBaseURL(r *http.Request) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host
+}
+
+func (s *server) panelBaseURL(r *http.Request) (string, bool) {
+	domain := s.backup.Domain
+	if domain != "" && domain != ":80" {
+		if !validPanelDomain(domain) {
+			return "", false
+		}
+		return "https://" + domain, true
+	}
+	if !validRequestHost(r.Host) {
+		return "", false
+	}
+	return requestBaseURL(r), true
+}
+
+func validPanelDomain(domain string) bool {
+	return strings.TrimSpace(domain) == domain && strings.Contains(domain, ".") && validDNSHostname(domain)
+}
+
+func validRequestHost(host string) bool {
+	if host == "" || strings.TrimSpace(host) != host || strings.ContainsAny(host, "/?#@\\") {
+		return false
+	}
+	parsed, err := url.Parse("http://" + host)
+	if err != nil || parsed.Host != host || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(hostname); err != nil && !validDNSHostname(hostname) {
+		return false
+	}
+	if port := parsed.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value <= 0 || value > 65535 {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSHostname(hostname string) bool {
+	if len(hostname) == 0 || len(hostname) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isUnsafeSessionMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *server) validateSessionRequestOrigin(r *http.Request) bool {
+	expected, ok := s.panelBaseURL(r)
+	if !ok {
+		return false
+	}
+	source := r.Header.Get("Origin")
+	referer := false
+	if source == "" {
+		source = r.Header.Get("Referer")
+		referer = true
+	}
+	if source == "" || source == "null" {
+		return false
+	}
+	expectedURL, err := url.Parse(expected)
+	if err != nil {
+		return false
+	}
+	sourceURL, err := url.Parse(source)
+	if err != nil || sourceURL.User != nil || sourceURL.Scheme == "" || sourceURL.Host == "" {
+		return false
+	}
+	if !referer && (sourceURL.Path != "" || sourceURL.RawQuery != "" || sourceURL.Fragment != "") {
+		return false
+	}
+	return strings.EqualFold(sourceURL.Scheme, expectedURL.Scheme) && strings.EqualFold(sourceURL.Host, expectedURL.Host)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) bool {

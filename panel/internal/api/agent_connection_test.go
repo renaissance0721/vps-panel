@@ -509,6 +509,7 @@ func TestCreatingEnrollmentClosesWebSocketAndKeepsServerPending(t *testing.T) {
 		t.Fatalf("create enrollment request: %v", err)
 	}
 	request.AddCookie(adminCookie)
+	request.Header.Set("Origin", panel.URL)
 	enrollmentResponse, err := panel.Client().Do(request)
 	if err != nil {
 		t.Fatalf("create enrollment: %v", err)
@@ -585,6 +586,7 @@ func TestArchiveClosesAgentWebSocketAndRevokesToken(t *testing.T) {
 		t.Fatalf("create archive request: %v", err)
 	}
 	request.AddCookie(adminCookie)
+	request.Header.Set("Origin", panel.URL)
 	archiveResponse, err := panel.Client().Do(request)
 	if err != nil {
 		t.Fatalf("archive server: %v", err)

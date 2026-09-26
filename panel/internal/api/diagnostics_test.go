@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,6 +124,7 @@ func TestDiagnosticsAPIMatchesRequestAndBuildsPanelChecks(t *testing.T) {
 			return
 		}
 		request.AddCookie(cookie)
+		request.Header.Set("Origin", panel.URL)
 		response, requestErr := panel.Client().Do(request)
 		if requestErr != nil {
 			responseBody <- struct {
@@ -176,20 +178,32 @@ func TestDiagnosticsAPIMatchesRequestAndBuildsPanelChecks(t *testing.T) {
 }
 
 func TestPanelEntryProbeAndConfigFailureChecks(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	dial := func(ctx context.Context, endpoint string) (net.Conn, error) {
+		return dialPanelEntryWith(ctx, endpoint, func(context.Context, string) ([]netip.Addr, error) {
+			return nil, errors.New("unexpected DNS lookup")
+		}, func(_ context.Context, _, endpoint string) (net.Conn, error) {
+			if endpoint != "1.1.1.1:443" {
+				return nil, errors.New("connection refused")
+			}
+			connection, peer := net.Pipe()
+			_ = peer.Close()
+			return connection, nil
+		})
 	}
-	defer listener.Close()
-	port := listener.Addr().(*net.TCPAddr).Port
 	checks := probePanelEntries(t.Context(), []panelEntry{
-		{resourceID: 1, label: "reachable", host: "127.0.0.1", port: port, protocol: "tcp"},
-		{resourceID: 2, label: "failed", host: "127.0.0.1", port: 1, protocol: "tcp"},
-		{resourceID: 3, label: "udp", host: "127.0.0.1", port: 53, protocol: "udp"},
-	}, dialPanelEntry)
+		{resourceID: 1, label: "reachable", host: "1.1.1.1", port: 443, protocol: "tcp"},
+		{resourceID: 2, label: "failed", host: "8.8.8.8", port: 443, protocol: "tcp"},
+		{resourceID: 3, label: "blocked", host: "127.0.0.1", port: 22, protocol: "tcp"},
+		{resourceID: 4, label: "udp", host: "1.1.1.1", port: 53, protocol: "udp"},
+	}, dial)
 	if checks[0].Status != diagnostic.StatusPass || checks[0].LatencyMS == nil ||
-		checks[1].Status != diagnostic.StatusFail || checks[2].Status != diagnostic.StatusSkipped {
+		checks[1].Status != diagnostic.StatusFail || checks[2].Status != diagnostic.StatusSkipped ||
+		checks[2].Endpoint != "" || strings.Contains(checks[2].Detail, "127.0.0.1") ||
+		checks[3].Status != diagnostic.StatusSkipped {
 		t.Fatalf("Panel entry checks = %+v", checks)
+	}
+	if !strings.Contains(safePanelProbeError(context.DeadlineExceeded), "timeout") {
+		t.Fatal("Panel timeout error was not normalized")
 	}
 	status := agentcontrol.DiagnosticStatus{
 		DesiredVersion: 142, AppliedVersion: 141,
@@ -200,6 +214,96 @@ func TestPanelEntryProbeAndConfigFailureChecks(t *testing.T) {
 		len(diagnosticSyncCheck(status).Detail) > diagnostic.MaxDetailBytes {
 		t.Fatalf("config failure checks = %+v, %+v", diagnosticVersionCheck(status), diagnosticSyncCheck(status))
 	}
+}
+
+func TestSafePanelDialRejectsNonPublicLiteralAddresses(t *testing.T) {
+	tests := []struct {
+		address string
+		allowed bool
+	}{
+		{"0.0.0.0", false},
+		{"127.0.0.1", false},
+		{"10.0.0.1", false},
+		{"172.16.0.1", false},
+		{"192.168.1.1", false},
+		{"169.254.1.1", false},
+		{"100.64.0.1", false},
+		{"224.0.0.1", false},
+		{"::", false},
+		{"::1", false},
+		{"fc00::1", false},
+		{"fe80::1", false},
+		{"ff02::1", false},
+		{"1.1.1.1", true},
+		{"2606:4700:4700::1111", true},
+	}
+	for _, test := range tests {
+		t.Run(test.address, func(t *testing.T) {
+			dialed := ""
+			connection, err := dialPanelEntryWith(
+				t.Context(), net.JoinHostPort(test.address, "443"),
+				func(context.Context, string) ([]netip.Addr, error) {
+					t.Fatal("literal IP triggered DNS resolution")
+					return nil, nil
+				},
+				func(_ context.Context, _, endpoint string) (net.Conn, error) {
+					dialed = endpoint
+					client, peer := net.Pipe()
+					_ = peer.Close()
+					return client, nil
+				},
+			)
+			if test.allowed {
+				if err != nil || dialed != net.JoinHostPort(test.address, "443") {
+					t.Fatalf("allowed address dial = %q, %v", dialed, err)
+				}
+				_ = connection.Close()
+				return
+			}
+			if !errors.Is(err, errUnsafePanelDiagnosticTarget) || dialed != "" || connection != nil {
+				t.Fatalf("blocked address dial = (%v, %q, %v)", connection, dialed, err)
+			}
+		})
+	}
+}
+
+func TestSafePanelDialRejectsUnsafeDNSAndPinsPublicAddress(t *testing.T) {
+	resolved := map[string][]netip.Addr{
+		"localhost.example": {netip.MustParseAddr("127.0.0.1")},
+		"private.example":   {netip.MustParseAddr("10.0.0.1")},
+		"mixed.example":     {netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("10.0.0.1")},
+		"public.example":    {netip.MustParseAddr("1.1.1.1")},
+	}
+	resolve := func(_ context.Context, host string) ([]netip.Addr, error) {
+		return resolved[host], nil
+	}
+	for _, host := range []string{"localhost.example", "private.example", "mixed.example"} {
+		t.Run(host, func(t *testing.T) {
+			dialed := false
+			_, err := dialPanelEntryWith(t.Context(), host+":443", resolve, func(context.Context, string, string) (net.Conn, error) {
+				dialed = true
+				return nil, errors.New("unexpected dial")
+			})
+			if !errors.Is(err, errUnsafePanelDiagnosticTarget) || dialed {
+				t.Fatalf("unsafe DNS result = %v, dialed=%t", err, dialed)
+			}
+		})
+	}
+
+	var dialedEndpoint string
+	connection, err := dialPanelEntryWith(t.Context(), "public.example:443", resolve, func(_ context.Context, network, endpoint string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q", network)
+		}
+		dialedEndpoint = endpoint
+		client, peer := net.Pipe()
+		_ = peer.Close()
+		return client, nil
+	})
+	if err != nil || dialedEndpoint != "1.1.1.1:443" || strings.Contains(dialedEndpoint, "public.example") {
+		t.Fatalf("public DNS dial = %q, %v", dialedEndpoint, err)
+	}
+	_ = connection.Close()
 }
 
 func TestPanelEntryProbeUsesOnlySuppliedServerResources(t *testing.T) {

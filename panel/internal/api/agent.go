@@ -145,13 +145,18 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, user a
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
 	created, err := s.servers.CreateEnrollment(r.Context(), id)
 	if err != nil {
 		writeServerError(w, err)
 		return
 	}
 	s.agents.CloseConnections(id)
-	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, requestBaseURL(r)))
+	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, baseURL))
 }
 
 func (s *server) upgradeAgent(w http.ResponseWriter, r *http.Request, user auth.User) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,11 @@ const (
 	panelDiagnosticTimeout = 12 * time.Second
 	panelProbeTimeout      = 2 * time.Second
 	maxPanelProbes         = 8
+)
+
+var (
+	errUnsafePanelDiagnosticTarget = errors.New("unsafe Panel diagnostic target")
+	cgnatPrefix                    = netip.MustParsePrefix("100.64.0.0/10")
 )
 
 type serverDiagnosticResponse struct {
@@ -265,6 +271,12 @@ func probePanelEntry(ctx context.Context, entry panelEntry, dial func(context.Co
 	connection, err := dial(probeContext, check.Endpoint)
 	latency := time.Since(startedAt).Milliseconds()
 	cancel()
+	if errors.Is(err, errUnsafePanelDiagnosticTarget) {
+		check.Endpoint = ""
+		check.Status = diagnostic.StatusSkipped
+		check.Detail = "节点入口不是公网地址，Panel 未执行 TCP 探测"
+		return check
+	}
 	if err != nil {
 		check.Status = diagnostic.StatusFail
 		check.Detail = safePanelProbeError(err)
@@ -278,7 +290,62 @@ func probePanelEntry(ctx context.Context, entry panelEntry, dial func(context.Co
 }
 
 func dialPanelEntry(ctx context.Context, endpoint string) (net.Conn, error) {
-	return (&net.Dialer{Timeout: panelProbeTimeout}).DialContext(ctx, "tcp", endpoint)
+	resolver := func(ctx context.Context, host string) ([]netip.Addr, error) {
+		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	}
+	return dialPanelEntryWith(ctx, endpoint, resolver, (&net.Dialer{Timeout: panelProbeTimeout}).DialContext)
+}
+
+func dialPanelEntryWith(
+	ctx context.Context,
+	endpoint string,
+	resolve func(context.Context, string) ([]netip.Addr, error),
+	dial func(context.Context, string, string) (net.Conn, error),
+) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	addresses := make([]netip.Addr, 0, 1)
+	if address, parseErr := netip.ParseAddr(host); parseErr == nil {
+		addresses = append(addresses, address)
+	} else {
+		addresses, err = resolve(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("diagnostic target has no addresses")
+	}
+	for _, address := range addresses {
+		if !isAllowedDiagnosticIP(address) {
+			return nil, errUnsafePanelDiagnosticTarget
+		}
+	}
+	var lastErr error
+	for _, address := range addresses {
+		connection, dialErr := dial(ctx, "tcp", net.JoinHostPort(address.Unmap().String(), port))
+		if dialErr == nil {
+			return connection, nil
+		}
+		lastErr = dialErr
+	}
+	return nil, lastErr
+}
+
+func isAllowedDiagnosticIP(address netip.Addr) bool {
+	if !address.IsValid() || address.Zone() != "" {
+		return false
+	}
+	address = address.Unmap()
+	return address.IsGlobalUnicast() &&
+		!address.IsPrivate() &&
+		!address.IsLoopback() &&
+		!address.IsLinkLocalUnicast() &&
+		!address.IsMulticast() &&
+		!address.IsUnspecified() &&
+		!cgnatPrefix.Contains(address)
 }
 
 func safePanelProbeError(err error) string {

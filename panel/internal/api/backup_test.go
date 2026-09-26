@@ -36,7 +36,11 @@ func TestBackupAPIRequiresAdminAndSignalsRestore(t *testing.T) {
 		t.Fatalf("initialize=%d: %s", adminLogin.Code, adminLogin.Body.String())
 	}
 	adminCookie := adminLogin.Result().Cookies()[0]
-	invitation := performRequest(t, handler, "POST", "/api/admin/invitations", nil, adminCookie)
+	invitationRequest := jsonRequest(t, "POST", "/api/admin/invitations", nil)
+	invitationRequest.Header.Set("Origin", "https://panel.example.com")
+	invitationRequest.AddCookie(adminCookie)
+	invitation := httptest.NewRecorder()
+	handler.ServeHTTP(invitation, invitationRequest)
 	if invitation.Code != http.StatusCreated {
 		t.Fatalf("invite=%d", invitation.Code)
 	}
@@ -81,6 +85,7 @@ func TestBackupAPIRequiresAdminAndSignalsRestore(t *testing.T) {
 		}
 		request := httptest.NewRequest("POST", "/api/admin/backup/import", &body)
 		request.Header.Set("Content-Type", writer.FormDataContentType())
+		request.Header.Set("Origin", "https://panel.example.com")
 		request.AddCookie(adminCookie)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)

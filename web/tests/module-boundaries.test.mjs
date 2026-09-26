@@ -135,9 +135,9 @@ test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令�
   const { model, error } = serverModel()
   model.viewServer(serverRecord())
   model.createdServer.value = { enrollment_token: 'once' }
-  model.accessModalOpen.value = model.trafficModalOpen.value = model.trafficAdjustmentModalOpen.value = true
+  model.accessModalOpen.value = model.ownerModalOpen.value = model.trafficModalOpen.value = model.trafficAdjustmentModalOpen.value = true
   await model.loadServers()
-  for (const key of ['serverModalOpen', 'accessModalOpen', 'trafficModalOpen', 'trafficAdjustmentModalOpen']) assert.equal(model[key].value, false)
+  for (const key of ['serverModalOpen', 'accessModalOpen', 'ownerModalOpen', 'trafficModalOpen', 'trafficAdjustmentModalOpen']) assert.equal(model[key].value, false)
   assert.equal(model.createdServer.value, null)
   assert.equal(model.selectedServer.value, null)
   assert.equal(error.value, '服务器不存在或当前账号无权访问')
@@ -384,6 +384,60 @@ test('服务器名称保存后详情保持打开且列表使用新名称', async
   const detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /server-detail-grid/)
   for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
+})
+
+test('服务器所有者弹窗可选择账号或无所有者并立即刷新详情', async t => {
+  const users = [
+    { id: 1, username: 'admin', role: 'admin' },
+    { id: 2, username: 'member', role: 'vip' },
+  ]
+  let current = serverRecord()
+  const patchBodies = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(init.body)
+      patchBodies.push(body)
+      current = {
+        ...current,
+        owner_user_id: body.owner_user_id,
+        owner_username: body.owner_user_id === 2 ? 'member' : '',
+      }
+      return json({ server: current })
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : [current] })
+  })
+  const { model } = serverModel()
+  model.users.value = users
+  model.viewServer(current)
+  let detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /admin/)
+  assert.match(detail, /aria-label="修改所有者"/)
+
+  model.openOwnerModal()
+  assert.equal(model.ownerModalOpen.value, true)
+  assert.equal(model.ownerUserID.value, 1)
+  const form = await render('components/server/ServerOwnerForm.vue', model)
+  assert.match(form, /修改所有者/)
+  assert.match(form, /无所有者/)
+  assert.match(form, /admin（admin）/)
+  assert.match(form, /member（vip）/)
+
+  model.ownerUserID.value = 2
+  await model.saveServerOwner()
+  assert.deepEqual(patchBodies[0], { owner_user_id: 2 })
+  assert.equal(model.selectedServer.value.owner_username, 'member')
+  assert.equal(model.servers.value[0].owner_username, 'member')
+  assert.equal(model.ownerModalOpen.value, false)
+
+  model.openOwnerModal()
+  model.ownerUserID.value = 0
+  await model.saveServerOwner()
+  assert.deepEqual(patchBodies[1], { owner_user_id: null })
+  assert.equal(model.selectedServer.value.owner_user_id, null)
+  assert.equal(model.selectedServer.value.owner_username, '')
+  detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /所有者/)
+  assert.match(detail, /—/)
 })
 
 test('服务器详情展示中国 IP 入站限制状态并允许历史开启状态关闭', async () => {

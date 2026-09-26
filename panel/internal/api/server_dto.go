@@ -26,6 +26,7 @@ type updateServerAccessRequest struct {
 
 type updateServerRequest struct {
 	Name                     *string         `json:"name"`
+	OwnerUserID              json.RawMessage `json:"owner_user_id"`
 	OutboundPreference       *string         `json:"outbound_preference"`
 	BlockChinaInbound        *bool           `json:"block_china_inbound"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`

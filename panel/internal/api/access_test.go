@@ -198,6 +198,77 @@ func TestServerAccessScopesListsMutationsAndAdminOperations(t *testing.T) {
 	}
 }
 
+func TestServerOwnerUpdateIsMetadataOnly(t *testing.T) {
+	db, handler, accounts := setupAccessTest(t)
+	defer db.Close()
+	created := createAccessTestServer(t, handler, accounts.adminCookie, "Owned", "private", nil)
+	path := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
+
+	response := performRequest(t, handler, http.MethodPatch, path, map[string]any{
+		"owner_user_id": accounts.memberID,
+	}, accounts.adminCookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update owner = %d, %s", response.Code, response.Body.String())
+	}
+	var updated struct {
+		Server serverResponse `json:"server"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Server.OwnerUserID == nil || *updated.Server.OwnerUserID != accounts.memberID || updated.Server.OwnerUsername != "member" {
+		t.Fatalf("updated owner = (%v, %q)", updated.Server.OwnerUserID, updated.Server.OwnerUsername)
+	}
+	if updated.Server.Visibility != "private" || len(updated.Server.AccessUserIDs) != 1 || updated.Server.AccessUserIDs[0] != accounts.adminID {
+		t.Fatalf("owner update changed access = (%q, %v)", updated.Server.Visibility, updated.Server.AccessUserIDs)
+	}
+	if memberView := performRequest(t, handler, http.MethodGet, path, nil, accounts.memberCookie); memberView.Code != http.StatusNotFound {
+		t.Fatalf("owner unexpectedly gained access = %d, %s", memberView.Code, memberView.Body.String())
+	}
+	var visibility, adminRole, memberRole string
+	var accessRows int
+	if err := db.QueryRow(`SELECT visibility FROM servers WHERE id = ?`, created.Server.ID).Scan(&visibility); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM server_access WHERE server_id = ? AND user_id = ?`, created.Server.ID, accounts.adminID).Scan(&accessRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, accounts.adminID).Scan(&adminRole); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, accounts.memberID).Scan(&memberRole); err != nil {
+		t.Fatal(err)
+	}
+	if visibility != "private" || accessRows != 1 || adminRole != "admin" || memberRole != "vip" {
+		t.Fatalf("owner update side effects = (%q, %d, %q, %q)", visibility, accessRows, adminRole, memberRole)
+	}
+
+	cleared := performRequest(t, handler, http.MethodPatch, path, map[string]any{"owner_user_id": nil}, accounts.adminCookie)
+	if cleared.Code != http.StatusOK || !strings.Contains(cleared.Body.String(), `"owner_user_id":null`) ||
+		!strings.Contains(cleared.Body.String(), `"owner_username":""`) {
+		t.Fatalf("clear owner = %d, %s", cleared.Code, cleared.Body.String())
+	}
+	for _, invalidID := range []int64{0, -1, 999999} {
+		invalid := performRequest(t, handler, http.MethodPatch, path, map[string]any{"owner_user_id": invalidID}, accounts.adminCookie)
+		if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "服务器所有者账号无效") {
+			t.Fatalf("invalid owner %d = %d, %s", invalidID, invalid.Code, invalid.Body.String())
+		}
+	}
+	ambiguous := performRequest(t, handler, http.MethodPatch, path, map[string]any{
+		"name": "Renamed", "owner_user_id": accounts.memberID,
+	}, accounts.adminCookie)
+	if ambiguous.Code != http.StatusBadRequest || !strings.Contains(ambiguous.Body.String(), "服务器设置格式无效") {
+		t.Fatalf("ambiguous owner update = %d, %s", ambiguous.Code, ambiguous.Body.String())
+	}
+	if archived := performRequest(t, handler, http.MethodDelete, path+"/force", nil, accounts.adminCookie); archived.Code != http.StatusNoContent {
+		t.Fatalf("archive server = %d, %s", archived.Code, archived.Body.String())
+	}
+	archivedUpdate := performRequest(t, handler, http.MethodPatch, path, map[string]any{"owner_user_id": accounts.memberID}, accounts.adminCookie)
+	if archivedUpdate.Code != http.StatusNotFound {
+		t.Fatalf("archived owner update = %d, %s", archivedUpdate.Code, archivedUpdate.Body.String())
+	}
+}
+
 func TestDerivedResourcesRequireServerAccessAndRelayBothSides(t *testing.T) {
 	db, handler, accounts := setupAccessTest(t)
 	defer db.Close()

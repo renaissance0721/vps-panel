@@ -33,6 +33,7 @@ var (
 	ErrInvalidTrafficTarget      = errors.New("invalid server traffic target")
 	ErrInvalidVisibility         = errors.New("invalid server visibility")
 	ErrInvalidServerAccess       = errors.New("invalid server access list")
+	ErrInvalidServerOwner        = errors.New("invalid server owner")
 	ErrInvalidOutboundPreference = errors.New("invalid server outbound preference")
 	ErrInvalidRenewalPeriod      = errors.New("invalid server renewal period")
 	ErrAutoRenewRequirements     = errors.New("automatic renewal requires expiration and renewal period")

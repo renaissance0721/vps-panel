@@ -116,12 +116,13 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAutoRenew := request.AutoRenew != nil
 	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
 	hasName := request.Name != nil
+	hasOwner := len(request.OwnerUserID) != 0
 	hasOutboundPreference := request.OutboundPreference != nil
 	hasBlockChinaInbound := request.BlockChinaInbound != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
+	for _, present := range []bool{hasName, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
@@ -132,6 +133,20 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	}
 	if hasName {
 		updated, err := s.servers.UpdateName(r.Context(), id, *request.Name)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
+		return
+	}
+	if hasOwner {
+		var ownerUserID *int64
+		if json.Unmarshal(request.OwnerUserID, &ownerUserID) != nil {
+			writeServerError(w, serverstore.ErrInvalidServerOwner)
+			return
+		}
+		updated, err := s.servers.UpdateOwner(r.Context(), id, ownerUserID)
 		if err != nil {
 			writeServerError(w, err)
 			return
@@ -379,6 +394,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
 	case errors.Is(err, serverstore.ErrInvalidServerAccess):
 		writeError(w, http.StatusBadRequest, "服务器访问账号无效")
+	case errors.Is(err, serverstore.ErrInvalidServerOwner):
+		writeError(w, http.StatusBadRequest, "服务器所有者账号无效")
 	case errors.Is(err, serverstore.ErrInvalidOutboundPreference):
 		writeError(w, http.StatusBadRequest, "服务器出站优先级无效")
 	case errors.Is(err, serverstore.ErrInvalidRenewalPeriod):

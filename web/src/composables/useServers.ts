@@ -119,6 +119,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const nameModalOpen = ref(false)
   const nameInput = ref('')
   const nameFormError = ref('')
+  const ownerModalOpen = ref(false)
+  const ownerUserID = ref(0)
+  const ownerFormError = ref('')
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
   const bulkUpgradeModalOpen = ref(false)
@@ -236,6 +239,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
           serverModalOpen.value = false
           accessModalOpen.value = false
           nameModalOpen.value = false
+          ownerModalOpen.value = false
+          ownerUserID.value = 0
+          ownerFormError.value = ''
           expirationModalOpen.value = false
           trafficModalOpen.value = false
           trafficAdjustmentModalOpen.value = false
@@ -271,6 +277,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       serverAccessUserIDs.value = []
       copiedCommand.value = false
       expirationModalOpen.value = false
+      ownerModalOpen.value = false
+      ownerUserID.value = 0
+      ownerFormError.value = ''
       trafficModalOpen.value = false
       trafficAdjustmentModalOpen.value = false
       await loadServers()
@@ -286,6 +295,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     copiedUpgradeCommand.value = false
     expirationModalOpen.value = false
     nameModalOpen.value = false
+    ownerModalOpen.value = false
+    ownerUserID.value = 0
+    ownerFormError.value = ''
     trafficModalOpen.value = false
     trafficAdjustmentModalOpen.value = false
     diagnosticOpen.value = false
@@ -624,6 +636,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameModalOpen.value = false
     nameInput.value = ''
     nameFormError.value = ''
+    ownerModalOpen.value = false
+    ownerUserID.value = 0
+    ownerFormError.value = ''
     resetTrafficAdjustmentForm()
   }
 
@@ -659,6 +674,36 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       await loadServers()
     })
     if (nameModalOpen.value && error.value) nameFormError.value = error.value
+  }
+
+  function openOwnerModal() {
+    if (!selectedServer.value || selectedServer.value.archived_at) return
+    ownerUserID.value = selectedServer.value.owner_user_id ?? 0
+    ownerFormError.value = ''
+    ownerModalOpen.value = true
+  }
+
+  function closeOwnerModal() {
+    ownerModalOpen.value = false
+    ownerUserID.value = 0
+    ownerFormError.value = ''
+  }
+
+  async function saveServerOwner() {
+    if (!selectedServer.value || submitting.value) return
+    const id = selectedServer.value.id
+    const selectedOwnerID = ownerUserID.value > 0 ? ownerUserID.value : null
+    ownerFormError.value = ''
+    await submit(async () => {
+      const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ owner_user_id: selectedOwnerID }),
+      })
+      selectedServer.value = response.server
+      closeOwnerModal()
+      await loadServers()
+    })
+    if (ownerModalOpen.value && error.value) ownerFormError.value = error.value
   }
 
   async function setOutboundPreference(server: ServerRecord, preference: ServerRecord['outbound_preference']) {
@@ -947,6 +992,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameModalOpen.value = false
     nameInput.value = ''
     nameFormError.value = ''
+    ownerModalOpen.value = false
+    ownerUserID.value = 0
+    ownerFormError.value = ''
     trafficAdjustmentModalOpen.value = false
     accessModalOpen.value = false
     diagnosticOpen.value = false
@@ -968,6 +1016,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     stopChinaInboundConfigPolling()
     serverModalOpen.value = false
     nameModalOpen.value = false
+    ownerModalOpen.value = false
+    ownerUserID.value = 0
+    ownerFormError.value = ''
     selectedServer.value = null
     createdServer.value = null
     await loadServers().catch(() => undefined)
@@ -983,6 +1034,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameModalOpen,
     nameInput,
     nameFormError,
+    ownerModalOpen,
+    ownerUserID,
+    ownerFormError,
     trafficAdjustmentModalOpen,
     diagnosticOpen,
     diagnosticLoading,
@@ -1052,6 +1106,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     openNameModal,
     closeNameModal,
     saveServerName,
+    openOwnerModal,
+    closeOwnerModal,
+    saveServerOwner,
     setOutboundPreference,
     setBlockChinaInbound,
     openExpirationModal,

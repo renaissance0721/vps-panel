@@ -51,6 +51,47 @@ func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server
 	return s.Get(ctx, id)
 }
 
+func (s *Service) UpdateOwner(ctx context.Context, id int64, ownerUserID *int64) (Server, error) {
+	if ownerUserID != nil && *ownerUserID <= 0 {
+		return Server{}, ErrInvalidServerOwner
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Server{}, fmt.Errorf("begin server owner update: %w", err)
+	}
+	defer tx.Rollback()
+
+	var ownerValue any
+	if ownerUserID != nil {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)`, *ownerUserID).Scan(&exists); err != nil {
+			return Server{}, fmt.Errorf("validate server owner: %w", err)
+		}
+		if !exists {
+			return Server{}, ErrInvalidServerOwner
+		}
+		ownerValue = *ownerUserID
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE servers SET owner_user_id = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+		ownerValue, s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server owner: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server owner count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return Server{}, fmt.Errorf("commit server owner update: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *Service) UpdateOutboundPreference(ctx context.Context, id int64, preference string) (Server, int64, error) {
 	switch preference {
 	case OutboundAuto, OutboundPreferIPv4, OutboundPreferIPv6:

@@ -45,6 +45,7 @@ const props = defineProps<{
     | 'submitting'
     | 'openAccessModal'
     | 'openNameModal'
+    | 'openOwnerModal'
     | 'formatExpirationDate'
     | 'openExpirationModal'
     | 'renewalPeriodLabel'
@@ -88,6 +89,7 @@ const {
   submitting,
   openAccessModal,
   openNameModal,
+  openOwnerModal,
   formatExpirationDate,
   openExpirationModal,
   renewalPeriodLabel,
@@ -225,7 +227,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             <dl class="server-details">
               <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting || !!selectedServer.decommission_status" @click="openNameModal">✎</n-button></dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
-              <div><dt>所有者</dt><dd>{{ selectedServer.owner_username || '—' }}</dd></div>
+              <div><dt>所有者</dt><dd class="expiration-display"><span>{{ selectedServer.owner_username || '—' }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改所有者" aria-label="修改所有者" :disabled="submitting || !!selectedServer.decommission_status" @click="openOwnerModal">✎</n-button></dd></div>
               <div>
                 <dt>访问范围</dt>
                 <dd class="expiration-display">

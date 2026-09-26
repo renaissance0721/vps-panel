@@ -205,11 +205,11 @@ func (m *acmeManager) purge(ctx context.Context) error {
 		return fmt.Errorf("%w: inspect ACME ownership: %v", errManagedRuntimePurge, err)
 	}
 	if managed {
-		if err := os.RemoveAll(m.installDir); err != nil {
+		if err := removeDirectoryContentsExcept(m.installDir, filepath.Base(marker)); err != nil {
 			return fmt.Errorf("%w: remove managed ACME runtime: %v", errManagedRuntimePurge, err)
 		}
 	}
-	if err := os.RemoveAll(m.homeDir); err != nil {
+	if err := removeDirectoryContents(m.homeDir); err != nil {
 		return fmt.Errorf("%w: remove managed ACME state: %v", errManagedRuntimePurge, err)
 	}
 	entries, err := os.ReadDir(m.certDir)
@@ -235,6 +235,11 @@ func (m *acmeManager) purge(ctx context.Context) error {
 		remaining, readErr := os.ReadDir(m.certDir)
 		if readErr != nil || len(remaining) == 0 {
 			return fmt.Errorf("%w: remove managed ACME certificate directory: %v", errManagedRuntimePurge, err)
+		}
+	}
+	if managed {
+		if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: remove managed ACME ownership marker: %v", errManagedRuntimePurge, err)
 		}
 	}
 	return nil

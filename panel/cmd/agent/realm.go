@@ -105,7 +105,6 @@ type realmManager struct {
 	reconcileFirewall func(context.Context, []firewallRule) error
 	purgeFirewall     func(context.Context) error
 	removePath        func(string) error
-	removeAll         func(string) error
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
@@ -155,7 +154,6 @@ func newRealmManager() *realmManager {
 			return nil
 		},
 		removePath:       os.Remove,
-		removeAll:        os.RemoveAll,
 		wait:             waitForXray,
 		healthAttempts:   6,
 		healthCheckDelay: 500 * time.Millisecond,
@@ -215,11 +213,14 @@ func (m *realmManager) purge(ctx context.Context) error {
 			return fmt.Errorf("%w: reload services after Realm purge: %v", errManagedRuntimePurge, err)
 		}
 	}
-	if err := m.removeTree(m.configDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeDirectoryContents(m.configDir); err != nil {
 		return fmt.Errorf("%w: remove managed Realm config: %v", errManagedRuntimePurge, err)
 	}
-	if err := m.removeTree(m.installDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeDirectoryContentsExcept(m.installDir, filepath.Base(m.markerPath)); err != nil {
 		return fmt.Errorf("%w: remove managed Realm runtime: %v", errManagedRuntimePurge, err)
+	}
+	if err := m.remove(m.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Realm ownership marker: %v", errManagedRuntimePurge, err)
 	}
 	log.Print("Managed Realm purge complete")
 	return nil
@@ -240,13 +241,6 @@ func (m *realmManager) remove(path string) error {
 		return m.removePath(path)
 	}
 	return os.Remove(path)
-}
-
-func (m *realmManager) removeTree(path string) error {
-	if m.removeAll != nil {
-		return m.removeAll(path)
-	}
-	return os.RemoveAll(path)
 }
 
 func (m *realmManager) disable(ctx context.Context) error {

@@ -262,6 +262,8 @@ func TestManagedRealmPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 	seedManagedRealm(t, manager)
 	writeTestFile(t, manager.configPath, []byte("current"), 0o600)
 	writeTestFile(t, manager.previousPath, []byte("previous"), 0o600)
+	writeTestFile(t, filepath.Join(manager.configDir, "nested", "managed.toml"), []byte("managed"), 0o600)
+	writeTestFile(t, filepath.Join(manager.installDir, "data", "managed.db"), []byte("managed"), 0o600)
 	writeTestFile(t, manager.unitPath, []byte("unit"), 0o644)
 	commands.active = true
 	firewallPurges := 0
@@ -277,16 +279,35 @@ func TestManagedRealmPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 		commands.count("systemctl", "daemon-reload") != 1 || firewallPurges != 1 {
 		t.Fatalf("purge calls = %v, firewall purges = %d", commands.calls, firewallPurges)
 	}
-	for _, path := range []string{manager.installDir, manager.configDir, manager.unitPath} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("managed Realm path remained: %s (%v)", path, err)
-		}
+	if _, err := os.Stat(manager.unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed Realm service remained: %v", err)
+	}
+	for _, path := range []string{manager.installDir, manager.configDir} {
+		assertDirectoryEmpty(t, path)
 	}
 	if err := manager.apply(t.Context(), state); err != nil {
 		t.Fatalf("repeat purge: %v", err)
 	}
 	if firewallPurges != 2 {
 		t.Fatalf("repeat purge did not verify firewall cleanup: %d", firewallPurges)
+	}
+}
+
+func TestManagedRealmPurgeMissingPathsIsIdempotent(t *testing.T) {
+	manager, commands := newTestRealmManager(t)
+	firewallPurges := 0
+	manager.purgeFirewall = func(context.Context) error {
+		firewallPurges++
+		return nil
+	}
+	state := desiredRealmState{Purge: true}
+	for range 2 {
+		if err := manager.apply(t.Context(), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if firewallPurges != 2 || len(commands.calls) != 0 {
+		t.Fatalf("missing-path purges = %d, service calls = %v", firewallPurges, commands.calls)
 	}
 }
 

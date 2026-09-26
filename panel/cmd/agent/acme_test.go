@@ -319,6 +319,7 @@ func TestACMEPurgeRemovesManagedStateAndPreservesUnmanagedCertificate(t *testing
 	unmanagedDir := filepath.Join(m.certDir, "user.example.com")
 	writeTestFile(t, filepath.Join(unmanagedDir, "fullchain.pem"), []byte("user certificate"), 0o644)
 	writeTestFile(t, filepath.Join(m.homeDir, "account.conf"), []byte("state"), 0o600)
+	writeTestFile(t, filepath.Join(m.installDir, "nested", "runtime"), []byte("state"), 0o600)
 	firewallPurged := false
 	m.reconcileFirewall = func(_ context.Context, rules []firewallRule) error {
 		firewallPurged = len(rules) == 0
@@ -330,12 +331,18 @@ func TestACMEPurgeRemovesManagedStateAndPreservesUnmanagedCertificate(t *testing
 	if !firewallPurged {
 		t.Fatal("ACME purge did not clear managed firewall")
 	}
-	for _, path := range []string{m.installDir, m.homeDir, filepath.Dir(managed.Fullchain)} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("managed ACME path remained: %s (%v)", path, err)
-		}
+	for _, path := range []string{m.installDir, m.homeDir} {
+		assertDirectoryEmpty(t, path)
+	}
+	if _, err := os.Stat(filepath.Dir(managed.Fullchain)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed ACME certificate remained: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(unmanagedDir, "fullchain.pem")); err != nil || string(got) != "user certificate" {
 		t.Fatalf("unmanaged certificate changed: %q, %v", got, err)
 	}
+	if err := m.purge(t.Context()); err != nil {
+		t.Fatalf("repeat purge: %v", err)
+	}
+	assertDirectoryEmpty(t, m.installDir)
+	assertDirectoryEmpty(t, m.homeDir)
 }

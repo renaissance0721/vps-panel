@@ -817,6 +817,8 @@ func TestManagedXrayPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 	seedManagedXray(t, manager, []byte("binary"))
 	writeTestFile(t, manager.configPath, []byte("current"), 0o600)
 	writeTestFile(t, manager.previousPath, []byte("previous"), 0o600)
+	writeTestFile(t, filepath.Join(manager.configDir, "nested", "managed.json"), []byte("managed"), 0o600)
+	writeTestFile(t, filepath.Join(manager.installDir, "data", "managed.db"), []byte("managed"), 0o600)
 	writeTestFile(t, manager.unitPath, []byte("unit"), 0o644)
 	commands.active = true
 	firewallPurges := 0
@@ -832,10 +834,11 @@ func TestManagedXrayPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 		commands.count("systemctl", "daemon-reload") != 1 || firewallPurges != 1 {
 		t.Fatalf("purge calls = %v, firewall purges = %d", commands.calls, firewallPurges)
 	}
-	for _, path := range []string{manager.installDir, manager.configDir, manager.unitPath} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("managed Xray path remained: %s (%v)", path, err)
-		}
+	if _, err := os.Stat(manager.unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed Xray service remained: %v", err)
+	}
+	for _, path := range []string{manager.installDir, manager.configDir} {
+		assertDirectoryEmpty(t, path)
 	}
 	if err := manager.apply(t.Context(), state); err != nil {
 		t.Fatalf("repeat purge: %v", err)
@@ -843,6 +846,142 @@ func TestManagedXrayPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 	if firewallPurges != 2 {
 		t.Fatalf("repeat purge did not verify firewall cleanup: %d", firewallPurges)
 	}
+}
+
+func TestManagedXrayPurgeRetriesPartiallyCompletedCleanup(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, []byte("current"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("unit"), 0o644)
+	manager.purgeFirewall = func(context.Context) error { return nil }
+	commands.active = true
+	failMarkerRemoval := true
+	manager.removePath = func(path string) error {
+		if path == manager.markerPath && failMarkerRemoval {
+			failMarkerRemoval = false
+			return errors.New("marker removal failed")
+		}
+		return os.Remove(path)
+	}
+
+	state := desiredState{Xray: desiredXrayState{Purge: true}}
+	if err := manager.apply(t.Context(), state); !errors.Is(err, errManagedRuntimePurge) {
+		t.Fatalf("first purge error = %v", err)
+	}
+	if _, err := os.Stat(manager.markerPath); err != nil {
+		t.Fatalf("ownership marker was not retained for retry: %v", err)
+	}
+	if _, err := os.Stat(manager.unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("service was not removed before the partial failure: %v", err)
+	}
+	assertDirectoryEmptyExcept(t, manager.installDir, filepath.Base(manager.markerPath))
+	assertDirectoryEmpty(t, manager.configDir)
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatalf("retry purge: %v", err)
+	}
+	assertDirectoryEmpty(t, manager.installDir)
+	assertDirectoryEmpty(t, manager.configDir)
+	if commands.count("systemctl", "stop") != 1 || commands.count("systemctl", "disable") != 1 ||
+		commands.count("systemctl", "daemon-reload") != 1 {
+		t.Fatalf("retry repeated cleanup for removed service: %v", commands.calls)
+	}
+}
+
+func TestManagedXrayPurgeMissingPathsIsIdempotent(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	firewallPurges := 0
+	manager.purgeFirewall = func(context.Context) error {
+		firewallPurges++
+		return nil
+	}
+	state := desiredState{Xray: desiredXrayState{Purge: true}}
+	for range 2 {
+		if err := manager.apply(t.Context(), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if firewallPurges != 2 || len(commands.calls) != 0 {
+		t.Fatalf("missing-path purges = %d, service calls = %v", firewallPurges, commands.calls)
+	}
+}
+
+func TestManagedXrayPurgeUsesOpenRCServiceAndKeepsRuntimeDirectories(t *testing.T) {
+	manager, commands := newTestXrayManager(t)
+	root := t.TempDir()
+	manager.service = newServiceManager(initSystemOpenRC, xrayServiceDefinition(), root, commands.run)
+	manager.unitPath = manager.service.Path()
+	seedManagedXray(t, manager, []byte("binary"))
+	writeTestFile(t, manager.configPath, []byte("current"), 0o600)
+	writeTestFile(t, manager.unitPath, []byte("service"), 0o755)
+	manager.purgeFirewall = func(context.Context) error { return nil }
+	commands.active = true
+
+	if err := manager.apply(t.Context(), desiredState{Xray: desiredXrayState{Purge: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if commands.count("rc-service", managedXrayServiceName) != 1 || commands.count("rc-update", "del") != 1 {
+		t.Fatalf("OpenRC purge calls = %v", commands.calls)
+	}
+	if _, err := os.Stat(manager.unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenRC service remained: %v", err)
+	}
+	assertDirectoryEmpty(t, manager.installDir)
+	assertDirectoryEmpty(t, manager.configDir)
+}
+
+func TestRemoveDirectoryContents(t *testing.T) {
+	t.Run("entries", func(t *testing.T) {
+		directory := t.TempDir()
+		writeTestFile(t, filepath.Join(directory, "file"), []byte("file"), 0o600)
+		writeTestFile(t, filepath.Join(directory, "nested", "file"), []byte("nested"), 0o600)
+		if err := os.Mkdir(filepath.Join(directory, "empty"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeDirectoryContents(directory); err != nil {
+			t.Fatal(err)
+		}
+		assertDirectoryEmpty(t, directory)
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		directory := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "outside")
+		writeTestFile(t, outside, []byte("outside"), 0o600)
+		if err := os.Symlink(outside, filepath.Join(directory, "link")); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			t.Fatal(err)
+		}
+		if err := removeDirectoryContents(directory); err != nil {
+			t.Fatal(err)
+		}
+		assertDirectoryEmpty(t, directory)
+		assertFileEquals(t, outside, []byte("outside"))
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		directory := t.TempDir()
+		if err := removeDirectoryContents(directory); err != nil {
+			t.Fatal(err)
+		}
+		assertDirectoryEmpty(t, directory)
+	})
+
+	t.Run("missing", func(t *testing.T) {
+		if err := removeDirectoryContents(filepath.Join(t.TempDir(), "missing")); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("not directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "file")
+		writeTestFile(t, path, []byte("file"), 0o600)
+		if err := removeDirectoryContents(path); err == nil {
+			t.Fatal("non-directory path was accepted")
+		}
+		assertFileEquals(t, path, []byte("file"))
+	})
 }
 
 func TestManagedXrayPurgePreservesRuntimeWithoutOwnershipMarker(t *testing.T) {
@@ -1041,6 +1180,29 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertDirectoryEmpty(t *testing.T, path string) {
+	t.Helper()
+	assertDirectoryEmptyExcept(t, path, "")
+}
+
+func assertDirectoryEmptyExcept(t *testing.T, path, expectedEntry string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("directory %s = (%v, %v)", path, info, err)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expectedEntry == "" && len(entries) == 0 {
+		return
+	}
+	if len(entries) != 1 || entries[0].Name() != expectedEntry {
+		t.Fatalf("directory %s entries = %v, want %q", path, entries, expectedEntry)
 	}
 }
 

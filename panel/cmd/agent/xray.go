@@ -83,7 +83,6 @@ type xrayManager struct {
 	reconcileFirewall func(context.Context, []firewallRule) error
 	purgeFirewall     func(context.Context) error
 	removePath        func(string) error
-	removeAll         func(string) error
 	wait              func(context.Context, time.Duration) error
 	healthAttempts    int
 	healthCheckDelay  time.Duration
@@ -114,7 +113,6 @@ func newXrayManager() *xrayManager {
 		reconcileFirewall: firewall.reconcileRules,
 		purgeFirewall:     firewall.purge,
 		removePath:        os.Remove,
-		removeAll:         os.RemoveAll,
 		wait:              waitForXray,
 		healthAttempts:    6,
 		healthCheckDelay:  500 * time.Millisecond,
@@ -179,11 +177,14 @@ func (m *xrayManager) purge(ctx context.Context) error {
 			return fmt.Errorf("%w: reload services after Xray purge: %v", errManagedRuntimePurge, err)
 		}
 	}
-	if err := m.removeTree(m.configDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeDirectoryContents(m.configDir); err != nil {
 		return fmt.Errorf("%w: remove managed Xray config: %v", errManagedRuntimePurge, err)
 	}
-	if err := m.removeTree(m.installDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeDirectoryContentsExcept(m.installDir, filepath.Base(m.markerPath)); err != nil {
 		return fmt.Errorf("%w: remove managed Xray runtime: %v", errManagedRuntimePurge, err)
+	}
+	if err := m.remove(m.markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: remove managed Xray ownership marker: %v", errManagedRuntimePurge, err)
 	}
 	m.acmeDomains = nil
 	log.Print("Managed Xray purge complete")
@@ -205,13 +206,6 @@ func (m *xrayManager) remove(path string) error {
 		return m.removePath(path)
 	}
 	return os.Remove(path)
-}
-
-func (m *xrayManager) removeTree(path string) error {
-	if m.removeAll != nil {
-		return m.removeAll(path)
-	}
-	return os.RemoveAll(path)
 }
 
 func (m *xrayManager) disable(ctx context.Context) error {
@@ -931,6 +925,36 @@ func directoryHasEntries(path string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func removeDirectoryContents(path string) error {
+	return removeDirectoryContentsExcept(path, "")
+}
+
+func removeDirectoryContentsExcept(path, preservedEntry string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("path is not a directory")
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == preservedEntry {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(path, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runXrayCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {

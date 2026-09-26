@@ -35,6 +35,7 @@ after(async () => {
 function serverRecord(overrides = {}) {
   return {
     id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
+    owner_user_id: 1, owner_username: 'admin',
     archived_at: null, expires_at: null, renewal_period_months: null, auto_renew: false,
     decommissioning_at: null, decommission_status: '', decommission_error: '',
     outbound_preference: 'auto', block_china_inbound: false,
@@ -144,9 +145,14 @@ test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令�
 
 test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Modal 内错误', async () => {
   const { model } = serverModel()
-  model.servers.value = [serverRecord({ expires_at: '2026-12-31T15:59:59Z' }), serverRecord({ id: 8 })]
+  model.servers.value = [
+    serverRecord({ expires_at: '2026-12-31T15:59:59Z', owner_username: 'refrain' }),
+    serverRecord({ id: 8, owner_user_id: null, owner_username: '' }),
+  ]
   const list = await render('components/server/ServerList.vue', model)
   assert.match(list, /到期时间/)
+  assert.match(list, /所有者/)
+  assert.match(list, /refrain/)
   assert.match(list, /2026-12-31/)
   assert.match(list, /不限/)
   assert.doesNotMatch(list, /服务器 ID/)
@@ -193,7 +199,7 @@ test('Server 到期与续费表单初始化、保存和列表摘要保持紧凑'
   const list = await render('components/server/ServerList.vue', model)
   assert.match(list, /2026-10-31/)
   assert.match(list, /月付[\s\S]*?· 自动续费/)
-  assert.equal((list.match(/<th(?:\s|>)/g) ?? []).length, 6)
+  assert.equal((list.match(/<th(?:\s|>)/g) ?? []).length, 7)
 
   model.viewServer(serverRecord())
   model.openExpirationModal()

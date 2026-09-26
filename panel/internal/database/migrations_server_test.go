@@ -38,10 +38,10 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	defer db.Close()
 	var visibility, outboundPreference, decommissionStatus, decommissionError string
 	var blockChinaInbound bool
-	var decommissioningAt sql.NullInt64
+	var decommissioningAt, ownerUserID sql.NullInt64
 	if err := db.QueryRow(`SELECT visibility, outbound_preference, block_china_inbound,
-		decommissioning_at, decommission_status, decommission_error FROM servers WHERE id = 1`).
-		Scan(&visibility, &outboundPreference, &blockChinaInbound, &decommissioningAt, &decommissionStatus, &decommissionError); err != nil {
+		decommissioning_at, decommission_status, decommission_error, owner_user_id FROM servers WHERE id = 1`).
+		Scan(&visibility, &outboundPreference, &blockChinaInbound, &decommissioningAt, &decommissionStatus, &decommissionError, &ownerUserID); err != nil {
 		t.Fatal(err)
 	}
 	if visibility != "public" {
@@ -55,6 +55,19 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if decommissioningAt.Valid || decommissionStatus != "" || decommissionError != "" {
 		t.Fatalf("existing server decommission defaults = (%v, %q, %q)", decommissioningAt.Valid, decommissionStatus, decommissionError)
+	}
+	if ownerUserID.Valid {
+		t.Fatalf("existing server owner_user_id = %d, want null", ownerUserID.Int64)
+	}
+	var ownerDeleteAction string
+	if err := db.QueryRow(
+		`SELECT on_delete FROM pragma_foreign_key_list('servers')
+		 WHERE "table" = 'users' AND "from" = 'owner_user_id'`,
+	).Scan(&ownerDeleteAction); err != nil {
+		t.Fatalf("inspect migrated server owner foreign key: %v", err)
+	}
+	if ownerDeleteAction != "SET NULL" {
+		t.Fatalf("migrated server owner on_delete = %q, want SET NULL", ownerDeleteAction)
 	}
 	for _, table := range []string{"user_server_order", "user_proxy_order", "user_relay_order"} {
 		var name string

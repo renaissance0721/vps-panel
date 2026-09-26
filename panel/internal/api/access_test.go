@@ -99,6 +99,12 @@ func TestServerAccessScopesListsMutationsAndAdminOperations(t *testing.T) {
 	publicServer := createAccessTestServer(t, handler, accounts.adminCookie, "Public", "public", nil)
 	adminServer := createAccessTestServer(t, handler, accounts.adminCookie, "Admin Private", "private", nil)
 	memberServer := createAccessTestServer(t, handler, accounts.memberCookie, "Member Private", "private", nil)
+	if publicServer.Server.OwnerUserID == nil || *publicServer.Server.OwnerUserID != accounts.adminID || publicServer.Server.OwnerUsername != "admin" ||
+		memberServer.Server.OwnerUserID == nil || *memberServer.Server.OwnerUserID != accounts.memberID || memberServer.Server.OwnerUsername != "member" {
+		t.Fatalf("server owners = public (%v, %q), private (%v, %q)",
+			publicServer.Server.OwnerUserID, publicServer.Server.OwnerUsername,
+			memberServer.Server.OwnerUserID, memberServer.Server.OwnerUsername)
+	}
 
 	if adminServer.Server.Visibility != "private" || len(adminServer.Server.AccessUserIDs) != 1 ||
 		adminServer.Server.AccessUserIDs[0] != accounts.adminID {

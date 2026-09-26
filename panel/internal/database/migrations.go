@@ -29,6 +29,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerDecommission(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerOwner(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerAccess(ctx, db); err != nil {
 		return err
 	}
@@ -87,6 +90,23 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	return nil
+}
+
+func migrateServerOwner(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = 'owner_user_id'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect servers.owner_user_id: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`,
+		); err != nil {
+			return fmt.Errorf("add servers.owner_user_id: %w", err)
+		}
+	}
 	return nil
 }
 

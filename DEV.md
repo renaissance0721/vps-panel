@@ -497,6 +497,8 @@ private
 → 只有 server_access 中的账号可访问
 ```
 
+`servers.owner_user_id` 记录创建这台 Server 的账号；owner 是持久化的创建者元数据，与 `visibility` 和 `server_access` 的访问范围语义相互独立。
+
 重要：
 
 > admin 不自动绕过 private Server。

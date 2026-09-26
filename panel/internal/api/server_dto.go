@@ -44,6 +44,8 @@ type updateTrafficAdjustmentRequest struct {
 type serverResponse struct {
 	ID                        int64               `json:"id"`
 	Name                      string              `json:"name"`
+	OwnerUserID               *int64              `json:"owner_user_id"`
+	OwnerUsername             string              `json:"owner_username"`
 	Status                    string              `json:"status"`
 	Visibility                string              `json:"visibility"`
 	OutboundPreference        string              `json:"outbound_preference"`
@@ -121,6 +123,8 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 	response := serverResponse{
 		ID:                       value.ID,
 		Name:                     value.Name,
+		OwnerUserID:              value.OwnerUserID,
+		OwnerUsername:            value.OwnerUsername,
 		Status:                   value.Status,
 		Visibility:               value.Visibility,
 		OutboundPreference:       value.OutboundPreference,

@@ -44,6 +44,8 @@ var (
 type Server struct {
 	ID                        int64
 	Name                      string
+	OwnerUserID               *int64
+	OwnerUsername             string
 	Status                    string
 	Visibility                string
 	OutboundPreference        string

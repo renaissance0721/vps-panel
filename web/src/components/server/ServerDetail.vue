@@ -134,7 +134,7 @@ const chinaInboundSwitchTitle = computed(() => {
   const server = selectedServer.value
   if (!server) return ''
   if (server.archived_at) return '已移除服务器不能修改设置。'
-  if (server.decommission_status) return '服务器正在退役，不能继续修改配置。'
+  if (server.decommission_status) return '服务器正在删除，不能继续修改配置。'
   if (!server.block_china_inbound && !chinaInboundSupported(server)) return chinaInboundUnsupportedReason(server)
   return '仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。'
 })
@@ -212,11 +212,11 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             closable
             @close="serverModalOpen = false"
           >
-            <n-alert v-if="selectedServer.decommission_status === 'pending'" type="warning" class="form-alert" title="正在退役">
+            <n-alert v-if="selectedServer.decommission_status === 'pending'" type="warning" class="form-alert" title="正在删除">
               {{ selectedServer.status === 'offline' ? '等待 Agent 上线清理。' : 'Agent 正在清理 VPS Panel 管理的资源。' }}
             </n-alert>
-            <n-alert v-else-if="selectedServer.decommission_status === 'failed'" type="error" class="form-alert" title="退役失败">
-              <p>{{ selectedServer.decommission_error || '退役清理失败' }}</p>
+            <n-alert v-else-if="selectedServer.decommission_status === 'failed'" type="error" class="form-alert" title="删除失败">
+              <p>{{ selectedServer.decommission_error || '服务器删除清理失败' }}</p>
               <p>Agent 将自动重试清理。</p>
             </n-alert>
             <div class="server-detail-grid">
@@ -225,6 +225,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             <dl class="server-details">
               <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting || !!selectedServer.decommission_status" @click="openNameModal">✎</n-button></dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
+              <div><dt>所有者</dt><dd>{{ selectedServer.owner_username || '—' }}</dd></div>
               <div>
                 <dt>访问范围</dt>
                 <dd class="expiration-display">
@@ -463,7 +464,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 :disabled="submitting || !!selectedServer.decommission_status"
                 @click="archiveServer(selectedServer)"
               >
-                {{ selectedServer.decommission_status ? '正在退役' : '开始退役' }}
+                {{ selectedServer.decommission_status ? '删除中' : '删除' }}
               </n-button>
               <n-button
                 v-if="!selectedServer.archived_at"

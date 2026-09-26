@@ -32,6 +32,7 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
 			visibility TEXT NOT NULL DEFAULT 'public'
 				CHECK (visibility IN ('public', 'private')),

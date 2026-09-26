@@ -26,10 +26,8 @@ const props = defineProps<{
     | 'formatServerExpiration'
     | 'renewalPeriodLabel'
     | 'submitting'
-    | 'state'
     | 'viewServer'
     | 'archiveServer'
-    | 'forceRemoveServer'
     | 'archivedServers'
     | 'formatTime'
   >
@@ -47,10 +45,8 @@ const {
   formatServerExpiration,
   renewalPeriodLabel,
   submitting,
-  state,
   viewServer,
   archiveServer,
-  forceRemoveServer,
   archivedServers,
   formatTime,
 } = toRefs(props.model)
@@ -95,6 +91,7 @@ async function dropServer(id: number, archived: boolean) {
                   <tr>
                     <th class="reorder-cell" aria-label="排序"></th>
                     <th>名称</th>
+                    <th>所有者</th>
                     <th>状态</th>
                     <th>本周期流量</th>
                     <th>到期时间</th>
@@ -112,16 +109,17 @@ async function dropServer(id: number, archived: boolean) {
                         {{ visibilityLabel(value.visibility) }}
                       </n-tag>
                     </td>
+                    <td>{{ value.owner_username || '—' }}</td>
                     <td>
                       <div class="server-status-tags">
                         <n-tag :type="statusType(value.status)" size="small">
                           {{ statusLabel(value.status) }}
                         </n-tag>
                         <n-tag v-if="value.decommission_status === 'pending'" type="warning" size="small">
-                          {{ value.status === 'offline' ? '等待 Agent 上线清理' : '正在退役' }}
+                          {{ value.status === 'offline' ? '等待 Agent 上线清理' : '正在删除' }}
                         </n-tag>
                         <n-tag v-else-if="value.decommission_status === 'failed'" type="error" size="small">
-                          退役失败
+                          删除失败
                         </n-tag>
                         <n-tag
                           v-if="trafficWarningLevel(value.traffic_used_bytes, value.monthly_traffic_limit_bytes) === 'warning'"
@@ -162,17 +160,7 @@ async function dropServer(id: number, archived: boolean) {
                         :disabled="submitting || !!value.decommission_status"
                         @click="archiveServer(value)"
                       >
-                        {{ value.decommission_status ? '正在退役' : '开始退役' }}
-                      </n-button>
-                      <n-button
-                        v-if="state?.user?.role === 'admin'"
-                        size="small"
-                        type="error"
-                        text
-                        :disabled="submitting"
-                        @click="forceRemoveServer(value)"
-                      >
-                        强制从 Panel 移除
+                        {{ value.decommission_status ? '删除中' : '删除' }}
                       </n-button>
                     </td>
                   </tr>
@@ -189,6 +177,7 @@ async function dropServer(id: number, archived: boolean) {
                   <tr>
                     <th class="reorder-cell" aria-label="排序"></th>
                     <th>名称</th>
+                    <th>所有者</th>
                     <th>移除时间</th>
                     <th>创建时间</th>
                     <th>操作</th>
@@ -205,6 +194,7 @@ async function dropServer(id: number, archived: boolean) {
                         {{ visibilityLabel(value.visibility) }}
                       </n-tag>
                     </td>
+                    <td>{{ value.owner_username || '—' }}</td>
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
                     <td class="server-actions">

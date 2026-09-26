@@ -77,6 +77,9 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.Name != "JP Native 01" || created.Server.Status != "pending" {
 		t.Fatalf("created server = %+v, want named pending server", created.Server)
 	}
+	if created.Server.OwnerUserID == nil || *created.Server.OwnerUserID <= 0 || created.Server.OwnerUsername != "admin" {
+		t.Fatalf("created server owner = (%v, %q), want admin", created.Server.OwnerUserID, created.Server.OwnerUsername)
+	}
 	if created.Server.LastSeenAt != nil {
 		t.Fatalf("new server last_seen_at = %v, want null", created.Server.LastSeenAt)
 	}
@@ -145,9 +148,16 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 
 	serverPath := "/api/servers/" + strconv.FormatInt(created.Server.ID, 10)
+	if _, err := db.Exec(`UPDATE servers SET owner_user_id = NULL WHERE id = ?`, created.Server.ID); err != nil {
+		t.Fatalf("clear server owner for legacy response: %v", err)
+	}
 	getResponse := performRequest(t, handler, http.MethodGet, serverPath, nil, sessionCookie)
 	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), created.EnrollmentToken) {
 		t.Fatalf("get server = (%d, %q), token must not be returned", getResponse.Code, getResponse.Body.String())
+	}
+	if !strings.Contains(getResponse.Body.String(), `"owner_user_id":null`) ||
+		!strings.Contains(getResponse.Body.String(), `"owner_username":""`) {
+		t.Fatalf("get legacy server owner = %q, want null owner", getResponse.Body.String())
 	}
 	trafficLimit := int64(500 << 30)
 	updateTrafficResponse := performRequest(

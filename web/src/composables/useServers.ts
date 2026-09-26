@@ -559,7 +559,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     if (value.decommission_status || value.archived_at) return
     if (
       !window.confirm(
-        `删除服务器“${value.name}”\n\nPanel 会先让 Agent 清理所有 VPS Panel 管理的代理服务、中转服务、防火墙和证书状态，然后 Agent 会自行卸载。清理成功后服务器才会进入归档。\n\n确认后将开始退役。`,
+        `删除服务器“${value.name}”\n\nPanel 会先让 Agent 清理所有 VPS Panel 管理的代理服务、中转服务、防火墙和证书状态，然后 Agent 会自行卸载。清理成功后服务器才会进入“已移除”。\n\n确认后开始删除。`,
       )
     )
       return

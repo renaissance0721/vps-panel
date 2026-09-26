@@ -3,6 +3,8 @@ export type RenewalPeriodMonths = 1 | 3 | 6 | 12 | 24 | 36
 export type ServerRecord = {
   id: number
   name: string
+  owner_user_id: number | null
+  owner_username: string
   status: 'pending' | 'online' | 'offline'
   visibility: 'public' | 'private'
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'

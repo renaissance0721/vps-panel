@@ -23,6 +23,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateUserRoles(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateInvitationRoles(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerArchive(ctx, db); err != nil {
 		return err
 	}
@@ -80,6 +83,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateRelayLandingTarget(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateRelayOwner(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateProxyProtocols(ctx, db); err != nil {
 		return err
 	}
@@ -87,6 +93,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := migrateClientLifecycle(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateClientAssignment(ctx, db); err != nil {
 		return err
 	}
 
@@ -252,6 +261,28 @@ func migrateRelayTargetClient(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+func migrateRelayOwner(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('relays') WHERE name = 'owner_user_id'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect relays.owner_user_id: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE relays ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`,
+		); err != nil {
+			return fmt.Errorf("add relays.owner_user_id: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_relays_owner_user_id ON relays(owner_user_id)`,
+	); err != nil {
+		return fmt.Errorf("create relays owner index: %w", err)
+	}
+	return nil
+}
+
 func migrateServerAccess(ctx context.Context, db *sql.DB) error {
 	var count int
 	if err := db.QueryRowContext(ctx,
@@ -327,6 +358,35 @@ func migrateClientLifecycle(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, "ALTER TABLE clients ADD COLUMN "+column.definition); err != nil {
 			return fmt.Errorf("add clients.%s column: %w", column.name, err)
 		}
+	}
+	return nil
+}
+
+func migrateClientAssignment(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"assigned_user_id", "assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"},
+		{"billing_period_months", "billing_period_months INTEGER CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12))"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('clients') WHERE name = ?`, column.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("inspect clients.%s: %w", column.name, err)
+		}
+		if count == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE clients ADD COLUMN "+column.definition); err != nil {
+				return fmt.Errorf("add clients.%s: %w", column.name, err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_clients_assigned_user_id ON clients(assigned_user_id)`,
+	); err != nil {
+		return fmt.Errorf("create clients assigned user index: %w", err)
 	}
 	return nil
 }
@@ -747,19 +807,96 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 	if roleColumnCount == 0 {
 		if _, err := db.ExecContext(ctx,
 			`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
-			 CHECK (role IN ('admin', 'vip'))`,
+			 CHECK (role IN ('admin', 'vip', 'user'))`,
 		); err != nil {
 			return fmt.Errorf("add user role column: %w", err)
 		}
+		if _, err := db.ExecContext(ctx, `
+			UPDATE users
+			SET role = CASE
+				WHEN id = (SELECT MIN(id) FROM users) THEN 'admin'
+				ELSE 'vip'
+			END`); err != nil {
+			return fmt.Errorf("initialize user roles: %w", err)
+		}
+		return nil
 	}
 
-	if _, err := db.ExecContext(ctx, `
-		UPDATE users
-		SET role = CASE
-			WHEN id = (SELECT MIN(id) FROM users) THEN 'admin'
-			ELSE 'vip'
-		END`); err != nil {
-		return fmt.Errorf("migrate user roles: %w", err)
+	var tableSQL string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`,
+	).Scan(&tableSQL); err != nil {
+		return fmt.Errorf("inspect users table: %w", err)
+	}
+	if strings.Contains(strings.ToLower(tableSQL), "'user'") {
+		return nil
+	}
+
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open user role migration connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for user role migration: %w", err)
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin user role migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE users_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO users_new (id, username, password_hash, role, created_at, updated_at)
+		 SELECT id, username, password_hash, role, created_at, updated_at FROM users`,
+		`DROP TABLE users`,
+		`ALTER TABLE users_new RENAME TO users`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate user role constraint: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit user role migration: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after user role migration: %w", err)
+	}
+	rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check user role migration foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("user role migration left invalid foreign keys")
+	}
+	return rows.Err()
+}
+
+func migrateInvitationRoles(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('admin_invitations') WHERE name = 'role'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect admin_invitations.role: %w", err)
+	}
+	if count != 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE admin_invitations ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
+		 CHECK (role IN ('vip', 'user'))`,
+	); err != nil {
+		return fmt.Errorf("add admin_invitations.role: %w", err)
 	}
 	return nil
 }

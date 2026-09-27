@@ -122,9 +122,15 @@ func (s *server) listInvitations(w http.ResponseWriter, r *http.Request, _ auth.
 }
 
 func (s *server) createInvitation(w http.ResponseWriter, r *http.Request, user auth.User) {
-	invitation, err := s.authService.CreateInvitation(r.Context(), user.ID)
+	request := createInvitationRequest{Role: auth.RoleVIP}
+	if r.ContentLength != 0 {
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+	}
+	invitation, err := s.authService.CreateInvitation(r.Context(), user.ID, request.Role)
 	if err != nil {
-		writeInternalError(w)
+		writeAuthError(w, err)
 		return
 	}
 	response := toInvitationResponse(invitation.Invitation)
@@ -211,6 +217,30 @@ func (s *server) requireAdmin(
 	})
 }
 
+func (s *server) requireManager(
+	next func(http.ResponseWriter, *http.Request, auth.User),
+) http.HandlerFunc {
+	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
+		if user.Role != auth.RoleAdmin && user.Role != auth.RoleVIP {
+			writeError(w, http.StatusForbidden, "普通用户无权访问管理 API")
+			return
+		}
+		next(w, r, user)
+	})
+}
+
+func (s *server) requireUser(
+	next func(http.ResponseWriter, *http.Request, auth.User),
+) http.HandlerFunc {
+	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
+		if user.Role != auth.RoleUser {
+			writeError(w, http.StatusForbidden, "仅普通用户可以访问用户门户 API")
+			return
+		}
+		next(w, r, user)
+	})
+}
+
 func readSessionToken(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
@@ -241,6 +271,8 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "邀请链接无效、已使用或已过期")
 	case errors.Is(err, auth.ErrInvitationNotFound):
 		writeError(w, http.StatusNotFound, "邀请不存在、已使用或已过期")
+	case errors.Is(err, auth.ErrInvalidInvitationRole):
+		writeError(w, http.StatusBadRequest, "邀请角色仅支持 VIP 或用户")
 	case errors.Is(err, auth.ErrInvalidUsername):
 		writeError(w, http.StatusBadRequest, "用户名需为 3–64 位字母、数字、点、下划线或连字符")
 	case errors.Is(err, auth.ErrInvalidPassword):

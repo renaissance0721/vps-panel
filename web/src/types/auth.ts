@@ -1,7 +1,7 @@
 export type User = {
   id: number
   username: string
-  role: 'admin' | 'vip'
+  role: 'admin' | 'vip' | 'user'
   created_at: string
 }
 

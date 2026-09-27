@@ -47,6 +47,9 @@ var (
 	ErrConnectionAddressUnavailable   = errors.New("connection address unavailable")
 	ErrInvalidClientTrafficConfig     = errors.New("invalid client traffic configuration")
 	ErrInvalidClientExpiration        = errors.New("invalid client expiration")
+	ErrAssignmentUserNotFound         = errors.New("assigned user not found")
+	ErrInvalidAssignmentRole          = errors.New("client can only be assigned to a user account")
+	ErrInvalidBillingPeriod           = errors.New("billing period must be 1, 3, 6, 12, or null")
 	ErrReferencedByRelay              = errors.New("proxy is referenced by a relay")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
@@ -89,6 +92,9 @@ type ClientSummary struct {
 	ID                  int64
 	ProxyID             int64
 	Name                string
+	AssignedUserID      *int64
+	AssignedUsername    string
+	BillingPeriodMonths *int
 	ClientUDP443        bool
 	Enabled             bool
 	ExpiresAt           *time.Time
@@ -106,6 +112,10 @@ type Client struct {
 	ID                  int64
 	ProxyID             int64
 	Name                string
+	ProxyName           string
+	AssignedUserID      *int64
+	AssignedUsername    string
+	BillingPeriodMonths *int
 	UUID                string
 	Password            string
 	Protocol            string

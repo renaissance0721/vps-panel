@@ -1,6 +1,6 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip 两级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、Agent 原地升级、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray、Realm 安全托管与 Proxy、Relay 管理。
+多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip / user 三级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、Agent 原地升级、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray、Realm 安全托管与 Proxy、Relay 管理。
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
 
@@ -21,6 +21,10 @@ Phase 10 已完成。Xray 使用稳定的非敏感 Client 统计标识维护累�
 Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 和 glibc / musl 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、服务重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。
 
 Phase 11.6 已完成账号级 Server 访问控制。Server 默认为所有已登录账号可见的 `public`，也可设为授权一个或多个 admin / vip 的 `private`；Proxy、Client、Relay 和分享链接继承 Server 可见范围，Relay 同时要求源 Server 与目标 Proxy 所属 Server 均可访问。admin 不自动绕过私有范围，角色权限与资源访问权限必须同时满足。该可见范围只约束 Panel 用户 API 和 UI，不影响 Agent、Xray、Realm 或 desired state。
+
+账号角色分为 `admin`、`vip` 和 `user`。`admin` 拥有完整管理能力，`vip` 保持原有资源管理行为；`user` 是由管理员通过 user 邀请创建的普通消费账号，登录后只进入独立用户门户。普通用户只能查看管理员明确分配给自己的 Client 节点、真实周期流量、到期时间和付款周期，并按需获取自己的分享链接或二维码；还可使用管理员在 Server 上开放的中转池，创建“公网 IP + 端口”的 TCP Realm 中转、删除自己的中转，以及提交密码修改申请供管理员审核。
+
+普通用户不能管理 Server、Proxy、其他 Client、Landing 或管理员 Relay，不能查看其他用户信息，也不能自行修改资源授权。Client assignment 与现有 Server access 是两套独立权限：前者只决定普通用户门户里的节点归属，后者继续服务于 admin / vip 的管理资源可见性。普通用户中转固定复用现有 Relay service、Realm desired state、Agent 通知与防火墙同步，不存在第二套 Realm runtime；目标只接受公网 IP 字面量，内网、回环、链路本地、共享地址和 metadata 地址均会被后端拒绝，每个普通用户最多创建 10 条。
 
 概览显示已注册账号的用户名与等级，以及当前账号可访问的未归档服务器数、代理节点数。Server（含已移除列表）、Proxy、Relay 主列表支持账号级 ↑ ↓ 顺序调整；偏好持久化到 SQLite，不改变 Agent 配置或资源业务状态。
 
@@ -107,7 +111,7 @@ vps-panel-linux-arm64.tar.gz
 systemctl status vps-panel
 ```
 
-首次打开会进入初始化页面，用于创建唯一的 admin。创建成功后初始化入口永久关闭；后续账号只能通过 admin 生成的 24 小时一次性邀请链接注册，且统一为 vip。
+首次打开会进入初始化页面，用于创建唯一的 admin。创建成功后初始化入口永久关闭；后续账号只能通过 admin 生成的 24 小时一次性邀请链接注册，邀请可指定为 vip 或 user，不支持通过邀请创建 admin。
 
 ## Agent 安装
 

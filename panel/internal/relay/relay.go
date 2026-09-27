@@ -12,6 +12,19 @@ func (s *Service) List(ctx context.Context) ([]Relay, error) {
 	return list(ctx, s.db, `WHERE source.archived_at IS NULL ORDER BY relays.created_at DESC, relays.id DESC`)
 }
 
+func (s *Service) ListByOwner(ctx context.Context, userID int64) ([]Relay, error) {
+	return list(ctx, s.db,
+		`WHERE relays.owner_user_id = ? AND source.archived_at IS NULL ORDER BY relays.created_at DESC, relays.id DESC`,
+		userID,
+	)
+}
+
+func (s *Service) ListUserOwned(ctx context.Context) ([]Relay, error) {
+	return list(ctx, s.db,
+		`WHERE relays.owner_user_id IS NOT NULL AND source.archived_at IS NULL ORDER BY relays.created_at DESC, relays.id DESC`,
+	)
+}
+
 func (s *Service) Get(ctx context.Context, id int64) (Relay, error) {
 	values, err := list(ctx, s.db, `WHERE relays.id = ? AND source.archived_at IS NULL`, id)
 	if err != nil {
@@ -40,6 +53,17 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	if err := ensureActiveServer(ctx, tx, value.ServerID); err != nil {
 		return Relay{}, Mutation{}, err
 	}
+	if value.OwnerUserID != nil {
+		var count int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM relays WHERE owner_user_id = ?`, *value.OwnerUserID,
+		).Scan(&count); err != nil {
+			return Relay{}, Mutation{}, fmt.Errorf("count user relays: %w", err)
+		}
+		if count >= MaxUserRelays {
+			return Relay{}, Mutation{}, ErrUserRelayLimit
+		}
+	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
 		return Relay{}, Mutation{}, err
 	}
@@ -48,10 +72,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO relays
-		 (server_id, name, listen_address, listen_port, entry_host_mode, entry_host,
+		 (server_id, owner_user_id, name, listen_address, listen_port, entry_host_mode, entry_host,
 		  target_type, target_proxy_id, target_client_id, target_landing_id, target_host, target_port, network, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		value.ServerID, value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		value.ServerID, nullableID(value.OwnerUserID), value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
 		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), now.Unix(),
 	)
@@ -157,7 +181,7 @@ func list(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, condition string, arguments ...any) ([]Relay, error) {
 	rows, err := query.QueryContext(ctx,
-		`SELECT relays.id, relays.server_id, source.name, COALESCE(source_info.public_ipv4, ''),
+		`SELECT relays.id, relays.server_id, relays.owner_user_id, owner.username, source.name, COALESCE(source_info.public_ipv4, ''),
 		 relays.name, relays.listen_address, relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type,
 		 relays.target_proxy_id, relays.target_client_id, target_client.name, relays.target_landing_id,
 		 target_landing.name, target_landing.protocol, target_landing.visibility, target_landing.host, target_landing.port,
@@ -167,6 +191,7 @@ func list(ctx context.Context, query interface {
 		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at
 		 FROM relays
 		 JOIN servers AS source ON source.id = relays.server_id
+		 LEFT JOIN users AS owner ON owner.id = relays.owner_user_id
 		 LEFT JOIN server_system_info AS source_info ON source_info.server_id = source.id
 		 LEFT JOIN proxies AS target_proxy ON target_proxy.id = relays.target_proxy_id
 		 LEFT JOIN clients AS target_client ON target_client.id = relays.target_client_id
@@ -182,13 +207,15 @@ func list(ctx context.Context, query interface {
 	values := make([]Relay, 0)
 	for rows.Next() {
 		var value Relay
+		var ownerUserID sql.NullInt64
+		var ownerUsername sql.NullString
 		var targetProxyID, targetClientID, targetLandingID, storedTargetPort, proxyPort, landingPort, targetArchived sql.NullInt64
 		var targetProxyName, targetClientName, targetLandingName, targetLandingProtocol, targetLandingVisibility sql.NullString
 		var targetLandingHost, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
-			&value.ID, &value.ServerID, &value.ServerName, &value.ServerPublicIPv4,
+			&value.ID, &value.ServerID, &ownerUserID, &ownerUsername, &value.ServerName, &value.ServerPublicIPv4,
 			&value.Name, &value.ListenAddress, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType,
 			&targetProxyID, &targetClientID, &targetClientName, &targetLandingID,
 			&targetLandingName, &targetLandingProtocol, &targetLandingVisibility, &targetLandingHost, &landingPort,
@@ -199,6 +226,11 @@ func list(ctx context.Context, query interface {
 			return nil, fmt.Errorf("scan relay: %w", err)
 		}
 		value.Enabled = enabled != 0
+		if ownerUserID.Valid {
+			id := ownerUserID.Int64
+			value.OwnerUserID = &id
+			value.OwnerUsername = ownerUsername.String
+		}
 		entryHostMode, entryHost, err := normalizeRelayEntryHost(value.EntryHostMode, value.EntryHost)
 		if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
 			return nil, errors.New("invalid stored Relay entry host")
@@ -255,16 +287,16 @@ func getForMutation(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id int64) (Relay, error) {
 	var value Relay
-	var targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
+	var ownerUserID, targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
 	var enabled int
 	var decommissionStatus string
 	err := query.QueryRowContext(ctx,
-		`SELECT relays.id, relays.server_id, relays.name, relays.listen_address,
+		`SELECT relays.id, relays.server_id, relays.owner_user_id, relays.name, relays.listen_address,
 		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id, relays.target_client_id, relays.target_landing_id,
 		 relays.target_host, relays.target_port, relays.network, relays.enabled, servers.decommission_status
 		 FROM relays JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.id = ? AND servers.archived_at IS NULL`, id,
-	).Scan(&value.ID, &value.ServerID, &value.Name, &value.ListenAddress,
+	).Scan(&value.ID, &value.ServerID, &ownerUserID, &value.Name, &value.ListenAddress,
 		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID, &targetClientID, &targetLandingID,
 		&value.TargetHost, &targetPort, &value.Network, &enabled, &decommissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -275,6 +307,10 @@ func getForMutation(ctx context.Context, query interface {
 	}
 	if decommissionStatus != "" {
 		return Relay{}, ErrServerDecommissioning
+	}
+	if ownerUserID.Valid {
+		id := ownerUserID.Int64
+		value.OwnerUserID = &id
 	}
 	if targetProxyID.Valid {
 		id := targetProxyID.Int64

@@ -10,7 +10,14 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
-func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (CreatedInvitation, error) {
+func (s *Service) CreateInvitation(ctx context.Context, createdBy int64, roles ...string) (CreatedInvitation, error) {
+	role := RoleVIP
+	if len(roles) == 1 {
+		role = roles[0]
+	}
+	if len(roles) > 1 || (role != RoleVIP && role != RoleUser) {
+		return CreatedInvitation{}, ErrInvalidInvitationRole
+	}
 	tokenValue, tokenHash, err := token.New()
 	if err != nil {
 		return CreatedInvitation{}, err
@@ -18,8 +25,8 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (Create
 	now := s.now().UTC().Truncate(time.Second)
 	expiresAt := now.Add(InvitationLifetime)
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO admin_invitations (token_hash, created_by, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-		tokenHash, createdBy, expiresAt.Unix(), now.Unix(),
+		`INSERT INTO admin_invitations (token_hash, created_by, expires_at, role, created_at) VALUES (?, ?, ?, ?, ?)`,
+		tokenHash, createdBy, expiresAt.Unix(), role, now.Unix(),
 	)
 	if err != nil {
 		return CreatedInvitation{}, fmt.Errorf("create invitation: %w", err)
@@ -29,7 +36,7 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (Create
 		return CreatedInvitation{}, fmt.Errorf("read invitation id: %w", err)
 	}
 	return CreatedInvitation{
-		Invitation: Invitation{ID: id, CreatedBy: createdBy, ExpiresAt: expiresAt, CreatedAt: now},
+		Invitation: Invitation{ID: id, CreatedBy: createdBy, Role: role, ExpiresAt: expiresAt, CreatedAt: now},
 		Token:      tokenValue,
 	}, nil
 }
@@ -37,7 +44,7 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64) (Create
 func (s *Service) ListActiveInvitations(ctx context.Context) ([]Invitation, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT invitations.id, invitations.created_by, users.username,
-		       invitations.expires_at, invitations.created_at
+		       invitations.role, invitations.expires_at, invitations.created_at
 		FROM admin_invitations AS invitations
 		JOIN users ON users.id = invitations.created_by
 		WHERE invitations.used_at IS NULL AND invitations.expires_at > ?
@@ -55,6 +62,7 @@ func (s *Service) ListActiveInvitations(ctx context.Context) ([]Invitation, erro
 			&invitation.ID,
 			&invitation.CreatedBy,
 			&invitation.CreatedByUsername,
+			&invitation.Role,
 			&expiresAt,
 			&createdAt,
 		); err != nil {
@@ -105,10 +113,11 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 
 	now := s.now().UTC().Truncate(time.Second)
 	var invitationID int64
+	var invitationRole string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id FROM admin_invitations WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+		`SELECT id, role FROM admin_invitations WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
 		token.Hash(tokenValue), now.Unix(),
-	).Scan(&invitationID)
+	).Scan(&invitationID, &invitationRole)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrInvalidInvitation
 	}
@@ -127,7 +136,7 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		username, passwordHash, RoleVIP, now.Unix(), now.Unix(),
+		username, passwordHash, invitationRole, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return User{}, fmt.Errorf("create invited user: %w", err)
@@ -155,5 +164,5 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 		return User{}, fmt.Errorf("commit invited registration: %w", err)
 	}
 
-	return User{ID: userID, Username: username, Role: RoleVIP, CreatedAt: now, UpdatedAt: now}, nil
+	return User{ID: userID, Username: username, Role: invitationRole, CreatedAt: now, UpdatedAt: now}, nil
 }

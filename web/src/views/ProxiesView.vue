@@ -5,6 +5,7 @@ import {
 import type {
   ServerOption,
 } from '../types/proxy'
+import type { AccessUser, User } from '../types/auth'
 import {
   useProxies,
 } from '../composables/useProxies'
@@ -15,7 +16,7 @@ import ClientForm from '../components/proxy/ClientForm.vue'
 import ClientDetail from '../components/proxy/ClientDetail.vue'
 import ExternalNodeManager from '../components/proxy/ExternalNodeManager.vue'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
-const props = defineProps<{ servers: ServerOption[] }>()
+const props = defineProps<{ servers: ServerOption[]; users: AccessUser[]; role?: User['role'] }>()
 const model = reactive(useProxies(props))
 </script>
 

@@ -40,7 +40,7 @@ import {
 import {
   useClientForm,
 } from './useClientForm'
-export function useProxies(props: { servers: ServerOption[] }) {
+export function useProxies(props: { servers: ServerOption[]; users: import('../types/auth').AccessUser[]; role?: import('../types/auth').User['role'] }) {
   const proxies = ref<ProxyRecord[]>([])
   const loading = ref(true)
   const submitting = ref(false)
@@ -60,7 +60,7 @@ export function useProxies(props: { servers: ServerOption[] }) {
 
   const proxyForm = useProxyForm(props, selectedProxy, error, run, loadProxies, showProxy)
   const { proxyFormOpen } = proxyForm
-  const clientForm = useClientForm(selectedProxy, error, run, loadProxies, refreshSelectedProxy)
+  const clientForm = useClientForm(selectedProxy, error, run, loadProxies, refreshSelectedProxy, props)
   const { clientFormOpen } = clientForm
 
   const filteredProxies = computed(() => {

@@ -28,6 +28,9 @@ export type ClientSummary = {
   id: number
   proxy_id: number
   name: string
+  assigned_user_id: number | null
+  assigned_username: string
+  billing_period_months: 1 | 3 | 6 | 12 | null
   client_udp443: boolean
   enabled: boolean
   expires_at: string | null
@@ -50,6 +53,9 @@ export type ClientRecord = {
   id: number
   proxy_id: number
   name: string
+  assigned_user_id: number | null
+  assigned_username: string
+  billing_period_months: 1 | 3 | 6 | 12 | null
   client_udp443: boolean
   enabled: boolean
   expires_at: string | null

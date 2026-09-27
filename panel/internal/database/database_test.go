@@ -26,6 +26,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	for _, table := range []string{
 		"users",
 		"admin_invitations",
+		"password_change_requests",
 		"sessions",
 		"servers",
 		"server_access",
@@ -37,6 +38,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"proxies",
 		"user_proxy_order",
 		"relays",
+		"user_relay_pools",
 		"user_relay_order",
 		"clients",
 		"client_metrics",
@@ -73,10 +75,11 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		},
 		"server_system_info": {"public_ipv4"},
 		"proxies":            {"entry_host_mode", "entry_host"},
-		"relays":             {"entry_host_mode", "entry_host"},
+		"admin_invitations":  {"role"},
+		"relays":             {"entry_host_mode", "entry_host", "owner_user_id"},
 		"clients": {
 			"expires_at", "effective_enabled_snapshot", "traffic_limit_bytes", "traffic_reset_mode",
-			"traffic_reset_weekday", "traffic_reset_day", "traffic_reset_time",
+			"traffic_reset_weekday", "traffic_reset_day", "traffic_reset_time", "assigned_user_id", "billing_period_months",
 		},
 		"client_metrics": {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",

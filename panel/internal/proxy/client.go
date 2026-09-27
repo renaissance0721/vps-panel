@@ -26,15 +26,17 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
+		 clients.assigned_user_id, assigned_user.username, clients.billing_period_months,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json,
+		 proxies.name, proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
+		 LEFT JOIN users AS assigned_user ON assigned_user.id = clients.assigned_user_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.proxy_id = ? ORDER BY clients.created_at, clients.id`, proxyID,
 	)
@@ -118,17 +120,19 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 	value, err := scanClient(s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
 		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
+		 clients.assigned_user_id, assigned_user.username, clients.billing_period_months,
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.protocol, proxies.config_json,
+		 proxies.name, proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
+		 LEFT JOIN users AS assigned_user ON assigned_user.id = clients.assigned_user_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.id = ? AND servers.archived_at IS NULL`, id,
 	))
@@ -139,6 +143,95 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 		return Client{}, fmt.Errorf("get client: %w", err)
 	}
 	return value, nil
+}
+
+func (s *Service) ListAssignedClients(ctx context.Context, userID int64) ([]Client, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
+		 clients.client_udp443, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
+		 clients.assigned_user_id, assigned_user.username, clients.billing_period_months,
+		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
+		 clients.traffic_reset_day, clients.traffic_reset_time,
+		 clients.effective_enabled_snapshot,
+		 clients.created_at, clients.updated_at,
+		 proxies.name, proxies.protocol, proxies.config_json,
+		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
+		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
+		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
+		 FROM clients
+		 JOIN proxies ON proxies.id = clients.proxy_id
+		 JOIN servers ON servers.id = proxies.server_id
+		 LEFT JOIN users AS assigned_user ON assigned_user.id = clients.assigned_user_id
+		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
+		 WHERE clients.assigned_user_id = ? AND servers.archived_at IS NULL
+		 ORDER BY clients.created_at, clients.id`, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list assigned clients: %w", err)
+	}
+	defer rows.Close()
+	values := make([]Client, 0)
+	for rows.Next() {
+		value, err := scanClient(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan assigned client: %w", err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (s *Service) GetAssignedClient(ctx context.Context, userID, clientID int64) (Client, error) {
+	value, err := s.GetClient(ctx, clientID)
+	if err != nil {
+		return Client{}, err
+	}
+	if value.AssignedUserID == nil || *value.AssignedUserID != userID {
+		return Client{}, ErrClientNotFound
+	}
+	return value, nil
+}
+
+func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, billingPeriodMonths *int) (Client, error) {
+	if billingPeriodMonths != nil && *billingPeriodMonths != 1 && *billingPeriodMonths != 3 &&
+		*billingPeriodMonths != 6 && *billingPeriodMonths != 12 {
+		return Client{}, ErrInvalidBillingPeriod
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, fmt.Errorf("begin client assignment: %w", err)
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM clients WHERE id = ?`, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return Client{}, ErrClientNotFound
+	} else if err != nil {
+		return Client{}, fmt.Errorf("find client for assignment: %w", err)
+	}
+	if userID != nil {
+		var role string
+		err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?`, *userID).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Client{}, ErrAssignmentUserNotFound
+		}
+		if err != nil {
+			return Client{}, fmt.Errorf("find assignment user: %w", err)
+		}
+		if role != "user" {
+			return Client{}, ErrInvalidAssignmentRole
+		}
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE clients SET assigned_user_id = ?, billing_period_months = ?, updated_at = ? WHERE id = ?`,
+		nullableID(userID), nullableInt(billingPeriodMonths), now.Unix(), id,
+	); err != nil {
+		return Client{}, fmt.Errorf("assign client: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Client{}, fmt.Errorf("commit client assignment: %w", err)
+	}
+	return s.GetClient(ctx, id)
 }
 
 func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdateInput) (Client, Mutation, error) {
@@ -290,14 +383,17 @@ func scanClient(row rowScanner) (Client, error) {
 	var credentialJSON, configJSON string
 	var udp443, enabled, effectiveEnabled int
 	var expiresAt, trafficLimit sql.NullInt64
+	var assignedUserID, billingPeriod sql.NullInt64
+	var assignedUsername sql.NullString
 	var createdAt, updatedAt int64
 	var xrayUplink, xrayDownlink, cycleUplink, cycleDownlink sql.NullInt64
 	var cycleStartedAt, lastActivityAt, metricsUpdatedAt sql.NullInt64
 	if err := row.Scan(
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
-		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
+		&expiresAt, &trafficLimit, &assignedUserID, &assignedUsername, &billingPeriod,
+		&value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON,
+		&effectiveEnabled, &createdAt, &updatedAt, &value.ProxyName, &value.Protocol, &configJSON,
 		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
 		&cycleStartedAt, &lastActivityAt, &metricsUpdatedAt,
 	); err != nil {
@@ -319,6 +415,15 @@ func scanClient(row rowScanner) (Client, error) {
 	value.ClientUDP443 = udp443 != 0
 	value.Enabled = enabled != 0
 	value.ExpiresAt = nullableTimeValue(expiresAt)
+	if assignedUserID.Valid {
+		id := assignedUserID.Int64
+		value.AssignedUserID = &id
+		value.AssignedUsername = assignedUsername.String
+	}
+	if billingPeriod.Valid {
+		period := int(billingPeriod.Int64)
+		value.BillingPeriodMonths = &period
+	}
 	value.effectiveEnabled = effectiveEnabled != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
@@ -338,12 +443,28 @@ func scanClient(row rowScanner) (Client, error) {
 func summarizeClient(value Client) ClientSummary {
 	return ClientSummary{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
+		BillingPeriodMonths: value.BillingPeriodMonths,
+		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func nullableID(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, int64, error) {

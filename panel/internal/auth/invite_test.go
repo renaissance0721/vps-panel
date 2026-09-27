@@ -83,3 +83,30 @@ func TestInvitationExpirationAndRevocation(t *testing.T) {
 		t.Fatalf("revoked invitation error = %v, want ErrInvalidInvitation", err)
 	}
 }
+
+func TestInvitationRoleControlsRegisteredUser(t *testing.T) {
+	service, _ := newTestService(t)
+	ctx := context.Background()
+	owner, err := service.Initialize(ctx, "admin", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{RoleVIP, RoleUser} {
+		created, err := service.CreateInvitation(ctx, owner.ID, role)
+		if err != nil {
+			t.Fatalf("CreateInvitation(%q): %v", role, err)
+		}
+		if created.Role != role {
+			t.Fatalf("created role = %q, want %q", created.Role, role)
+		}
+		user, err := service.RegisterWithInvitation(ctx, created.Token, "account-"+role, testPassword)
+		if err != nil || user.Role != role {
+			t.Fatalf("registered role = %q, %v; want %q", user.Role, err, role)
+		}
+	}
+	for _, role := range []string{RoleAdmin, "unknown", ""} {
+		if _, err := service.CreateInvitation(ctx, owner.ID, role); !errors.Is(err, ErrInvalidInvitationRole) {
+			t.Fatalf("CreateInvitation(%q) error = %v, want ErrInvalidInvitationRole", role, err)
+		}
+	}
+}

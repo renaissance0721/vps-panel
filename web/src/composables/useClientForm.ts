@@ -1,4 +1,5 @@
 import {
+	computed,
   ref,
 } from 'vue'
 import {
@@ -19,8 +20,9 @@ import {
 import type {
   Ref,
 } from 'vue'
+import type { AccessUser, User } from '../types/auth'
 
-export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref<string>, run: (action: () => Promise<void>) => Promise<void>, loadProxies: () => Promise<void>, refreshSelectedProxy: () => Promise<void>) {
+export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref<string>, run: (action: () => Promise<void>) => Promise<void>, loadProxies: () => Promise<void>, refreshSelectedProxy: () => Promise<void>, assignment: { users: AccessUser[]; role?: User['role'] } = { users: [] }) {
   const clientFormOpen = ref(false)
   const clientFormMode = ref<'create' | 'edit'>('create')
   const editingClientID = ref<number | null>(null)
@@ -35,6 +37,10 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
   const clientTrafficResetTime = ref('00:00')
   const clientExpirationMode = ref<'unlimited' | 'specified'>('unlimited')
   const clientExpiresAt = ref('')
+	const assignedUserID = ref(0)
+	const billingPeriodMonths = ref(0)
+	const assignableUsers = computed(() => assignment.users.filter((user) => user.role === 'user'))
+	const canAssignClient = computed(() => assignment.role === 'admin')
 
   function openCreateClient() {
     if (!selectedProxy.value) return
@@ -51,6 +57,8 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
     clientTrafficResetTime.value = '00:00'
     clientExpirationMode.value = 'unlimited'
     clientExpiresAt.value = ''
+	assignedUserID.value = 0
+	billingPeriodMonths.value = 0
     clientFormOpen.value = true
   }
 
@@ -71,6 +79,8 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
       clientTrafficResetTime.value = response.client.traffic_reset_time
       clientExpirationMode.value = response.client.expires_at ? 'specified' : 'unlimited'
       clientExpiresAt.value = formatClientExpirationInput(response.client.expires_at)
+	  assignedUserID.value = response.client.assigned_user_id ?? 0
+	  billingPeriodMonths.value = response.client.billing_period_months ?? 0
       clientFormOpen.value = true
     })
   }
@@ -115,11 +125,23 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
         traffic_reset_time: clientTrafficResetTime.value,
         expires_at: clientExpirationMode.value === 'specified' ? clientExpiresAt.value : null,
       })
-      if (clientFormMode.value === 'create') {
-        await api(`/api/proxies/${proxy.id}/clients`, { method: 'POST', body })
+      let saved: ClientRecord
+	  if (clientFormMode.value === 'create') {
+        const response = await api<{ client: ClientRecord }>(`/api/proxies/${proxy.id}/clients`, { method: 'POST', body })
+		saved = response.client
       } else {
-        await api(`/api/clients/${editingClientID.value}`, { method: 'PATCH', body })
+		const response = await api<{ client: ClientRecord }>(`/api/clients/${editingClientID.value}`, { method: 'PATCH', body })
+		saved = response.client
       }
+	  if (canAssignClient.value) {
+		await api(`/api/admin/clients/${saved.id}/assignment`, {
+		  method: 'PATCH',
+		  body: JSON.stringify({
+			user_id: assignedUserID.value > 0 ? assignedUserID.value : null,
+			billing_period_months: billingPeriodMonths.value > 0 ? billingPeriodMonths.value : null,
+		  }),
+		})
+	  }
       clientFormOpen.value = false
       await Promise.all([loadProxies(), refreshSelectedProxy()])
     })
@@ -139,6 +161,10 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
     clientTrafficResetTime,
     clientExpirationMode,
     clientExpiresAt,
+	assignedUserID,
+	billingPeriodMonths,
+	assignableUsers,
+	canAssignClient,
     openCreateClient,
     openEditClient,
     saveClient,

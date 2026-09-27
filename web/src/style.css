@@ -962,3 +962,55 @@ h1 {
   .server-detail-grid { grid-template-columns: 1fr; }
   .server-modal-card { width: calc(100vw - 24px); }
 }
+.user-portal {
+  width: min(1080px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.user-portal-header,
+.user-portal-header > div,
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.user-portal-header > div {
+  justify-content: flex-start;
+}
+
+.user-portal section {
+  margin-top: 28px;
+}
+
+.user-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.user-status {
+  color: #8b949e;
+}
+
+.user-status.online {
+  color: #18a058;
+}
+
+.user-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.user-details dt {
+  color: #667085;
+  font-size: 12px;
+}
+
+.user-details dd {
+  margin: 4px 0 0;
+}

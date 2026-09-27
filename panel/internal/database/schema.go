@@ -7,7 +7,7 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -17,6 +17,7 @@ func schemaStatements() []string {
 			created_by INTEGER NOT NULL REFERENCES users(id),
 			expires_at INTEGER NOT NULL,
 			used_at INTEGER,
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user')),
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_invitations_active
@@ -29,6 +30,18 @@ func schemaStatements() []string {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS password_change_requests (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			proposed_password_hash TEXT,
+			status TEXT NOT NULL DEFAULT 'pending'
+				CHECK (status IN ('pending', 'approved', 'rejected')),
+			reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at INTEGER NOT NULL,
+			reviewed_at INTEGER
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_password_change_requests_pending
+			ON password_change_requests(user_id) WHERE status = 'pending'`,
 		`CREATE TABLE IF NOT EXISTS servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -178,6 +191,7 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS relays (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
@@ -204,6 +218,19 @@ func schemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_target_proxy_id ON relays(target_proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS user_relay_pools (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
+			enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+			listen_address TEXT NOT NULL CHECK (listen_address IN ('0.0.0.0', '::')),
+			entry_host TEXT NOT NULL DEFAULT '',
+			port_start INTEGER NOT NULL CHECK (port_start BETWEEN 1 AND 65535),
+			port_end INTEGER NOT NULL CHECK (port_end BETWEEN 1 AND 65535),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK (port_start <= port_end),
+			CHECK (listen_address != '::' OR entry_host != '')
+		)`,
 		`CREATE TABLE IF NOT EXISTS user_relay_order (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			relay_id INTEGER NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
@@ -214,12 +241,15 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS clients (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE,
+			assigned_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			name TEXT NOT NULL,
 			credential_json TEXT NOT NULL,
 			client_udp443 INTEGER NOT NULL DEFAULT 0 CHECK (client_udp443 IN (0, 1)),
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			expires_at INTEGER,
 			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes >= 0),
+			billing_period_months INTEGER
+				CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12)),
 			traffic_reset_mode TEXT NOT NULL DEFAULT 'never'
 				CHECK (traffic_reset_mode IN ('never', 'daily', 'weekly', 'monthly')),
 			traffic_reset_weekday INTEGER NOT NULL DEFAULT 1

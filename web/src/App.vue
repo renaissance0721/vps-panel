@@ -35,6 +35,7 @@ import OverviewView from './views/OverviewView.vue'
 import ServersView from './views/ServersView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
+import UserPortalView from './views/UserPortalView.vue'
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
@@ -52,7 +53,7 @@ const serverView = reactive(serverState)
 const { servers, loadServers, serverReorderingID } = serverState
 const overviewState = useOverview(state, health, submitting, error, submit)
 const overviewView = reactive(overviewState)
-const { loadOverview, loadInvitations } = overviewState
+const { loadOverview, loadInvitations, loadPasswordChangeRequests, loadUserRelays } = overviewState
 
 let serverPollTimer: number | undefined
 
@@ -65,9 +66,13 @@ const isInvitationPage = computed(
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
   if (state.value.authenticated) {
+	if (state.value.user?.role === 'user') {
+	  stopServerPolling()
+	  return
+	}
     const requests = [loadHealth(), loadServers(), loadUsers(), loadOverview()]
     if (state.value.user?.role === 'admin') {
-      requests.push(loadInvitations())
+	  requests.push(loadInvitations(), loadPasswordChangeRequests(), loadUserRelays())
     }
     await Promise.all(requests)
     startServerPolling()
@@ -231,8 +236,8 @@ onUnmounted(stopServerPolling)
         :bordered="true"
       >
         <p class="eyebrow">账号邀请</p>
-        <h1>创建 VIP 账户</h1>
-        <p class="description">此邀请仅可使用一次，注册后账号权限为 VIP。</p>
+        <h1>创建受邀账户</h1>
+        <p class="description">此邀请仅可使用一次。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="register">
           <label>
@@ -332,6 +337,8 @@ onUnmounted(stopServerPolling)
         </form>
       </n-card>
 
+      <UserPortalView v-else-if="state.user?.role === 'user'" :user="state.user" @logout="logout" />
+
       <div v-else class="app-layout">
         <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
           <strong class="sidebar-brand">VPS Panel</strong>
@@ -391,7 +398,7 @@ onUnmounted(stopServerPolling)
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
         <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
-        <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" />
+        <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
         <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
         <ServersView :active="currentPage === 'servers'" :model="serverView" />
 

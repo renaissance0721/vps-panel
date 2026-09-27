@@ -40,6 +40,9 @@ type clientSummaryResponse struct {
 	ID                  int64                 `json:"id"`
 	ProxyID             int64                 `json:"proxy_id"`
 	Name                string                `json:"name"`
+	AssignedUserID      *int64                `json:"assigned_user_id"`
+	AssignedUsername    string                `json:"assigned_username"`
+	BillingPeriodMonths *int                  `json:"billing_period_months"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
 	ExpiresAt           *time.Time            `json:"expires_at"`
@@ -62,6 +65,9 @@ type clientResponse struct {
 	ID                  int64                 `json:"id"`
 	ProxyID             int64                 `json:"proxy_id"`
 	Name                string                `json:"name"`
+	AssignedUserID      *int64                `json:"assigned_user_id"`
+	AssignedUsername    string                `json:"assigned_username"`
+	BillingPeriodMonths *int                  `json:"billing_period_months"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
 	ExpiresAt           *time.Time            `json:"expires_at"`
@@ -113,7 +119,9 @@ func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryRespon
 	lifecycle := client.LifecycleAt(time.Now())
 	return clientSummaryResponse{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
+		BillingPeriodMonths: value.BillingPeriodMonths,
+		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
@@ -127,7 +135,9 @@ func toClientResponse(value proxystore.Client) clientResponse {
 	lifecycle := value.LifecycleAt(time.Now())
 	return clientResponse{
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-		ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
+		BillingPeriodMonths: value.BillingPeriodMonths,
+		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,

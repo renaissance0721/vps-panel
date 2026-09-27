@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import {
   computed,
+	ref,
   toRefs,
+	watch,
 } from 'vue'
 import {
   NModal,
@@ -33,6 +35,7 @@ import {
   agentSupportsCapability,
 } from '../../server'
 import ServerTraffic from './ServerTraffic.vue'
+import { api } from '../../api/client'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
 const props = defineProps<{
   model: TrafficModel & Pick<ServersViewState,
@@ -140,6 +143,64 @@ const chinaInboundSwitchTitle = computed(() => {
   if (!server.block_china_inbound && !chinaInboundSupported(server)) return chinaInboundUnsupportedReason(server)
   return '仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。'
 })
+
+type UserRelayPool = {
+	id: number
+	enabled: boolean
+	listen_address: '0.0.0.0' | '::'
+	entry_host: string
+	port_start: number
+	port_end: number
+}
+const relayPool = ref<UserRelayPool | null>(null)
+const relayPoolEnabled = ref(false)
+const relayPoolListenAddress = ref<'0.0.0.0' | '::'>('0.0.0.0')
+const relayPoolEntryHost = ref('')
+const relayPoolPortStart = ref(20000)
+const relayPoolPortEnd = ref(29999)
+const relayPoolBusy = ref(false)
+const relayPoolError = ref('')
+
+async function loadRelayPool() {
+	if (!selectedServer.value || state.value?.user?.role !== 'admin' || selectedServer.value.archived_at) return
+	try {
+		const response = await api<{ pool: UserRelayPool | null }>(`/api/admin/servers/${selectedServer.value.id}/user-relay-pool`)
+		relayPool.value = response.pool
+		relayPoolEnabled.value = response.pool?.enabled ?? false
+		relayPoolListenAddress.value = response.pool?.listen_address ?? '0.0.0.0'
+		relayPoolEntryHost.value = response.pool?.entry_host ?? ''
+		relayPoolPortStart.value = response.pool?.port_start ?? 20000
+		relayPoolPortEnd.value = response.pool?.port_end ?? 29999
+		relayPoolError.value = ''
+	} catch (reason) {
+		relayPoolError.value = reason instanceof Error ? reason.message : '无法加载用户中转池'
+	}
+}
+
+async function saveRelayPool() {
+	if (!selectedServer.value) return
+	relayPoolBusy.value = true
+	relayPoolError.value = ''
+	try {
+		const response = await api<{ pool: UserRelayPool }>(`/api/admin/servers/${selectedServer.value.id}/user-relay-pool`, {
+			method: 'PUT',
+			body: JSON.stringify({
+				enabled: relayPoolEnabled.value,
+				listen_address: relayPoolListenAddress.value,
+				entry_host: relayPoolEntryHost.value,
+				port_start: relayPoolPortStart.value,
+				port_end: relayPoolPortEnd.value,
+			}),
+		})
+		relayPool.value = response.pool
+	} catch (reason) {
+		relayPoolError.value = reason instanceof Error ? reason.message : '保存用户中转池失败'
+	} finally {
+		relayPoolBusy.value = false
+	}
+}
+
+watch(() => selectedServer.value?.id, () => { void loadRelayPool() })
 
 const diagnosticGroupDefinitions = [
   { title: 'Agent', prefixes: ['agent.'] },
@@ -458,6 +519,16 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             </section>
 
             <section class="server-detail-section server-detail-section--wide"><ServerTraffic :model="model" /></section>
+			<section v-if="state?.user?.role === 'admin' && !selectedServer.archived_at" class="server-detail-section server-detail-section--wide">
+			  <div class="section-heading"><h3 class="system-info-title">普通用户中转池</h3><label class="checkbox-row"><input v-model="relayPoolEnabled" type="checkbox" /><span>允许普通用户中转</span></label></div>
+			  <n-alert v-if="relayPoolError" type="error" class="form-alert">{{ relayPoolError }}</n-alert>
+			  <div class="proxy-form">
+				<label><span>监听</span><select v-model="relayPoolListenAddress" class="settings-input"><option value="0.0.0.0">IPv4（0.0.0.0）</option><option value="::">IPv6（::）</option></select></label>
+				<label><span>公开入口</span><n-input v-model:value="relayPoolEntryHost" :placeholder="relayPoolListenAddress === '::' ? 'IPv6 监听必须填写' : '留空使用服务器公网 IPv4'" /></label>
+				<label><span>端口范围</span><div class="inline-fields"><input v-model.number="relayPoolPortStart" class="settings-input" type="number" min="1" max="65535" /><input v-model.number="relayPoolPortEnd" class="settings-input" type="number" min="1" max="65535" /></div></label>
+				<n-button type="primary" :loading="relayPoolBusy" @click="saveRelayPool">保存中转池</n-button>
+			  </div>
+			</section>
 <div v-if="state?.user?.role === 'admin'" class="server-modal-actions">
               <n-button
                 v-if="!selectedServer.archived_at"

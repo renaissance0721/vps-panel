@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +115,124 @@ func TestOpenMigratesExistingUsersWithoutLosingData(t *testing.T) {
 	}
 	if serverID != 12 || serverName != "Legacy Server" || archivedAt.Valid {
 		t.Fatalf("migrated server = (%d, %q, archived %v), want preserved active server", serverID, serverName, archivedAt.Valid)
+	}
+}
+
+func TestOpenExpandsUserRoleConstraintWithoutBreakingReferences(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO users VALUES (7, 'admin', 'a', 'admin', 10, 11), (9, 'vip', 'v', 'vip', 12, 13)`,
+		`CREATE TABLE sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL UNIQUE,
+			expires_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO sessions VALUES (3, 9, 'session', 9999, 20)`,
+		`CREATE TABLE admin_invitations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_hash TEXT NOT NULL UNIQUE,
+			created_by INTEGER NOT NULL REFERENCES users(id),
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO admin_invitations VALUES (4, 'invite', 7, 9999, NULL, 21)`,
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers VALUES (5, 'server', 9, 'offline', 30, 31)`,
+		`CREATE TABLE server_access (
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			PRIMARY KEY (server_id, user_id)
+		)`,
+		`INSERT INTO server_access VALUES (5, 9)`,
+		`CREATE TABLE landing_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id),
+			name TEXT NOT NULL,
+			visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+			uri TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO landing_nodes VALUES (6, 9, 'landing', 'private', 'vless', 'example.com', 443, 'vless://x', 40, 41)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("prepare legacy schema: %v\n%s", err, statement)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	for id, want := range map[int64]string{7: "admin", 9: "vip"} {
+		var role string
+		if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, id).Scan(&role); err != nil || role != want {
+			t.Fatalf("user %d role = %q, %v; want %q", id, role, err, want)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('user', 'u', 'user', 50, 50)`); err != nil {
+		t.Fatalf("insert user role: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('bad', 'b', 'unknown', 50, 50)`); err == nil {
+		t.Fatal("unknown role was accepted")
+	}
+	for query, want := range map[string]int64{
+		`SELECT user_id FROM sessions WHERE id = 3`:             9,
+		`SELECT created_by FROM admin_invitations WHERE id = 4`: 7,
+		`SELECT owner_user_id FROM servers WHERE id = 5`:        9,
+		`SELECT user_id FROM server_access WHERE server_id = 5`: 9,
+		`SELECT owner_user_id FROM landing_nodes WHERE id = 6`:  9,
+	} {
+		var got int64
+		if err := db.QueryRow(query).Scan(&got); err != nil || got != want {
+			t.Fatalf("preserved reference %q = %d, %v; want %d", query, got, err, want)
+		}
+	}
+	var invitationRole string
+	if err := db.QueryRow(`SELECT role FROM admin_invitations WHERE id = 4`).Scan(&invitationRole); err != nil || invitationRole != "vip" {
+		t.Fatalf("legacy invitation role = %q, %v; want vip", invitationRole, err)
+	}
+	var tableSQL string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).Scan(&tableSQL); err != nil || !strings.Contains(tableSQL, "'user'") {
+		t.Fatalf("migrated users SQL = %q, %v", tableSQL, err)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("migration left an invalid foreign key")
 	}
 }

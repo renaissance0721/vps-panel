@@ -14,6 +14,7 @@ const (
 	NetworkTCP      = "tcp"
 	NetworkUDP      = "udp"
 	NetworkBoth     = "tcp,udp"
+	MaxUserRelays   = 10
 	maxNameRunes    = 100
 )
 
@@ -35,11 +36,14 @@ var (
 	ErrTargetUnavailable              = errors.New("relay target address is unavailable")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
+	ErrUserRelayLimit                 = errors.New("user relay limit reached")
 )
 
 type Relay struct {
 	ID                      int64
 	ServerID                int64
+	OwnerUserID             *int64
+	OwnerUsername           string
 	ServerName              string
 	ServerPublicIPv4        string
 	Name                    string
@@ -68,6 +72,7 @@ type Relay struct {
 
 type CreateInput struct {
 	ServerID        int64
+	OwnerUserID     *int64
 	Name            string
 	ListenAddress   string
 	ListenPort      int

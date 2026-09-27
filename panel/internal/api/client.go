@@ -1,11 +1,17 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
+
+type clientAssignmentRequest struct {
+	UserID              *int64 `json:"user_id"`
+	BillingPeriodMonths *int   `json:"billing_period_months"`
+}
 
 func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
@@ -25,7 +31,9 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 	for _, value := range values {
 		response = append(response, toClientSummaryResponse(proxystore.ClientSummary{
 			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
-			ClientUDP443: value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+			AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
+			BillingPeriodMonths: value.BillingPeriodMonths,
+			ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 			TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 			TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 			TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
@@ -33,6 +41,36 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 		}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
+}
+
+func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
+	if !ok {
+		return
+	}
+	var request clientAssignmentRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.UserID != nil && *request.UserID <= 0 {
+		writeError(w, http.StatusBadRequest, "普通用户账号无效")
+		return
+	}
+	value, err := s.proxies.AssignClient(r.Context(), id, request.UserID, request.BillingPeriodMonths)
+	if err != nil {
+		switch {
+		case errors.Is(err, proxystore.ErrAssignmentUserNotFound):
+			writeError(w, http.StatusBadRequest, "普通用户账号不存在")
+		case errors.Is(err, proxystore.ErrInvalidAssignmentRole):
+			writeError(w, http.StatusBadRequest, "客户端只能分配给普通用户账号")
+		case errors.Is(err, proxystore.ErrInvalidBillingPeriod):
+			writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
+		default:
+			writeProxyError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
 func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {

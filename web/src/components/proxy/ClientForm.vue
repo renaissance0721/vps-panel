@@ -30,6 +30,10 @@ const props = defineProps<{
     | 'clientExpirationMode'
     | 'clientExpiresAt'
     | 'clientEnabled'
+	| 'assignedUserID'
+	| 'billingPeriodMonths'
+	| 'assignableUsers'
+	| 'canAssignClient'
   >
 }>()
 const {
@@ -49,6 +53,10 @@ const {
   clientExpirationMode,
   clientExpiresAt,
   clientEnabled,
+	assignedUserID,
+	billingPeriodMonths,
+	assignableUsers,
+	canAssignClient,
 } = toRefs(props.model)
 </script>
 
@@ -67,6 +75,10 @@ const {
         <label><span>到期时间</span><select v-model="clientExpirationMode" class="settings-input"><option value="unlimited">不限</option><option value="specified">指定日期时间</option></select></label>
         <label v-if="clientExpirationMode === 'specified'"><span>到期日期时间（上海时区）</span><input v-model="clientExpiresAt" class="settings-input" type="datetime-local" /></label>
         <label class="checkbox-row"><input v-model="clientEnabled" type="checkbox" /><span>启用客户端</span></label>
+		<template v-if="canAssignClient">
+		  <label><span>普通用户</span><select v-model.number="assignedUserID" class="settings-input"><option :value="0">未分配</option><option v-for="user in assignableUsers" :key="user.id" :value="user.id">{{ user.username }}</option></select></label>
+		  <label><span>付款周期</span><select v-model.number="billingPeriodMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">月付</option><option :value="3">季付</option><option :value="6">半年</option><option :value="12">年付</option></select></label>
+		</template>
         <div class="modal-actions"><n-button @click="clientFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
       </form>
     </n-card>

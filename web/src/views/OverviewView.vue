@@ -15,8 +15,8 @@ import type {
 } from '../composables/useOverview'
 import { adminFirst } from '../adminFirst'
 
-const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation' | 'backupFile' | 'backupBusy' | 'backupStatus' | 'selectBackup' | 'exportBackup' | 'importBackup'> }>()
-const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, copyInvitation, copied, invitations, formatTime, revokeInvitation, backupFile, backupBusy, backupStatus, selectBackup, exportBackup, importBackup } = toRefs(props.model)
+const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'invitationRole' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation' | 'passwordChangeRequests' | 'reviewPasswordChangeRequest' | 'userRelays' | 'deleteUserRelay' | 'backupFile' | 'backupBusy' | 'backupStatus' | 'selectBackup' | 'exportBackup' | 'importBackup'> }>()
+const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, invitationRole, copyInvitation, copied, invitations, formatTime, revokeInvitation, passwordChangeRequests, reviewPasswordChangeRequest, userRelays, deleteUserRelay, backupFile, backupBusy, backupStatus, selectBackup, exportBackup, importBackup } = toRefs(props.model)
 const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 </script>
 
@@ -57,8 +57,9 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
               </div>
             </n-card>
 
-            <n-card v-if="state?.user?.role === 'admin'" title="邀请 VIP 账号" :bordered="true">
-              <p class="card-copy">生成 24 小时有效的一次性 VIP 注册链接。</p>
+            <n-card v-if="state?.user?.role === 'admin'" title="邀请账号" :bordered="true">
+              <p class="card-copy">生成 24 小时有效的一次性注册链接。</p>
+			  <label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP</option><option value="user">用户</option></select></label>
               <n-button type="primary" :loading="submitting" @click="createInvitation">
                 生成邀请链接
               </n-button>
@@ -79,7 +80,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
                 <div>
                   <strong>邀请 #{{ invitation.id }}</strong>
                   <span>
-                    {{ invitation.created_by_username }} 创建 ·
+					角色：{{ invitation.role === 'vip' ? 'VIP' : '用户' }} · {{ invitation.created_by_username }} 创建 ·
                     {{ formatTime(invitation.expires_at) }} 过期
                   </span>
                 </div>
@@ -95,6 +96,24 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
               </div>
             </div>
           </n-card>
+		  <n-card v-if="state?.user?.role === 'admin'" title="密码修改申请" :bordered="true">
+			<n-empty v-if="passwordChangeRequests.length === 0" description="当前没有待审核申请" />
+			<div v-else class="invitation-list">
+			  <div v-for="request in passwordChangeRequests" :key="request.id" class="invitation-row">
+				<div><strong>{{ request.username }}</strong><span>{{ formatTime(request.created_at) }} 提交</span></div>
+				<div class="modal-actions"><n-button size="small" type="error" secondary :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'reject')">拒绝</n-button><n-button size="small" type="primary" :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'approve')">批准</n-button></div>
+			  </div>
+			</div>
+		  </n-card>
+		  <n-card v-if="state?.user?.role === 'admin'" title="普通用户中转" :bordered="true">
+			<n-empty v-if="userRelays.length === 0" description="当前没有普通用户中转" />
+			<div v-else class="invitation-list">
+			  <div v-for="relay in userRelays" :key="relay.id" class="invitation-row">
+				<div><strong>{{ relay.username }} · {{ relay.name }}</strong><span>{{ relay.source_name }} · {{ relay.entry_address }} → {{ relay.target_ip }}:{{ relay.target_port }}</span></div>
+				<n-button size="small" type="error" secondary :disabled="submitting" @click="deleteUserRelay(relay.id)">删除</n-button>
+			  </div>
+			</div>
+		  </n-card>
           <n-card v-if="state?.user?.role === 'admin'" title="备份与恢复" :bordered="true">
             <h3>整站备份</h3>
             <p class="card-copy">导出的 ZIP 包含 Panel 数据、账号、服务器、Agent 身份、代理节点、中转、客户端、流量和权限等敏感信息，请妥善保管。</p>

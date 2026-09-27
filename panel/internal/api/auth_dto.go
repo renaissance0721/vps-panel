@@ -17,6 +17,10 @@ type registrationRequest struct {
 	Password string `json:"password"`
 }
 
+type createInvitationRequest struct {
+	Role string `json:"role"`
+}
+
 type userResponse struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`
@@ -28,6 +32,7 @@ type invitationResponse struct {
 	ID                int64     `json:"id"`
 	CreatedBy         int64     `json:"created_by"`
 	CreatedByUsername string    `json:"created_by_username"`
+	Role              string    `json:"role"`
 	ExpiresAt         time.Time `json:"expires_at"`
 	CreatedAt         time.Time `json:"created_at"`
 	Token             string    `json:"token,omitempty"`
@@ -48,6 +53,7 @@ func toInvitationResponse(invitation auth.Invitation) invitationResponse {
 		ID:                invitation.ID,
 		CreatedBy:         invitation.CreatedBy,
 		CreatedByUsername: invitation.CreatedByUsername,
+		Role:              invitation.Role,
 		ExpiresAt:         invitation.ExpiresAt,
 		CreatedAt:         invitation.CreatedAt,
 	}

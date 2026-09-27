@@ -76,6 +76,9 @@ func (s *server) relayForUser(ctx context.Context, user auth.User, id int64) (re
 	if err != nil {
 		return relaystore.Relay{}, err
 	}
+	if value.OwnerUserID != nil && user.Role != auth.RoleAdmin {
+		return relaystore.Relay{}, relaystore.ErrNotFound
+	}
 	allowed, err := s.canAccessServer(ctx, user, value.ServerID)
 	if err != nil {
 		return relaystore.Relay{}, err

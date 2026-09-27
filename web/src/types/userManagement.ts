@@ -12,12 +12,10 @@ export type ManagedUserNode = {
 export type ManagedUserRelay = {
   id: number
   name: string
-  source_client_id?: number
-  server_name: string
-  proxy_name: string
+  mode: 'assigned_node' | 'custom'
+  source: { server_name: string; proxy_name: string }
+  target?: { server_name: string; proxy_name: string }
   entry_address: string
-  target_ip: string
-  target_port: number
   enabled: boolean
   created_at: string
 }

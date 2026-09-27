@@ -68,7 +68,7 @@ func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 	assignmentRemoved := current.AssignedUserID != nil &&
 		(request.UserID == nil || *request.UserID != *current.AssignedUserID)
 	if assignmentRemoved {
-		if err := s.deleteUserRelaysForSourceClient(r.Context(), id); err != nil {
+		if err := s.deleteUserRelaysForClient(r.Context(), id); err != nil {
 			writeRelayError(w, err)
 			return
 		}
@@ -219,7 +219,7 @@ func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, user 
 		writeProxyError(w, err)
 		return
 	}
-	if err := s.deleteUserRelaysForSourceClient(r.Context(), id); err != nil {
+	if err := s.deleteUserRelaysForClient(r.Context(), id); err != nil {
 		writeRelayError(w, err)
 		return
 	}

@@ -26,7 +26,7 @@ import type { ManagedUserNode } from '../types/userManagement'
 const model = useUserManagement()
 const {
   users, selectedUserID, detail, assignedNodes, availableNodes, loading, submitting, error,
-  formOpen, formMode, editingNode, clientName, clientEnabled, clientUDP443,
+  formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
   trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
   trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths,
 } = model
@@ -42,6 +42,7 @@ onMounted(model.load)
 
 <template>
   <div class="user-management">
+    <h1>用户管理</h1>
     <div class="relay-toolbar user-management-toolbar">
       <label>
         <span>普通用户</span>
@@ -59,22 +60,20 @@ onMounted(model.load)
     <n-empty v-else-if="users.length === 0" description="暂无普通用户" />
 
     <template v-else-if="detail">
-      <div class="overview-summary-grid user-management-summary">
-        <n-card class="overview-summary-card" size="small"><span>用户</span><strong>{{ detail.user.username }}</strong><small class="overview-summary-caption">角色：普通用户</small></n-card>
-        <n-card class="overview-summary-card" size="small"><span>已开通节点</span><strong class="overview-summary-number">{{ assignedNodes.length }}</strong></n-card>
-        <n-card class="overview-summary-card" size="small"><span>自建中转</span><strong class="overview-summary-number">{{ detail.relays.length }}</strong></n-card>
-        <n-card class="overview-summary-card" size="small"><span>密码申请</span><strong>{{ detail.password_request ? '等待审核' : '无' }}</strong></n-card>
-      </div>
+      <n-card class="user-management-summary" size="small">
+        <strong>{{ detail.user.username }} · 普通用户</strong>
+        <span>已开通节点 {{ assignedNodes.length }} · 自建中转 {{ detail.relays.length }} · 密码申请 {{ detail.password_request ? '等待审核' : '无' }}</span>
+      </n-card>
 
       <section>
-        <div class="section-heading"><h2>{{ detail.user.username }} 的节点</h2></div>
-        <div class="user-management-grid">
-          <n-card v-for="node in detail.nodes" :key="node.proxy_id" size="small" :bordered="true">
+        <div class="section-heading"><h2>客户端</h2><n-button type="primary" :disabled="availableNodes.length === 0" @click="model.openCreate">+ 新建客户端</n-button></div>
+        <n-empty v-if="assignedNodes.length === 0" description="暂无已开通客户端" />
+        <div v-else class="user-management-grid">
+          <n-card v-for="node in assignedNodes" :key="node.proxy_id" size="small" :bordered="true">
             <template #header>{{ node.server_name }} · {{ node.proxy_name }}</template>
-            <template #header-extra><n-tag size="small">{{ node.protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</n-tag></template>
+            <template #header-extra><n-tag :type="node.client ? clientStatusTagType(node.client.status) : 'default'" size="small">{{ node.protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }} · {{ node.client ? clientStatusLabel(node.client.status) : '未知' }}</n-tag></template>
             <template v-if="node.client">
               <div class="user-management-status">
-                <n-tag :type="clientStatusTagType(node.client.status)" size="small">{{ clientStatusLabel(node.client.status) }}</n-tag>
                 <span>{{ node.client.name }}</span>
               </div>
               <dl class="user-details">
@@ -89,10 +88,6 @@ onMounted(model.load)
                 <n-button size="small" type="error" secondary :disabled="submitting" @click="model.removeNode(node)">删除</n-button>
               </div>
             </template>
-            <template v-else>
-              <p class="secondary-text">该用户尚未开通此代理节点。</p>
-              <n-button size="small" type="primary" @click="model.openCreate(node)">开通节点</n-button>
-            </template>
           </n-card>
         </div>
       </section>
@@ -103,10 +98,10 @@ onMounted(model.load)
         <div v-else class="user-management-grid">
           <n-card v-for="relay in detail.relays" :key="relay.id" size="small">
             <template #header>{{ relay.name }}</template>
-            <p>{{ relay.server_name }} · {{ relay.proxy_name }}</p>
+            <p>{{ relay.source.server_name }} · {{ relay.source.proxy_name }}</p>
             <dl class="user-details">
               <div><dt>入口</dt><dd>{{ relay.entry_address }}</dd></div>
-              <div><dt>落地</dt><dd>{{ relay.target_ip }}:{{ relay.target_port }}</dd></div>
+              <div><dt>落地</dt><dd>{{ relay.mode === 'assigned_node' && relay.target ? `${relay.target.server_name} · ${relay.target.proxy_name}` : '自定义落地' }}</dd></div>
             </dl>
             <n-button size="small" type="error" secondary :disabled="submitting" @click="model.removeRelay(relay.id)">删除中转</n-button>
           </n-card>
@@ -127,9 +122,10 @@ onMounted(model.load)
     </template>
 
     <n-modal v-model:show="formOpen">
-      <n-card class="client-form-card" :title="formMode === 'create' ? '开通用户节点' : '编辑用户节点'" closable @close="formOpen = false">
+      <n-card class="client-form-card" :title="formMode === 'create' ? '新建客户端' : '编辑用户节点'" closable @close="formOpen = false">
         <form class="proxy-form" @submit.prevent="model.saveNode">
-          <div class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span><span>{{ editingNode?.protocol }}</span></div>
+          <label v-if="formMode === 'create'"><span>代理节点</span><select v-model.number="createProxyID" class="settings-input" @change="model.selectCreateNode"><option v-for="node in availableNodes" :key="node.proxy_id" :value="node.proxy_id">{{ node.server_name }} · {{ node.proxy_name }}</option></select></label>
+          <div v-else class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span><span>{{ editingNode?.protocol }}</span></div>
           <label><span>客户端名称</span><n-input v-model:value="clientName" /></label>
           <label><span>流量额度（留空为不限）</span><div class="user-management-inline"><n-input v-model:value="trafficLimit" placeholder="例如 100" /><select v-model="trafficLimitUnit" class="settings-input"><option value="G">GiB</option><option value="T">TiB</option></select></div></label>
           <label><span>流量重置</span><select v-model="trafficResetMode" class="settings-input"><option value="never">不重置</option><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>

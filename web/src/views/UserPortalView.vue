@@ -22,19 +22,28 @@ type UserNode = {
   next_reset_at: string | null
 }
 
-type RelaySource = { client_id: number; server_name: string; proxy_name: string; protocol: 'vless' | 'shadowsocks' }
+type RelaySource = {
+  client_id: number
+  server_name: string
+  proxy_name: string
+  protocol: 'vless' | 'shadowsocks'
+  effective_enabled: boolean
+}
+type RelayNode = { server_name: string; proxy_name: string }
 type UserRelay = {
   id: number
   name: string
-  server_name: string
-  proxy_name: string
+  mode: 'assigned_node' | 'custom'
+  source: RelayNode
+  target?: RelayNode
+  target_ip?: string
+  target_port?: number
   entry_address: string
-  target_ip: string
-  target_port: number
   enabled: boolean
 }
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at: string | null }
 type NodeShare = { uri: string; protocol: 'vless' | 'shadowsocks'; server_name: string; proxy_name: string }
+type RelayShare = { uri: string; protocol: 'vless' | 'shadowsocks'; name: string }
 
 const props = defineProps<{ user: User }>()
 const emit = defineEmits<{ logout: [] }>()
@@ -57,16 +66,22 @@ const newPassword = ref('')
 const confirmPassword = ref('')
 const relayModalOpen = ref(false)
 const relayName = ref('')
+const relayMode = ref<'assigned_node' | 'custom'>('assigned_node')
 const sourceClientID = ref(0)
+const targetClientID = ref(0)
 const relayTargetIP = ref('')
 const relayTargetPort = ref<number | null>(null)
+const editingRelayID = ref<number | null>(null)
 
 const pendingPasswordRequest = computed(() => passwordRequest.value?.status === 'pending')
+const targetSources = computed(() => relaySources.value.filter((source) => source.client_id !== sourceClientID.value))
 
 async function loadPortal() {
   const results = await Promise.allSettled([loadNodes(), loadRelaySources(), loadRelays(), loadPasswordRequest()])
   const failed = results.find((result) => result.status === 'rejected')
-  if (failed?.status === 'rejected') throw failed.reason
+  if (failed?.status === 'rejected') {
+    error.value = failed.reason instanceof Error ? failed.reason.message : '部分用户门户数据加载失败'
+  }
 }
 
 async function loadNodes() {
@@ -97,14 +112,17 @@ async function run(action: () => Promise<void>) {
   }
 }
 
-async function getShare(node: UserNode) {
-  const response = await api<{ share: NodeShare }>(`/api/me/nodes/${node.client_id}/share`)
-  return response.share
+async function getNodeShare(node: UserNode) {
+  return (await api<{ share: NodeShare }>(`/api/me/nodes/${node.client_id}/share`)).share
+}
+
+async function getRelayShare(relay: UserRelay) {
+  return (await api<{ share: RelayShare }>(`/api/me/relays/${relay.id}/share`)).share
 }
 
 async function copyNode(node: UserNode) {
   await run(async () => {
-    const share = await getShare(node)
+    const share = await getNodeShare(node)
     await navigator.clipboard.writeText(share.uri)
     copiedNodeID.value = node.client_id
   })
@@ -112,10 +130,28 @@ async function copyNode(node: UserNode) {
 
 async function showNodeQR(node: UserNode) {
   await run(async () => {
-    const share = await getShare(node)
+    const share = await getNodeShare(node)
     qrURI.value = share.uri
     qrTitle.value = `${share.server_name} · ${share.proxy_name}`
     qrSubtitle.value = share.protocol === 'vless' ? 'VLESS' : 'Shadowsocks 2022'
+    qrOpen.value = true
+  })
+}
+
+async function copyRelay(relay: UserRelay) {
+  await run(async () => {
+    const share = await getRelayShare(relay)
+    await navigator.clipboard.writeText(share.uri)
+    copiedRelayID.value = relay.id
+  })
+}
+
+async function showRelayQR(relay: UserRelay) {
+  await run(async () => {
+    const share = await getRelayShare(relay)
+    qrURI.value = share.uri
+    qrTitle.value = share.name
+    qrSubtitle.value = share.protocol === 'vless' ? 'VLESS · 中转' : 'Shadowsocks 2022 · 中转'
     qrOpen.value = true
   })
 }
@@ -157,24 +193,51 @@ async function submitPasswordRequest() {
 }
 
 function openRelayModal() {
+  editingRelayID.value = null
   relayName.value = ''
+  relayMode.value = 'assigned_node'
   sourceClientID.value = relaySources.value[0]?.client_id ?? 0
+  targetClientID.value = relaySources.value.find((source) => source.client_id !== sourceClientID.value)?.client_id ?? 0
   relayTargetIP.value = ''
   relayTargetPort.value = null
   relayModalOpen.value = true
 }
 
-async function createRelay() {
+function onSourceChange() {
+  if (targetClientID.value === sourceClientID.value || !targetSources.value.some((source) => source.client_id === targetClientID.value)) {
+    targetClientID.value = targetSources.value[0]?.client_id ?? 0
+  }
+}
+
+function editCustomRelay(relay: UserRelay) {
+  editingRelayID.value = relay.id
+  relayName.value = relay.name
+  relayMode.value = 'custom'
+  relayTargetIP.value = relay.target_ip ?? ''
+  relayTargetPort.value = relay.target_port ?? null
+  relayModalOpen.value = true
+}
+
+async function saveRelay() {
   await run(async () => {
-    await api('/api/me/relays', {
-      method: 'POST',
-      body: JSON.stringify({
-        source_client_id: sourceClientID.value,
-        name: relayName.value,
-        target_ip: relayTargetIP.value,
-        target_port: relayTargetPort.value,
-      }),
-    })
+    if (editingRelayID.value !== null) {
+      await api(`/api/me/relays/${editingRelayID.value}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ target_ip: relayTargetIP.value, target_port: relayTargetPort.value }),
+      })
+    } else {
+      await api('/api/me/relays', {
+        method: 'POST',
+        body: JSON.stringify({
+          source_client_id: sourceClientID.value,
+          name: relayName.value,
+          mode: relayMode.value,
+          ...(relayMode.value === 'assigned_node'
+            ? { target_client_id: targetClientID.value }
+            : { target_ip: relayTargetIP.value, target_port: relayTargetPort.value }),
+        }),
+      })
+    }
     relayModalOpen.value = false
     await loadRelays()
   })
@@ -188,21 +251,9 @@ async function deleteRelay(relay: UserRelay) {
   })
 }
 
-async function copyRelay(relay: UserRelay) {
-  await run(async () => {
-    await navigator.clipboard.writeText(relay.entry_address)
-    copiedRelayID.value = relay.id
-  })
-}
-
 onMounted(async () => {
-  try {
-    await loadPortal()
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法加载用户门户'
-  } finally {
-    loading.value = false
-  }
+  await loadPortal()
+  loading.value = false
 })
 </script>
 
@@ -215,7 +266,9 @@ onMounted(async () => {
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载…</span></div>
     <template v-else>
-      <section><h1>我的节点</h1><n-empty v-if="nodes.length === 0" description="管理员尚未分配节点" />
+      <section>
+        <h1>我的节点</h1>
+        <n-empty v-if="nodes.length === 0" description="管理员尚未分配节点" />
         <div v-else class="user-card-grid">
           <n-card v-for="node in nodes" :key="node.client_id" :title="node.server_name" :bordered="true">
             <template #header-extra><span :class="['user-status', { online: node.effective_enabled }]">● {{ nodeStatus(node) }}</span></template>
@@ -227,14 +280,24 @@ onMounted(async () => {
           </n-card>
         </div>
       </section>
-      <section><div class="section-heading"><h1>我的中转</h1><n-button type="primary" :disabled="relaySources.length === 0 || busy" @click="openRelayModal">添加中转</n-button></div><n-empty v-if="relays.length === 0" description="暂无中转" />
-        <div v-else class="user-card-grid"><n-card v-for="relay in relays" :key="relay.id" :title="relay.name" :bordered="true"><p>{{ relay.server_name }} · {{ relay.proxy_name }}</p><strong>{{ relay.entry_address }}</strong><p class="secondary-text">→ {{ relay.target_ip }}:{{ relay.target_port }}</p><div class="modal-actions"><n-button secondary @click="copyRelay(relay)">{{ copiedRelayID === relay.id ? '已复制' : '复制入口' }}</n-button><n-button type="error" secondary :disabled="busy" @click="deleteRelay(relay)">删除</n-button></div></n-card></div>
+      <section>
+        <div class="section-heading"><h1>我的中转</h1><n-button type="primary" :disabled="relaySources.length === 0 || busy" @click="openRelayModal">添加中转</n-button></div>
+        <n-empty v-if="relays.length === 0" description="暂无中转" />
+        <div v-else class="user-card-grid">
+          <n-card v-for="relay in relays" :key="relay.id" :title="relay.name" :bordered="true">
+            <p>{{ relay.source.server_name }} · {{ relay.source.proxy_name }}</p>
+            <p class="secondary-text">→ {{ relay.mode === 'assigned_node' && relay.target ? `${relay.target.server_name} · ${relay.target.proxy_name}` : '自定义落地' }}</p>
+            <p v-if="relay.mode === 'custom'">落地：{{ relay.target_ip }}:{{ relay.target_port }}</p>
+            <p>入口：<strong>{{ relay.entry_address }}</strong></p>
+            <div class="modal-actions"><n-button secondary @click="copyRelay(relay)">{{ copiedRelayID === relay.id ? '已复制' : '复制链接' }}</n-button><n-button type="primary" secondary @click="showRelayQR(relay)">二维码</n-button><n-button v-if="relay.mode === 'custom'" secondary @click="editCustomRelay(relay)">修改落地</n-button><n-button type="error" secondary :disabled="busy" @click="deleteRelay(relay)">删除</n-button></div>
+          </n-card>
+        </div>
       </section>
       <section><h1>账号</h1><n-card :bordered="true"><dl class="user-details"><div><dt>用户名</dt><dd>{{ props.user.username }}</dd></div><div><dt>密码修改</dt><dd>{{ pendingPasswordRequest ? '等待管理员审核' : passwordRequest?.status === 'approved' ? '最近申请已批准' : passwordRequest?.status === 'rejected' ? '最近申请已拒绝' : '无待处理申请' }}</dd></div></dl><n-button type="primary" :disabled="pendingPasswordRequest || busy" @click="passwordModalOpen = true">申请修改密码</n-button></n-card></section>
     </template>
   </main>
 
   <n-modal v-model:show="passwordModalOpen"><n-card class="client-form-card" title="申请修改密码" closable @close="passwordModalOpen = false"><form class="auth-form" @submit.prevent="submitPasswordRequest"><label><span>当前密码</span><n-input v-model:value="currentPassword" type="password" show-password-on="click" /></label><label><span>新密码</span><n-input v-model:value="newPassword" type="password" show-password-on="click" /></label><label><span>确认新密码</span><n-input v-model:value="confirmPassword" type="password" show-password-on="click" /></label><div class="modal-actions"><n-button @click="passwordModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">提交申请</n-button></div></form></n-card></n-modal>
-  <n-modal v-model:show="relayModalOpen"><n-card class="client-form-card" title="添加中转" closable @close="relayModalOpen = false"><form class="auth-form" @submit.prevent="createRelay"><label><span>名称</span><n-input v-model:value="relayName" maxlength="100" /></label><label><span>中转节点</span><select v-model.number="sourceClientID" class="settings-input"><option v-for="source in relaySources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label><label><span>落地公网 IP</span><n-input v-model:value="relayTargetIP" placeholder="1.2.3.4" /></label><label><span>落地端口</span><input v-model.number="relayTargetPort" class="settings-input" type="number" min="1" max="65535" /></label><div class="modal-actions"><n-button @click="relayModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">创建</n-button></div></form></n-card></n-modal>
+  <n-modal v-model:show="relayModalOpen"><n-card class="client-form-card" :title="editingRelayID === null ? '添加中转' : '修改落地'" closable @close="relayModalOpen = false"><form class="auth-form" @submit.prevent="saveRelay"><template v-if="editingRelayID === null"><label><span>名称</span><n-input v-model:value="relayName" maxlength="100" /></label><label><span>入口节点</span><select v-model.number="sourceClientID" class="settings-input" @change="onSourceChange"><option v-for="source in relaySources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label><fieldset class="relay-mode-field"><legend>落地方式</legend><label><input v-model="relayMode" type="radio" value="assigned_node" /> 使用已有节点</label><label><input v-model="relayMode" type="radio" value="custom" /> 自定义落地</label></fieldset><label v-if="relayMode === 'assigned_node'"><span>落地节点</span><select v-model.number="targetClientID" class="settings-input"><option v-for="source in targetSources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label></template><template v-if="relayMode === 'custom'"><label><span>落地公网 IP</span><n-input v-model:value="relayTargetIP" placeholder="1.2.3.4" /></label><label><span>落地端口</span><input v-model.number="relayTargetPort" class="settings-input" type="number" min="1" max="65535" /></label></template><div class="modal-actions"><n-button @click="relayModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="qrOpen = $event" />
 </template>

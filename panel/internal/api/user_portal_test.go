@@ -16,6 +16,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -410,14 +411,14 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 	}
 	for _, invalidSource := range []int64{bobClientID, unassignedClientID} {
 		response := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-			"source_client_id": invalidSource, "name": "Invalid Source", "target_ip": "1.1.1.1", "target_port": 443,
+			"mode": "custom", "source_client_id": invalidSource, "name": "Invalid Source", "target_ip": "1.1.1.1", "target_port": 443,
 		}, fixture.userCookie)
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("foreign source %d = %d, %s", invalidSource, response.Code, response.Body.String())
 		}
 	}
 	invalidFields := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-		"source_client_id": sourceClientID, "name": "Bypass", "target_ip": "1.1.1.1", "target_port": 443,
+		"mode": "custom", "source_client_id": sourceClientID, "name": "Bypass", "target_ip": "1.1.1.1", "target_port": 443,
 		"server_id": server.Server.ID, "listen_port": 25000, "listen_address": "0.0.0.0",
 	}, fixture.userCookie)
 	if invalidFields.Code != http.StatusBadRequest {
@@ -445,7 +446,7 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 		t.Fatal(err)
 	}
 	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-		"source_client_id": sourceClientID, "name": "Alice Relay", "target_ip": "1.1.1.1", "target_port": 443,
+		"mode": "custom", "source_client_id": sourceClientID, "name": "Alice Relay", "target_ip": "1.1.1.1", "target_port": 443,
 	}, fixture.userCookie)
 	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"entry_address":"node.example.com:20002"`) {
 		t.Fatalf("create user relay = %d, %s", created.Code, created.Body.String())
@@ -553,10 +554,265 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 		}
 	}
 	limited := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-		"source_client_id": sourceClientID, "name": "Too Many", "target_ip": "1.1.1.1", "target_port": 443,
+		"mode": "custom", "source_client_id": sourceClientID, "name": "Too Many", "target_ip": "1.1.1.1", "target_port": 443,
 	}, fixture.userCookie)
 	if limited.Code != http.StatusConflict || !strings.Contains(limited.Body.String(), "最多") {
 		t.Fatalf("relay limit = %d, %s", limited.Code, limited.Body.String())
+	}
+}
+
+func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
+	fixture := setupUserPortalFixture(t)
+	defer fixture.db.Close()
+	server, proxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, relaystore.UserRelayPortStart)
+	assign := func(clientID, userID int64) {
+		response := performRequest(t, fixture.handler, http.MethodPatch,
+			"/api/admin/clients/"+strconv.FormatInt(clientID, 10)+"/assignment",
+			map[string]any{"user_id": userID, "billing_period_months": 1}, fixture.adminCookie)
+		if response.Code != http.StatusOK {
+			t.Fatalf("assign client %d = %d, %s", clientID, response.Code, response.Body.String())
+		}
+	}
+	createClient := func(name string) int64 {
+		response := performRequest(t, fixture.handler, http.MethodPost,
+			"/api/proxies/"+strconv.FormatInt(proxy.ID, 10)+"/clients", map[string]any{"name": name}, fixture.adminCookie)
+		var body struct {
+			Client clientResponse `json:"client"`
+		}
+		if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+			t.Fatalf("create client %q = %d, %s", name, response.Code, response.Body.String())
+		}
+		return body.Client.ID
+	}
+	sourceClientID := proxy.Clients[0].ID
+	targetClientID := createClient("Alice Target")
+	foreignClientID := createClient("Bob Target")
+	assign(sourceClientID, fixture.userID)
+	assign(targetClientID, fixture.userID)
+	assign(foreignClientID, fixture.otherID)
+	registration := performRequest(t, fixture.handler, http.MethodPost, "/api/agent/register", agentRegistrationRequest{
+		EnrollmentToken: server.EnrollmentToken, AgentVersion: "1.0.0",
+		AgentImplementation: agentcontrol.OfficialImplementation, AgentAPIVersion: agentcontrol.CurrentAPIVersion,
+		AgentCapabilities: []string{agentcontrol.CapabilityRelayRealm, agentcontrol.CapabilityManagedRuntimePurge},
+	}, nil)
+	if registration.Code != http.StatusCreated {
+		t.Fatalf("register Agent = %d, %s", registration.Code, registration.Body.String())
+	}
+
+	sources := performRequest(t, fixture.handler, http.MethodGet, "/api/me/relay-sources", nil, fixture.userCookie)
+	if sources.Code != http.StatusOK || strings.Contains(sources.Body.String(), "Subscription") ||
+		strings.Contains(sources.Body.String(), "Alice Target") || strings.Contains(sources.Body.String(), "Bob Target") {
+		t.Fatalf("relay source privacy = %d, %s", sources.Code, sources.Body.String())
+	}
+	var sourceBody struct {
+		Sources []struct {
+			ClientID         int64  `json:"client_id"`
+			ServerName       string `json:"server_name"`
+			ProxyName        string `json:"proxy_name"`
+			EffectiveEnabled bool   `json:"effective_enabled"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(sources.Body.Bytes(), &sourceBody); err != nil || len(sourceBody.Sources) != 2 {
+		t.Fatalf("decode relay sources = %+v, %v", sourceBody, err)
+	}
+	for _, source := range sourceBody.Sources {
+		if source.ServerName != "Portal Server" || source.ProxyName != "Portal Proxy" || !source.EffectiveEnabled || source.ClientID == foreignClientID {
+			t.Fatalf("relay source = %+v", source)
+		}
+	}
+
+	for name, targetID := range map[string]int64{"foreign": foreignClientID, "same": sourceClientID} {
+		response := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
+			"name": name, "mode": "assigned_node", "source_client_id": sourceClientID, "target_client_id": targetID,
+		}, fixture.userCookie)
+		want := http.StatusNotFound
+		if name == "same" {
+			want = http.StatusBadRequest
+		}
+		if response.Code != want {
+			t.Fatalf("%s target = %d, %s; want %d", name, response.Code, response.Body.String(), want)
+		}
+	}
+
+	assignedCreated := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
+		"name": "Assigned Relay", "mode": "assigned_node", "source_client_id": sourceClientID, "target_client_id": targetClientID,
+	}, fixture.userCookie)
+	var assignedBody struct {
+		Relay myRelayResponse `json:"relay"`
+	}
+	if assignedCreated.Code != http.StatusCreated || json.Unmarshal(assignedCreated.Body.Bytes(), &assignedBody) != nil ||
+		assignedBody.Relay.Mode != "assigned_node" || assignedBody.Relay.Target == nil ||
+		assignedBody.Relay.Target.ServerName != "Portal Server" || assignedBody.Relay.Target.ProxyName != "Portal Proxy" {
+		t.Fatalf("create assigned relay = %d, %s", assignedCreated.Code, assignedCreated.Body.String())
+	}
+	var storedServerID, storedSourceID, storedTargetID, storedTargetProxyID int64
+	var storedType string
+	var assignedPort int
+	if err := fixture.db.QueryRow(`SELECT server_id, source_client_id, target_type, target_proxy_id, target_client_id, listen_port
+		FROM relays WHERE id = ?`, assignedBody.Relay.ID).Scan(
+		&storedServerID, &storedSourceID, &storedType, &storedTargetProxyID, &storedTargetID, &assignedPort,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if storedServerID != server.Server.ID || storedSourceID != sourceClientID || storedType != relaystore.TargetProxy ||
+		storedTargetProxyID != proxy.ID || storedTargetID != targetClientID || assignedPort != relaystore.UserRelayPortStart+1 {
+		t.Fatalf("stored assigned relay = server %d source %d type %s proxy %d target %d port %d",
+			storedServerID, storedSourceID, storedType, storedTargetProxyID, storedTargetID, assignedPort)
+	}
+
+	relayService := relaystore.NewService(fixture.db)
+	assignedRelay, err := relayService.Get(t.Context(), assignedBody.Relay.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTargetShare, err := proxystore.NewService(fixture.db).GetClientShareAtEndpoint(t.Context(), targetClientID, proxystore.ShareEndpoint{
+		Address: assignedRelay.EntryAddress, Port: assignedRelay.ListenPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignedShare := performRequest(t, fixture.handler, http.MethodGet,
+		"/api/me/relays/"+strconv.FormatInt(assignedBody.Relay.ID, 10)+"/share", nil, fixture.userCookie)
+	var assignedShareBody struct {
+		Share struct {
+			URI string `json:"uri"`
+		} `json:"share"`
+	}
+	if assignedShare.Code != http.StatusOK || json.Unmarshal(assignedShare.Body.Bytes(), &assignedShareBody) != nil ||
+		assignedShareBody.Share.URI != wantTargetShare.URI {
+		t.Fatalf("assigned share = %d, %s; want %s", assignedShare.Code, assignedShare.Body.String(), wantTargetShare.URI)
+	}
+
+	customCreated := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
+		"name": "Private Custom", "mode": "custom", "source_client_id": sourceClientID,
+		"target_ip": "1.1.1.1", "target_port": 5353,
+	}, fixture.userCookie)
+	var customBody struct {
+		Relay myRelayResponse `json:"relay"`
+	}
+	if customCreated.Code != http.StatusCreated || json.Unmarshal(customCreated.Body.Bytes(), &customBody) != nil ||
+		customBody.Relay.Mode != "custom" || customBody.Relay.TargetIP == nil || *customBody.Relay.TargetIP != "1.1.1.1" {
+		t.Fatalf("create custom relay = %d, %s", customCreated.Code, customCreated.Body.String())
+	}
+	customRelay, err := relayService.Get(t.Context(), customBody.Relay.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSourceShare, err := proxystore.NewService(fixture.db).GetClientShareAtEndpoint(t.Context(), sourceClientID, proxystore.ShareEndpoint{
+		Address: customRelay.EntryAddress, Port: customRelay.ListenPort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customShare := performRequest(t, fixture.handler, http.MethodGet,
+		"/api/me/relays/"+strconv.FormatInt(customBody.Relay.ID, 10)+"/share", nil, fixture.userCookie)
+	var customShareBody struct {
+		Share struct {
+			URI string `json:"uri"`
+		} `json:"share"`
+	}
+	if customShare.Code != http.StatusOK || json.Unmarshal(customShare.Body.Bytes(), &customShareBody) != nil ||
+		customShareBody.Share.URI != wantSourceShare.URI {
+		t.Fatalf("custom share = %d, %s; want %s", customShare.Code, customShare.Body.String(), wantSourceShare.URI)
+	}
+
+	assignedPatch := performRequest(t, fixture.handler, http.MethodPatch,
+		"/api/me/relays/"+strconv.FormatInt(assignedBody.Relay.ID, 10),
+		map[string]any{"target_ip": "8.8.8.8", "target_port": 443}, fixture.userCookie)
+	if assignedPatch.Code != http.StatusBadRequest {
+		t.Fatalf("patch assigned relay = %d, %s", assignedPatch.Code, assignedPatch.Body.String())
+	}
+	customPatch := performRequest(t, fixture.handler, http.MethodPatch,
+		"/api/me/relays/"+strconv.FormatInt(customBody.Relay.ID, 10),
+		map[string]any{"target_ip": "8.8.8.8", "target_port": 8443}, fixture.userCookie)
+	if customPatch.Code != http.StatusOK || !strings.Contains(customPatch.Body.String(), `"target_ip":"8.8.8.8"`) ||
+		!strings.Contains(customPatch.Body.String(), `"target_port":8443`) {
+		t.Fatalf("patch custom relay = %d, %s", customPatch.Code, customPatch.Body.String())
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPatch} {
+		path := "/api/me/relays/" + strconv.FormatInt(customBody.Relay.ID, 10)
+		body := any(nil)
+		if method == http.MethodGet {
+			path += "/share"
+		} else {
+			body = map[string]any{"target_ip": "9.9.9.9", "target_port": 443}
+		}
+		response := performRequest(t, fixture.handler, method, path, body, fixture.otherCookie)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("other user %s relay = %d, %s", method, response.Code, response.Body.String())
+		}
+	}
+
+	owned := performRequest(t, fixture.handler, http.MethodGet, "/api/me/relays", nil, fixture.userCookie)
+	if owned.Code != http.StatusOK || !strings.Contains(owned.Body.String(), "Assigned Relay") || !strings.Contains(owned.Body.String(), "Private Custom") ||
+		!strings.Contains(owned.Body.String(), `"target_ip":"8.8.8.8"`) {
+		t.Fatalf("owner relay list = %d, %s", owned.Code, owned.Body.String())
+	}
+	for _, path := range []string{
+		"/api/admin/user-relays", "/api/relays", "/api/admin/users/" + strconv.FormatInt(fixture.userID, 10),
+	} {
+		response := performRequest(t, fixture.handler, http.MethodGet, path, nil, fixture.adminCookie)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Private Custom") ||
+			strings.Contains(response.Body.String(), "8.8.8.8") || strings.Contains(response.Body.String(), `"target_port":8443`) {
+			t.Fatalf("admin redaction %s = %d, %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDeletingTargetAssignedClientPurgesUserRelay(t *testing.T) {
+	fixture := setupUserPortalFixture(t)
+	defer fixture.db.Close()
+	server, proxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, 24000)
+	sourceClientID := proxy.Clients[0].ID
+	targetResponse := performRequest(t, fixture.handler, http.MethodPost,
+		"/api/proxies/"+strconv.FormatInt(proxy.ID, 10)+"/clients", map[string]any{"name": "Target"}, fixture.adminCookie)
+	var targetBody struct {
+		Client clientResponse `json:"client"`
+	}
+	if targetResponse.Code != http.StatusCreated || json.Unmarshal(targetResponse.Body.Bytes(), &targetBody) != nil {
+		t.Fatalf("create target client = %d, %s", targetResponse.Code, targetResponse.Body.String())
+	}
+	for _, clientID := range []int64{sourceClientID, targetBody.Client.ID} {
+		assigned := performRequest(t, fixture.handler, http.MethodPatch,
+			"/api/admin/clients/"+strconv.FormatInt(clientID, 10)+"/assignment",
+			map[string]any{"user_id": fixture.userID, "billing_period_months": 1}, fixture.adminCookie)
+		if assigned.Code != http.StatusOK {
+			t.Fatalf("assign client = %d, %s", assigned.Code, assigned.Body.String())
+		}
+	}
+	registration := performRequest(t, fixture.handler, http.MethodPost, "/api/agent/register", agentRegistrationRequest{
+		EnrollmentToken: server.EnrollmentToken, AgentVersion: "1.0.0",
+		AgentImplementation: agentcontrol.OfficialImplementation, AgentAPIVersion: agentcontrol.CurrentAPIVersion,
+		AgentCapabilities: []string{agentcontrol.CapabilityRelayRealm, agentcontrol.CapabilityManagedRuntimePurge},
+	}, nil)
+	if registration.Code != http.StatusCreated {
+		t.Fatalf("register Agent = %d, %s", registration.Code, registration.Body.String())
+	}
+	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
+		"name": "Target Dependency", "mode": "assigned_node", "source_client_id": sourceClientID,
+		"target_client_id": targetBody.Client.ID,
+	}, fixture.userCookie)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create target-dependent relay = %d, %s", created.Code, created.Body.String())
+	}
+	var versionBefore int64
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, server.Server.ID).Scan(&versionBefore); err != nil {
+		t.Fatal(err)
+	}
+	deleted := performRequest(t, fixture.handler, http.MethodDelete,
+		"/api/clients/"+strconv.FormatInt(targetBody.Client.ID, 10), nil, fixture.adminCookie)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete target client = %d, %s", deleted.Code, deleted.Body.String())
+	}
+	var relayCount, versionAfter int64
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM relays WHERE target_client_id = ?`, targetBody.Client.ID).Scan(&relayCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, server.Server.ID).Scan(&versionAfter); err != nil {
+		t.Fatal(err)
+	}
+	if relayCount != 0 || versionAfter != versionBefore+2 {
+		t.Fatalf("target cleanup = relays %d version %d->%d", relayCount, versionBefore, versionAfter)
 	}
 }
 
@@ -581,7 +837,7 @@ func TestDeletingAssignedClientPurgesUserRelaysAndDesiredState(t *testing.T) {
 		t.Fatalf("register Agent = %d, %s", registration.Code, registration.Body.String())
 	}
 	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-		"source_client_id": clientID, "name": "Dependent Relay", "target_ip": "1.1.1.1", "target_port": 443,
+		"mode": "custom", "source_client_id": clientID, "name": "Dependent Relay", "target_ip": "1.1.1.1", "target_port": 443,
 	}, fixture.userCookie)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create dependent relay = %d, %s", created.Code, created.Body.String())
@@ -816,7 +1072,7 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 	}
 
 	relayCreated := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
-		"source_client_id": vlessBody.Client.ID, "name": "Managed User Relay", "target_ip": "1.1.1.1", "target_port": 443,
+		"mode": "custom", "source_client_id": vlessBody.Client.ID, "name": "Managed User Relay", "target_ip": "1.1.1.1", "target_port": 443,
 	}, fixture.userCookie)
 	if relayCreated.Code != http.StatusCreated {
 		t.Fatalf("create managed user relay = %d, %s", relayCreated.Code, relayCreated.Body.String())

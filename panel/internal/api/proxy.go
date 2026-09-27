@@ -233,7 +233,7 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	for _, client := range clients {
-		if err := s.deleteUserRelaysForSourceClient(r.Context(), client.ID); err != nil {
+		if err := s.deleteUserRelaysForClient(r.Context(), client.ID); err != nil {
 			writeRelayError(w, err)
 			return
 		}

@@ -61,6 +61,7 @@ type Relay struct {
 	TargetClientID          *int64
 	TargetLandingID         *int64
 	TargetProxyName         string
+	TargetServerName        string
 	TargetClientName        string
 	TargetLandingName       string
 	TargetLandingProtocol   string

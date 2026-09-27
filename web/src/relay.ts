@@ -10,16 +10,20 @@ export function relayNetworkLabel(network: RelayNetwork) {
 export function relayTargetLabel(value: {
   target_type: RelayTargetType
   target_proxy_name: string
+  target_server_name?: string
   target_landing_name: string
-  target_host: string
-  target_port: number
+  target_host?: string
+  target_port?: number
 }) {
   if (value.target_type === 'proxy') {
-    return `${value.target_proxy_name} · ${value.target_port}`
+    return value.target_server_name
+      ? `${value.target_server_name} · ${value.target_proxy_name}`
+      : `${value.target_proxy_name} · ${value.target_port}`
   }
   if (value.target_type === 'landing') {
-    return `${value.target_landing_name} · ${relayEndpointLabel(value.target_host, value.target_port)}`
+    return `${value.target_landing_name} · ${relayEndpointLabel(value.target_host ?? '', value.target_port ?? 0)}`
   }
+  if (!value.target_host || !value.target_port) return '自定义落地'
   return relayEndpointLabel(value.target_host, value.target_port)
 }
 

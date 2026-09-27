@@ -20,11 +20,11 @@ type createAssignedNodeRequest struct {
 }
 
 type userManagementNodeResponse struct {
-	ProxyID   int64           `json:"proxy_id"`
-	ServerName string         `json:"server_name"`
-	ProxyName string          `json:"proxy_name"`
-	Protocol  string          `json:"protocol"`
-	Client    *clientResponse `json:"client"`
+	ProxyID    int64           `json:"proxy_id"`
+	ServerName string          `json:"server_name"`
+	ProxyName  string          `json:"proxy_name"`
+	Protocol   string          `json:"protocol"`
+	Client     *clientResponse `json:"client"`
 }
 
 func (s *server) listAdminUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -78,9 +78,9 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 		writeInternalError(w)
 		return
 	}
-	relayResponse := make([]myRelayResponse, 0, len(relays))
+	relayResponse := make([]adminUserRelayResponse, 0, len(relays))
 	for _, relay := range relays {
-		relayResponse = append(relayResponse, toMyRelayResponse(relay))
+		relayResponse = append(relayResponse, toAdminUserRelayResponse(relay))
 	}
 	passwordRequest, err := s.authService.LatestPasswordChangeRequest(r.Context(), user.ID)
 	if err != nil {
@@ -93,7 +93,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 		pendingPasswordRequest = &value
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user": accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role},
+		"user":  accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role},
 		"nodes": nodes, "relays": relayResponse, "password_request": pendingPasswordRequest,
 	})
 }

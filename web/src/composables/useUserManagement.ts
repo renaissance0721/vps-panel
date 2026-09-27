@@ -22,6 +22,7 @@ export function useUserManagement() {
   const formOpen = ref(false)
   const formMode = ref<'create' | 'edit'>('create')
   const editingNode = ref<ManagedUserNode | null>(null)
+  const createProxyID = ref<number | null>(null)
   const clientName = ref('')
   const clientEnabled = ref(true)
   const clientUDP443 = ref(false)
@@ -107,11 +108,25 @@ export function useUserManagement() {
     billingPeriodMonths.value = 0
   }
 
-  function openCreate(node: ManagedUserNode) {
+  function openCreate() {
+    const node = availableNodes.value[0]
+    if (!node) {
+      error.value = '没有可开通的代理节点'
+      return
+    }
+    resetForm(node)
+    formMode.value = 'create'
+    createProxyID.value = node.proxy_id
+    clientName.value = `${detail.value?.user.username ?? 'user'}-${node.proxy_name}`
+    formOpen.value = true
+  }
+
+  function selectCreateNode() {
+    const node = availableNodes.value.find((value) => value.proxy_id === createProxyID.value)
+    if (!node) return
     resetForm(node)
     formMode.value = 'create'
     clientName.value = `${detail.value?.user.username ?? 'user'}-${node.proxy_name}`
-    formOpen.value = true
   }
 
   function openEdit(node: ManagedUserNode) {
@@ -183,7 +198,7 @@ export function useUserManagement() {
   }
 
   async function removeNode(node: ManagedUserNode) {
-    if (!node.client || !window.confirm('将删除该用户在此节点的客户端凭据，并移除基于该节点创建的用户中转。是否继续？')) return
+    if (!node.client || !window.confirm('将删除该用户在此节点的客户端凭据，并删除依赖此客户端创建的用户中转。是否继续？')) return
     await run(async () => {
       await api(`/api/clients/${node.client!.id}`, { method: 'DELETE' })
       await loadDetail()
@@ -209,10 +224,10 @@ export function useUserManagement() {
 
   return {
     users, selectedUserID, detail, assignedNodes, availableNodes, loading, submitting, error,
-    formOpen, formMode, editingNode, clientName, clientEnabled, clientUDP443,
+    formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
     trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
     trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths,
-    load, loadDetail, selectUser, openCreate, openEdit, saveNode, removeNode, removeRelay,
+    load, loadDetail, selectUser, openCreate, selectCreateNode, openEdit, saveNode, removeNode, removeRelay,
     reviewPasswordRequest,
   }
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -68,6 +69,7 @@ type relayResponse struct {
 	TargetClientID          *int64    `json:"target_client_id"`
 	TargetLandingID         *int64    `json:"target_landing_id"`
 	TargetProxyName         string    `json:"target_proxy_name"`
+	TargetServerName        string    `json:"target_server_name"`
 	TargetClientName        string    `json:"target_client_name"`
 	TargetLandingName       string    `json:"target_landing_name"`
 	TargetLandingProtocol   string    `json:"target_landing_protocol"`
@@ -79,6 +81,25 @@ type relayResponse struct {
 	Enabled                 bool      `json:"enabled"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
+	RedactPrivateTarget     bool      `json:"-"`
+}
+
+func (value relayResponse) MarshalJSON() ([]byte, error) {
+	type relayResponseAlias relayResponse
+	if !value.RedactPrivateTarget {
+		return json.Marshal(relayResponseAlias(value))
+	}
+	encoded, err := json.Marshal(relayResponseAlias(value))
+	if err != nil {
+		return nil, err
+	}
+	var response map[string]any
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		return nil, err
+	}
+	delete(response, "target_host")
+	delete(response, "target_port")
+	return json.Marshal(response)
 }
 
 type relayClientShareResponse struct {
@@ -417,12 +438,14 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		TargetType: value.TargetType, TargetProxyID: value.TargetProxyID, TargetClientID: value.TargetClientID,
 		TargetLandingID: value.TargetLandingID,
-		TargetProxyName: value.TargetProxyName, TargetClientName: value.TargetClientName, TargetHost: value.TargetHost,
+		TargetProxyName: value.TargetProxyName, TargetServerName: value.TargetServerName,
+		TargetClientName: value.TargetClientName, TargetHost: value.TargetHost,
 		TargetLandingName: value.TargetLandingName, TargetLandingProtocol: value.TargetLandingProtocol,
 		TargetLandingVisibility: value.TargetLandingVisibility,
 		TargetPort:              value.TargetPort, TargetAddressReady: value.TargetAddressReady,
 		Network: value.Network, Enabled: value.Enabled,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		RedactPrivateTarget: value.OwnerUserID != nil && value.TargetType == relaystore.TargetManual,
 	}
 }
 

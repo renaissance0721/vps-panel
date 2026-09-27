@@ -75,12 +75,13 @@ type RelayRecord = {
   target_client_id: number | null
   target_landing_id: number | null
   target_proxy_name: string
+  target_server_name?: string
   target_client_name: string
   target_landing_name: string
   target_landing_protocol: 'vless' | 'shadowsocks' | ''
   target_landing_visibility: 'private' | 'public' | ''
-  target_host: string
-  target_port: number
+  target_host?: string
+  target_port?: number
   target_address_ready: boolean
   network: RelayNetwork
   enabled: boolean
@@ -363,8 +364,8 @@ function openEdit(value: RelayRecord) {
   targetProxyID.value = value.target_proxy_id
   targetLandingID.value = value.target_landing_id
   void loadTargetClients(value.target_type === 'proxy' ? value.target_proxy_id : null, value.target_client_id)
-  targetHost.value = value.target_type === 'manual' ? value.target_host : ''
-  targetPort.value = value.target_type === 'manual' ? value.target_port : 443
+  targetHost.value = value.target_type === 'manual' ? (value.target_host ?? '') : ''
+  targetPort.value = value.target_type === 'manual' ? (value.target_port ?? 443) : 443
   enabled.value = value.enabled
   formOpen.value = true
 }
@@ -588,13 +589,13 @@ import {
               <small class="secondary-text">{{ value.entry_host_mode === 'auto' ? '自动检测' : '手动' }}</small>
             </td>
             <td>{{ value.listen_port }}</td>
-            <td>{{ relayTargetLabel(value) }}</td>
+            <td>{{ value.owner_username && value.target_type === 'manual' ? '自定义落地' : relayTargetLabel(value) }}</td>
             <td>{{ value.target_client_name || '—' }}</td>
             <td>{{ relayNetworkLabel(value.network) }}</td>
             <td><n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag></td>
             <td class="server-actions">
               <n-button size="small" secondary @click="showRelay(value.id)">查看</n-button>
-              <n-button size="small" secondary @click="openEdit(value)">编辑</n-button>
+              <n-button v-if="!value.owner_username" size="small" secondary @click="openEdit(value)">编辑</n-button>
               <n-button size="small" secondary :disabled="!value.enabled && !serverSupportsRealm(value.server_id)" :title="!value.enabled && !serverSupportsRealm(value.server_id) ? '当前 Agent 不支持 Realm 中转' : undefined" @click="toggleRelay(value)">{{ value.enabled ? '禁用' : '启用' }}</n-button>
               <n-button size="small" type="error" secondary @click="removeRelay(value)">删除</n-button>
             </td>
@@ -687,10 +688,10 @@ import {
     <n-card class="relay-detail-card" title="中转详情" :bordered="false" closable @close="detailOpen = false">
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedRelay.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedRelay.server_name }}</dd></div>
-        <div v-if="selectedRelay.owner_username"><dt>归属</dt><dd><n-tag type="info" size="small">用户中转</n-tag> {{ selectedRelay.owner_username }}</dd></div><div v-if="selectedRelay.source_proxy_name"><dt>来源节点</dt><dd>{{ selectedRelay.source_proxy_name }}</dd></div>
+        <div v-if="selectedRelay.owner_username"><dt>归属</dt><dd><n-tag type="info" size="small">用户中转</n-tag> {{ selectedRelay.owner_username }}</dd></div><div v-if="selectedRelay.source_proxy_name"><dt>来源节点</dt><dd>{{ selectedRelay.server_name }} · {{ selectedRelay.source_proxy_name }}</dd></div>
         <div><dt>入口模式</dt><dd>{{ selectedRelay.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>客户端入口</dt><dd>{{ relayEndpointLabel(selectedRelay.entry_address, selectedRelay.listen_port) }}</dd></div>
         <div><dt>监听地址</dt><dd>{{ relayEndpointLabel(selectedRelay.listen_address, selectedRelay.listen_port) }}</dd></div><div><dt>目标类型</dt><dd>{{ selectedRelay.target_type === 'proxy' ? 'Panel Proxy' : selectedRelay.target_type === 'landing' ? '外部节点' : '手动地址' }}</dd></div>
-        <div><dt>目标</dt><dd>{{ relayTargetLabel(selectedRelay) }}</dd></div><div><dt>Network</dt><dd>{{ relayNetworkLabel(selectedRelay.network) }}</dd></div>
+        <div><dt>目标</dt><dd>{{ selectedRelay.owner_username && selectedRelay.target_type === 'manual' ? '自定义落地' : relayTargetLabel(selectedRelay) }}</dd></div><div><dt>Network</dt><dd>{{ relayNetworkLabel(selectedRelay.network) }}</dd></div>
         <div v-if="selectedRelay.target_type === 'landing'"><dt>外部节点</dt><dd>{{ selectedRelay.target_landing_name }}</dd></div><div v-if="selectedRelay.target_type === 'landing'"><dt>协议</dt><dd>{{ selectedRelay.target_landing_protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</dd></div>
         <div v-if="selectedRelay.target_type === 'landing'"><dt>可见性</dt><dd>{{ selectedRelay.target_landing_visibility === 'public' ? '公开' : '私有' }}</dd></div>
         <div><dt>状态</dt><dd>{{ selectedRelay.enabled ? '启用' : '禁用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
@@ -730,7 +731,7 @@ import {
           <div class="modal-actions"><n-button secondary :disabled="!client.network_compatible" @click="showRelayQRCode(client)">二维码</n-button><n-button type="primary" :disabled="!client.network_compatible" @click="copyRelayClientURI(client)">{{ copiedRelayClientID === client.client.id ? '链接已复制' : '复制链接' }}</n-button></div>
         </div>
       </div>
-      <div class="modal-actions"><n-button secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
+      <div class="modal-actions"><n-button v-if="!selectedRelay.owner_username" secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
     </n-card>
   </n-modal>
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="setQRCodeOpen" />

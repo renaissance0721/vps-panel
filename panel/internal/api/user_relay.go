@@ -11,6 +11,7 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
@@ -25,21 +26,45 @@ var (
 type createMyRelayRequest struct {
 	SourceClientID int64  `json:"source_client_id"`
 	Name           string `json:"name"`
+	Mode           string `json:"mode"`
+	TargetClientID int64  `json:"target_client_id"`
 	TargetIP       string `json:"target_ip"`
 	TargetPort     int    `json:"target_port"`
 }
 
+type updateMyRelayRequest struct {
+	TargetIP   string `json:"target_ip"`
+	TargetPort int    `json:"target_port"`
+}
+
+type myRelayNodeResponse struct {
+	ServerName string `json:"server_name"`
+	ProxyName  string `json:"proxy_name"`
+}
+
 type myRelayResponse struct {
-	ID             int64     `json:"id"`
-	Name           string    `json:"name"`
-	SourceClientID *int64    `json:"source_client_id,omitempty"`
-	ServerName     string    `json:"server_name"`
-	ProxyName      string    `json:"proxy_name"`
-	EntryAddress   string    `json:"entry_address"`
-	TargetIP       string    `json:"target_ip"`
-	TargetPort     int       `json:"target_port"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID           int64                `json:"id"`
+	Name         string               `json:"name"`
+	Mode         string               `json:"mode"`
+	Source       myRelayNodeResponse  `json:"source"`
+	Target       *myRelayNodeResponse `json:"target,omitempty"`
+	TargetIP     *string              `json:"target_ip,omitempty"`
+	TargetPort   *int                 `json:"target_port,omitempty"`
+	EntryAddress string               `json:"entry_address"`
+	Enabled      bool                 `json:"enabled"`
+	CreatedAt    time.Time            `json:"created_at"`
+}
+
+type adminUserRelayResponse struct {
+	ID           int64                `json:"id"`
+	Name         string               `json:"name"`
+	Username     string               `json:"username,omitempty"`
+	Mode         string               `json:"mode"`
+	Source       myRelayNodeResponse  `json:"source"`
+	Target       *myRelayNodeResponse `json:"target,omitempty"`
+	EntryAddress string               `json:"entry_address"`
+	Enabled      bool                 `json:"enabled"`
+	CreatedAt    time.Time            `json:"created_at"`
 }
 
 func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -49,10 +74,11 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	type sourceResponse struct {
-		ClientID   int64  `json:"client_id"`
-		ServerName string `json:"server_name"`
-		ProxyName  string `json:"proxy_name"`
-		Protocol   string `json:"protocol"`
+		ClientID         int64  `json:"client_id"`
+		ServerName       string `json:"server_name"`
+		ProxyName        string `json:"proxy_name"`
+		Protocol         string `json:"protocol"`
+		EffectiveEnabled bool   `json:"effective_enabled"`
 	}
 	values := make([]sourceResponse, 0, len(clients))
 	now := time.Now()
@@ -60,7 +86,7 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 		if client.LifecycleAt(now).EffectiveEnabled {
 			values = append(values, sourceResponse{
 				ClientID: client.ID, ServerName: client.ServerName,
-				ProxyName: client.ProxyName, Protocol: client.Protocol,
+				ProxyName: client.ProxyName, Protocol: client.Protocol, EffectiveEnabled: true,
 			})
 		}
 	}
@@ -85,15 +111,6 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	targetIP, err := validatePublicTargetIP(request.TargetIP)
-	if err != nil {
-		writeUserRelayError(w, err)
-		return
-	}
-	if request.TargetPort < 1 || request.TargetPort > 65535 {
-		writeRelayError(w, relaystore.ErrInvalidPort)
-		return
-	}
 	source, err := s.proxies.GetAssignedClient(r.Context(), user.ID, request.SourceClientID)
 	if err != nil {
 		writeProxyError(w, err)
@@ -112,14 +129,49 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		writeError(w, http.StatusConflict, "当前中转节点暂不可用")
 		return
 	}
+	input := relaystore.CreateInput{
+		ServerID: source.ServerID, OwnerUserID: &user.ID, SourceClientID: &source.ID, Name: request.Name,
+		ListenAddress: "0.0.0.0", EntryHostMode: source.ProxyEntryHostMode, EntryHost: source.ProxyEntryHost,
+		Network: relaystore.NetworkTCP, Enabled: true,
+	}
+	switch request.Mode {
+	case "assigned_node":
+		if request.TargetClientID == request.SourceClientID {
+			writeError(w, http.StatusBadRequest, "入口节点和落地节点不能相同")
+			return
+		}
+		target, err := s.proxies.GetAssignedClient(r.Context(), user.ID, request.TargetClientID)
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+		if !target.LifecycleAt(time.Now()).EffectiveEnabled {
+			writeError(w, http.StatusConflict, "所选落地节点当前不可用于创建中转")
+			return
+		}
+		input.TargetType = relaystore.TargetProxy
+		input.TargetProxyID = &target.ProxyID
+		input.TargetClientID = &target.ID
+	case "custom":
+		targetIP, err := validatePublicTargetIP(request.TargetIP)
+		if err != nil {
+			writeUserRelayError(w, err)
+			return
+		}
+		if request.TargetPort < 1 || request.TargetPort > 65535 {
+			writeRelayError(w, relaystore.ErrInvalidPort)
+			return
+		}
+		input.TargetType = relaystore.TargetManual
+		input.TargetHost = targetIP.String()
+		input.TargetPort = request.TargetPort
+	default:
+		writeError(w, http.StatusBadRequest, "落地方式无效")
+		return
+	}
 	for port := relaystore.UserRelayPortStart; port <= relaystore.UserRelayPortEnd; port++ {
-		value, mutation, err := s.relays.Create(r.Context(), relaystore.CreateInput{
-			ServerID: source.ServerID, OwnerUserID: &user.ID, SourceClientID: &source.ID, Name: request.Name,
-			ListenAddress: "0.0.0.0", ListenPort: port,
-			EntryHostMode: source.ProxyEntryHostMode, EntryHost: source.ProxyEntryHost,
-			TargetType: relaystore.TargetManual, TargetHost: targetIP.String(), TargetPort: request.TargetPort,
-			Network: relaystore.NetworkTCP, Enabled: true,
-		})
+		input.ListenPort = port
+		value, mutation, err := s.relays.Create(r.Context(), input)
 		if errors.Is(err, relaystore.ErrPortConflict) {
 			continue
 		}
@@ -138,14 +190,90 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 	writeUserRelayError(w, errUserRelayPortsFull)
 }
 
-func (s *server) deleteMyRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
+func (s *server) updateMyRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
+	value, ok := s.readOwnedRelay(w, r, user)
 	if !ok {
 		return
+	}
+	if value.TargetType != relaystore.TargetManual {
+		writeError(w, http.StatusBadRequest, "仅自定义落地中转可以修改目标地址")
+		return
+	}
+	var request updateMyRelayRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	targetIP, err := validatePublicTargetIP(request.TargetIP)
+	if err != nil {
+		writeUserRelayError(w, err)
+		return
+	}
+	if request.TargetPort < 1 || request.TargetPort > 65535 {
+		writeRelayError(w, relaystore.ErrInvalidPort)
+		return
+	}
+	target := targetIP.String()
+	updated, mutation, err := s.relays.Update(r.Context(), value.ID, relaystore.UpdateInput{
+		TargetHost: &target, TargetPort: &request.TargetPort,
+	})
+	if err != nil {
+		writeRelayError(w, err)
+		return
+	}
+	s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	writeJSON(w, http.StatusOK, map[string]any{"relay": toMyRelayResponse(updated)})
+}
+
+func (s *server) getMyRelayShare(w http.ResponseWriter, r *http.Request, user auth.User) {
+	value, ok := s.readOwnedRelay(w, r, user)
+	if !ok {
+		return
+	}
+	if value.EntryAddress == "" {
+		writeRelayError(w, relaystore.ErrEntryUnavailable)
+		return
+	}
+	var clientID int64
+	if value.TargetType == relaystore.TargetProxy && value.TargetClientID != nil {
+		clientID = *value.TargetClientID
+	} else if value.TargetType == relaystore.TargetManual && value.SourceClientID != nil {
+		clientID = *value.SourceClientID
+	} else {
+		writeRelayError(w, relaystore.ErrInvalidTargetClient)
+		return
+	}
+	if _, err := s.proxies.GetAssignedClient(r.Context(), user.ID, clientID); err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	share, err := s.proxies.GetClientShareAtEndpoint(r.Context(), clientID, proxystore.ShareEndpoint{
+		Address: value.EntryAddress, Port: value.ListenPort,
+	})
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"share": map[string]any{
+		"uri": share.URI, "protocol": share.Protocol, "name": value.Name,
+	}})
+}
+
+func (s *server) readOwnedRelay(w http.ResponseWriter, r *http.Request, user auth.User) (relaystore.Relay, bool) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "中转 ID 无效")
+	if !ok {
+		return relaystore.Relay{}, false
 	}
 	value, err := s.relays.Get(r.Context(), id)
 	if err != nil || value.OwnerUserID == nil || *value.OwnerUserID != user.ID {
 		writeRelayError(w, relaystore.ErrNotFound)
+		return relaystore.Relay{}, false
+	}
+	return value, true
+}
+
+func (s *server) deleteMyRelay(w http.ResponseWriter, r *http.Request, user auth.User) {
+	value, ok := s.readOwnedRelay(w, r, user)
+	if !ok {
 		return
 	}
 	s.deleteOwnedRelay(w, r, value)
@@ -157,13 +285,9 @@ func (s *server) listAdminUserRelays(w http.ResponseWriter, r *http.Request, _ a
 		writeInternalError(w)
 		return
 	}
-	type adminUserRelayResponse struct {
-		myRelayResponse
-		Username string `json:"username"`
-	}
 	response := make([]adminUserRelayResponse, 0, len(values))
 	for _, value := range values {
-		response = append(response, adminUserRelayResponse{myRelayResponse: toMyRelayResponse(value), Username: value.OwnerUsername})
+		response = append(response, toAdminUserRelayResponse(value))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"relays": response})
 }
@@ -196,8 +320,8 @@ func (s *server) deleteOwnedRelay(w http.ResponseWriter, r *http.Request, value 
 	writeNoContent(w)
 }
 
-func (s *server) deleteUserRelaysForSourceClient(ctx context.Context, clientID int64) error {
-	values, err := s.relays.ListBySourceClient(ctx, clientID)
+func (s *server) deleteUserRelaysForClient(ctx context.Context, clientID int64) error {
+	values, err := s.relays.ListUserOwnedByClient(ctx, clientID)
 	if err != nil {
 		return err
 	}
@@ -229,13 +353,39 @@ func (s *server) allowManagedRelayPurge(ctx context.Context, serverID int64) (bo
 }
 
 func toMyRelayResponse(value relaystore.Relay) myRelayResponse {
-	return myRelayResponse{
-		ID: value.ID, Name: value.Name, SourceClientID: value.SourceClientID,
-		ServerName: value.ServerName, ProxyName: value.SourceProxyName,
+	response := myRelayResponse{
+		ID: value.ID, Name: value.Name, Mode: relayMode(value),
+		Source:       myRelayNodeResponse{ServerName: value.ServerName, ProxyName: value.SourceProxyName},
 		EntryAddress: relaystore.JoinHostPort(value.EntryAddress, value.ListenPort),
-		TargetIP:     value.TargetHost, TargetPort: value.TargetPort,
-		Enabled: value.Enabled, CreatedAt: value.CreatedAt,
+		Enabled:      value.Enabled, CreatedAt: value.CreatedAt,
 	}
+	if value.TargetType == relaystore.TargetProxy {
+		response.Target = &myRelayNodeResponse{ServerName: value.TargetServerName, ProxyName: value.TargetProxyName}
+	} else if value.TargetType == relaystore.TargetManual {
+		targetIP, targetPort := value.TargetHost, value.TargetPort
+		response.TargetIP, response.TargetPort = &targetIP, &targetPort
+	}
+	return response
+}
+
+func toAdminUserRelayResponse(value relaystore.Relay) adminUserRelayResponse {
+	response := adminUserRelayResponse{
+		ID: value.ID, Name: value.Name, Username: value.OwnerUsername, Mode: relayMode(value),
+		Source:       myRelayNodeResponse{ServerName: value.ServerName, ProxyName: value.SourceProxyName},
+		EntryAddress: relaystore.JoinHostPort(value.EntryAddress, value.ListenPort),
+		Enabled:      value.Enabled, CreatedAt: value.CreatedAt,
+	}
+	if value.TargetType == relaystore.TargetProxy {
+		response.Target = &myRelayNodeResponse{ServerName: value.TargetServerName, ProxyName: value.TargetProxyName}
+	}
+	return response
+}
+
+func relayMode(value relaystore.Relay) string {
+	if value.TargetType == relaystore.TargetProxy {
+		return "assigned_node"
+	}
+	return "custom"
 }
 
 func validatePublicTargetIP(value string) (netip.Addr, error) {

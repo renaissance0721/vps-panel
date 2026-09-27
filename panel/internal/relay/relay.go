@@ -25,10 +25,11 @@ func (s *Service) ListUserOwned(ctx context.Context) ([]Relay, error) {
 	)
 }
 
-func (s *Service) ListBySourceClient(ctx context.Context, clientID int64) ([]Relay, error) {
+func (s *Service) ListUserOwnedByClient(ctx context.Context, clientID int64) ([]Relay, error) {
 	return list(ctx, s.db,
-		`WHERE relays.source_client_id = ? AND source.archived_at IS NULL ORDER BY relays.created_at, relays.id`,
-		clientID,
+		`WHERE relays.owner_user_id IS NOT NULL AND (relays.source_client_id = ? OR relays.target_client_id = ?)
+		 AND source.archived_at IS NULL ORDER BY relays.created_at, relays.id`,
+		clientID, clientID,
 	)
 }
 
@@ -195,7 +196,7 @@ func list(ctx context.Context, query interface {
 		 target_landing.name, target_landing.protocol, target_landing.visibility, target_landing.host, target_landing.port,
 		 relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
-		 target_proxy.name, target_proxy.listen_port, target_proxy.entry_host_mode,
+		 target_proxy.name, target_server.name, target_proxy.listen_port, target_proxy.entry_host_mode,
 		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at
 		 FROM relays
 		 JOIN servers AS source ON source.id = relays.server_id
@@ -220,7 +221,7 @@ func list(ctx context.Context, query interface {
 		var ownerUserID, sourceClientID sql.NullInt64
 		var ownerUsername, sourceProxyName sql.NullString
 		var targetProxyID, targetClientID, targetLandingID, storedTargetPort, proxyPort, landingPort, targetArchived sql.NullInt64
-		var targetProxyName, targetClientName, targetLandingName, targetLandingProtocol, targetLandingVisibility sql.NullString
+		var targetProxyName, targetServerName, targetClientName, targetLandingName, targetLandingProtocol, targetLandingVisibility sql.NullString
 		var targetLandingHost, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
@@ -232,7 +233,7 @@ func list(ctx context.Context, query interface {
 			&targetLandingName, &targetLandingProtocol, &targetLandingVisibility, &targetLandingHost, &landingPort,
 			&value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
-			&targetProxyName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
+			&targetProxyName, &targetServerName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
 		); err != nil {
 			return nil, fmt.Errorf("scan relay: %w", err)
 		}
@@ -283,6 +284,7 @@ func list(ctx context.Context, query interface {
 			value.TargetAddressReady = true
 		} else if targetProxyID.Valid && proxyPort.Valid && !targetArchived.Valid {
 			value.TargetProxyName = targetProxyName.String
+			value.TargetServerName = targetServerName.String
 			value.TargetPort = int(proxyPort.Int64)
 			if targetEntryMode.String == "manual" {
 				value.TargetHost = targetEntryHost.String

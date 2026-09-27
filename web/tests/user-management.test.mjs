@@ -19,12 +19,12 @@ test('用户管理从 User 角度复用真实 Client 且原子开通', () => {
   assert.doesNotMatch(composableSource, /user_nodes/)
   assert.match(composableSource, /\/api\/clients\/\$\{node\.client\.id\}/)
   assert.match(composableSource, /method: 'DELETE'/)
-  assert.match(composableSource, /将删除该用户在此节点的客户端凭据，并移除基于该节点创建的用户中转。是否继续？/)
+  assert.match(composableSource, /将删除该用户在此节点的客户端凭据，并删除依赖此客户端创建的用户中转。是否继续？/)
 })
 
 test('用户切换及节点、中转、密码操作后立即刷新详情', () => {
   assert.match(viewSource, /@change="model\.selectUser"/)
-  assert.match(viewSource, /开通节点/)
+  assert.match(viewSource, /\+ 新建客户端/)
   assert.match(viewSource, />查看</)
   assert.match(viewSource, />编辑</)
   assert.match(viewSource, />删除</)
@@ -41,6 +41,18 @@ test('用户管理显示 Server 与 Proxy 并提供完整 Client 管理字段', 
   for (const label of ['客户端名称', '流量额度', '流量重置', '到期设置', '付款周期', '允许 UDP\/443', '启用节点']) {
     assert.match(viewSource, new RegExp(label))
   }
-  assert.match(viewSource, /relay\.server_name.*relay\.proxy_name/)
+  assert.match(viewSource, /relay\.source\.server_name.*relay\.source\.proxy_name/)
+  assert.match(viewSource, /自定义落地/)
+  assert.doesNotMatch(viewSource, /relay\.target_(?:ip|port)/)
   assert.doesNotMatch(viewSource, /source_client_id|assigned_user_id|credential|UUID/)
+})
+
+test('用户管理主区域只展示已开通节点，未开通节点只进入新建弹窗', () => {
+  assert.match(viewSource, /v-for="node in assignedNodes"/)
+  assert.doesNotMatch(viewSource, /v-for="node in detail\.nodes"/)
+  assert.match(viewSource, /v-if="assignedNodes\.length === 0" description="暂无已开通客户端"/)
+  assert.match(viewSource, /v-if="formMode === 'create'"[\s\S]*v-for="node in availableNodes"/)
+  assert.match(viewSource, /node\.server_name.*node\.proxy_name/)
+  assert.match(composableSource, /function openCreate\(\)[\s\S]*availableNodes\.value\[0\]/)
+  assert.doesNotMatch(viewSource, /overview-summary-grid/)
 })

@@ -13,6 +13,10 @@ type clientAssignmentRequest struct {
 	BillingPeriodMonths *int   `json:"billing_period_months"`
 }
 
+type clientRelayPortCountRequest struct {
+	Count int `json:"user_relay_port_count"`
+}
+
 func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "代理节点 ID 无效")
 	if !ok {
@@ -33,7 +37,9 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 			AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 			BillingPeriodMonths: value.BillingPeriodMonths,
-			ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+			UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,
+			UserRelayPortCount: value.UserRelayPortCount,
+			ClientUDP443:       value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 			TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 			TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 			TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
@@ -41,6 +47,38 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 		}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
+}
+
+func (s *server) updateClientRelayPortCount(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "客户端 ID 无效")
+	if !ok {
+		return
+	}
+	var request clientRelayPortCountRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	value, err := s.proxies.UpdateClientRelayPortCount(r.Context(), id, request.Count)
+	if err != nil {
+		writeClientRelayPortError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
+}
+
+func writeClientRelayPortError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, proxystore.ErrInvalidClientRelayPortCount):
+		writeError(w, http.StatusBadRequest, "用户中转端口数量必须在 0–5 之间")
+	case errors.Is(err, proxystore.ErrClientRelayPortsUnavailable):
+		writeError(w, http.StatusConflict, "该服务器没有可分配的连续用户中转端口")
+	case errors.Is(err, proxystore.ErrClientRelayPortsActive):
+		writeError(w, http.StatusConflict, "该客户端存在正在使用的用户中转，请先删除中转后调整端口")
+	case errors.Is(err, proxystore.ErrClientNotAssigned):
+		writeError(w, http.StatusConflict, "仅已分配给普通用户的客户端可配置用户中转端口")
+	default:
+		writeClientAssignmentError(w, err)
+	}
 }
 
 func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ auth.User) {

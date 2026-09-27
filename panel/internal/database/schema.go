@@ -250,6 +250,15 @@ func schemaStatements() []string {
 			updated_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_clients_proxy_id ON clients(proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS client_relay_ports (
+			client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			port INTEGER NOT NULL CHECK (port BETWEEN 20000 AND 29999),
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (client_id, port),
+			UNIQUE (server_id, port)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_client_relay_ports_server_id ON client_relay_ports(server_id)`,
 		`CREATE TABLE IF NOT EXISTS client_metrics (
 			client_id INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
 			xray_uplink_bytes INTEGER NOT NULL CHECK (xray_uplink_bytes >= 0),

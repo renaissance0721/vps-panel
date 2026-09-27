@@ -35,6 +35,7 @@ export function useUserManagement() {
   const expirationMode = ref<'unlimited' | 'specified'>('unlimited')
   const expiresAt = ref('')
   const billingPeriodMonths = ref<0 | 1 | 3 | 6 | 12>(0)
+  const userRelayPortCount = ref(5)
 
   const assignedNodes = computed(() => detail.value?.nodes.filter((node) => node.client !== null) ?? [])
   const availableNodes = computed(() => detail.value?.nodes.filter((node) => node.client === null) ?? [])
@@ -106,6 +107,7 @@ export function useUserManagement() {
     expirationMode.value = 'unlimited'
     expiresAt.value = ''
     billingPeriodMonths.value = 0
+    userRelayPortCount.value = 5
   }
 
   function openCreate() {
@@ -146,6 +148,7 @@ export function useUserManagement() {
     expirationMode.value = node.client.expires_at ? 'specified' : 'unlimited'
     expiresAt.value = formatClientExpirationInput(node.client.expires_at)
     billingPeriodMonths.value = node.client.billing_period_months ?? 0
+    userRelayPortCount.value = node.client.user_relay_port_count
     formOpen.value = true
   }
 
@@ -156,6 +159,7 @@ export function useUserManagement() {
     if (trafficResetMode.value === 'monthly' && (trafficResetDay.value < 1 || trafficResetDay.value > 31)) return '每月重置日期必须在 1–31 之间'
     if (trafficResetMode.value !== 'never' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(trafficResetTime.value)) return '流量重置时间格式无效'
     if (expirationMode.value === 'specified' && !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/.test(expiresAt.value)) return '请选择有效的到期时间'
+    if (!Number.isInteger(userRelayPortCount.value) || userRelayPortCount.value < 0 || userRelayPortCount.value > 5) return '用户中转端口数量必须在 0–5 之间'
     return ''
   }
 
@@ -183,9 +187,15 @@ export function useUserManagement() {
       if (formMode.value === 'create') {
         await api(`/api/admin/users/${userID}/nodes`, {
           method: 'POST',
-          body: JSON.stringify({ ...payload, proxy_id: node.proxy_id, billing_period_months: billingPeriodMonths.value || null }),
+          body: JSON.stringify({ ...payload, proxy_id: node.proxy_id, billing_period_months: billingPeriodMonths.value || null, user_relay_port_count: userRelayPortCount.value }),
         })
       } else if (node.client) {
+        if (userRelayPortCount.value !== node.client.user_relay_port_count) {
+          await api(`/api/admin/clients/${node.client.id}/relay-ports`, {
+            method: 'PATCH',
+            body: JSON.stringify({ user_relay_port_count: userRelayPortCount.value }),
+          })
+        }
         await api(`/api/clients/${node.client.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
         await api(`/api/admin/clients/${node.client.id}/assignment`, {
           method: 'PATCH',
@@ -226,7 +236,7 @@ export function useUserManagement() {
     users, selectedUserID, detail, assignedNodes, availableNodes, loading, submitting, error,
     formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
     trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
-    trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths,
+    trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths, userRelayPortCount,
     load, loadDetail, selectUser, openCreate, selectCreateNode, openEdit, saveNode, removeNode, removeRelay,
     reviewPasswordRequest,
   }

@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+func TestMigrateClientRelayPortsDoesNotBackfillExistingClients(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, statement := range []string{
+		`PRAGMA foreign_keys = ON`,
+		`CREATE TABLE servers (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE clients (id INTEGER PRIMARY KEY)`,
+		`INSERT INTO servers (id) VALUES (1)`,
+		`INSERT INTO clients (id) VALUES (10)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrateClientRelayPorts(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateClientRelayPorts(t.Context(), db); err != nil {
+		t.Fatalf("repeat client relay port migration: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM client_relay_ports`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy client relay ports = %d, %v", count, err)
+	}
+	if _, err := db.Exec(`INSERT INTO client_relay_ports (client_id, server_id, port, created_at) VALUES (10, 1, 20000, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM clients WHERE id = 10`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM client_relay_ports`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("deleted client relay ports = %d, %v", count, err)
+	}
+}
+
 func TestMigrateRelayEntryHostDefaultsExistingRowsToAuto(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

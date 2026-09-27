@@ -43,6 +43,9 @@ type clientSummaryResponse struct {
 	AssignedUserID      *int64                `json:"assigned_user_id"`
 	AssignedUsername    string                `json:"assigned_username"`
 	BillingPeriodMonths *int                  `json:"billing_period_months"`
+	UserRelayPortStart  *int                  `json:"user_relay_port_start"`
+	UserRelayPortEnd    *int                  `json:"user_relay_port_end"`
+	UserRelayPortCount  int                   `json:"user_relay_port_count"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
 	ExpiresAt           *time.Time            `json:"expires_at"`
@@ -68,6 +71,9 @@ type clientResponse struct {
 	AssignedUserID      *int64                `json:"assigned_user_id"`
 	AssignedUsername    string                `json:"assigned_username"`
 	BillingPeriodMonths *int                  `json:"billing_period_months"`
+	UserRelayPortStart  *int                  `json:"user_relay_port_start"`
+	UserRelayPortEnd    *int                  `json:"user_relay_port_end"`
+	UserRelayPortCount  int                   `json:"user_relay_port_count"`
 	ClientUDP443        bool                  `json:"client_udp443"`
 	Enabled             bool                  `json:"enabled"`
 	ExpiresAt           *time.Time            `json:"expires_at"`
@@ -121,7 +127,9 @@ func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryRespon
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 		BillingPeriodMonths: value.BillingPeriodMonths,
-		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,
+		UserRelayPortCount: value.UserRelayPortCount,
+		ClientUDP443:       value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
@@ -137,7 +145,9 @@ func toClientResponse(value proxystore.Client) clientResponse {
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 		BillingPeriodMonths: value.BillingPeriodMonths,
-		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,
+		UserRelayPortCount: value.UserRelayPortCount,
+		ClientUDP443:       value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 		EffectiveEnabled: lifecycle.EffectiveEnabled, Status: lifecycle.Status,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,

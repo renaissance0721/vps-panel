@@ -136,6 +136,16 @@ func createPortalServerAndProxy(t *testing.T, fixture userPortalFixture, protoco
 	return server, response.Proxy
 }
 
+func setClientRelayPortCount(t *testing.T, fixture userPortalFixture, clientID int64, count int) {
+	t.Helper()
+	response := performRequest(t, fixture.handler, http.MethodPatch,
+		"/api/admin/clients/"+strconv.FormatInt(clientID, 10)+"/relay-ports",
+		map[string]any{"user_relay_port_count": count}, fixture.adminCookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("set client %d relay port count to %d = %d, %s", clientID, count, response.Code, response.Body.String())
+	}
+}
+
 func TestAssignedNodesMetricsAndShareAreOwnerScoped(t *testing.T) {
 	fixture := setupUserPortalFixture(t)
 	defer fixture.db.Close()
@@ -177,8 +187,8 @@ func TestAssignedNodesMetricsAndShareAreOwnerScoped(t *testing.T) {
 	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"traffic_used_bytes":700`) ||
 		!strings.Contains(nodes.Body.String(), `"billing_period_months":1`) || !strings.Contains(nodes.Body.String(), `"expires_at"`) ||
 		decodeErr != nil || len(nodeBody.Nodes) != 1 || nodeBody.Nodes[0].ClientID != vlessClientID ||
-		nodeBody.Nodes[0].ServerName != "Portal Server" || strings.Contains(nodes.Body.String(), "credential") ||
-		strings.Contains(nodes.Body.String(), "Subscription") {
+		nodeBody.Nodes[0].ServerName != "Portal Server" || nodeBody.Nodes[0].ClientName != "Subscription" ||
+		strings.Contains(nodes.Body.String(), "credential") {
 		t.Fatalf("alice nodes = %d, %s", nodes.Code, nodes.Body.String())
 	}
 	ownedShare := performRequest(t, fixture.handler, http.MethodGet,
@@ -396,6 +406,7 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 	if managerRelay.Code != http.StatusCreated {
 		t.Fatalf("create reserved relay = %d, %s", managerRelay.Code, managerRelay.Body.String())
 	}
+	setClientRelayPortCount(t, fixture, sourceClientID, 5)
 	sources := performRequest(t, fixture.handler, http.MethodGet, "/api/me/relay-sources", nil, fixture.userCookie)
 	if sources.Code != http.StatusOK || !strings.Contains(sources.Body.String(), `"server_name":"Portal Server"`) ||
 		!strings.Contains(sources.Body.String(), `"proxy_name":"Portal Proxy"`) {
@@ -448,7 +459,7 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
 		"mode": "custom", "source_client_id": sourceClientID, "name": "Alice Relay", "target_ip": "1.1.1.1", "target_port": 443,
 	}, fixture.userCookie)
-	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"entry_address":"node.example.com:20002"`) {
+	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"entry_address":"node.example.com:`) {
 		t.Fatalf("create user relay = %d, %s", created.Code, created.Body.String())
 	}
 	var createdBody struct {
@@ -471,11 +482,15 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 		t.Fatal(err)
 	}
 	if ownerID != fixture.userID || storedSourceClientID != sourceClientID || storedServerID != server.Server.ID ||
-		entryMode != "manual" || entryHost != "node.example.com" || listenPort != 20002 ||
+		entryMode != "manual" || entryHost != "node.example.com" ||
 		targetType != "manual" || targetHost != "1.1.1.1" || targetPort != 443 || network != "tcp" || versionAfter != versionBefore+1 {
 		t.Fatalf("stored user relay = owner %d source %d server %d entry %s/%s port %d target %s:%d type %q network %q version %d->%d",
 			ownerID, storedSourceClientID, storedServerID, entryMode, entryHost, listenPort,
 			targetHost, targetPort, targetType, network, versionBefore, versionAfter)
+	}
+	var sourceReservation int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM client_relay_ports WHERE client_id = ? AND port = ?`, sourceClientID, listenPort).Scan(&sourceReservation); err != nil || sourceReservation != 1 {
+		t.Fatalf("user relay port %d reservation count = %d, %v", listenPort, sourceReservation, err)
 	}
 	readContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -590,6 +605,9 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 	assign(sourceClientID, fixture.userID)
 	assign(targetClientID, fixture.userID)
 	assign(foreignClientID, fixture.otherID)
+	setClientRelayPortCount(t, fixture, sourceClientID, 5)
+	setClientRelayPortCount(t, fixture, targetClientID, 5)
+	setClientRelayPortCount(t, fixture, foreignClientID, 5)
 	registration := performRequest(t, fixture.handler, http.MethodPost, "/api/agent/register", agentRegistrationRequest{
 		EnrollmentToken: server.EnrollmentToken, AgentVersion: "1.0.0",
 		AgentImplementation: agentcontrol.OfficialImplementation, AgentAPIVersion: agentcontrol.CurrentAPIVersion,
@@ -655,9 +673,13 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	if storedServerID != server.Server.ID || storedSourceID != sourceClientID || storedType != relaystore.TargetProxy ||
-		storedTargetProxyID != proxy.ID || storedTargetID != targetClientID || assignedPort != relaystore.UserRelayPortStart+1 {
+		storedTargetProxyID != proxy.ID || storedTargetID != targetClientID {
 		t.Fatalf("stored assigned relay = server %d source %d type %s proxy %d target %d port %d",
 			storedServerID, storedSourceID, storedType, storedTargetProxyID, storedTargetID, assignedPort)
+	}
+	var reservedCount int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM client_relay_ports WHERE client_id = ? AND port = ?`, sourceClientID, assignedPort).Scan(&reservedCount); err != nil || reservedCount != 1 {
+		t.Fatalf("assigned relay port %d reservation count = %d, %v", assignedPort, reservedCount, err)
 	}
 
 	relayService := relaystore.NewService(fixture.db)
@@ -780,6 +802,7 @@ func TestDeletingTargetAssignedClientPurgesUserRelay(t *testing.T) {
 			t.Fatalf("assign client = %d, %s", assigned.Code, assigned.Body.String())
 		}
 	}
+	setClientRelayPortCount(t, fixture, sourceClientID, 5)
 	registration := performRequest(t, fixture.handler, http.MethodPost, "/api/agent/register", agentRegistrationRequest{
 		EnrollmentToken: server.EnrollmentToken, AgentVersion: "1.0.0",
 		AgentImplementation: agentcontrol.OfficialImplementation, AgentAPIVersion: agentcontrol.CurrentAPIVersion,
@@ -827,6 +850,7 @@ func TestDeletingAssignedClientPurgesUserRelaysAndDesiredState(t *testing.T) {
 	if assigned.Code != http.StatusOK {
 		t.Fatalf("assign client = %d, %s", assigned.Code, assigned.Body.String())
 	}
+	setClientRelayPortCount(t, fixture, clientID, 5)
 	registration := performRequest(t, fixture.handler, http.MethodPost, "/api/agent/register", agentRegistrationRequest{
 		EnrollmentToken: server.EnrollmentToken, AgentVersion: "1.0.0",
 		AgentImplementation: agentcontrol.OfficialImplementation, AgentAPIVersion: agentcontrol.CurrentAPIVersion,
@@ -1047,7 +1071,7 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 	nodes := performRequest(t, fixture.handler, http.MethodGet, "/api/me/nodes", nil, fixture.userCookie)
 	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"client_id":`+strconv.FormatInt(vlessBody.Client.ID, 10)) ||
 		!strings.Contains(nodes.Body.String(), `"server_name":"Portal Server"`) ||
-		!strings.Contains(nodes.Body.String(), `"proxy_name":"Portal Proxy"`) || strings.Contains(nodes.Body.String(), "alice-SG") {
+		!strings.Contains(nodes.Body.String(), `"proxy_name":"Portal Proxy"`) || !strings.Contains(nodes.Body.String(), `"client_name":"alice-SG"`) {
 		t.Fatalf("user portal nodes = %d, %s", nodes.Code, nodes.Body.String())
 	}
 	for clientID, prefix := range map[int64]string{vlessBody.Client.ID: `"uri":"vless://`, ssBody.Client.ID: `"uri":"ss://`} {

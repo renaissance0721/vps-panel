@@ -29,12 +29,22 @@ const {
   formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
   trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
   trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths,
+  userRelayPortCount,
 } = model
 
 const viewedNode = ref<ManagedUserNode | null>(null)
 
 function billingLabel(months: 1 | 3 | 6 | 12 | null) {
   return months === 1 ? '月付' : months === 3 ? '季付' : months === 6 ? '半年付' : months === 12 ? '年付' : '未设置'
+}
+
+function relayPortLabel(node: ManagedUserNode) {
+  const client = node.client
+  if (!client || client.user_relay_port_count === 0 || client.user_relay_port_start === null || client.user_relay_port_end === null) return '未分配'
+  const range = client.user_relay_port_start === client.user_relay_port_end
+    ? String(client.user_relay_port_start)
+    : `${client.user_relay_port_start}–${client.user_relay_port_end}`
+  return `${range}（${client.user_relay_port_count} 个）`
 }
 
 onMounted(model.load)
@@ -81,6 +91,7 @@ onMounted(model.load)
                 <div><dt>重置</dt><dd>{{ clientTrafficCycleLabel(node.client.traffic_reset_mode, node.client.traffic_reset_weekday, node.client.traffic_reset_day, node.client.traffic_reset_time) }}</dd></div>
                 <div><dt>到期</dt><dd>{{ formatClientExpiration(node.client.expires_at) }}</dd></div>
                 <div><dt>付款周期</dt><dd>{{ billingLabel(node.client.billing_period_months) }}</dd></div>
+                <div><dt>中转端口</dt><dd>{{ relayPortLabel(node) }}</dd></div>
               </dl>
               <div class="server-actions">
                 <n-button size="small" secondary @click="viewedNode = node">查看</n-button>
@@ -135,6 +146,7 @@ onMounted(model.load)
           <label><span>到期设置</span><select v-model="expirationMode" class="settings-input"><option value="unlimited">不限</option><option value="specified">指定时间</option></select></label>
           <label v-if="expirationMode === 'specified'"><span>到期时间</span><input v-model="expiresAt" class="settings-input" type="datetime-local" /></label>
           <label><span>付款周期</span><select v-model.number="billingPeriodMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">1 个月</option><option :value="3">3 个月</option><option :value="6">6 个月</option><option :value="12">12 个月</option></select></label>
+          <label><span>用户中转端口数量</span><select v-model.number="userRelayPortCount" class="settings-input"><option v-for="count in 6" :key="count - 1" :value="count - 1">{{ count - 1 }}</option></select><small class="secondary-text">从 20000–29999 随机分配连续端口；设为 0 表示不允许该客户端创建用户中转。</small></label>
           <n-checkbox v-model:checked="clientEnabled">启用节点</n-checkbox>
           <n-checkbox v-if="editingNode?.protocol === 'vless'" v-model:checked="clientUDP443">允许 UDP/443</n-checkbox>
           <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
@@ -152,6 +164,7 @@ onMounted(model.load)
             <div><dt>流量</dt><dd>{{ clientTrafficUsageLabel(viewedNode.client.metrics, viewedNode.client.traffic_limit_bytes) }}</dd></div>
             <div><dt>到期</dt><dd>{{ formatClientExpiration(viewedNode.client.expires_at) }}</dd></div>
             <div><dt>付款周期</dt><dd>{{ billingLabel(viewedNode.client.billing_period_months) }}</dd></div>
+            <div><dt>中转端口</dt><dd>{{ relayPortLabel(viewedNode) }}</dd></div>
             <div v-if="viewedNode.protocol === 'vless'"><dt>UDP/443</dt><dd>{{ viewedNode.client.client_udp443 ? '允许' : '禁止' }}</dd></div>
           </dl>
         </template>

@@ -40,6 +40,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"relays",
 		"user_relay_order",
 		"clients",
+		"client_relay_ports",
 		"client_metrics",
 	} {
 		var name string

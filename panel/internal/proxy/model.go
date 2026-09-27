@@ -51,6 +51,10 @@ var (
 	ErrInvalidAssignmentRole          = errors.New("client can only be assigned to a user account")
 	ErrInvalidBillingPeriod           = errors.New("billing period must be 1, 3, 6, 12, or null")
 	ErrAssignedClientExists           = errors.New("user already has a client on this proxy")
+	ErrInvalidClientRelayPortCount    = errors.New("client relay port count must be between 0 and 5")
+	ErrClientRelayPortsUnavailable    = errors.New("no contiguous client relay ports are available")
+	ErrClientRelayPortsActive         = errors.New("client has active user relays")
+	ErrClientNotAssigned              = errors.New("client is not assigned to a user")
 	ErrReferencedByRelay              = errors.New("proxy is referenced by a relay")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
@@ -96,6 +100,9 @@ type ClientSummary struct {
 	AssignedUserID      *int64
 	AssignedUsername    string
 	BillingPeriodMonths *int
+	UserRelayPortStart  *int
+	UserRelayPortEnd    *int
+	UserRelayPortCount  int
 	ClientUDP443        bool
 	Enabled             bool
 	ExpiresAt           *time.Time
@@ -121,6 +128,9 @@ type Client struct {
 	AssignedUserID      *int64
 	AssignedUsername    string
 	BillingPeriodMonths *int
+	UserRelayPortStart  *int
+	UserRelayPortEnd    *int
+	UserRelayPortCount  int
 	UUID                string
 	Password            string
 	Protocol            string
@@ -190,6 +200,7 @@ type AssignedClientCreateInput struct {
 	ExpiresAt           *time.Time
 	Traffic             ClientTrafficConfig
 	BillingPeriodMonths *int
+	UserRelayPortCount  int
 }
 
 type ClientUpdateInput struct {

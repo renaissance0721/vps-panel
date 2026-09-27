@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -83,7 +85,7 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 	values := make([]sourceResponse, 0, len(clients))
 	now := time.Now()
 	for _, client := range clients {
-		if client.LifecycleAt(now).EffectiveEnabled {
+		if client.UserRelayPortCount > 0 && client.LifecycleAt(now).EffectiveEnabled {
 			values = append(values, sourceResponse{
 				ClientID: client.ID, ServerName: client.ServerName,
 				ProxyName: client.ProxyName, Protocol: client.Protocol, EffectiveEnabled: true,
@@ -169,7 +171,22 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		writeError(w, http.StatusBadRequest, "落地方式无效")
 		return
 	}
-	for port := relaystore.UserRelayPortStart; port <= relaystore.UserRelayPortEnd; port++ {
+	for attempt := 0; attempt < proxystore.MaxClientRelayPorts; attempt++ {
+		ports, err := s.proxies.ListAvailableClientRelayPorts(r.Context(), source.ID)
+		if err != nil {
+			writeInternalError(w)
+			return
+		}
+		if len(ports) == 0 {
+			writeUserRelayError(w, errUserRelayPortsFull)
+			return
+		}
+		choice, err := rand.Int(rand.Reader, big.NewInt(int64(len(ports))))
+		if err != nil {
+			writeInternalError(w)
+			return
+		}
+		port := ports[int(choice.Int64())]
 		input.ListenPort = port
 		value, mutation, err := s.relays.Create(r.Context(), input)
 		if errors.Is(err, relaystore.ErrPortConflict) {
@@ -427,7 +444,7 @@ func writeUserRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errUserRelayLimit):
 		writeError(w, http.StatusConflict, "每个普通用户最多可创建 "+strconv.Itoa(maxUserRelays)+" 条中转")
 	case errors.Is(err, errUserRelayPortsFull):
-		writeError(w, http.StatusConflict, "中转端口范围已用尽")
+		writeError(w, http.StatusConflict, "该节点可用中转端口已用尽")
 	case errors.Is(err, errInvalidPublicIP):
 		writeError(w, http.StatusBadRequest, "落地地址必须是可公开访问的 IP，不能使用域名、内网或保留地址")
 	default:

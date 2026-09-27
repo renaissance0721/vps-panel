@@ -198,7 +198,17 @@ func validateTarget(ctx context.Context, query interface {
 func ensurePortAvailable(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, serverID int64, port int, network string, excludeRelayID int64) error {
+}, serverID int64, port int, network string, excludeRelayID int64, reservedClientID *int64) error {
+	var ownerClientID int64
+	err := query.QueryRowContext(ctx,
+		`SELECT client_id FROM client_relay_ports WHERE server_id = ? AND port = ?`, serverID, port,
+	).Scan(&ownerClientID)
+	if err == nil && (reservedClientID == nil || ownerClientID != *reservedClientID) {
+		return ErrPortConflict
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check reserved client relay port: %w", err)
+	}
 	rows, err := query.QueryContext(ctx,
 		`SELECT protocol FROM proxies WHERE server_id = ? AND listen_port = ?`, serverID, port)
 	if err != nil {
@@ -244,7 +254,18 @@ func ensurePortAvailable(ctx context.Context, query interface {
 
 func ProxyPortAvailable(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, serverID int64, port int, protocol string) error {
+	var reserved int
+	err := query.QueryRowContext(ctx,
+		`SELECT 1 FROM client_relay_ports WHERE server_id = ? AND port = ?`, serverID, port,
+	).Scan(&reserved)
+	if err == nil {
+		return ErrPortConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check reserved client relay port: %w", err)
+	}
 	network := NetworkTCP
 	if protocol == "shadowsocks" {
 		network = NetworkBoth

@@ -92,6 +92,32 @@ h1 {
   font-weight: 600;
 }
 
+.relay-mode-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.relay-mode-field legend {
+  margin-bottom: 8px;
+  color: #47525d;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.relay-mode-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.auth-form .relay-mode-options .n-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
 .app-layout {
   width: 100%;
   min-height: 100vh;

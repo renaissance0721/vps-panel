@@ -101,7 +101,29 @@ func migrate(db *sql.DB) error {
 	if err := migrateClientAssignment(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateClientRelayPorts(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateClientRelayPorts(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS client_relay_ports (
+		client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+		server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+		port INTEGER NOT NULL CHECK (port BETWEEN 20000 AND 29999),
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (client_id, port),
+		UNIQUE (server_id, port)
+	)`); err != nil {
+		return fmt.Errorf("create client relay ports: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_client_relay_ports_server_id ON client_relay_ports(server_id)`,
+	); err != nil {
+		return fmt.Errorf("create client relay ports server index: %w", err)
+	}
 	return nil
 }
 

@@ -7,6 +7,7 @@ const portalSource = await readFile(new URL('../src/views/UserPortalView.vue', i
 const clientFormSource = await readFile(new URL('../src/components/proxy/ClientForm.vue', import.meta.url), 'utf8')
 const serverDetailSource = await readFile(new URL('../src/components/server/ServerDetail.vue', import.meta.url), 'utf8')
 const relayViewSource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
+const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
 test('普通 user 使用独立门户且登录初始化不加载管理数据', () => {
   assert.match(appSource, /state\.value\.user\?\.role === 'user'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
@@ -25,12 +26,24 @@ test('普通用户门户按需请求分享并只展示轻量节点与中转表�
   assert.match(portalSource, /source\.server_name.*source\.proxy_name/)
   assert.match(portalSource, /使用已有节点/)
   assert.match(portalSource, /自定义落地/)
+  assert.match(portalSource, /<n-radio-group[^>]*v-model:value="relayMode"/)
+  assert.match(portalSource, /relay-mode-options/)
+  assert.match(styleSource, /\.auth-form \.relay-mode-options \.n-radio\s*\{[\s\S]*display: inline-flex;[\s\S]*align-items: center;/)
   assert.match(portalSource, /method: 'PATCH'/)
   assert.match(portalSource, /修改落地/)
   assert.match(portalSource, /复制链接/)
   assert.match(portalSource, /二维码/)
   assert.match(portalSource, /落地公网 IP/)
   assert.doesNotMatch(portalSource, /REALITY Public Key|desired state|listen_address|server_id/)
+})
+
+test('普通用户只通过专用接口修改自己的 Client Name', () => {
+  assert.ok(portalSource.includes('/api/me/nodes/${node.client_id}'))
+  assert.match(portalSource, /body: JSON\.stringify\(\{ name: nodeName\.value\.trim\(\) \}\)/)
+  assert.match(portalSource, /title="编辑节点"/)
+  assert.match(portalSource, /editingNode\?\.server_name/)
+  assert.match(portalSource, /editingNode\?\.proxy_name/)
+  assert.match(portalSource, /客户端名称/)
 })
 
 test('用户门户各区域独立加载且管理员中转页标记用户中转', () => {

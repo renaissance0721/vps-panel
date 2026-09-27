@@ -10,6 +10,7 @@ import (
 
 type myNodeResponse struct {
 	ClientID            int64      `json:"client_id"`
+	ClientName          string     `json:"client_name"`
 	ServerName          string     `json:"server_name"`
 	ProxyName           string     `json:"proxy_name"`
 	Protocol            string     `json:"protocol"`
@@ -25,6 +26,10 @@ type myNodeResponse struct {
 	NextResetAt         *time.Time `json:"next_reset_at"`
 }
 
+type updateMyNodeRequest struct {
+	Name string `json:"name"`
+}
+
 func (s *server) listMyNodes(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
 	if err != nil {
@@ -36,7 +41,7 @@ func (s *server) listMyNodes(w http.ResponseWriter, r *http.Request, user auth.U
 	for _, value := range values {
 		lifecycle := value.LifecycleAt(now)
 		response = append(response, myNodeResponse{
-			ClientID: value.ID, ServerName: value.ServerName, ProxyName: value.ProxyName, Protocol: value.Protocol,
+			ClientID: value.ID, ClientName: value.Name, ServerName: value.ServerName, ProxyName: value.ProxyName, Protocol: value.Protocol,
 			Status: lifecycle.Status, Enabled: value.Enabled, EffectiveEnabled: lifecycle.EffectiveEnabled,
 			Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 			TrafficUsedBytes: proxystore.ClientUsedBytes(value.Metrics), TrafficLimitBytes: value.TrafficLimitBytes,
@@ -45,6 +50,28 @@ func (s *server) listMyNodes(w http.ResponseWriter, r *http.Request, user auth.U
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": response})
+}
+
+func (s *server) updateMyNode(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "节点 ID 无效")
+	if !ok {
+		return
+	}
+	if _, err := s.proxies.GetAssignedClient(r.Context(), user.ID, id); err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	var request updateMyNodeRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	value, mutation, err := s.proxies.UpdateClient(r.Context(), id, proxystore.ClientUpdateInput{Name: &request.Name})
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	s.notifyProxyMutation(mutation)
+	writeJSON(w, http.StatusOK, map[string]any{"client": map[string]any{"id": value.ID, "name": value.Name}})
 }
 
 func (s *server) getMyNodeShare(w http.ResponseWriter, r *http.Request, user auth.User) {

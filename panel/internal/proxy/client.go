@@ -33,6 +33,9 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
+		 (SELECT MIN(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT MAX(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT COUNT(*) FROM client_relay_ports WHERE client_id = clients.id),
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
@@ -119,6 +122,9 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 }
 
 func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClientCreateInput) (Client, Mutation, error) {
+	if err := validateClientRelayPortCount(input.UserRelayPortCount); err != nil {
+		return Client{}, Mutation{}, err
+	}
 	name, err := validateName(input.Name)
 	if err != nil {
 		return Client{}, Mutation{}, err
@@ -180,6 +186,9 @@ func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClient
 	if err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("read assigned client id: %w", err)
 	}
+	if err := reserveClientRelayPorts(ctx, tx, clientID, proxyValue.ServerID, input.UserRelayPortCount, now); err != nil {
+		return Client{}, Mutation{}, err
+	}
 	version, err := bumpVersion(ctx, tx, proxyValue.ServerID, now)
 	if err != nil {
 		return Client{}, Mutation{}, err
@@ -202,6 +211,9 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
+		 (SELECT MIN(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT MAX(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT COUNT(*) FROM client_relay_ports WHERE client_id = clients.id),
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
@@ -232,6 +244,9 @@ func (s *Service) ListAssignedClients(ctx context.Context, userID int64) ([]Clie
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
+		 (SELECT MIN(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT MAX(port) FROM client_relay_ports WHERE client_id = clients.id),
+		 (SELECT COUNT(*) FROM client_relay_ports WHERE client_id = clients.id),
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
@@ -290,6 +305,11 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 		nullableID(userID), nullableInt(billingPeriodMonths), now.Unix(), id,
 	); err != nil {
 		return Client{}, fmt.Errorf("assign client: %w", err)
+	}
+	if userID == nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM client_relay_ports WHERE client_id = ?`, id); err != nil {
+			return Client{}, fmt.Errorf("release unassigned client relay ports: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Client{}, fmt.Errorf("commit client assignment: %w", err)
@@ -474,7 +494,7 @@ func scanClient(row rowScanner) (Client, error) {
 	var credentialJSON, configJSON string
 	var udp443, enabled, effectiveEnabled int
 	var expiresAt, trafficLimit sql.NullInt64
-	var assignedUserID, billingPeriod sql.NullInt64
+	var assignedUserID, billingPeriod, relayPortStart, relayPortEnd sql.NullInt64
 	var assignedUsername sql.NullString
 	var createdAt, updatedAt int64
 	var xrayUplink, xrayDownlink, cycleUplink, cycleDownlink sql.NullInt64
@@ -486,6 +506,7 @@ func scanClient(row rowScanner) (Client, error) {
 		&value.TrafficResetDay, &value.TrafficResetTime,
 		&effectiveEnabled, &createdAt, &updatedAt, &value.ProxyName, &value.ServerID, &value.ServerName,
 		&value.ProxyEntryHostMode, &value.ProxyEntryHost, &value.Protocol, &configJSON,
+		&relayPortStart, &relayPortEnd, &value.UserRelayPortCount,
 		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
 		&cycleStartedAt, &lastActivityAt, &metricsUpdatedAt,
 	); err != nil {
@@ -516,6 +537,14 @@ func scanClient(row rowScanner) (Client, error) {
 		period := int(billingPeriod.Int64)
 		value.BillingPeriodMonths = &period
 	}
+	if relayPortStart.Valid {
+		start := int(relayPortStart.Int64)
+		value.UserRelayPortStart = &start
+	}
+	if relayPortEnd.Valid {
+		end := int(relayPortEnd.Int64)
+		value.UserRelayPortEnd = &end
+	}
 	value.effectiveEnabled = effectiveEnabled != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
@@ -537,7 +566,9 @@ func summarizeClient(value Client) ClientSummary {
 		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
 		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 		BillingPeriodMonths: value.BillingPeriodMonths,
-		ClientUDP443:        value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
+		UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,
+		UserRelayPortCount: value.UserRelayPortCount,
+		ClientUDP443:       value.ClientUDP443, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,

@@ -38,13 +38,22 @@ test('用户切换及节点、中转、密码操作后立即刷新详情', () =>
 
 test('用户管理显示 Server 与 Proxy 并提供完整 Client 管理字段', () => {
   assert.match(viewSource, /node\.server_name.*node\.proxy_name/)
-  for (const label of ['客户端名称', '流量额度', '流量重置', '到期设置', '付款周期', '允许 UDP\/443', '启用节点']) {
+  for (const label of ['客户端名称', '流量额度', '流量重置', '到期设置', '付款周期', '用户中转端口数量', '中转端口', '允许 UDP\/443', '启用节点']) {
     assert.match(viewSource, new RegExp(label))
   }
   assert.match(viewSource, /relay\.source\.server_name.*relay\.source\.proxy_name/)
   assert.match(viewSource, /自定义落地/)
   assert.doesNotMatch(viewSource, /relay\.target_(?:ip|port)/)
   assert.doesNotMatch(viewSource, /source_client_id|assigned_user_id|credential|UUID/)
+})
+
+test('用户管理创建和编辑 Client 时管理 0–5 个预留端口', () => {
+  assert.match(composableSource, /const userRelayPortCount = ref\(5\)/)
+  assert.match(composableSource, /user_relay_port_count: userRelayPortCount\.value/)
+  assert.match(composableSource, /\/api\/admin\/clients\/\$\{node\.client\.id\}\/relay-ports/)
+  assert.match(viewSource, /v-for="count in 6"/)
+  assert.match(viewSource, /20000–29999/)
+  assert.match(viewSource, /未分配/)
 })
 
 test('用户管理主区域只展示已开通节点，未开通节点只进入新建弹窗', () => {

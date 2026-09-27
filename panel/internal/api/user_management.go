@@ -16,6 +16,7 @@ type createAssignedNodeRequest struct {
 	Enabled             *bool           `json:"enabled"`
 	ExpiresAt           json.RawMessage `json:"expires_at"`
 	BillingPeriodMonths *int            `json:"billing_period_months"`
+	UserRelayPortCount  *int            `json:"user_relay_port_count"`
 	clientTrafficRequest
 }
 
@@ -121,17 +122,22 @@ func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, _ a
 		writeProxyError(w, err)
 		return
 	}
+	userRelayPortCount := proxystore.MaxClientRelayPorts
+	if request.UserRelayPortCount != nil {
+		userRelayPortCount = *request.UserRelayPortCount
+	}
 	value, mutation, err := s.proxies.CreateAssignedClient(r.Context(), proxystore.AssignedClientCreateInput{
 		UserID: user.ID, ProxyID: request.ProxyID, Name: request.Name,
 		ClientUDP443: request.ClientUDP443, Enabled: enabled, ExpiresAt: expiresAt,
 		Traffic: traffic, BillingPeriodMonths: request.BillingPeriodMonths,
+		UserRelayPortCount: userRelayPortCount,
 	})
 	if err != nil {
 		if errors.Is(err, proxystore.ErrAssignedClientExists) {
 			writeError(w, http.StatusConflict, "该用户已开通此节点")
 			return
 		}
-		writeClientAssignmentError(w, err)
+		writeClientRelayPortError(w, err)
 		return
 	}
 	s.notifyProxyMutation(mutation)

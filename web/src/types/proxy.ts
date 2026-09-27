@@ -31,6 +31,9 @@ export type ClientSummary = {
   assigned_user_id: number | null
   assigned_username: string
   billing_period_months: 1 | 3 | 6 | 12 | null
+  user_relay_port_start: number | null
+  user_relay_port_end: number | null
+  user_relay_port_count: number
   client_udp443: boolean
   enabled: boolean
   expires_at: string | null
@@ -56,6 +59,9 @@ export type ClientRecord = {
   assigned_user_id: number | null
   assigned_username: string
   billing_period_months: 1 | 3 | 6 | 12 | null
+  user_relay_port_start: number | null
+  user_relay_port_end: number | null
+  user_relay_port_count: number
   client_udp443: boolean
   enabled: boolean
   expires_at: string | null

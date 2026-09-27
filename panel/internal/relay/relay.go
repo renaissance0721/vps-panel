@@ -75,7 +75,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	if err := validateTarget(ctx, tx, &value); err != nil {
 		return Relay{}, Mutation{}, err
 	}
-	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, 0); err != nil {
+	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, 0, value.SourceClientID); err != nil {
 		return Relay{}, Mutation{}, err
 	}
 	result, err := tx.ExecContext(ctx,
@@ -123,7 +123,7 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	if err := validateTarget(ctx, tx, &value); err != nil {
 		return Relay{}, Mutation{}, err
 	}
-	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, id); err != nil {
+	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, id, value.SourceClientID); err != nil {
 		return Relay{}, Mutation{}, err
 	}
 	_, err = tx.ExecContext(ctx,
@@ -305,16 +305,16 @@ func getForMutation(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id int64) (Relay, error) {
 	var value Relay
-	var ownerUserID, targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
+	var ownerUserID, sourceClientID, targetProxyID, targetClientID, targetLandingID, targetPort sql.NullInt64
 	var enabled int
 	var decommissionStatus string
 	err := query.QueryRowContext(ctx,
-		`SELECT relays.id, relays.server_id, relays.owner_user_id, relays.name, relays.listen_address,
+		`SELECT relays.id, relays.server_id, relays.owner_user_id, relays.source_client_id, relays.name, relays.listen_address,
 		 relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type, relays.target_proxy_id, relays.target_client_id, relays.target_landing_id,
 		 relays.target_host, relays.target_port, relays.network, relays.enabled, servers.decommission_status
 		 FROM relays JOIN servers ON servers.id = relays.server_id
 		 WHERE relays.id = ? AND servers.archived_at IS NULL`, id,
-	).Scan(&value.ID, &value.ServerID, &ownerUserID, &value.Name, &value.ListenAddress,
+	).Scan(&value.ID, &value.ServerID, &ownerUserID, &sourceClientID, &value.Name, &value.ListenAddress,
 		&value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType, &targetProxyID, &targetClientID, &targetLandingID,
 		&value.TargetHost, &targetPort, &value.Network, &enabled, &decommissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -329,6 +329,10 @@ func getForMutation(ctx context.Context, query interface {
 	if ownerUserID.Valid {
 		id := ownerUserID.Int64
 		value.OwnerUserID = &id
+	}
+	if sourceClientID.Valid {
+		id := sourceClientID.Int64
+		value.SourceClientID = &id
 	}
 	if targetProxyID.Valid {
 		id := targetProxyID.Int64

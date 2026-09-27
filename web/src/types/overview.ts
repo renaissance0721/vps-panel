@@ -33,7 +33,8 @@ export type AdminUserRelay = {
   id: number
   name: string
   username: string
-  source_name: string
+  server_name: string
+  proxy_name: string
   entry_address: string
   target_ip: string
   target_port: number

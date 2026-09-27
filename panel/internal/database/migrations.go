@@ -86,6 +86,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateRelayOwner(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateRelaySourceClient(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateProxyProtocols(ctx, db); err != nil {
 		return err
 	}
@@ -279,6 +282,28 @@ func migrateRelayOwner(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_relays_owner_user_id ON relays(owner_user_id)`,
 	); err != nil {
 		return fmt.Errorf("create relays owner index: %w", err)
+	}
+	return nil
+}
+
+func migrateRelaySourceClient(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('relays') WHERE name = 'source_client_id'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect relays.source_client_id: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE relays ADD COLUMN source_client_id INTEGER REFERENCES clients(id) ON DELETE RESTRICT`,
+		); err != nil {
+			return fmt.Errorf("add relays.source_client_id: %w", err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_relays_source_client_id ON relays(source_client_id)`,
+	); err != nil {
+		return fmt.Errorf("create relays source client index: %w", err)
 	}
 	return nil
 }

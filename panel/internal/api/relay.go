@@ -52,6 +52,9 @@ type updateRelayRequest struct {
 type relayResponse struct {
 	ID                      int64     `json:"id"`
 	ServerID                int64     `json:"server_id"`
+	OwnerUsername           string    `json:"owner_username,omitempty"`
+	SourceClientID          *int64    `json:"source_client_id,omitempty"`
+	SourceProxyName         string    `json:"source_proxy_name,omitempty"`
 	ServerName              string    `json:"server_name"`
 	ServerPublicIPv4        string    `json:"server_public_ipv4"`
 	Name                    string    `json:"name"`
@@ -407,7 +410,8 @@ func (s *server) notifyRelayMutations(mutations []relaystore.Mutation) {
 
 func toRelayResponse(value relaystore.Relay) relayResponse {
 	return relayResponse{
-		ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
+		ID: value.ID, ServerID: value.ServerID, OwnerUsername: value.OwnerUsername,
+		SourceClientID: value.SourceClientID, SourceProxyName: value.SourceProxyName, ServerName: value.ServerName,
 		ServerPublicIPv4: value.ServerPublicIPv4, Name: value.Name,
 		ListenAddress: value.ListenAddress, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,

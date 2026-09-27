@@ -192,6 +192,7 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			source_client_id INTEGER REFERENCES clients(id) ON DELETE RESTRICT,
 			name TEXT NOT NULL,
 			listen_address TEXT NOT NULL DEFAULT '0.0.0.0',
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
@@ -218,19 +219,6 @@ func schemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_target_proxy_id ON relays(target_proxy_id)`,
-		`CREATE TABLE IF NOT EXISTS user_relay_pools (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			server_id INTEGER NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
-			enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-			listen_address TEXT NOT NULL CHECK (listen_address IN ('0.0.0.0', '::')),
-			entry_host TEXT NOT NULL DEFAULT '',
-			port_start INTEGER NOT NULL CHECK (port_start BETWEEN 1 AND 65535),
-			port_end INTEGER NOT NULL CHECK (port_end BETWEEN 1 AND 65535),
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL,
-			CHECK (port_start <= port_end),
-			CHECK (listen_address != '::' OR entry_host != '')
-		)`,
 		`CREATE TABLE IF NOT EXISTS user_relay_order (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			relay_id INTEGER NOT NULL REFERENCES relays(id) ON DELETE CASCADE,

@@ -23,6 +23,7 @@ var (
 	ErrInvalidUsername         = errors.New("username must be 3-64 characters using letters, numbers, dot, underscore, or hyphen")
 	ErrInvalidPassword         = errors.New("password must be 10-72 bytes")
 	ErrUsernameTaken           = errors.New("username is already in use")
+	ErrUserNotFound            = errors.New("user not found")
 	ErrUnauthenticated         = errors.New("authentication required")
 	ErrPasswordUnchanged       = errors.New("new password must differ from current password")
 	ErrPasswordRequestPending  = errors.New("a password change request is already pending")

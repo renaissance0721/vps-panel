@@ -6,16 +6,18 @@ import (
 )
 
 const (
-	TargetProxy     = "proxy"
-	TargetLanding   = "landing"
-	TargetManual    = "manual"
-	EntryHostAuto   = "auto"
-	EntryHostManual = "manual"
-	NetworkTCP      = "tcp"
-	NetworkUDP      = "udp"
-	NetworkBoth     = "tcp,udp"
-	MaxUserRelays   = 10
-	maxNameRunes    = 100
+	TargetProxy        = "proxy"
+	TargetLanding      = "landing"
+	TargetManual       = "manual"
+	EntryHostAuto      = "auto"
+	EntryHostManual    = "manual"
+	NetworkTCP         = "tcp"
+	NetworkUDP         = "udp"
+	NetworkBoth        = "tcp,udp"
+	MaxUserRelays      = 10
+	UserRelayPortStart = 20000
+	UserRelayPortEnd   = 29999
+	maxNameRunes       = 100
 )
 
 var (
@@ -44,6 +46,8 @@ type Relay struct {
 	ServerID                int64
 	OwnerUserID             *int64
 	OwnerUsername           string
+	SourceClientID          *int64
+	SourceProxyName         string
 	ServerName              string
 	ServerPublicIPv4        string
 	Name                    string
@@ -73,6 +77,7 @@ type Relay struct {
 type CreateInput struct {
 	ServerID        int64
 	OwnerUserID     *int64
+	SourceClientID  *int64
 	Name            string
 	ListenAddress   string
 	ListenPort      int

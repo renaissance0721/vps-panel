@@ -1014,3 +1014,49 @@ h1 {
 .user-details dd {
   margin: 4px 0 0;
 }
+
+.user-management-toolbar {
+  grid-template-columns: minmax(220px, 420px) auto;
+  justify-content: space-between;
+}
+
+.user-management-toolbar label {
+  display: grid;
+  gap: 6px;
+  color: #47525d;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.user-management section {
+  margin-top: 24px;
+}
+
+.user-management-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.user-management-summary {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.user-management-status,
+.user-management-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-management-inline .settings-input {
+  width: 100px;
+  flex: 0 0 100px;
+}
+
+@media (max-width: 640px) {
+  .user-management-toolbar,
+  .overview-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}

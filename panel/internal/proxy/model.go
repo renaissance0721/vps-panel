@@ -50,6 +50,7 @@ var (
 	ErrAssignmentUserNotFound         = errors.New("assigned user not found")
 	ErrInvalidAssignmentRole          = errors.New("client can only be assigned to a user account")
 	ErrInvalidBillingPeriod           = errors.New("billing period must be 1, 3, 6, 12, or null")
+	ErrAssignedClientExists           = errors.New("user already has a client on this proxy")
 	ErrReferencedByRelay              = errors.New("proxy is referenced by a relay")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
@@ -113,6 +114,10 @@ type Client struct {
 	ProxyID             int64
 	Name                string
 	ProxyName           string
+	ServerID            int64
+	ServerName          string
+	ProxyEntryHostMode  string
+	ProxyEntryHost      string
 	AssignedUserID      *int64
 	AssignedUsername    string
 	BillingPeriodMonths *int
@@ -174,6 +179,17 @@ type ClientCreateInput struct {
 	Enabled      bool
 	ExpiresAt    *time.Time
 	Traffic      ClientTrafficConfig
+}
+
+type AssignedClientCreateInput struct {
+	UserID              int64
+	ProxyID             int64
+	Name                string
+	ClientUDP443        bool
+	Enabled             bool
+	ExpiresAt           *time.Time
+	Traffic             ClientTrafficConfig
+	BillingPeriodMonths *int
 }
 
 type ClientUpdateInput struct {

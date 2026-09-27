@@ -31,11 +31,13 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.name, proxies.protocol, proxies.config_json,
+		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
 		 FROM clients JOIN proxies ON proxies.id = clients.proxy_id
+		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN users AS assigned_user ON assigned_user.id = clients.assigned_user_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		 WHERE clients.proxy_id = ? ORDER BY clients.created_at, clients.id`, proxyID,
@@ -116,6 +118,79 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 	return value, Mutation{ServerID: proxyValue.ServerID, Version: version}, err
 }
 
+func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClientCreateInput) (Client, Mutation, error) {
+	name, err := validateName(input.Name)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	traffic, err := normalizeClientTrafficConfig(input.Traffic)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	expiresAt := normalizeClientExpiration(input.ExpiresAt)
+	effectiveEnabled := Client{Enabled: input.Enabled, ExpiresAt: expiresAt}.LifecycleAt(now).EffectiveEnabled
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("begin assigned client creation: %w", err)
+	}
+	defer tx.Rollback()
+	if err := validateClientAssignment(ctx, tx, &input.UserID, input.BillingPeriodMonths); err != nil {
+		return Client{}, Mutation{}, err
+	}
+	proxyValue, config, err := getProxyForMutation(ctx, tx, input.ProxyID)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	var duplicate int
+	err = tx.QueryRowContext(ctx,
+		`SELECT 1 FROM clients WHERE proxy_id = ? AND assigned_user_id = ? LIMIT 1`, input.ProxyID, input.UserID,
+	).Scan(&duplicate)
+	if err == nil {
+		return Client{}, Mutation{}, ErrAssignedClientExists
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Client{}, Mutation{}, fmt.Errorf("check assigned client duplicate: %w", err)
+	}
+	if proxyValue.Protocol == ProtocolShadowsocks && input.ClientUDP443 {
+		return Client{}, Mutation{}, ErrShadowsocksClientUDP443
+	}
+	credential, err := newCredentialForProxy(proxyValue.Protocol, config)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	credentialJSON, err := json.Marshal(credential)
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("encode assigned client credential: %w", err)
+	}
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO clients
+		 (proxy_id, assigned_user_id, name, credential_json, client_udp443, enabled, expires_at,
+		  traffic_limit_bytes, billing_period_months, traffic_reset_mode, traffic_reset_weekday,
+		  traffic_reset_day, traffic_reset_time, effective_enabled_snapshot, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.ProxyID, input.UserID, name, string(credentialJSON), input.ClientUDP443, input.Enabled,
+		nullableTime(expiresAt), nullableTrafficLimit(traffic.LimitBytes), nullableInt(input.BillingPeriodMonths),
+		traffic.ResetMode, traffic.Weekday, traffic.Day, traffic.ResetTime, effectiveEnabled, now.Unix(), now.Unix(),
+	)
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("create assigned client: %w", err)
+	}
+	clientID, err := result.LastInsertId()
+	if err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("read assigned client id: %w", err)
+	}
+	version, err := bumpVersion(ctx, tx, proxyValue.ServerID, now)
+	if err != nil {
+		return Client{}, Mutation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Client{}, Mutation{}, fmt.Errorf("commit assigned client creation: %w", err)
+	}
+	value, err := s.GetClient(ctx, clientID)
+	return value, Mutation{ServerID: proxyValue.ServerID, Version: version}, err
+}
+
 func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 	value, err := scanClient(s.db.QueryRowContext(ctx,
 		`SELECT clients.id, clients.proxy_id, clients.name, clients.credential_json,
@@ -125,7 +200,8 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.name, proxies.protocol, proxies.config_json,
+		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
@@ -154,7 +230,8 @@ func (s *Service) ListAssignedClients(ctx context.Context, userID int64) ([]Clie
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
 		 clients.created_at, clients.updated_at,
-		 proxies.name, proxies.protocol, proxies.config_json,
+		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.protocol, proxies.config_json,
 		 metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
 		 metrics.cycle_uplink_bytes, metrics.cycle_downlink_bytes,
 		 metrics.cycle_started_at, metrics.last_activity_at, metrics.updated_at
@@ -193,10 +270,6 @@ func (s *Service) GetAssignedClient(ctx context.Context, userID, clientID int64)
 }
 
 func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, billingPeriodMonths *int) (Client, error) {
-	if billingPeriodMonths != nil && *billingPeriodMonths != 1 && *billingPeriodMonths != 3 &&
-		*billingPeriodMonths != 6 && *billingPeriodMonths != 12 {
-		return Client{}, ErrInvalidBillingPeriod
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Client{}, fmt.Errorf("begin client assignment: %w", err)
@@ -208,18 +281,8 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 	} else if err != nil {
 		return Client{}, fmt.Errorf("find client for assignment: %w", err)
 	}
-	if userID != nil {
-		var role string
-		err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?`, *userID).Scan(&role)
-		if errors.Is(err, sql.ErrNoRows) {
-			return Client{}, ErrAssignmentUserNotFound
-		}
-		if err != nil {
-			return Client{}, fmt.Errorf("find assignment user: %w", err)
-		}
-		if role != "user" {
-			return Client{}, ErrInvalidAssignmentRole
-		}
+	if err := validateClientAssignment(ctx, tx, userID, billingPeriodMonths); err != nil {
+		return Client{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	if _, err := tx.ExecContext(ctx,
@@ -232,6 +295,34 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 		return Client{}, fmt.Errorf("commit client assignment: %w", err)
 	}
 	return s.GetClient(ctx, id)
+}
+
+func (s *Service) ValidateClientAssignment(ctx context.Context, userID *int64, billingPeriodMonths *int) error {
+	return validateClientAssignment(ctx, s.db, userID, billingPeriodMonths)
+}
+
+func validateClientAssignment(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, userID *int64, billingPeriodMonths *int) error {
+	if billingPeriodMonths != nil && *billingPeriodMonths != 1 && *billingPeriodMonths != 3 &&
+		*billingPeriodMonths != 6 && *billingPeriodMonths != 12 {
+		return ErrInvalidBillingPeriod
+	}
+	if userID == nil {
+		return nil
+	}
+	var role string
+	err := query.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?`, *userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAssignmentUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("find assignment user: %w", err)
+	}
+	if role != "user" {
+		return ErrInvalidAssignmentRole
+	}
+	return nil
 }
 
 func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdateInput) (Client, Mutation, error) {
@@ -393,7 +484,8 @@ func scanClient(row rowScanner) (Client, error) {
 		&expiresAt, &trafficLimit, &assignedUserID, &assignedUsername, &billingPeriod,
 		&value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &value.ProxyName, &value.Protocol, &configJSON,
+		&effectiveEnabled, &createdAt, &updatedAt, &value.ProxyName, &value.ServerID, &value.ServerName,
+		&value.ProxyEntryHostMode, &value.ProxyEntryHost, &value.Protocol, &configJSON,
 		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
 		&cycleStartedAt, &lastActivityAt, &metricsUpdatedAt,
 	); err != nil {

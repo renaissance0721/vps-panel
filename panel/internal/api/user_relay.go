@@ -1,7 +1,7 @@
 package api
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"net/http"
 	"net/netip"
@@ -17,181 +17,52 @@ import (
 const maxUserRelays = relaystore.MaxUserRelays
 
 var (
-	errInvalidRelayPool   = errors.New("invalid user relay pool")
-	errRelayPoolNotFound  = errors.New("user relay pool not found")
 	errUserRelayLimit     = errors.New("user relay limit reached")
 	errUserRelayPortsFull = errors.New("user relay port range exhausted")
 	errInvalidPublicIP    = errors.New("target must be a public IP address")
 )
 
-type userRelayPoolRequest struct {
-	Enabled       bool   `json:"enabled"`
-	ListenAddress string `json:"listen_address"`
-	EntryHost     string `json:"entry_host"`
-	PortStart     int    `json:"port_start"`
-	PortEnd       int    `json:"port_end"`
-}
-
-type userRelayPool struct {
-	ID               int64     `json:"id"`
-	ServerID         int64     `json:"server_id"`
-	ServerName       string    `json:"server_name"`
-	Enabled          bool      `json:"enabled"`
-	ListenAddress    string    `json:"listen_address"`
-	EntryHost        string    `json:"entry_host"`
-	EffectiveEntry   string    `json:"effective_entry_host"`
-	PortStart        int       `json:"port_start"`
-	PortEnd          int       `json:"port_end"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	serverPublicIPv4 string
-}
-
 type createMyRelayRequest struct {
-	RelaySourceID int64  `json:"relay_source_id"`
-	Name          string `json:"name"`
-	TargetIP      string `json:"target_ip"`
-	TargetPort    int    `json:"target_port"`
+	SourceClientID int64  `json:"source_client_id"`
+	Name           string `json:"name"`
+	TargetIP       string `json:"target_ip"`
+	TargetPort     int    `json:"target_port"`
 }
 
 type myRelayResponse struct {
-	ID           int64     `json:"id"`
-	Name         string    `json:"name"`
-	SourceName   string    `json:"source_name"`
-	EntryHost    string    `json:"entry_host"`
-	ListenPort   int       `json:"listen_port"`
-	TargetIP     string    `json:"target_ip"`
-	TargetPort   int       `json:"target_port"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	EntryAddress string    `json:"entry_address"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	SourceClientID *int64    `json:"source_client_id,omitempty"`
+	ServerName     string    `json:"server_name"`
+	ProxyName      string    `json:"proxy_name"`
+	EntryAddress   string    `json:"entry_address"`
+	TargetIP       string    `json:"target_ip"`
+	TargetPort     int       `json:"target_port"`
+	Enabled        bool      `json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
-func (s *server) getUserRelayPool(w http.ResponseWriter, r *http.Request, user auth.User) {
-	serverID, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
-	if !ok || !s.requireServerAccess(w, r, user, serverID) {
-		return
-	}
-	pool, err := s.readUserRelayPool(r, serverID)
-	if errors.Is(err, errRelayPoolNotFound) {
-		writeJSON(w, http.StatusOK, map[string]any{"pool": nil})
-		return
-	}
+func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user auth.User) {
+	clients, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
 	if err != nil {
 		writeInternalError(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pool": pool})
-}
-
-func (s *server) updateUserRelayPool(w http.ResponseWriter, r *http.Request, user auth.User) {
-	serverID, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
-	if !ok || !s.requireServerAccess(w, r, user, serverID) {
-		return
-	}
-	var request userRelayPoolRequest
-	if !decodeJSON(w, r, &request) {
-		return
-	}
-	listenAddress := strings.TrimSpace(request.ListenAddress)
-	entryHost, err := normalizeRelayPoolEntryHost(request.EntryHost)
-	if err != nil || (listenAddress != "0.0.0.0" && listenAddress != "::") ||
-		request.PortStart < 1 || request.PortEnd > 65535 || request.PortStart > request.PortEnd ||
-		(listenAddress == "::" && entryHost == "") {
-		writeUserRelayError(w, errInvalidRelayPool)
-		return
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	_, err = s.db.ExecContext(r.Context(),
-		`INSERT INTO user_relay_pools
-		 (server_id, enabled, listen_address, entry_host, port_start, port_end, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(server_id) DO UPDATE SET enabled = excluded.enabled,
-		 listen_address = excluded.listen_address, entry_host = excluded.entry_host,
-		 port_start = excluded.port_start, port_end = excluded.port_end, updated_at = excluded.updated_at`,
-		serverID, request.Enabled, listenAddress, entryHost, request.PortStart, request.PortEnd, now.Unix(), now.Unix(),
-	)
-	if err != nil {
-		writeInternalError(w)
-		return
-	}
-	pool, err := s.readUserRelayPool(r, serverID)
-	if err != nil {
-		writeInternalError(w)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"pool": pool})
-}
-
-func (s *server) readUserRelayPool(r *http.Request, serverID int64) (userRelayPool, error) {
-	var pool userRelayPool
-	var enabled int
-	var createdAt, updatedAt int64
-	err := s.db.QueryRowContext(r.Context(),
-		`SELECT pools.id, pools.server_id, servers.name, pools.enabled, pools.listen_address,
-		 pools.entry_host, pools.port_start, pools.port_end, pools.created_at, pools.updated_at,
-		 COALESCE(system_info.public_ipv4, '')
-		 FROM user_relay_pools AS pools
-		 JOIN servers ON servers.id = pools.server_id
-		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
-		 WHERE pools.server_id = ? AND servers.archived_at IS NULL`, serverID,
-	).Scan(&pool.ID, &pool.ServerID, &pool.ServerName, &enabled, &pool.ListenAddress,
-		&pool.EntryHost, &pool.PortStart, &pool.PortEnd, &createdAt, &updatedAt, &pool.serverPublicIPv4)
-	if errors.Is(err, sql.ErrNoRows) {
-		return userRelayPool{}, errRelayPoolNotFound
-	}
-	if err != nil {
-		return userRelayPool{}, err
-	}
-	pool.Enabled = enabled != 0
-	pool.CreatedAt = time.Unix(createdAt, 0).UTC()
-	pool.UpdatedAt = time.Unix(updatedAt, 0).UTC()
-	pool.EffectiveEntry = pool.EntryHost
-	if pool.EffectiveEntry == "" {
-		pool.EffectiveEntry = pool.serverPublicIPv4
-	}
-	return pool, nil
-}
-
-func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	rows, err := s.db.QueryContext(r.Context(),
-		`SELECT pools.id, servers.name, pools.entry_host, COALESCE(system_info.public_ipv4, '')
-		 FROM user_relay_pools AS pools
-		 JOIN servers ON servers.id = pools.server_id
-		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
-		 WHERE pools.enabled = 1 AND servers.archived_at IS NULL
-		 ORDER BY servers.name, pools.id`,
-	)
-	if err != nil {
-		writeInternalError(w)
-		return
-	}
-	defer rows.Close()
 	type sourceResponse struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
-		EntryHost string `json:"entry_host"`
+		ClientID   int64  `json:"client_id"`
+		ServerName string `json:"server_name"`
+		ProxyName  string `json:"proxy_name"`
+		Protocol   string `json:"protocol"`
 	}
-	values := make([]sourceResponse, 0)
-	for rows.Next() {
-		var value sourceResponse
-		var configured, publicIPv4 string
-		if err := rows.Scan(&value.ID, &value.Name, &configured, &publicIPv4); err != nil {
-			writeInternalError(w)
-			return
+	values := make([]sourceResponse, 0, len(clients))
+	now := time.Now()
+	for _, client := range clients {
+		if client.LifecycleAt(now).EffectiveEnabled {
+			values = append(values, sourceResponse{
+				ClientID: client.ID, ServerName: client.ServerName,
+				ProxyName: client.ProxyName, Protocol: client.Protocol,
+			})
 		}
-		value.EntryHost = configured
-		if value.EntryHost == "" {
-			if _, err := validatePublicTargetIP(publicIPv4); err != nil {
-				continue
-			}
-			value.EntryHost = publicIPv4
-		}
-		values = append(values, value)
-	}
-	if err := rows.Err(); err != nil {
-		writeInternalError(w)
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": values})
 }
@@ -223,34 +94,16 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		writeRelayError(w, relaystore.ErrInvalidPort)
 		return
 	}
-	var pool userRelayPool
-	var enabled int
-	var createdAt, updatedAt int64
-	err = s.db.QueryRowContext(r.Context(),
-		`SELECT pools.id, pools.server_id, servers.name, pools.enabled, pools.listen_address,
-		 pools.entry_host, pools.port_start, pools.port_end, pools.created_at, pools.updated_at,
-		 COALESCE(system_info.public_ipv4, '')
-		 FROM user_relay_pools AS pools
-		 JOIN servers ON servers.id = pools.server_id
-		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
-		 WHERE pools.id = ? AND pools.enabled = 1 AND servers.archived_at IS NULL`, request.RelaySourceID,
-	).Scan(&pool.ID, &pool.ServerID, &pool.ServerName, &enabled, &pool.ListenAddress,
-		&pool.EntryHost, &pool.PortStart, &pool.PortEnd, &createdAt, &updatedAt, &pool.serverPublicIPv4)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeUserRelayError(w, errRelayPoolNotFound)
-		return
-	}
+	source, err := s.proxies.GetAssignedClient(r.Context(), user.ID, request.SourceClientID)
 	if err != nil {
-		writeInternalError(w)
+		writeProxyError(w, err)
 		return
 	}
-	if pool.EntryHost == "" {
-		if _, err := validatePublicTargetIP(pool.serverPublicIPv4); err != nil {
-			writeUserRelayError(w, errRelayPoolNotFound)
-			return
-		}
+	if !source.LifecycleAt(time.Now()).EffectiveEnabled {
+		writeError(w, http.StatusConflict, "所选节点当前不可用于创建中转")
+		return
 	}
-	supported, err := s.serverSupportsCapability(r, pool.ServerID, agentcontrol.CapabilityRelayRealm)
+	supported, err := s.serverSupportsCapability(r, source.ServerID, agentcontrol.CapabilityRelayRealm)
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -259,15 +112,11 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		writeError(w, http.StatusConflict, "当前中转节点暂不可用")
 		return
 	}
-	entryMode := relaystore.EntryHostAuto
-	if pool.EntryHost != "" {
-		entryMode = relaystore.EntryHostManual
-	}
-	for port := pool.PortStart; port <= pool.PortEnd; port++ {
+	for port := relaystore.UserRelayPortStart; port <= relaystore.UserRelayPortEnd; port++ {
 		value, mutation, err := s.relays.Create(r.Context(), relaystore.CreateInput{
-			ServerID: pool.ServerID, OwnerUserID: &user.ID, Name: request.Name,
-			ListenAddress: pool.ListenAddress, ListenPort: port,
-			EntryHostMode: entryMode, EntryHost: pool.EntryHost,
+			ServerID: source.ServerID, OwnerUserID: &user.ID, SourceClientID: &source.ID, Name: request.Name,
+			ListenAddress: "0.0.0.0", ListenPort: port,
+			EntryHostMode: source.ProxyEntryHostMode, EntryHost: source.ProxyEntryHost,
 			TargetType: relaystore.TargetManual, TargetHost: targetIP.String(), TargetPort: request.TargetPort,
 			Network: relaystore.NetworkTCP, Enabled: true,
 		})
@@ -333,17 +182,11 @@ func (s *server) deleteAdminUserRelay(w http.ResponseWriter, r *http.Request, _ 
 }
 
 func (s *server) deleteOwnedRelay(w http.ResponseWriter, r *http.Request, value relaystore.Relay) {
-	serverValue, err := s.servers.Get(r.Context(), value.ServerID)
+	allowManagedPurge, err := s.allowManagedRelayPurge(r.Context(), value.ServerID)
 	if err != nil {
 		writeServerError(w, err)
 		return
 	}
-	allowManagedPurge := serverValue.AgentVersion == "" || agentcontrol.DeclaresCapability(agentcontrol.Metadata{
-		Implementation: serverValue.AgentImplementation,
-		Version:        serverValue.AgentVersion,
-		APIVersion:     serverValue.AgentAPIVersion,
-		Capabilities:   serverValue.AgentCapabilities,
-	}, agentcontrol.CapabilityManagedRuntimePurge)
 	mutation, err := s.relays.DeleteWithManagedPurge(r.Context(), value.ID, allowManagedPurge)
 	if err != nil {
 		writeRelayError(w, err)
@@ -353,30 +196,46 @@ func (s *server) deleteOwnedRelay(w http.ResponseWriter, r *http.Request, value 
 	writeNoContent(w)
 }
 
-func toMyRelayResponse(value relaystore.Relay) myRelayResponse {
-	return myRelayResponse{
-		ID: value.ID, Name: value.Name, SourceName: value.ServerName,
-		EntryHost: value.EntryAddress, EntryAddress: relaystore.JoinHostPort(value.EntryAddress, value.ListenPort),
-		ListenPort: value.ListenPort, TargetIP: value.TargetHost, TargetPort: value.TargetPort,
-		Enabled: value.Enabled, CreatedAt: value.CreatedAt,
+func (s *server) deleteUserRelaysForSourceClient(ctx context.Context, clientID int64) error {
+	values, err := s.relays.ListBySourceClient(ctx, clientID)
+	if err != nil {
+		return err
 	}
+	for _, value := range values {
+		allowManagedPurge, err := s.allowManagedRelayPurge(ctx, value.ServerID)
+		if err != nil {
+			return err
+		}
+		mutation, err := s.relays.DeleteWithManagedPurge(ctx, value.ID, allowManagedPurge)
+		if err != nil {
+			return err
+		}
+		s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	}
+	return nil
 }
 
-func normalizeRelayPoolEntryHost(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", nil
+func (s *server) allowManagedRelayPurge(ctx context.Context, serverID int64) (bool, error) {
+	serverValue, err := s.servers.Get(ctx, serverID)
+	if err != nil {
+		return false, err
 	}
-	if strings.ContainsAny(value, "/?#@") || strings.Contains(value, "://") {
-		return "", errInvalidRelayPool
+	return serverValue.AgentVersion == "" || agentcontrol.DeclaresCapability(agentcontrol.Metadata{
+		Implementation: serverValue.AgentImplementation,
+		Version:        serverValue.AgentVersion,
+		APIVersion:     serverValue.AgentAPIVersion,
+		Capabilities:   serverValue.AgentCapabilities,
+	}, agentcontrol.CapabilityManagedRuntimePurge), nil
+}
+
+func toMyRelayResponse(value relaystore.Relay) myRelayResponse {
+	return myRelayResponse{
+		ID: value.ID, Name: value.Name, SourceClientID: value.SourceClientID,
+		ServerName: value.ServerName, ProxyName: value.SourceProxyName,
+		EntryAddress: relaystore.JoinHostPort(value.EntryAddress, value.ListenPort),
+		TargetIP:     value.TargetHost, TargetPort: value.TargetPort,
+		Enabled: value.Enabled, CreatedAt: value.CreatedAt,
 	}
-	if address, err := netip.ParseAddr(strings.Trim(value, "[]")); err == nil {
-		return address.String(), nil
-	}
-	if strings.Contains(value, ":") || !validDNSHostname(value) {
-		return "", errInvalidRelayPool
-	}
-	return strings.ToLower(value), nil
 }
 
 func validatePublicTargetIP(value string) (netip.Addr, error) {
@@ -415,10 +274,6 @@ func isSpecialUseTarget(address netip.Addr) bool {
 
 func writeUserRelayError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, errInvalidRelayPool):
-		writeError(w, http.StatusBadRequest, "用户中转池配置无效")
-	case errors.Is(err, errRelayPoolNotFound):
-		writeError(w, http.StatusNotFound, "中转来源不存在或不可用")
 	case errors.Is(err, errUserRelayLimit):
 		writeError(w, http.StatusConflict, "每个普通用户最多可创建 "+strconv.Itoa(maxUserRelays)+" 条中转")
 	case errors.Is(err, errUserRelayPortsFull):

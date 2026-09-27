@@ -36,11 +36,13 @@ import ServersView from './views/ServersView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
 import UserPortalView from './views/UserPortalView.vue'
+import UserManagementView from './views/UserManagementView.vue'
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-const currentPage = ref<'overview' | 'servers' | 'proxies' | 'relays'>('overview')
+type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'users'
+const currentPage = ref<AdminPage>('overview')
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
@@ -193,11 +195,13 @@ function clearCredentials() {
   confirmPassword.value = ''
 }
 
-function selectPage(page: 'overview' | 'servers' | 'proxies' | 'relays') {
+function selectPage(page: AdminPage) {
   currentPage.value = page
   sidebarOpen.value = false
   if (page === 'overview') {
-    void loadOverview().catch((reason) => {
+    const requests: Promise<void>[] = [loadOverview()]
+    if (state.value?.user?.role === 'admin') requests.push(loadUserRelays(), loadPasswordChangeRequests())
+    void Promise.all(requests).catch((reason) => {
       error.value = reason instanceof Error ? reason.message : '无法加载概览'
     })
   }
@@ -371,6 +375,14 @@ onUnmounted(stopServerPolling)
             >
               中转
             </button>
+            <button
+              v-if="state.user?.role === 'admin'"
+              type="button"
+              :class="{ active: currentPage === 'users' }"
+              @click="selectPage('users')"
+            >
+              用户管理
+            </button>
           </nav>
           <div class="sidebar-account">
             <span>{{ state.user?.username }}</span>
@@ -392,7 +404,7 @@ onUnmounted(stopServerPolling)
           </header>
           <div class="admin-page">
             <header class="page-heading">
-              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : '中转' }}</h1>
+              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : currentPage === 'relays' ? '中转' : '用户管理' }}</h1>
             </header>
 
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
@@ -400,6 +412,7 @@ onUnmounted(stopServerPolling)
         <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
         <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
         <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
+        <UserManagementView v-if="currentPage === 'users' && state.user?.role === 'admin'" />
         <ServersView :active="currentPage === 'servers'" :model="serverView" />
 
 

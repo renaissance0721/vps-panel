@@ -56,21 +56,42 @@ func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 		writeError(w, http.StatusBadRequest, "普通用户账号无效")
 		return
 	}
+	current, err := s.proxies.GetClient(r.Context(), id)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	if err := s.proxies.ValidateClientAssignment(r.Context(), request.UserID, request.BillingPeriodMonths); err != nil {
+		writeClientAssignmentError(w, err)
+		return
+	}
+	assignmentRemoved := current.AssignedUserID != nil &&
+		(request.UserID == nil || *request.UserID != *current.AssignedUserID)
+	if assignmentRemoved {
+		if err := s.deleteUserRelaysForSourceClient(r.Context(), id); err != nil {
+			writeRelayError(w, err)
+			return
+		}
+	}
 	value, err := s.proxies.AssignClient(r.Context(), id, request.UserID, request.BillingPeriodMonths)
 	if err != nil {
-		switch {
-		case errors.Is(err, proxystore.ErrAssignmentUserNotFound):
-			writeError(w, http.StatusBadRequest, "普通用户账号不存在")
-		case errors.Is(err, proxystore.ErrInvalidAssignmentRole):
-			writeError(w, http.StatusBadRequest, "客户端只能分配给普通用户账号")
-		case errors.Is(err, proxystore.ErrInvalidBillingPeriod):
-			writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
-		default:
-			writeProxyError(w, err)
-		}
+		writeClientAssignmentError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
+}
+
+func writeClientAssignmentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, proxystore.ErrAssignmentUserNotFound):
+		writeError(w, http.StatusBadRequest, "普通用户账号不存在")
+	case errors.Is(err, proxystore.ErrInvalidAssignmentRole):
+		writeError(w, http.StatusBadRequest, "客户端只能分配给普通用户账号")
+	case errors.Is(err, proxystore.ErrInvalidBillingPeriod):
+		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
+	default:
+		writeProxyError(w, err)
+	}
 }
 
 func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -196,6 +217,10 @@ func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, user 
 	}
 	if _, err := s.clientForUser(r.Context(), user, id); err != nil {
 		writeProxyError(w, err)
+		return
+	}
+	if err := s.deleteUserRelaysForSourceClient(r.Context(), id); err != nil {
+		writeRelayError(w, err)
 		return
 	}
 	mutation, err := s.proxies.DeleteClient(r.Context(), id)

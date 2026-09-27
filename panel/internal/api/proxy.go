@@ -227,6 +227,17 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		APIVersion:     server.AgentAPIVersion,
 		Capabilities:   server.AgentCapabilities,
 	}, agentcontrol.CapabilityManagedRuntimePurge)
+	clients, err := s.proxies.ListClients(r.Context(), id)
+	if err != nil {
+		writeProxyError(w, err)
+		return
+	}
+	for _, client := range clients {
+		if err := s.deleteUserRelaysForSourceClient(r.Context(), client.ID); err != nil {
+			writeRelayError(w, err)
+			return
+		}
+	}
 	mutation, err := s.proxies.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
 	if err != nil {
 		writeProxyError(w, err)

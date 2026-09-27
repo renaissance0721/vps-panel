@@ -9,8 +9,8 @@ import (
 )
 
 type myNodeResponse struct {
-	ID                  int64      `json:"id"`
-	Name                string     `json:"name"`
+	ClientID            int64      `json:"client_id"`
+	ServerName          string     `json:"server_name"`
 	ProxyName           string     `json:"proxy_name"`
 	Protocol            string     `json:"protocol"`
 	Status              string     `json:"status"`
@@ -36,7 +36,7 @@ func (s *server) listMyNodes(w http.ResponseWriter, r *http.Request, user auth.U
 	for _, value := range values {
 		lifecycle := value.LifecycleAt(now)
 		response = append(response, myNodeResponse{
-			ID: value.ID, Name: value.Name, ProxyName: value.ProxyName, Protocol: value.Protocol,
+			ClientID: value.ID, ServerName: value.ServerName, ProxyName: value.ProxyName, Protocol: value.Protocol,
 			Status: lifecycle.Status, Enabled: value.Enabled, EffectiveEnabled: lifecycle.EffectiveEnabled,
 			Expired: lifecycle.Expired, QuotaExhausted: lifecycle.QuotaExhausted,
 			TrafficUsedBytes: proxystore.ClientUsedBytes(value.Metrics), TrafficLimitBytes: value.TrafficLimitBytes,
@@ -52,7 +52,8 @@ func (s *server) getMyNodeShare(w http.ResponseWriter, r *http.Request, user aut
 	if !ok {
 		return
 	}
-	if _, err := s.proxies.GetAssignedClient(r.Context(), user.ID, id); err != nil {
+	client, err := s.proxies.GetAssignedClient(r.Context(), user.ID, id)
+	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
@@ -62,6 +63,7 @@ func (s *server) getMyNodeShare(w http.ResponseWriter, r *http.Request, user aut
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"share": map[string]any{
-		"uri": share.URI, "protocol": share.Protocol, "name": share.Name, "proxy_name": share.ProxyName,
+		"uri": share.URI, "protocol": share.Protocol,
+		"server_name": client.ServerName, "proxy_name": share.ProxyName,
 	}})
 }

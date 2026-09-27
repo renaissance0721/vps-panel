@@ -109,7 +109,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 			<n-empty v-if="userRelays.length === 0" description="当前没有普通用户中转" />
 			<div v-else class="invitation-list">
 			  <div v-for="relay in userRelays" :key="relay.id" class="invitation-row">
-				<div><strong>{{ relay.username }} · {{ relay.name }}</strong><span>{{ relay.source_name }} · {{ relay.entry_address }} → {{ relay.target_ip }}:{{ relay.target_port }}</span></div>
+				<div><strong>{{ relay.username }} · {{ relay.name }}</strong><span>{{ relay.server_name }} · {{ relay.proxy_name }} · {{ relay.entry_address }} → {{ relay.target_ip }}:{{ relay.target_port }}</span></div>
 				<n-button size="small" type="error" secondary :disabled="submitting" @click="deleteUserRelay(relay.id)">删除</n-button>
 			  </div>
 			</div>

@@ -17,7 +17,8 @@ func normalizeCreate(input CreateInput) (Relay, error) {
 		listenAddress = "0.0.0.0"
 	}
 	return normalizeRelay(Relay{
-		ServerID: input.ServerID, OwnerUserID: input.OwnerUserID, Name: input.Name, ListenAddress: listenAddress,
+		ServerID: input.ServerID, OwnerUserID: input.OwnerUserID, SourceClientID: input.SourceClientID,
+		Name: input.Name, ListenAddress: listenAddress,
 		ListenPort: input.ListenPort, EntryHostMode: input.EntryHostMode, EntryHost: input.EntryHost,
 		TargetType:    input.TargetType,
 		TargetProxyID: input.TargetProxyID, TargetClientID: input.TargetClientID, TargetLandingID: input.TargetLandingID,

@@ -107,6 +107,23 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
+func (s *Service) GetUser(ctx context.Context, id int64) (User, error) {
+	var user User
+	var createdAt, updatedAt int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, role, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("get user: %w", err)
+	}
+	user.CreatedAt = time.Unix(createdAt, 0).UTC()
+	user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	return user, nil
+}
+
 func prepareCredentials(username, password string) (string, string, error) {
 	username = strings.TrimSpace(username)
 	if !usernamePattern.MatchString(username) {

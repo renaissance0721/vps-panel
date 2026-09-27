@@ -59,6 +59,9 @@ type ProxyOption = {
 type RelayRecord = {
   id: number
   server_id: number
+  owner_username?: string
+  source_client_id?: number
+  source_proxy_name?: string
   server_name: string
   server_public_ipv4: string
   name: string
@@ -578,7 +581,7 @@ import {
             <td class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
             </td>
-            <td>{{ value.name }}</td>
+            <td><span>{{ value.name }}</span><div v-if="value.owner_username"><n-tag type="info" size="small">用户中转</n-tag> <small class="secondary-text">{{ value.owner_username }}</small></div></td>
             <td>{{ value.server_name }}</td>
             <td>
               <span>{{ value.entry_address || '入口地址不可用' }}</span>
@@ -684,6 +687,7 @@ import {
     <n-card class="relay-detail-card" title="中转详情" :bordered="false" closable @close="detailOpen = false">
       <dl class="server-details">
         <div><dt>名称</dt><dd>{{ selectedRelay.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedRelay.server_name }}</dd></div>
+        <div v-if="selectedRelay.owner_username"><dt>归属</dt><dd><n-tag type="info" size="small">用户中转</n-tag> {{ selectedRelay.owner_username }}</dd></div><div v-if="selectedRelay.source_proxy_name"><dt>来源节点</dt><dd>{{ selectedRelay.source_proxy_name }}</dd></div>
         <div><dt>入口模式</dt><dd>{{ selectedRelay.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>客户端入口</dt><dd>{{ relayEndpointLabel(selectedRelay.entry_address, selectedRelay.listen_port) }}</dd></div>
         <div><dt>监听地址</dt><dd>{{ relayEndpointLabel(selectedRelay.listen_address, selectedRelay.listen_port) }}</dd></div><div><dt>目标类型</dt><dd>{{ selectedRelay.target_type === 'proxy' ? 'Panel Proxy' : selectedRelay.target_type === 'landing' ? '外部节点' : '手动地址' }}</dd></div>
         <div><dt>目标</dt><dd>{{ relayTargetLabel(selectedRelay) }}</dd></div><div><dt>Network</dt><dd>{{ relayNetworkLabel(selectedRelay.network) }}</dd></div>

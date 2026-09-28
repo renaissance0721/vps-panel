@@ -171,22 +171,6 @@ h1 {
   background: rgba(255, 255, 255, 0.16);
 }
 
-.sidebar-account {
-  display: grid;
-  gap: 12px;
-  padding: 18px 8px 0;
-  margin-top: auto;
-  border-top: 1px solid rgba(255, 255, 255, 0.22);
-}
-
-.sidebar-account span {
-  overflow: hidden;
-  font-size: 14px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .admin-main {
   width: calc(100% - 192px);
   min-width: 0;
@@ -199,6 +183,10 @@ h1 {
 }
 
 .page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 24px;
 }
 
@@ -1001,16 +989,11 @@ h1 {
 }
 
 .user-portal-header,
-.user-portal-header > div,
 .section-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-
-.user-portal-header > div {
-  justify-content: flex-start;
 }
 
 .user-portal section {
@@ -1047,20 +1030,23 @@ h1 {
   margin: 4px 0 0;
 }
 
-.subscriber-node-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
+.account-avatar-button {
+  font-size: 18px;
 }
 
-.subscriber-node-list > div {
+.account-modal-card {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.subscriber-plan-title {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+
+.subscriber-plan-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  justify-content: flex-end;
+  margin-top: 18px;
 }
 
 .subscription-import-card {

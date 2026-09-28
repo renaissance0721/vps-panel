@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NProgress, NSpin, NTag } from 'naive-ui'
+import { NAlert, NButton, NCard, NModal, NProgress, NSpin, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { formatTime } from '../format'
 import { formatClientTrafficBytes } from '../proxy'
 import type { User } from '../types/auth'
+import AccountMenu from '../components/AccountMenu.vue'
 
 type Subscriber = {
   username: string
@@ -26,24 +27,15 @@ type Subscriber = {
   subscription_auto_url: string
   subscription_title: string
 }
-type PublishedNode = { id: number; name: string; mode: 'direct' | 'relay'; traffic_multiplier: number; enabled: boolean }
-type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at: string | null }
-
 const props = defineProps<{ user: User }>()
-const emit = defineEmits<{ logout: [] }>()
+const emit = defineEmits<{ logout: []; userUpdated: [user: User] }>()
 const subscriber = ref<Subscriber | null>(null)
-const nodes = ref<PublishedNode[]>([])
-const passwordRequest = ref<PasswordRequest | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
 const copied = ref<'base64' | 'mihomo' | ''>('')
 const importModalOpen = ref(false)
 const qrOpen = ref(false)
-const passwordModalOpen = ref(false)
-const currentPassword = ref('')
-const newPassword = ref('')
-const confirmPassword = ref('')
 
 const usagePercent = computed(() => {
   const value = subscriber.value
@@ -51,22 +43,14 @@ const usagePercent = computed(() => {
 	if (value.traffic_limit_bytes === 0) return 100
   return Math.min(100, Math.round(value.used_bytes / value.traffic_limit_bytes * 100))
 })
-const pendingPasswordRequest = computed(() => passwordRequest.value?.status === 'pending')
-
 const statusLabels: Record<string, string> = {
   normal: '正常', unconfigured: '管理员尚未开通套餐', disabled: '账号已停用',
   plan_disabled: '套餐暂停 / 不可用', expired: '已到期', exhausted: '流量已用完',
 }
 
 async function loadPortal() {
-  const [me, nodeResult, requestResult] = await Promise.all([
-    api<{ subscriber: Subscriber }>('/api/subscriber/me'),
-    api<{ nodes: PublishedNode[] }>('/api/subscriber/nodes'),
-    api<{ request: PasswordRequest | null }>('/api/subscriber/password-change-request'),
-  ])
+  const me = await api<{ subscriber: Subscriber }>('/api/subscriber/me')
   subscriber.value = me.subscriber
-  nodes.value = nodeResult.nodes
-  passwordRequest.value = requestResult.request
 }
 
 async function run(action: () => Promise<void>) {
@@ -108,34 +92,8 @@ function showSubscriptionQRCode() {
   qrOpen.value = true
 }
 
-async function submitPasswordRequest() {
-  if (newPassword.value.length < 10 || newPassword.value.length > 72) {
-    error.value = '新密码长度需为 10–72 字节'
-    return
-  }
-  if (newPassword.value !== confirmPassword.value) {
-    error.value = '两次输入的新密码不一致'
-    return
-  }
-  await run(async () => {
-    const response = await api<{ request: PasswordRequest }>('/api/subscriber/password-change-request', {
-      method: 'POST',
-      body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value }),
-    })
-    passwordRequest.value = response.request
-    currentPassword.value = ''
-    newPassword.value = ''
-    confirmPassword.value = ''
-    passwordModalOpen.value = false
-  })
-}
-
 function billingLabel(months: number | null) {
   return ({ 1: '月付', 3: '季付', 6: '半年付', 12: '年付' } as Record<number, string>)[months ?? 0] ?? '未设置'
-}
-
-function multiplierLabel(value: number) {
-  return `${Number(value.toFixed(2))}×`
 }
 
 onMounted(async () => {
@@ -152,14 +110,14 @@ onMounted(async () => {
 <template>
   <main class="user-portal subscriber-portal">
     <header class="user-portal-header">
-      <div><strong>VPS Panel</strong><span>{{ props.user.username }}</span></div>
-      <n-button secondary :loading="busy" @click="emit('logout')">退出登录</n-button>
+      <strong>夕凪云</strong>
+      <AccountMenu :user="props.user" @updated="emit('userUpdated', $event)" @logout="emit('logout')" />
     </header>
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅…</span></div>
     <template v-else-if="subscriber">
       <section>
-        <h1>我的订阅</h1>
+        <h1 class="subscriber-plan-title">套餐信息</h1>
         <n-card :bordered="true">
           <template #header><strong>{{ subscriber.plan_name || '尚未开通套餐' }}</strong></template>
           <template #header-extra><n-tag :type="subscriber.active ? 'success' : 'warning'">{{ statusLabels[subscriber.status] ?? subscriber.status }}</n-tag></template>
@@ -171,32 +129,7 @@ onMounted(async () => {
             <div><dt>付款周期</dt><dd>{{ billingLabel(subscriber.billing_period_months) }}</dd></div>
             <div><dt>可用节点</dt><dd>{{ subscriber.enabled_node_count }}</dd></div>
           </dl>
-        </n-card>
-      </section>
-      <section>
-        <h1>订阅</h1>
-        <n-card :bordered="true">
-          <div class="modal-actions">
-            <n-button type="primary" :disabled="busy" @click="importModalOpen = true">导入订阅</n-button>
-            <n-button secondary :disabled="busy" @click="regenerateSubscription">重新生成订阅</n-button>
-          </div>
-        </n-card>
-      </section>
-      <section>
-        <h1>可用节点</h1>
-        <n-empty v-if="nodes.length === 0" description="暂无可用节点" />
-        <n-card v-else :bordered="true">
-          <div class="subscriber-node-list"><div v-for="node in nodes" :key="node.id"><span>{{ node.name }}</span><n-tag size="small">{{ multiplierLabel(node.traffic_multiplier) }}</n-tag></div></div>
-        </n-card>
-      </section>
-      <section>
-        <h1>账号</h1>
-        <n-card :bordered="true">
-          <dl class="user-details">
-            <div><dt>用户名</dt><dd>{{ subscriber.username }}</dd></div>
-            <div><dt>密码修改</dt><dd>{{ pendingPasswordRequest ? '等待管理员审核' : passwordRequest?.status === 'approved' ? '最近申请已批准' : passwordRequest?.status === 'rejected' ? '最近申请已拒绝' : '无待处理申请' }}</dd></div>
-          </dl>
-          <n-button type="primary" :disabled="pendingPasswordRequest || busy" @click="passwordModalOpen = true">申请修改密码</n-button>
+          <div class="subscriber-plan-actions"><n-button type="primary" :disabled="busy" @click="importModalOpen = true">导入订阅</n-button></div>
         </n-card>
       </section>
     </template>
@@ -218,7 +151,7 @@ onMounted(async () => {
           <n-button secondary :disabled="busy" @click="showSubscriptionQRCode">显示二维码</n-button>
         </section>
       </div>
-      <div class="modal-actions"><n-button @click="importModalOpen = false">关闭</n-button></div>
+      <div class="modal-actions"><n-button type="error" secondary :disabled="busy" @click="regenerateSubscription">重新生成订阅</n-button><n-button @click="importModalOpen = false">关闭</n-button></div>
     </n-card>
   </n-modal>
 
@@ -230,15 +163,4 @@ onMounted(async () => {
     instruction="使用支持订阅二维码的客户端扫描导入。"
     @update:show="qrOpen = $event"
   />
-
-  <n-modal v-model:show="passwordModalOpen">
-    <n-card class="client-form-card" title="申请修改密码" closable @close="passwordModalOpen = false">
-      <form class="auth-form" @submit.prevent="submitPasswordRequest">
-        <label><span>当前密码</span><n-input v-model:value="currentPassword" type="password" show-password-on="click" /></label>
-        <label><span>新密码</span><n-input v-model:value="newPassword" type="password" show-password-on="click" /></label>
-        <label><span>确认新密码</span><n-input v-model:value="confirmPassword" type="password" show-password-on="click" /></label>
-        <div class="modal-actions"><n-button @click="passwordModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">提交申请</n-button></div>
-      </form>
-    </n-card>
-  </n-modal>
 </template>

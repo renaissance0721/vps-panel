@@ -12,6 +12,15 @@ test('用户管理导航和页面仅对 Admin 开放', () => {
   assert.match(appSource, /type AdminPage = [^\n]*'users'/)
 })
 
+test('用户管理列出全部账号并对非管理员提供二次确认删除', () => {
+  assert.match(viewSource, /api<\{ users: AccessUser\[\] \}>\('\/api\/users'\)/)
+  assert.match(viewSource, /v-for="account in accounts"/)
+  assert.match(viewSource, /v-if="account\.role !== 'admin'"[\s\S]*@click="deleteAccount\(account\)"/)
+  assert.match(viewSource, /window\.confirm\(`删除用户“\$\{account\.username\}”后不可恢复，确定继续吗？`\)/)
+  assert.match(viewSource, /window\.prompt\(`请输入用户名“\$\{account\.username\}”再次确认删除`\) !== account\.username/)
+  assert.match(viewSource, /`\/api\/admin\/users\/\$\{account\.id\}`[\s\S]*method: 'DELETE'/)
+})
+
 test('用户管理从 User 角度复用真实 Client 且原子开通', () => {
   assert.match(composableSource, /\/api\/admin\/users/)
   assert.match(composableSource, /\/api\/admin\/users\/\$\{userID\}\/nodes/)

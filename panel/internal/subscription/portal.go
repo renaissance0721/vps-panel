@@ -23,6 +23,7 @@ func (s *Service) ListSubscriberNodes(ctx context.Context, userID int64) ([]Subs
 		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TrafficMultiplierBP, &value.Enabled); err != nil {
 			return nil, fmt.Errorf("scan subscriber portal node: %w", err)
 		}
+		value.Name = FormatNodeDisplayName(value.Name, value.TrafficMultiplierBP)
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {

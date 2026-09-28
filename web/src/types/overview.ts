@@ -24,6 +24,7 @@ export type PasswordChangeRequest = {
   id: number
   user_id: number
   username: string
+  role: 'vip' | 'user' | 'subscriber'
   status: 'pending' | 'approved' | 'rejected'
   created_at: string
   reviewed_at: string | null

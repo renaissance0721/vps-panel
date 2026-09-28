@@ -12,6 +12,7 @@ import {
   NTag,
 } from 'naive-ui'
 
+import { api } from '../api/client'
 import { formatTime } from '../format'
 import {
   clientStatusLabel,
@@ -22,6 +23,7 @@ import {
 } from '../proxy'
 import { useUserManagement } from '../composables/useUserManagement'
 import type { ManagedUserNode } from '../types/userManagement'
+import type { AccessUser } from '../types/auth'
 
 const model = useUserManagement()
 const {
@@ -33,6 +35,39 @@ const {
 } = model
 
 const viewedNode = ref<ManagedUserNode | null>(null)
+const accounts = ref<AccessUser[]>([])
+const accountBusy = ref(false)
+
+async function loadAccounts() {
+  accounts.value = (await api<{ users: AccessUser[] }>('/api/users')).users
+}
+
+async function loadPage() {
+  await Promise.all([model.load(), loadAccounts()])
+}
+
+async function deleteAccount(account: AccessUser) {
+  if (account.role === 'admin') return
+  if (!window.confirm(`删除用户“${account.username}”后不可恢复，确定继续吗？`)) return
+  if (window.prompt(`请输入用户名“${account.username}”再次确认删除`) !== account.username) {
+    error.value = '用户名确认不匹配，已取消删除'
+    return
+  }
+  accountBusy.value = true
+  error.value = ''
+  try {
+    await api(`/api/admin/users/${account.id}`, { method: 'DELETE' })
+    await loadPage()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '删除用户失败'
+  } finally {
+    accountBusy.value = false
+  }
+}
+
+function roleLabel(role: AccessUser['role']) {
+  return role === 'admin' ? '管理员' : role === 'vip' ? 'VIP' : role === 'subscriber' ? '订阅用户' : '普通用户'
+}
 
 function billingLabel(months: 1 | 3 | 6 | 12 | null) {
   return months === 1 ? '月付' : months === 3 ? '季付' : months === 6 ? '半年付' : months === 12 ? '年付' : '未设置'
@@ -47,12 +82,20 @@ function relayPortLabel(node: ManagedUserNode) {
   return `${range}（${client.user_relay_port_count} 个）`
 }
 
-onMounted(model.load)
+onMounted(loadPage)
 </script>
 
 <template>
   <div class="user-management">
     <h1>用户管理</h1>
+    <n-card title="账号列表" :bordered="true">
+      <div class="invitation-list">
+        <div v-for="account in accounts" :key="account.id" class="invitation-row">
+          <div><strong>{{ account.username }}</strong><span>{{ roleLabel(account.role) }}</span></div>
+          <n-button v-if="account.role !== 'admin'" type="error" secondary size="small" :disabled="accountBusy" @click="deleteAccount(account)">删除用户</n-button>
+        </div>
+      </div>
+    </n-card>
     <div class="relay-toolbar user-management-toolbar">
       <label>
         <span>普通用户</span>

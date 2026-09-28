@@ -87,8 +87,8 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if relayURI.Fragment != relayNode.Name || relayURI.Host != "198.51.100.10:"+strconv.Itoa(relayNode.EntryPort) ||
-		directURI.Fragment != direct.Name || directURI.Host != "203.0.113.20:9443" {
+	if relayURI.Fragment != FormatNodeDisplayName(relayNode.Name, relayNode.TrafficMultiplierBP) || relayURI.Host != "198.51.100.10:"+strconv.Itoa(relayNode.EntryPort) ||
+		directURI.Fragment != FormatNodeDisplayName(direct.Name, direct.TrafficMultiplierBP) || directURI.Host != "203.0.113.20:9443" {
 		t.Fatalf("subscription URIs = relay %q, direct %q", lines[0], lines[1])
 	}
 	if strings.Contains(string(decoded), "internal source") || strings.Contains(string(decoded), "internal target") ||
@@ -122,7 +122,8 @@ func TestGenerateSubscriptionTitleFallbackAndOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data.Title != plan.Name || len(data.Nodes) != 1 || data.Nodes[0].DisplayName != node.Name {
+	if data.Title != plan.Name || len(data.Nodes) != 1 ||
+		data.Nodes[0].DisplayName != FormatNodeDisplayName(node.Name, node.TrafficMultiplierBP) {
 		t.Fatalf("fallback subscription data = %+v", data)
 	}
 	title := "我的机场"

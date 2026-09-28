@@ -25,6 +25,7 @@ var (
 	ErrInvalidPassword         = errors.New("password must be 10-72 bytes")
 	ErrUsernameTaken           = errors.New("username is already in use")
 	ErrUserNotFound            = errors.New("user not found")
+	ErrCannotDeleteAdmin       = errors.New("admin users cannot be deleted")
 	ErrUnauthenticated         = errors.New("authentication required")
 	ErrPasswordUnchanged       = errors.New("new password must differ from current password")
 	ErrPasswordRequestPending  = errors.New("a password change request is already pending")
@@ -59,6 +60,7 @@ type PasswordChangeRequest struct {
 	ID         int64
 	UserID     int64
 	Username   string
+	Role       string
 	Status     string
 	CreatedAt  time.Time
 	ReviewedBy *int64

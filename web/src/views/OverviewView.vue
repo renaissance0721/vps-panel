@@ -100,8 +100,8 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 			<n-empty v-if="passwordChangeRequests.length === 0" description="当前没有待审核申请" />
 			<div v-else class="invitation-list">
 			  <div v-for="request in passwordChangeRequests" :key="request.id" class="invitation-row">
-				<div><strong>{{ request.username }}</strong><span>{{ formatTime(request.created_at) }} 提交</span></div>
-				<div class="modal-actions"><n-button size="small" type="error" secondary :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'reject')">拒绝</n-button><n-button size="small" type="primary" :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'approve')">批准</n-button></div>
+				<div><strong>{{ request.username }}</strong><span>{{ request.role === 'vip' ? 'VIP' : request.role === 'subscriber' ? '订阅用户' : '普通用户' }} · {{ formatTime(request.created_at) }} 提交</span></div>
+				<div class="modal-actions"><n-tag type="warning" size="small">待审核</n-tag><n-button size="small" type="error" secondary :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'reject')">拒绝</n-button><n-button size="small" type="primary" :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'approve')">批准</n-button></div>
 			  </div>
 			</div>
 		  </n-card>

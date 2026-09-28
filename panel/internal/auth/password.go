@@ -11,8 +11,8 @@ import (
 )
 
 func (s *Service) RequestPasswordChange(ctx context.Context, userID int64, currentPassword, newPassword string) (PasswordChangeRequest, error) {
-	if len(newPassword) < 10 || len(newPassword) > 72 {
-		return PasswordChangeRequest{}, ErrInvalidPassword
+	if err := validatePassword(newPassword); err != nil {
+		return PasswordChangeRequest{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -38,14 +38,14 @@ func (s *Service) RequestPasswordChange(ctx context.Context, userID int64, curre
 	if pending != 0 {
 		return PasswordChangeRequest{}, ErrPasswordRequestPending
 	}
-	proposedHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	proposedHash, err := hashPassword(newPassword)
 	if err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("hash proposed password: %w", err)
+		return PasswordChangeRequest{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO password_change_requests (user_id, proposed_password_hash, status, created_at)
-		 VALUES (?, ?, 'pending', ?)`, userID, string(proposedHash), now.Unix(),
+		 VALUES (?, ?, 'pending', ?)`, userID, proposedHash, now.Unix(),
 	)
 	if err != nil {
 		return PasswordChangeRequest{}, fmt.Errorf("create password change request: %w", err)
@@ -62,7 +62,7 @@ func (s *Service) RequestPasswordChange(ctx context.Context, userID int64, curre
 
 func (s *Service) LatestPasswordChangeRequest(ctx context.Context, userID int64) (*PasswordChangeRequest, error) {
 	request, err := scanPasswordChangeRequest(s.db.QueryRowContext(ctx,
-		`SELECT requests.id, requests.user_id, users.username, requests.status,
+		`SELECT requests.id, requests.user_id, users.username, users.role, requests.status,
 		 requests.created_at, requests.reviewed_by, requests.reviewed_at
 		 FROM password_change_requests AS requests
 		 JOIN users ON users.id = requests.user_id
@@ -79,7 +79,7 @@ func (s *Service) LatestPasswordChangeRequest(ctx context.Context, userID int64)
 
 func (s *Service) ListPendingPasswordChangeRequests(ctx context.Context) ([]PasswordChangeRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT requests.id, requests.user_id, users.username, requests.status,
+		`SELECT requests.id, requests.user_id, users.username, users.role, requests.status,
 		 requests.created_at, requests.reviewed_by, requests.reviewed_at
 		 FROM password_change_requests AS requests
 		 JOIN users ON users.id = requests.user_id
@@ -170,7 +170,7 @@ func scanPasswordChangeRequest(row passwordRequestScanner) (PasswordChangeReques
 	var createdAt int64
 	var reviewedBy, reviewedAt sql.NullInt64
 	if err := row.Scan(
-		&request.ID, &request.UserID, &request.Username, &request.Status,
+		&request.ID, &request.UserID, &request.Username, &request.Role, &request.Status,
 		&createdAt, &reviewedBy, &reviewedAt,
 	); err != nil {
 		return PasswordChangeRequest{}, err

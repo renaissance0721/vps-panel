@@ -12,24 +12,22 @@ test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数�
   assert.match(appSource, /state\.value\.user\?\.role === 'user' \|\| state\.value\.user\?\.role === 'subscriber'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
   assert.match(appSource, /<SubscriberPortalView[^>]*state\.user\?\.role === 'subscriber'/)
   assert.doesNotMatch(portalSource, /<UserPortalView|sidebar|\/api\/(?:servers|proxies|relays|overview)/)
-  for (const endpoint of [
-    '/api/subscriber/me',
-    '/api/subscriber/nodes',
-    '/api/subscriber/subscription/regenerate',
-    '/api/subscriber/password-change-request',
-  ]) {
+  for (const endpoint of ['/api/subscriber/me', '/api/subscriber/subscription/regenerate']) {
     assert.match(portalSource, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
+  assert.doesNotMatch(portalSource, /\/api\/subscriber\/(?:nodes|password-change-request)/)
 })
 
-test('Subscriber Portal 展示导入订阅面板并只用 Auto URL 生成二维码', () => {
-  for (const label of ['我的订阅', '下次重置', '到期', '可用节点', '导入订阅', '重新生成订阅', 'Base64 通用订阅', 'Clash / Mihomo', '扫描二维码订阅', '复制地址', '申请修改密码']) {
+test('Subscriber Portal 将套餐和导入入口收拢到单一卡片', () => {
+  for (const label of ['套餐信息', '下次重置', '到期', '可用节点', '导入订阅', '重新生成订阅', 'Base64 通用订阅', 'Clash / Mihomo', '扫描二维码订阅', '复制地址']) {
     assert.match(portalSource, new RegExp(label))
   }
   assert.match(portalSource, /subscriber\.plan_name/)
   assert.match(portalSource, /subscriber\.used_bytes/)
   assert.match(portalSource, /subscriber\.traffic_limit_bytes/)
-  assert.match(portalSource, /node\.name/)
+  assert.match(portalSource, /subscriber-plan-title">套餐信息/)
+  assert.match(portalSource, /<n-card[\s\S]*subscriber-plan-actions[\s\S]*importModalOpen = true/)
+  assert.match(portalSource, /subscription-import-card[\s\S]*regenerateSubscription[\s\S]*重新生成订阅/)
   assert.match(portalSource, /copySubscription\('base64', subscriber\?\.subscription_base64_url/)
   assert.match(portalSource, /copySubscription\('mihomo', subscriber\?\.subscription_mihomo_url/)
   assert.match(portalSource, /<QRCodeModal[\s\S]*:uri="subscriber\?\.subscription_auto_url \|\| ''"/)
@@ -37,6 +35,8 @@ test('Subscriber Portal 展示导入订阅面板并只用 Auto URL 生成二维�
   assert.match(portalSource, /modal-title="扫描二维码订阅"/)
   assert.match(portalSource, /instruction="使用支持订阅二维码的客户端扫描导入。"/)
   assert.match(portalSource, /Object\.assign\(subscriber\.value, value\)/)
+  assert.doesNotMatch(portalSource, /我的订阅|申请修改密码|subscriber-node-list/)
+  assert.doesNotMatch(portalSource, /<h1>可用节点<\/h1>|<h1>账号<\/h1>|<h1>订阅<\/h1>/)
   assert.doesNotMatch(portalSource, /server_name|proxy_name|client_name|UUID|SS Password|REALITY|Realm|添加中转|自定义落地/)
 })
 
@@ -97,7 +97,7 @@ test('套餐保存使用 Modal 独立错误、前端校验和防重复提交', (
   assert.doesNotMatch(managementSource, /planNodeIDs\.value\.length\s*(?:===?|<=?)\s*0/)
 })
 
-test('发布节点可手动输入并显示流量倍率', () => {
+test('发布节点可手动输入倍率且管理端统一显示最终名称', () => {
   assert.match(managementSource, /NInputNumber/)
   assert.match(managementSource, /v-model:value="nodeTrafficMultiplier"/)
   assert.match(managementSource, /:min="0\.1"/)
@@ -105,8 +105,12 @@ test('发布节点可手动输入并显示流量倍率', () => {
   assert.match(managementSource, /:precision="2"/)
   assert.match(managementSource, /实际使用 1 GB 时，按该倍率计入套餐流量。允许 0\.10×–5\.00×。/)
   assert.match(managementSource, /traffic_multiplier: multiplier/)
-  assert.match(managementSource, /multiplierLabel\(value\.traffic_multiplier\)/)
-  assert.match(portalSource, /multiplierLabel\(node\.traffic_multiplier\)/)
+  assert.match(managementSource, /function nodeDisplayName\(value: PublishedNode\)/)
+  assert.match(managementSource, /`\$\{value\.name\} \[\$\{Number\(value\.traffic_multiplier\.toFixed\(2\)\)\}×\]`/)
+  assert.match(managementSource, /:title="nodeDisplayName\(value\)"/)
+  assert.match(managementSource, /<span>\{\{ nodeDisplayName\(node\) \}\}<\/span>/)
+  assert.match(managementSource, /function openEditNode\(value: PublishedNode\)[\s\S]*nodeName\.value = value\.name/)
+  assert.doesNotMatch(portalSource, /traffic_multiplier|multiplierLabel/)
 })
 
 test('生命周期字段只在订阅用户表单管理', () => {

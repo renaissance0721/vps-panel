@@ -17,6 +17,7 @@ type passwordChangeRequestResponse struct {
 	ID         int64      `json:"id"`
 	UserID     int64      `json:"user_id"`
 	Username   string     `json:"username"`
+	Role       string     `json:"role"`
 	Status     string     `json:"status"`
 	CreatedAt  time.Time  `json:"created_at"`
 	ReviewedAt *time.Time `json:"reviewed_at"`
@@ -24,7 +25,7 @@ type passwordChangeRequestResponse struct {
 
 func toPasswordChangeRequestResponse(value auth.PasswordChangeRequest) passwordChangeRequestResponse {
 	return passwordChangeRequestResponse{
-		ID: value.ID, UserID: value.UserID, Username: value.Username, Status: value.Status,
+		ID: value.ID, UserID: value.UserID, Username: value.Username, Role: value.Role, Status: value.Status,
 		CreatedAt: value.CreatedAt, ReviewedAt: value.ReviewedAt,
 	}
 }
@@ -40,6 +41,7 @@ func (s *server) createMyPasswordChangeRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	created.Username = user.Username
+	created.Role = user.Role
 	writeJSON(w, http.StatusCreated, map[string]any{"request": toPasswordChangeRequestResponse(created)})
 }
 

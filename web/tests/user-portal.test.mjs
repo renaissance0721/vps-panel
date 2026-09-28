@@ -13,9 +13,10 @@ test('普通 user 使用独立门户且登录初始化不加载管理数据', ()
   assert.match(appSource, /state\.value\.user\?\.role === 'user'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
   assert.match(appSource, /<UserPortalView[^>]*state\.user\?\.role === 'user'/)
   assert.doesNotMatch(portalSource, /\/api\/(?:users|servers|overview|proxies|clients|landings)(?:[/'"`])/)
-  for (const endpoint of ['/api/me/nodes', '/api/me/relay-sources', '/api/me/relays', '/api/me/password-change-request']) {
+  for (const endpoint of ['/api/me/nodes', '/api/me/relay-sources', '/api/me/relays']) {
     assert.match(portalSource, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
+  assert.doesNotMatch(portalSource, /\/api\/me\/password-change-request/)
 })
 
 test('普通用户门户按需请求分享并只展示轻量节点与中转表单', () => {
@@ -47,10 +48,11 @@ test('普通用户只通过专用接口修改自己的 Client Name', () => {
 })
 
 test('用户门户各区域独立加载且管理员中转页标记用户中转', () => {
-  assert.match(portalSource, /Promise\.allSettled\(\[loadNodes\(\), loadRelaySources\(\), loadRelays\(\), loadPasswordRequest\(\)\]\)/)
-  for (const loader of ['loadNodes', 'loadRelaySources', 'loadRelays', 'loadPasswordRequest']) {
+  assert.match(portalSource, /Promise\.allSettled\(\[loadNodes\(\), loadRelaySources\(\), loadRelays\(\)\]\)/)
+  for (const loader of ['loadNodes', 'loadRelaySources', 'loadRelays']) {
     assert.match(portalSource, new RegExp(`async function ${loader}\\(`))
   }
+  assert.doesNotMatch(portalSource, /loadPasswordRequest|申请修改密码|<h1>账号<\/h1>/)
   assert.match(clientFormSource, /普通用户/)
   assert.match(clientFormSource, /付款周期/)
   assert.doesNotMatch(serverDetailSource, /普通用户中转池|user-relay-pool/)

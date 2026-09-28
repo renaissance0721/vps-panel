@@ -6,6 +6,7 @@ import { formatTime } from '../format'
 import { formatClientTrafficBytes } from '../proxy'
 import type { User } from '../types/auth'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
+import AccountMenu from '../components/AccountMenu.vue'
 
 type UserNode = {
   client_id: number
@@ -42,16 +43,14 @@ type UserRelay = {
   entry_address: string
   enabled: boolean
 }
-type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at: string | null }
 type NodeShare = { uri: string; protocol: 'vless' | 'shadowsocks'; server_name: string; proxy_name: string }
 type RelayShare = { uri: string; protocol: 'vless' | 'shadowsocks'; name: string }
 
 const props = defineProps<{ user: User }>()
-const emit = defineEmits<{ logout: [] }>()
+const emit = defineEmits<{ logout: []; userUpdated: [user: User] }>()
 const nodes = ref<UserNode[]>([])
 const relaySources = ref<RelaySource[]>([])
 const relays = ref<UserRelay[]>([])
-const passwordRequest = ref<PasswordRequest | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -61,10 +60,6 @@ const qrOpen = ref(false)
 const qrURI = ref('')
 const qrTitle = ref('')
 const qrSubtitle = ref('')
-const passwordModalOpen = ref(false)
-const currentPassword = ref('')
-const newPassword = ref('')
-const confirmPassword = ref('')
 const relayModalOpen = ref(false)
 const relayName = ref('')
 const relayMode = ref<'assigned_node' | 'custom'>('assigned_node')
@@ -77,11 +72,10 @@ const nodeModalOpen = ref(false)
 const editingNode = ref<UserNode | null>(null)
 const nodeName = ref('')
 
-const pendingPasswordRequest = computed(() => passwordRequest.value?.status === 'pending')
 const targetSources = computed(() => relaySources.value.filter((source) => source.client_id !== sourceClientID.value))
 
 async function loadPortal() {
-  const results = await Promise.allSettled([loadNodes(), loadRelaySources(), loadRelays(), loadPasswordRequest()])
+  const results = await Promise.allSettled([loadNodes(), loadRelaySources(), loadRelays()])
   const failed = results.find((result) => result.status === 'rejected')
   if (failed?.status === 'rejected') {
     error.value = failed.reason instanceof Error ? failed.reason.message : '部分用户门户数据加载失败'
@@ -98,10 +92,6 @@ async function loadRelaySources() {
 
 async function loadRelays() {
   relays.value = (await api<{ relays: UserRelay[] }>('/api/me/relays')).relays
-}
-
-async function loadPasswordRequest() {
-  passwordRequest.value = (await api<{ request: PasswordRequest | null }>('/api/me/password-change-request')).request
 }
 
 async function run(action: () => Promise<void>) {
@@ -193,28 +183,6 @@ function billingLabel(months: UserNode['billing_period_months']) {
   return ({ 1: '月付', 3: '季付', 6: '半年', 12: '年付' } as Record<number, string>)[months ?? 0] ?? '未设置'
 }
 
-async function submitPasswordRequest() {
-  if (newPassword.value.length < 10 || newPassword.value.length > 72) {
-    error.value = '新密码长度需为 10–72 字节'
-    return
-  }
-  if (newPassword.value !== confirmPassword.value) {
-    error.value = '两次输入的新密码不一致'
-    return
-  }
-  await run(async () => {
-    const response = await api<{ request: PasswordRequest }>('/api/me/password-change-request', {
-      method: 'POST',
-      body: JSON.stringify({ current_password: currentPassword.value, new_password: newPassword.value }),
-    })
-    passwordRequest.value = response.request
-    currentPassword.value = ''
-    newPassword.value = ''
-    confirmPassword.value = ''
-    passwordModalOpen.value = false
-  })
-}
-
 function openRelayModal() {
   editingRelayID.value = null
   relayName.value = ''
@@ -283,8 +251,8 @@ onMounted(async () => {
 <template>
   <main class="user-portal">
     <header class="user-portal-header">
-      <div><strong>VPS Panel</strong><span>{{ props.user.username }}</span></div>
-      <n-button secondary :loading="busy" @click="emit('logout')">退出登录</n-button>
+      <strong>夕凪云</strong>
+      <AccountMenu :user="props.user" @updated="emit('userUpdated', $event)" @logout="emit('logout')" />
     </header>
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载…</span></div>
@@ -316,11 +284,9 @@ onMounted(async () => {
           </n-card>
         </div>
       </section>
-      <section><h1>账号</h1><n-card :bordered="true"><dl class="user-details"><div><dt>用户名</dt><dd>{{ props.user.username }}</dd></div><div><dt>密码修改</dt><dd>{{ pendingPasswordRequest ? '等待管理员审核' : passwordRequest?.status === 'approved' ? '最近申请已批准' : passwordRequest?.status === 'rejected' ? '最近申请已拒绝' : '无待处理申请' }}</dd></div></dl><n-button type="primary" :disabled="pendingPasswordRequest || busy" @click="passwordModalOpen = true">申请修改密码</n-button></n-card></section>
     </template>
   </main>
 
-  <n-modal v-model:show="passwordModalOpen"><n-card class="client-form-card" title="申请修改密码" closable @close="passwordModalOpen = false"><form class="auth-form" @submit.prevent="submitPasswordRequest"><label><span>当前密码</span><n-input v-model:value="currentPassword" type="password" show-password-on="click" /></label><label><span>新密码</span><n-input v-model:value="newPassword" type="password" show-password-on="click" /></label><label><span>确认新密码</span><n-input v-model:value="confirmPassword" type="password" show-password-on="click" /></label><div class="modal-actions"><n-button @click="passwordModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">提交申请</n-button></div></form></n-card></n-modal>
   <n-modal v-model:show="nodeModalOpen"><n-card class="client-form-card" title="编辑节点" closable @close="nodeModalOpen = false"><form class="auth-form" @submit.prevent="saveNode"><div class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span></div><label><span>客户端名称</span><n-input v-model:value="nodeName" maxlength="100" /></label><div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
   <n-modal v-model:show="relayModalOpen"><n-card class="client-form-card" :title="editingRelayID === null ? '添加中转' : '修改落地'" closable @close="relayModalOpen = false"><form class="auth-form" @submit.prevent="saveRelay"><template v-if="editingRelayID === null"><label><span>名称</span><n-input v-model:value="relayName" maxlength="100" /></label><label><span>入口节点</span><select v-model.number="sourceClientID" class="settings-input" @change="onSourceChange"><option v-for="source in relaySources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label><fieldset class="relay-mode-field"><legend>落地方式</legend><n-radio-group v-model:value="relayMode"><div class="relay-mode-options"><n-radio value="assigned_node">使用已有节点</n-radio><n-radio value="custom">自定义落地</n-radio></div></n-radio-group></fieldset><label v-if="relayMode === 'assigned_node'"><span>落地节点</span><select v-model.number="targetClientID" class="settings-input"><option v-for="source in targetSources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label></template><template v-if="relayMode === 'custom'"><label><span>落地公网 IP</span><n-input v-model:value="relayTargetIP" placeholder="1.2.3.4" /></label><label><span>落地端口</span><input v-model.number="relayTargetPort" class="settings-input" type="number" min="1" max="65535" /></label></template><div class="modal-actions"><n-button @click="relayModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="qrOpen = $event" />

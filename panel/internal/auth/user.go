@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -124,17 +125,196 @@ func (s *Service) GetUser(ctx context.Context, id int64) (User, error) {
 	return user, nil
 }
 
+func (s *Service) RenameUser(ctx context.Context, id int64, currentPassword, username string) (User, error) {
+	username = strings.TrimSpace(username)
+	if !usernamePattern.MatchString(username) {
+		return User{}, ErrInvalidUsername
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, fmt.Errorf("begin user rename: %w", err)
+	}
+	defer tx.Rollback()
+
+	var user User
+	var passwordHash string
+	var createdAt, updatedAt int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("read user for rename: %w", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(currentPassword)) != nil {
+		return User{}, ErrInvalidCredentials
+	}
+	var existing int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE username = ? AND id != ?`, username, id).Scan(&existing)
+	if err == nil {
+		return User{}, ErrUsernameTaken
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return User{}, fmt.Errorf("check renamed username: %w", err)
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, updated_at = ? WHERE id = ?`,
+		username, now.Unix(), id); err != nil {
+		return User{}, fmt.Errorf("rename user: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, fmt.Errorf("commit user rename: %w", err)
+	}
+	user.Username = username
+	user.CreatedAt = time.Unix(createdAt, 0).UTC()
+	user.UpdatedAt = now
+	return user, nil
+}
+
+func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
+	var currentHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&currentHash); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return fmt.Errorf("read current password: %w", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(currentPassword)) != nil {
+		return ErrInvalidCredentials
+	}
+	if bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(newPassword)) == nil {
+		return ErrPasswordUnchanged
+	}
+	passwordHash, err := hashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+		passwordHash, s.now().UTC().Truncate(time.Second).Unix(), userID)
+	if err != nil {
+		return fmt.Errorf("change password: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		if err != nil {
+			return fmt.Errorf("read changed password count: %w", err)
+		}
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func (s *Service) DeleteUser(ctx context.Context, userID int64) ([]proxystore.Mutation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin user deletion: %w", err)
+	}
+	defer tx.Rollback()
+
+	var role string
+	if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?`, userID).Scan(&role); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUserNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("read user for deletion: %w", err)
+	}
+	if role == RoleAdmin {
+		return nil, ErrCannotDeleteAdmin
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT server_id FROM (
+		SELECT proxies.server_id AS server_id FROM clients
+		JOIN proxies ON proxies.id = clients.proxy_id WHERE clients.assigned_user_id = ?
+		UNION
+		SELECT relays.server_id AS server_id FROM relays WHERE relays.owner_user_id = ?
+			OR relays.source_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
+			OR relays.target_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
+			OR relays.target_landing_id IN (SELECT id FROM landing_nodes WHERE owner_user_id = ?)
+	) ORDER BY server_id`, userID, userID, userID, userID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user deletion servers: %w", err)
+	}
+	serverIDs := make([]int64, 0)
+	for rows.Next() {
+		var serverID int64
+		if err := rows.Scan(&serverID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan user deletion server: %w", err)
+		}
+		serverIDs = append(serverIDs, serverID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate user deletion servers: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close user deletion servers: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE owner_user_id = ?
+		OR source_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
+		OR target_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
+		OR target_landing_id IN (SELECT id FROM landing_nodes WHERE owner_user_id = ?)`,
+		userID, userID, userID, userID); err != nil {
+		return nil, fmt.Errorf("delete user relays: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM clients WHERE assigned_user_id = ?`, userID); err != nil {
+		return nil, fmt.Errorf("delete user clients: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM landing_nodes WHERE owner_user_id = ?`, userID); err != nil {
+		return nil, fmt.Errorf("delete user landing nodes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM admin_invitations WHERE created_by = ?`, userID); err != nil {
+		return nil, fmt.Errorf("delete user invitations: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("delete user: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		if err != nil {
+			return nil, fmt.Errorf("read deleted user count: %w", err)
+		}
+		return nil, ErrUserNotFound
+	}
+	mutations, err := proxystore.BumpServerVersionsTx(ctx, tx, serverIDs, s.now().UTC().Truncate(time.Second))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit user deletion: %w", err)
+	}
+	return mutations, nil
+}
+
 func prepareCredentials(username, password string) (string, string, error) {
 	username = strings.TrimSpace(username)
 	if !usernamePattern.MatchString(username) {
 		return "", "", ErrInvalidUsername
 	}
+	passwordHash, err := hashPassword(password)
+	if err != nil {
+		return "", "", err
+	}
+	return username, passwordHash, nil
+}
+
+func validatePassword(password string) error {
 	if len(password) < 10 || len(password) > 72 {
-		return "", "", ErrInvalidPassword
+		return ErrInvalidPassword
+	}
+	return nil
+}
+
+func hashPassword(password string) (string, error) {
+	if err := validatePassword(password); err != nil {
+		return "", err
 	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return "", "", fmt.Errorf("hash password: %w", err)
+		return "", fmt.Errorf("hash password: %w", err)
 	}
-	return username, string(passwordHash), nil
+	return string(passwordHash), nil
 }

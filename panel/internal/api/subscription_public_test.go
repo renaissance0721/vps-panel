@@ -50,7 +50,8 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 	}
 	subscriptions := subscriptionstore.NewService(db, relay.NewService(db))
 	node, _, err := subscriptions.CreatePublishedNode(t.Context(), subscriptionstore.CreatePublishedNodeInput{
-		Name: "🇸🇬 SG-01", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID, Enabled: true,
+		Name: "🇸🇬 SG-01", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID,
+		TrafficMultiplierBP: 50, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatalf("public subscription response = status %d headers %v body %q", response.Code, response.Header(), response.Body.String())
 	}
 	decoded, err := base64.StdEncoding.DecodeString(response.Body.String())
-	if err != nil || !strings.Contains(string(decoded), "#%F0%9F%87%B8%F0%9F%87%AC%20SG-01") {
+	if err != nil || !strings.Contains(string(decoded), "#%F0%9F%87%B8%F0%9F%87%AC%20SG-01%20%5B0.5%C3%97%5D") {
 		t.Fatalf("decoded public subscription = %q, error = %v", decoded, err)
 	}
 
@@ -115,13 +116,18 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		Rules []string `yaml:"rules"`
 	}
 	if err := yaml.Unmarshal(mihomo.Body.Bytes(), &config); err != nil || len(config.Proxies) != 1 ||
-		config.Proxies[0].Name != node.Name || config.Proxies[0].Type != "vless" ||
+		config.Proxies[0].Name != subscriptionstore.FormatNodeDisplayName(node.Name, 50) || config.Proxies[0].Type != "vless" ||
 		config.Proxies[0].ServerName != "www.example.com" || config.Proxies[0].Flow != proxystore.ServerFlow ||
 		config.Proxies[0].ClientFingerprint != proxystore.Fingerprint ||
 		config.Proxies[0].RealityOptions.PublicKey == "" || config.Proxies[0].RealityOptions.ShortID == "" ||
 		len(config.ProxyGroups) != 1 || config.ProxyGroups[0].Name != "节点选择" ||
+		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != config.Proxies[0].Name ||
 		len(config.Rules) != 1 || config.Rules[0] != "MATCH,节点选择" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
+	}
+	var storedName string
+	if err := db.QueryRow(`SELECT name FROM subscription_published_nodes WHERE id = ?`, node.ID).Scan(&storedName); err != nil || storedName != node.Name {
+		t.Fatalf("stored published node name = %q, %v; want base name %q", storedName, err, node.Name)
 	}
 	for _, userAgent := range []string{"Clash-Verge/2.4", "mihomo/1.19"} {
 		automatic := httptest.NewRecorder()

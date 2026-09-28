@@ -118,7 +118,7 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		t.Fatalf("configured subscriber = %d, %s", me.Code, me.Body.String())
 	}
 	nodes := performRequest(t, handler, http.MethodGet, "/api/subscriber/nodes", nil, subscriberCookie)
-	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"name":"🇸🇬 SG-01"`) ||
+	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"name":"🇸🇬 SG-01 [0.5×]"`) ||
 		!strings.Contains(nodes.Body.String(), `"traffic_multiplier":0.5`) ||
 		strings.Contains(nodes.Body.String(), "internal proxy") || strings.Contains(nodes.Body.String(), "target_proxy") {
 		t.Fatalf("subscriber nodes = %d, %s", nodes.Code, nodes.Body.String())

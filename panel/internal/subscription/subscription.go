@@ -49,11 +49,12 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	type subscriptionNode struct {
 		name         string
 		mode         string
+		multiplierBP int
 		clientID     int64
 		entryAddress string
 		entryPort    int
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT nodes.name, nodes.mode, clients.client_id,
+	rows, err := s.db.QueryContext(ctx, `SELECT nodes.name, nodes.mode, nodes.traffic_multiplier_bp, clients.client_id,
 		CASE WHEN relay.entry_host_mode = 'manual' THEN relay.entry_host
 		     ELSE COALESCE(source_info.public_ipv4, '') END,
 		COALESCE(relay.listen_port, 0)
@@ -72,7 +73,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	nodes := make([]subscriptionNode, 0)
 	for rows.Next() {
 		var value subscriptionNode
-		if err := rows.Scan(&value.name, &value.mode, &value.clientID, &value.entryAddress, &value.entryPort); err != nil {
+		if err := rows.Scan(&value.name, &value.mode, &value.multiplierBP, &value.clientID, &value.entryAddress, &value.entryPort); err != nil {
 			rows.Close()
 			return SubscriptionData{}, mutations, fmt.Errorf("scan subscription node: %w", err)
 		}
@@ -91,7 +92,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 
 	shares := make([]proxystore.ClientShare, 0, len(nodes))
 	for _, node := range nodes {
-		options := proxystore.ShareOptions{DisplayName: node.name}
+		options := proxystore.ShareOptions{DisplayName: FormatNodeDisplayName(node.name, node.multiplierBP)}
 		var share proxystore.ClientShare
 		if node.mode == NodeModeDirect {
 			share, err = s.proxies.GetClientShareWithOptions(ctx, node.clientID, options)

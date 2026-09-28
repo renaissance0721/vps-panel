@@ -402,8 +402,8 @@ async function reviewUserPassword(action: 'approve' | 'reject') {
   })
 }
 
-function multiplierLabel(value: number) {
-  return `${Number(value.toFixed(2))}×`
+function nodeDisplayName(value: PublishedNode) {
+  return `${value.name} [${Number(value.traffic_multiplier.toFixed(2))}×]`
 }
 
 onMounted(async () => {
@@ -448,13 +448,12 @@ onMounted(async () => {
     <div class="section-heading"><span></span><n-button type="primary" :disabled="proxies.length === 0" @click="openCreateNode">新增发布节点</n-button></div>
     <n-empty v-if="nodes.length === 0" description="暂无发布节点" />
     <div v-else class="user-management-grid">
-      <n-card v-for="value in nodes" :key="value.id" :title="value.name">
+      <n-card v-for="value in nodes" :key="value.id" :title="nodeDisplayName(value)">
         <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
         <p v-if="value.mode === 'direct'">单一节点</p><p v-else>中转 + 落地</p>
         <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · {{ value.source_proxy_name }} → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-if="value.mode === 'relay'">入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
-        <p>流量倍率：<n-tag size="small">{{ multiplierLabel(value.traffic_multiplier) }}</n-tag></p>
         <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
       </n-card>
     </div>
@@ -481,7 +480,7 @@ onMounted(async () => {
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
     <n-checkbox v-model:checked="planEnabled">启用套餐</n-checkbox>
     <fieldset class="subscription-node-picker"><legend>包含节点（上下调整订阅顺序）</legend>
-      <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ node.name }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>
+      <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ nodeDisplayName(node) }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>
     </fieldset>
     <div class="modal-actions subscription-form-actions"><n-button @click="planModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>

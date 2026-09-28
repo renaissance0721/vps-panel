@@ -39,6 +39,7 @@ import UserPortalView from './views/UserPortalView.vue'
 import SubscriberPortalView from './views/SubscriberPortalView.vue'
 import UserManagementView from './views/UserManagementView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
+import AccountMenu from './components/AccountMenu.vue'
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
@@ -204,6 +205,10 @@ function clearCredentials() {
   confirmPassword.value = ''
 }
 
+function updateCurrentUser(user: NonNullable<AuthState['user']>) {
+  if (state.value) state.value.user = user
+}
+
 function selectPage(page: AdminPage) {
   currentPage.value = page
   sidebarOpen.value = false
@@ -288,7 +293,7 @@ onUnmounted(stopServerPolling)
 
       <n-card v-else-if="state.requires_initialization" class="auth-card" :bordered="true">
         <p class="eyebrow">首次初始化</p>
-        <h1>初始化 VPS 管理面板</h1>
+        <h1>初始化夕凪云</h1>
         <p class="description">创建首个管理员。完成后，此入口将永久关闭。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="initialize">
@@ -326,8 +331,8 @@ onUnmounted(stopServerPolling)
       </n-card>
 
       <n-card v-else-if="!state.authenticated" class="auth-card" :bordered="true">
-        <p class="eyebrow">VPS 管理</p>
-        <h1>登录 VPS 管理面板</h1>
+        <p class="eyebrow">夕凪云</p>
+        <h1>登录管理面板</h1>
         <p class="description">请使用已注册账号登录。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="login">
@@ -350,12 +355,12 @@ onUnmounted(stopServerPolling)
         </form>
       </n-card>
 
-      <UserPortalView v-else-if="state.user?.role === 'user'" :user="state.user" @logout="logout" />
-      <SubscriberPortalView v-else-if="state.user?.role === 'subscriber'" :user="state.user" @logout="logout" />
+      <UserPortalView v-else-if="state.user?.role === 'user'" :user="state.user" @user-updated="updateCurrentUser" @logout="logout" />
+      <SubscriberPortalView v-else-if="state.user?.role === 'subscriber'" :user="state.user" @user-updated="updateCurrentUser" @logout="logout" />
 
       <div v-else class="app-layout">
         <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
-          <strong class="sidebar-brand">VPS Panel</strong>
+          <strong class="sidebar-brand">夕凪云</strong>
           <nav class="sidebar-nav" aria-label="管理导航">
             <button
               type="button"
@@ -402,10 +407,6 @@ onUnmounted(stopServerPolling)
               用户管理
             </button>
           </nav>
-          <div class="sidebar-account">
-            <span>{{ state.user?.username }}</span>
-            <n-button secondary block :loading="submitting" @click="logout">退出登录</n-button>
-          </div>
         </aside>
         <button
           v-if="sidebarOpen"
@@ -418,11 +419,12 @@ onUnmounted(stopServerPolling)
         <main class="admin-main">
           <header class="mobile-header">
             <button type="button" aria-label="打开菜单" @click="sidebarOpen = true">☰</button>
-            <strong>VPS Panel</strong>
+            <strong>夕凪云</strong>
           </header>
           <div class="admin-page">
             <header class="page-heading">
               <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : currentPage === 'relays' ? '中转' : currentPage === 'subscriptions' ? '订阅管理' : '用户管理' }}</h1>
+              <AccountMenu v-if="state.user" :user="state.user" @updated="updateCurrentUser" @logout="logout" />
             </header>
 
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>

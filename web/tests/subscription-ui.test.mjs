@@ -58,6 +58,45 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
   assert.match(managementSource, /node_ids: planNodeIDs\.value/)
 })
 
+test('套餐启用状态使用 NCheckbox 双向绑定并原样写入保存请求', () => {
+  assert.match(managementSource, /import \{[^}]*NCheckbox[^}]*\} from 'naive-ui'/)
+  assert.match(managementSource, /<n-checkbox v-model:checked="planEnabled">启用套餐<\/n-checkbox>/)
+  assert.match(managementSource, /<n-checkbox v-model:checked="nodeEnabled">启用发布节点<\/n-checkbox>/)
+  assert.match(managementSource, /<n-checkbox v-model:checked="userEnabled">启用账号<\/n-checkbox>/)
+  assert.match(managementSource, /function openCreatePlan\(\)[\s\S]*planEnabled\.value = true/)
+  assert.match(managementSource, /function openEditPlan\(value: Plan\)[\s\S]*populatePlanForm\(value\)/)
+  assert.match(managementSource, /function populatePlanForm\(value: Plan\)[\s\S]*planEnabled\.value = value\.enabled/)
+  assert.match(managementSource, /name, enabled: planEnabled\.value, traffic_limit_bytes: trafficLimit/)
+})
+
+test('套餐保存使用 Modal 独立错误、前端校验和防重复提交', () => {
+  assert.match(managementSource, /const planFormError = ref\(''\)/)
+  assert.match(managementSource, /async function savePlan\(\) \{\s*if \(busy\.value\) return\s*planFormError\.value = ''/)
+  assert.match(managementSource, /套餐名称不能为空/)
+  assert.match(managementSource, /流量额度必须是有限且不小于 0 的数字/)
+  assert.match(managementSource, /默认有效天数必须是大于等于 1 的整数/)
+  assert.match(managementSource, /每月重置日期必须是 1–31 的整数/)
+  assert.match(managementSource, /每月重置时间必须是有效的 HH:mm/)
+  assert.match(managementSource, /付款周期仅支持未设置、1、3、6 或 12 个月/)
+  assert.match(managementSource, /String\(planTrafficGiB\.value \?\? ''\)\.trim\(\)/)
+  assert.match(managementSource, /String\(planValidityDays\.value \?\? ''\)\.trim\(\)/)
+  assert.match(managementSource, /<form class="auth-form" novalidate @submit\.prevent="savePlan">/)
+  assert.match(managementSource, /v-if="planFormError"[\s\S]*\{\{ planFormError \}\}/)
+  assert.match(managementSource, /:loading="busy" :disabled="busy">保存<\/n-button>/)
+  assert.doesNotMatch(managementSource, /planNodeIDs\.value\.length\s*(?:===?|<=?)\s*0/)
+})
+
+test('套餐节点保存失败保留 Modal、说明部分成功并刷新服务端状态', () => {
+  assert.match(managementSource, /let planSaved = false/)
+  assert.match(managementSource, /let nodesSaved = false/)
+  assert.match(managementSource, /套餐基本信息已保存，但节点列表保存失败：\$\{message\}/)
+  assert.match(managementSource, /套餐已创建，但节点列表保存失败：\$\{message\}/)
+  assert.match(managementSource, /if \(planSaved && !nodesSaved\)[\s\S]*await loadAll\(\)[\s\S]*populatePlanForm\(current\)/)
+  assert.match(managementSource, /await loadAll\(\)\s*planModalOpen\.value = false/)
+  assert.match(managementSource, /function movePlanNode/)
+  assert.match(managementSource, /node_ids: planNodeIDs\.value/)
+})
+
 test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => {
   assert.match(relaySource, /subscription_published/)
   assert.match(relaySource, /订阅发布/)

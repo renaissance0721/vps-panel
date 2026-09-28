@@ -242,6 +242,7 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS subscription_plans (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			subscription_title TEXT,
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes IS NULL OR traffic_limit_bytes >= 0),
 			traffic_reset_mode TEXT NOT NULL DEFAULT 'monthly'

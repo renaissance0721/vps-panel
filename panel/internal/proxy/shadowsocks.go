@@ -83,10 +83,10 @@ func validShadowsocksKey(value, method string) bool {
 	return err == nil && len(decoded) == expected
 }
 
-func buildShadowsocksURI(share ClientShare, masterPassword string) string {
+func buildShadowsocksURI(share ClientShare) string {
 	return (&url.URL{
 		Scheme:   "ss",
-		User:     url.UserPassword(share.Method, masterPassword+":"+share.Password),
+		User:     url.UserPassword(share.Method, share.ShadowsocksPassword),
 		Host:     net.JoinHostPort(share.Address, strconv.Itoa(share.Port)),
 		Fragment: share.DisplayName,
 	}).String()

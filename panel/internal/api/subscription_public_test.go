@@ -11,6 +11,7 @@ import (
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"github.com/renaissance0721/vps-panel/panel/internal/relay"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
+	"gopkg.in/yaml.v3"
 )
 
 func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
@@ -56,7 +57,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 	}
 	limit := int64(1024)
 	plan, err := subscriptions.CreatePlan(t.Context(), subscriptionstore.CreatePlanInput{
-		Name: "Basic", Enabled: true, TrafficLimitBytes: &limit,
+		Name: "Basic", SubscriptionTitle: "我的机场", Enabled: true, TrafficLimitBytes: &limit,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +76,10 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/public-token", nil))
 	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
 		response.Header().Get("Cache-Control") != "no-store" ||
-		response.Header().Get("Subscription-Userinfo") != "upload=0; download=0; total=1024; expire=0" {
+		response.Header().Get("Subscription-Userinfo") != "upload=0; download=0; total=1024; expire=0" ||
+		response.Header().Get("Profile-Title") != "base64:"+base64.StdEncoding.EncodeToString([]byte("我的机场")) ||
+		response.Header().Get("Profile-Update-Interval") != "24" ||
+		response.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA.txt" {
 		t.Fatalf("public subscription response = status %d headers %v body %q", response.Code, response.Header(), response.Body.String())
 	}
 	decoded, err := base64.StdEncoding.DecodeString(response.Body.String())
@@ -83,17 +87,100 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatalf("decoded public subscription = %q, error = %v", decoded, err)
 	}
 
-	missing := httptest.NewRecorder()
-	handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/sub/not-a-token", nil))
-	if missing.Code != http.StatusNotFound || strings.Contains(missing.Body.String(), "not-a-token") {
-		t.Fatalf("missing token response = %d %q", missing.Code, missing.Body.String())
+	mihomo := httptest.NewRecorder()
+	handler.ServeHTTP(mihomo, httptest.NewRequest(http.MethodGet, "/sub/public-token/mihomo", nil))
+	if mihomo.Code != http.StatusOK || mihomo.Header().Get("Content-Type") != "text/yaml; charset=utf-8" ||
+		mihomo.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA.yaml" ||
+		mihomo.Header().Get("Subscription-Userinfo") != response.Header().Get("Subscription-Userinfo") ||
+		mihomo.Header().Get("Profile-Title") != response.Header().Get("Profile-Title") ||
+		mihomo.Header().Get("Profile-Update-Interval") != "24" {
+		t.Fatalf("Mihomo subscription response = status %d headers %v body %q", mihomo.Code, mihomo.Header(), mihomo.Body.String())
+	}
+	var config struct {
+		Proxies []struct {
+			Name              string `yaml:"name"`
+			Type              string `yaml:"type"`
+			ServerName        string `yaml:"servername"`
+			Flow              string `yaml:"flow"`
+			ClientFingerprint string `yaml:"client-fingerprint"`
+			RealityOptions    struct {
+				PublicKey string `yaml:"public-key"`
+				ShortID   string `yaml:"short-id"`
+			} `yaml:"reality-opts"`
+		} `yaml:"proxies"`
+		ProxyGroups []struct {
+			Name    string   `yaml:"name"`
+			Proxies []string `yaml:"proxies"`
+		} `yaml:"proxy-groups"`
+		Rules []string `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(mihomo.Body.Bytes(), &config); err != nil || len(config.Proxies) != 1 ||
+		config.Proxies[0].Name != node.Name || config.Proxies[0].Type != "vless" ||
+		config.Proxies[0].ServerName != "www.example.com" || config.Proxies[0].Flow != proxystore.ServerFlow ||
+		config.Proxies[0].ClientFingerprint != proxystore.Fingerprint ||
+		config.Proxies[0].RealityOptions.PublicKey == "" || config.Proxies[0].RealityOptions.ShortID == "" ||
+		len(config.ProxyGroups) != 1 || config.ProxyGroups[0].Name != "节点选择" ||
+		len(config.Rules) != 1 || config.Rules[0] != "MATCH,节点选择" {
+		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
+	}
+	for _, userAgent := range []string{"Clash-Verge/2.4", "mihomo/1.19"} {
+		automatic := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/sub/public-token/auto", nil)
+		request.Header.Set("User-Agent", userAgent)
+		handler.ServeHTTP(automatic, request)
+		if automatic.Code != http.StatusOK || automatic.Header().Get("Content-Type") != "text/yaml; charset=utf-8" ||
+			automatic.Header().Get("Subscription-Userinfo") != response.Header().Get("Subscription-Userinfo") ||
+			automatic.Header().Get("Profile-Title") != response.Header().Get("Profile-Title") ||
+			automatic.Header().Get("Profile-Update-Interval") != "24" ||
+			automatic.Header().Get("Content-Disposition") != mihomo.Header().Get("Content-Disposition") ||
+			automatic.Body.String() != mihomo.Body.String() {
+			t.Fatalf("auto Mihomo for %q = %d %v %q", userAgent, automatic.Code, automatic.Header(), automatic.Body.String())
+		}
+	}
+	automaticBase64 := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/sub/public-token/auto", nil)
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	handler.ServeHTTP(automaticBase64, request)
+	if automaticBase64.Code != http.StatusOK || automaticBase64.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		automaticBase64.Header().Get("Subscription-Userinfo") != response.Header().Get("Subscription-Userinfo") ||
+		automaticBase64.Header().Get("Profile-Title") != response.Header().Get("Profile-Title") ||
+		automaticBase64.Header().Get("Profile-Update-Interval") != "24" ||
+		automaticBase64.Header().Get("Content-Disposition") != response.Header().Get("Content-Disposition") ||
+		automaticBase64.Body.String() != response.Body.String() {
+		t.Fatalf("auto Base64 = %d %v %q", automaticBase64.Code, automaticBase64.Header(), automaticBase64.Body.String())
+	}
+
+	for _, suffix := range []string{"", "/mihomo", "/auto"} {
+		missing := httptest.NewRecorder()
+		handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/sub/not-a-token"+suffix, nil))
+		if missing.Code != http.StatusNotFound || strings.Contains(missing.Body.String(), "not-a-token") {
+			t.Fatalf("missing token response for %q = %d %q", suffix, missing.Code, missing.Body.String())
+		}
 	}
 	if _, err := db.Exec(`UPDATE subscriber_profiles SET enabled = 0 WHERE user_id = 100`); err != nil {
 		t.Fatal(err)
 	}
-	disabled := httptest.NewRecorder()
-	handler.ServeHTTP(disabled, httptest.NewRequest(http.MethodGet, "/sub/public-token", nil))
-	if disabled.Code != http.StatusForbidden {
-		t.Fatalf("disabled subscription status = %d, body %q", disabled.Code, disabled.Body.String())
+	assertSubscriptionStatusForAllFormats(t, handler, "public-token", http.StatusForbidden)
+	if _, err := db.Exec(`UPDATE subscriber_profiles SET enabled = 1, expires_at = 1 WHERE user_id = 100`); err != nil {
+		t.Fatal(err)
+	}
+	assertSubscriptionStatusForAllFormats(t, handler, "public-token", http.StatusForbidden)
+	if _, err := db.Exec(`UPDATE subscriber_profiles SET expires_at = NULL WHERE user_id = 100`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE subscription_plans SET traffic_limit_bytes = 0 WHERE id = ?`, plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertSubscriptionStatusForAllFormats(t, handler, "public-token", http.StatusForbidden)
+}
+
+func assertSubscriptionStatusForAllFormats(t *testing.T, handler http.Handler, tokenValue string, want int) {
+	t.Helper()
+	for _, suffix := range []string{"", "/mihomo", "/auto"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/"+tokenValue+suffix, nil))
+		if response.Code != want {
+			t.Fatalf("subscription status for %q = %d, want %d, body %q", suffix, response.Code, want, response.Body.String())
+		}
 	}
 }

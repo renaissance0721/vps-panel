@@ -24,6 +24,7 @@ type PublishedNode = {
 type Plan = {
   id: number
   name: string
+  subscription_title: string
   enabled: boolean
   traffic_limit_bytes: number | null
   traffic_reset_mode: 'never' | 'monthly'
@@ -75,6 +76,7 @@ const nodeEnabled = ref(true)
 const planModalOpen = ref(false)
 const editingPlan = ref<Plan | null>(null)
 const planName = ref('')
+const planSubscriptionTitle = ref('')
 const planEnabled = ref(true)
 const planTrafficGiB = ref('')
 const planResetMode = ref<'never' | 'monthly'>('monthly')
@@ -190,6 +192,7 @@ function openCreatePlan() {
   planFormError.value = ''
   editingPlan.value = null
   planName.value = ''
+  planSubscriptionTitle.value = ''
   planEnabled.value = true
   planTrafficGiB.value = ''
   planResetMode.value = 'monthly'
@@ -204,6 +207,7 @@ function openCreatePlan() {
 function populatePlanForm(value: Plan) {
   editingPlan.value = value
   planName.value = value.name
+  planSubscriptionTitle.value = value.subscription_title
   planEnabled.value = value.enabled
   planTrafficGiB.value = value.traffic_limit_bytes === null ? '' : String(value.traffic_limit_bytes / 1024 ** 3)
   planResetMode.value = value.traffic_reset_mode
@@ -274,7 +278,8 @@ async function savePlan() {
   }
 
   const body = {
-    name, enabled: planEnabled.value, traffic_limit_bytes: trafficLimit,
+    name, subscription_title: planSubscriptionTitle.value.trim(),
+    enabled: planEnabled.value, traffic_limit_bytes: trafficLimit,
     traffic_reset_mode: planResetMode.value, traffic_reset_day: resetDay,
     traffic_reset_time: planResetTime.value, default_validity_days: validityDays,
     billing_period_months: planBillingMonths.value || null,
@@ -466,7 +471,8 @@ onMounted(async () => {
 
   <n-modal v-model:show="planModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPlan ? '编辑套餐' : '新增套餐'" closable @close="planModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePlan">
     <n-alert v-if="planFormError" type="error" closable @close="planFormError = ''">{{ planFormError }}</n-alert>
-    <label><span>名称</span><n-input v-model:value="planName" maxlength="100" /></label>
+    <label><span>套餐名称</span><n-input v-model:value="planName" maxlength="100" /></label>
+    <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用套餐名称。</small></label>
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
     <label><span>重置模式</span><select v-model="planResetMode" class="settings-input"><option value="monthly">每月</option><option value="never">不重置</option></select></label>
     <label v-if="planResetMode === 'monthly'"><span>重置日期</span><input v-model.number="planResetDay" class="settings-input" type="number" min="1" max="31" /></label>

@@ -44,7 +44,9 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 
 	unconfigured := performRequest(t, handler, http.MethodGet, "/api/subscriber/me", nil, subscriberCookie)
 	if unconfigured.Code != http.StatusOK || !strings.Contains(unconfigured.Body.String(), `"status":"unconfigured"`) ||
-		!strings.Contains(unconfigured.Body.String(), `"subscription_url":"http://example.com/sub/`) {
+		!strings.Contains(unconfigured.Body.String(), `"subscription_url":"http://example.com/sub/`) ||
+		!strings.Contains(unconfigured.Body.String(), `"subscription_mihomo_url":"http://example.com/sub/`) ||
+		!strings.Contains(unconfigured.Body.String(), `"subscription_auto_url":"http://example.com/sub/`) {
 		t.Fatalf("unconfigured subscriber = %d, %s", unconfigured.Code, unconfigured.Body.String())
 	}
 	if denied := performRequest(t, handler, http.MethodGet, "/api/me/nodes", nil, subscriberCookie); denied.Code != http.StatusForbidden {
@@ -77,7 +79,9 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := subscriptions.CreatePlan(t.Context(), subscriptionstore.CreatePlanInput{Name: "Premium", Enabled: true})
+	plan, err := subscriptions.CreatePlan(t.Context(), subscriptionstore.CreatePlanInput{
+		Name: "Premium", SubscriptionTitle: "Refrain Cloud", Enabled: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +96,10 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 
 	me := performRequest(t, handler, http.MethodGet, "/api/subscriber/me", nil, subscriberCookie)
 	if me.Code != http.StatusOK || !strings.Contains(me.Body.String(), `"plan_name":"Premium"`) ||
+		!strings.Contains(me.Body.String(), `"subscription_title":"Refrain Cloud"`) ||
+		!strings.Contains(me.Body.String(), `"subscription_base64_url":"http://example.com/sub/`) ||
+		!strings.Contains(me.Body.String(), `"subscription_mihomo_url":"http://example.com/sub/`) ||
+		!strings.Contains(me.Body.String(), `"subscription_auto_url":"http://example.com/sub/`) ||
 		!strings.Contains(me.Body.String(), `"enabled_node_count":1`) {
 		t.Fatalf("configured subscriber = %d, %s", me.Code, me.Body.String())
 	}
@@ -100,10 +108,22 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		strings.Contains(nodes.Body.String(), "internal proxy") || strings.Contains(nodes.Body.String(), "target_proxy") {
 		t.Fatalf("subscriber nodes = %d, %s", nodes.Code, nodes.Body.String())
 	}
+	var oldToken string
+	if err := db.QueryRow(`SELECT subscription_token FROM subscriber_profiles WHERE user_id = ?`, userID).Scan(&oldToken); err != nil {
+		t.Fatal(err)
+	}
 	regenerated := performRequest(t, handler, http.MethodPost, "/api/subscriber/subscription/regenerate", nil, subscriberCookie)
-	if regenerated.Code != http.StatusOK || !strings.Contains(regenerated.Body.String(), `"subscription_url"`) {
+	var regeneratedURLs struct {
+		Base64 string `json:"subscription_base64_url"`
+		Mihomo string `json:"subscription_mihomo_url"`
+		Auto   string `json:"subscription_auto_url"`
+	}
+	if regenerated.Code != http.StatusOK || json.Unmarshal(regenerated.Body.Bytes(), &regeneratedURLs) != nil ||
+		regeneratedURLs.Base64 == "" || regeneratedURLs.Mihomo != regeneratedURLs.Base64+"/mihomo" ||
+		regeneratedURLs.Auto != regeneratedURLs.Base64+"/auto" {
 		t.Fatalf("regenerate subscriber token = %d, %s", regenerated.Code, regenerated.Body.String())
 	}
+	assertSubscriptionStatusForAllFormats(t, handler, oldToken, http.StatusNotFound)
 	passwordRequest := performRequest(t, handler, http.MethodPost, "/api/subscriber/password-change-request", map[string]string{
 		"current_password": "current-password", "new_password": "new-strong-password",
 	}, subscriberCookie)

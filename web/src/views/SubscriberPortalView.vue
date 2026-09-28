@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NProgress, NSpin, NTag } from 'naive-ui'
 import { api } from '../api/client'
+import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { formatTime } from '../format'
 import { formatClientTrafficBytes } from '../proxy'
 import type { User } from '../types/auth'
@@ -20,6 +21,10 @@ type Subscriber = {
   active: boolean
   status: string
   subscription_url: string
+  subscription_base64_url: string
+  subscription_mihomo_url: string
+  subscription_auto_url: string
+  subscription_title: string
 }
 type PublishedNode = { id: number; name: string; mode: 'direct' | 'relay'; enabled: boolean }
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at: string | null }
@@ -32,7 +37,9 @@ const passwordRequest = ref<PasswordRequest | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
-const copied = ref(false)
+const copied = ref<'base64' | 'mihomo' | ''>('')
+const importModalOpen = ref(false)
+const qrOpen = ref(false)
 const passwordModalOpen = ref(false)
 const currentPassword = ref('')
 const newPassword = ref('')
@@ -74,22 +81,31 @@ async function run(action: () => Promise<void>) {
   }
 }
 
-async function copySubscription() {
-  const value = subscriber.value?.subscription_url
+async function copySubscription(format: 'base64' | 'mihomo', value: string) {
   if (!value) return
   await run(async () => {
     await navigator.clipboard.writeText(value)
-    copied.value = true
+    copied.value = format
   })
 }
 
 async function regenerateSubscription() {
   if (!window.confirm('重新生成后，旧订阅链接会立即失效。确定继续吗？')) return
   await run(async () => {
-    const value = await api<{ subscription_url: string }>('/api/subscriber/subscription/regenerate', { method: 'POST' })
-    if (subscriber.value) subscriber.value.subscription_url = value.subscription_url
-    copied.value = false
+    const value = await api<{
+      subscription_url: string
+      subscription_base64_url: string
+      subscription_mihomo_url: string
+      subscription_auto_url: string
+    }>('/api/subscriber/subscription/regenerate', { method: 'POST' })
+    if (subscriber.value) Object.assign(subscriber.value, value)
+    copied.value = ''
   })
+}
+
+function showSubscriptionQRCode() {
+  importModalOpen.value = false
+  qrOpen.value = true
 }
 
 async function submitPasswordRequest() {
@@ -154,12 +170,11 @@ onMounted(async () => {
         </n-card>
       </section>
       <section>
-        <h1>订阅链接</h1>
+        <h1>订阅</h1>
         <n-card :bordered="true">
-          <n-input :value="subscriber.subscription_url" readonly />
           <div class="modal-actions">
-            <n-button type="primary" :disabled="busy" @click="copySubscription">{{ copied ? '已复制' : '复制订阅' }}</n-button>
-            <n-button secondary :disabled="busy" @click="regenerateSubscription">重新生成</n-button>
+            <n-button type="primary" :disabled="busy" @click="importModalOpen = true">导入订阅</n-button>
+            <n-button secondary :disabled="busy" @click="regenerateSubscription">重新生成订阅</n-button>
           </div>
         </n-card>
       </section>
@@ -182,6 +197,35 @@ onMounted(async () => {
       </section>
     </template>
   </main>
+
+  <n-modal v-model:show="importModalOpen">
+    <n-card class="client-form-card subscription-import-card" title="导入订阅" closable @close="importModalOpen = false">
+      <div class="subscription-import-list">
+        <section class="subscription-import-option">
+          <div><strong>Base64 通用订阅</strong><p>适用于支持 VLESS / Shadowsocks URI Base64 订阅的客户端</p></div>
+          <n-button secondary :disabled="busy" @click="copySubscription('base64', subscriber?.subscription_base64_url || '')">{{ copied === 'base64' ? '已复制' : '复制地址' }}</n-button>
+        </section>
+        <section class="subscription-import-option">
+          <div><strong>Clash / Mihomo</strong><p>适用于 Clash Verge Rev、Mihomo、FlClash 等</p></div>
+          <n-button secondary :disabled="busy" @click="copySubscription('mihomo', subscriber?.subscription_mihomo_url || '')">{{ copied === 'mihomo' ? '已复制' : '复制地址' }}</n-button>
+        </section>
+        <section class="subscription-import-option">
+          <div><strong>扫描二维码订阅</strong><p>扫描后自动适配常见订阅客户端</p></div>
+          <n-button secondary :disabled="busy" @click="showSubscriptionQRCode">显示二维码</n-button>
+        </section>
+      </div>
+      <div class="modal-actions"><n-button @click="importModalOpen = false">关闭</n-button></div>
+    </n-card>
+  </n-modal>
+
+  <QRCodeModal
+    :show="qrOpen"
+    :uri="subscriber?.subscription_auto_url || ''"
+    :title="subscriber?.subscription_title || subscriber?.plan_name || '订阅'"
+    modal-title="扫描二维码订阅"
+    instruction="使用支持订阅二维码的客户端扫描导入。"
+    @update:show="qrOpen = $event"
+  />
 
   <n-modal v-model:show="passwordModalOpen">
     <n-card class="client-form-card" title="申请修改密码" closable @close="passwordModalOpen = false">

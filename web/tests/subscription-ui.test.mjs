@@ -22,14 +22,21 @@ test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数�
   }
 })
 
-test('Subscriber Portal 只展示套餐、账号总量、订阅链接与发布节点名称', () => {
-  for (const label of ['我的订阅', '下次重置', '到期', '可用节点', '订阅链接', '复制订阅', '重新生成', '申请修改密码']) {
+test('Subscriber Portal 展示导入订阅面板并只用 Auto URL 生成二维码', () => {
+  for (const label of ['我的订阅', '下次重置', '到期', '可用节点', '导入订阅', '重新生成订阅', 'Base64 通用订阅', 'Clash / Mihomo', '扫描二维码订阅', '复制地址', '申请修改密码']) {
     assert.match(portalSource, new RegExp(label))
   }
   assert.match(portalSource, /subscriber\.plan_name/)
   assert.match(portalSource, /subscriber\.used_bytes/)
   assert.match(portalSource, /subscriber\.traffic_limit_bytes/)
   assert.match(portalSource, /node\.name/)
+  assert.match(portalSource, /copySubscription\('base64', subscriber\?\.subscription_base64_url/)
+  assert.match(portalSource, /copySubscription\('mihomo', subscriber\?\.subscription_mihomo_url/)
+  assert.match(portalSource, /<QRCodeModal[\s\S]*:uri="subscriber\?\.subscription_auto_url \|\| ''"/)
+  assert.equal([...portalSource.matchAll(/<QRCodeModal/g)].length, 1)
+  assert.match(portalSource, /modal-title="扫描二维码订阅"/)
+  assert.match(portalSource, /instruction="使用支持订阅二维码的客户端扫描导入。"/)
+  assert.match(portalSource, /Object\.assign\(subscriber\.value, value\)/)
   assert.doesNotMatch(portalSource, /server_name|proxy_name|client_name|UUID|SS Password|REALITY|Realm|添加中转|自定义落地/)
 })
 
@@ -66,7 +73,16 @@ test('套餐启用状态使用 NCheckbox 双向绑定并原样写入保存请求
   assert.match(managementSource, /function openCreatePlan\(\)[\s\S]*planEnabled\.value = true/)
   assert.match(managementSource, /function openEditPlan\(value: Plan\)[\s\S]*populatePlanForm\(value\)/)
   assert.match(managementSource, /function populatePlanForm\(value: Plan\)[\s\S]*planEnabled\.value = value\.enabled/)
-  assert.match(managementSource, /name, enabled: planEnabled\.value, traffic_limit_bytes: trafficLimit/)
+  assert.match(managementSource, /name, subscription_title: planSubscriptionTitle\.value\.trim\(\)/)
+  assert.match(managementSource, /enabled: planEnabled\.value, traffic_limit_bytes: trafficLimit/)
+})
+
+test('套餐表单区分后台名称与订阅显示名称', () => {
+  assert.match(managementSource, /subscription_title: string/)
+  assert.match(managementSource, /const planSubscriptionTitle = ref\(''\)/)
+  assert.match(managementSource, /planSubscriptionTitle\.value = value\.subscription_title/)
+  assert.match(managementSource, /订阅显示名称/)
+  assert.match(managementSource, /客户端导入订阅后显示的名称。留空则使用套餐名称。/)
 })
 
 test('套餐保存使用 Modal 独立错误、前端校验和防重复提交', () => {

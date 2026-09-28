@@ -358,6 +358,7 @@ func subscriberClientName(username, proxyName string) string {
 }
 
 const subscriberSelect = `SELECT users.id, users.username, profiles.plan_id, plans.name,
+	COALESCE(NULLIF(TRIM(plans.subscription_title), ''), plans.name, ''),
 	COALESCE(plans.enabled, 0), profiles.enabled, profiles.expires_at, profiles.subscription_token,
 	(SELECT COUNT(*) FROM subscriber_clients WHERE user_id = users.id),
 	(SELECT COUNT(*) FROM subscription_plan_nodes AS mapping
@@ -381,7 +382,7 @@ func scanSubscriber(row rowScanner, now time.Time) (Subscriber, error) {
 	var resetDay int
 	var archivedUplink, archivedDownlink, cycleStartedAt int64
 	var createdAt, updatedAt int64
-	err := row.Scan(&value.UserID, &value.Username, &planID, &planName, &planEnabled,
+	err := row.Scan(&value.UserID, &value.Username, &planID, &planName, &value.SubscriptionTitle, &planEnabled,
 		&profileEnabled, &expiresAt, &value.SubscriptionToken, &value.ClientCount,
 		&value.EnabledNodeCount, &trafficLimit, &resetMode, &resetDay, &resetTime,
 		&billingPeriod, &archivedUplink, &archivedDownlink, &cycleStartedAt,

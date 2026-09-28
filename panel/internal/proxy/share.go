@@ -14,20 +14,21 @@ import (
 
 type ClientShare struct {
 	Client
-	ProxyName        string
-	Address          string
-	Port             int
-	Security         string
-	ServerName       string
-	Fingerprint      string
-	Flow             string
-	RealityPublicKey string
-	RealityShortID   string
-	Protocol         string
-	Method           string
-	Network          string
-	URI              string
-	DisplayName      string
+	ProxyName           string
+	Address             string
+	Port                int
+	Security            string
+	ServerName          string
+	Fingerprint         string
+	Flow                string
+	RealityPublicKey    string
+	RealityShortID      string
+	Protocol            string
+	Method              string
+	Network             string
+	ShadowsocksPassword string
+	URI                 string
+	DisplayName         string
 }
 
 type ShareEndpoint struct {
@@ -155,7 +156,8 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 	case ProtocolShadowsocks:
 		share.Method = config.Shadowsocks.Method
 		share.Network = config.Shadowsocks.Network
-		share.URI = buildShadowsocksURI(share, config.Shadowsocks.Password)
+		share.ShadowsocksPassword = config.Shadowsocks.Password + ":" + share.Password
+		share.URI = buildShadowsocksURI(share)
 	default:
 		return ClientShare{}, ErrInvalidProtocol
 	}

@@ -92,6 +92,12 @@ h1 {
   font-weight: 600;
 }
 
+.form-help {
+  color: #65717e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .relay-mode-field {
   margin: 0;
   padding: 0;
@@ -1053,6 +1059,31 @@ h1 {
   border-radius: 6px;
 }
 
+.subscription-import-card {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.subscription-import-list {
+  display: grid;
+  gap: 12px;
+}
+
+.subscription-import-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.subscription-import-option p {
+  margin: 6px 0 0;
+  color: #65717e;
+  font-size: 13px;
+}
+
 .subscription-tabs {
   display: flex;
   gap: 8px;
@@ -1136,5 +1167,10 @@ h1 {
   .user-management-toolbar,
   .overview-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .subscription-import-option {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

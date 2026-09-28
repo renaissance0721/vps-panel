@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/relay"
@@ -28,14 +29,15 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	limit := int64(100 * 1024 * 1024 * 1024)
 	validityDays, billingPeriod := 30, 1
 	created, err := service.CreatePlan(t.Context(), CreatePlanInput{
-		Name: " Basic ", Enabled: true, TrafficLimitBytes: &limit,
+		Name: " Basic ", SubscriptionTitle: " Refrain Cloud ", Enabled: true, TrafficLimitBytes: &limit,
 		TrafficResetMode: ResetModeMonthly, TrafficResetDay: 15, TrafficResetTime: "03:30",
 		DefaultValidityDays: &validityDays, BillingPeriodMonths: &billingPeriod,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "Basic" || !created.Enabled || created.TrafficLimitBytes == nil || *created.TrafficLimitBytes != limit ||
+	if created.Name != "Basic" || created.SubscriptionTitle != "Refrain Cloud" || !created.Enabled ||
+		created.TrafficLimitBytes == nil || *created.TrafficLimitBytes != limit ||
 		created.TrafficResetMode != ResetModeMonthly || created.TrafficResetDay != 15 || created.TrafficResetTime != "03:30" ||
 		created.DefaultValidityDays == nil || *created.DefaultValidityDays != 30 ||
 		created.BillingPeriodMonths == nil || *created.BillingPeriodMonths != 1 || len(created.Nodes) != 0 {
@@ -61,8 +63,9 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	}
 
 	disabled := false
+	emptyTitle := "  "
 	updated, mutations, err = service.UpdatePlan(t.Context(), created.ID, UpdatePlanInput{
-		Enabled: &disabled, TrafficLimitBytesSet: true,
+		SubscriptionTitle: &emptyTitle, Enabled: &disabled, TrafficLimitBytesSet: true,
 		DefaultValidityDaysSet: true, BillingPeriodMonthsSet: true,
 	})
 	if err != nil {
@@ -71,7 +74,8 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	if len(mutations) != 0 {
 		t.Fatalf("unexpected plan update mutations = %+v", mutations)
 	}
-	if updated.Enabled || updated.TrafficLimitBytes != nil || updated.DefaultValidityDays != nil || updated.BillingPeriodMonths != nil {
+	if updated.SubscriptionTitle != "" || updated.Enabled || updated.TrafficLimitBytes != nil ||
+		updated.DefaultValidityDays != nil || updated.BillingPeriodMonths != nil {
 		t.Fatalf("updated subscription plan = %+v", updated)
 	}
 
@@ -98,5 +102,10 @@ func TestPlanValidation(t *testing.T) {
 		Name: "invalid", Enabled: true, TrafficResetMode: ResetModeMonthly, TrafficResetDay: 1, TrafficResetTime: "3:00",
 	}); !errors.Is(err, ErrInvalidTrafficReset) {
 		t.Fatalf("invalid reset time error = %v", err)
+	}
+	if _, err := service.CreatePlan(t.Context(), CreatePlanInput{
+		Name: "invalid title", SubscriptionTitle: strings.Repeat("长", 101), Enabled: true,
+	}); !errors.Is(err, ErrInvalidSubscriptionTitle) {
+		t.Fatalf("invalid subscription title error = %v", err)
 	}
 }

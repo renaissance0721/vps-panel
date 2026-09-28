@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, enabled, traffic_limit_bytes, traffic_reset_mode,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
 		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
@@ -45,7 +45,7 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 }
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
-	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, enabled, traffic_limit_bytes, traffic_reset_mode,
+	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
 		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -63,7 +63,8 @@ func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
 
 func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, error) {
 	value, err := normalizePlan(Plan{
-		Name: input.Name, Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
+		Name: input.Name, SubscriptionTitle: input.SubscriptionTitle,
+		Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
 		TrafficResetMode: input.TrafficResetMode, TrafficResetDay: input.TrafficResetDay,
 		TrafficResetTime: input.TrafficResetTime, DefaultValidityDays: input.DefaultValidityDays,
 		BillingPeriodMonths: input.BillingPeriodMonths,
@@ -73,10 +74,11 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_plans
-		(name, enabled, traffic_limit_bytes, traffic_reset_mode, traffic_reset_day, traffic_reset_time,
+		(name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode, traffic_reset_day, traffic_reset_time,
 		 default_validity_days, billing_period_months, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		value.Name, value.Enabled, nullableInt64(value.TrafficLimitBytes), value.TrafficResetMode,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		value.Name, nullableString(value.SubscriptionTitle), value.Enabled,
+		nullableInt64(value.TrafficLimitBytes), value.TrafficResetMode,
 		value.TrafficResetDay, value.TrafficResetTime, nullableInt(value.DefaultValidityDays),
 		nullableInt(value.BillingPeriodMonths), now.Unix(), now.Unix())
 	if err != nil {
@@ -96,7 +98,7 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 		return Plan{}, nil, fmt.Errorf("begin subscription plan update: %w", err)
 	}
 	defer tx.Rollback()
-	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, enabled, traffic_limit_bytes, traffic_reset_mode,
+	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
 		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -107,6 +109,9 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	}
 	if input.Name != nil {
 		current.Name = *input.Name
+	}
+	if input.SubscriptionTitle != nil {
+		current.SubscriptionTitle = *input.SubscriptionTitle
 	}
 	if input.Enabled != nil {
 		current.Enabled = *input.Enabled
@@ -134,9 +139,10 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 		return Plan{}, nil, err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET
-		name = ?, enabled = ?, traffic_limit_bytes = ?, traffic_reset_mode = ?, traffic_reset_day = ?,
+		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?, traffic_reset_mode = ?, traffic_reset_day = ?,
 		traffic_reset_time = ?, default_validity_days = ?, billing_period_months = ?, updated_at = ? WHERE id = ?`,
-		current.Name, current.Enabled, nullableInt64(current.TrafficLimitBytes), current.TrafficResetMode,
+		current.Name, nullableString(current.SubscriptionTitle), current.Enabled,
+		nullableInt64(current.TrafficLimitBytes), current.TrafficResetMode,
 		current.TrafficResetDay, current.TrafficResetTime, nullableInt(current.DefaultValidityDays),
 		nullableInt(current.BillingPeriodMonths), now.Unix(), id)
 	if err != nil {
@@ -367,14 +373,16 @@ type rowScanner interface{ Scan(...any) error }
 func scanPlan(row rowScanner) (Plan, error) {
 	var value Plan
 	var trafficLimit, validityDays, billingPeriod sql.NullInt64
+	var subscriptionTitle sql.NullString
 	var enabled int
 	var createdAt, updatedAt int64
-	err := row.Scan(&value.ID, &value.Name, &enabled, &trafficLimit, &value.TrafficResetMode,
+	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit, &value.TrafficResetMode,
 		&value.TrafficResetDay, &value.TrafficResetTime, &validityDays, &billingPeriod, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
 	value.Enabled = enabled != 0
+	value.SubscriptionTitle = strings.TrimSpace(subscriptionTitle.String)
 	if trafficLimit.Valid {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -397,6 +405,10 @@ func normalizePlan(value Plan) (Plan, error) {
 	value.Name = strings.TrimSpace(value.Name)
 	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes {
 		return Plan{}, ErrInvalidPlanName
+	}
+	value.SubscriptionTitle = strings.TrimSpace(value.SubscriptionTitle)
+	if utf8.RuneCountInString(value.SubscriptionTitle) > maxNameRunes {
+		return Plan{}, ErrInvalidSubscriptionTitle
 	}
 	if value.TrafficLimitBytes != nil && *value.TrafficLimitBytes < 0 {
 		return Plan{}, ErrInvalidTrafficLimit
@@ -441,4 +453,11 @@ func nullableInt(value *int) any {
 		return nil
 	}
 	return *value
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }

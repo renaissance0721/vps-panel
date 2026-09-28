@@ -68,6 +68,8 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /sub/{token}", s.getPublicSubscription)
+	mux.HandleFunc("GET /sub/{token}/mihomo", s.getPublicSubscriptionMihomo)
+	mux.HandleFunc("GET /sub/{token}/auto", s.getPublicSubscriptionAuto)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)
 	mux.HandleFunc("POST /api/auth/initialize", s.initialize)

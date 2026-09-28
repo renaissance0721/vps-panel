@@ -97,6 +97,19 @@ test('二维码生成失败显示局部错误', async t => {
   assert.equal(bindings.image.value, '')
 })
 
+test('二维码弹窗支持订阅专用标题和说明', async t => {
+  t.mock.method(QRCode, 'toDataURL', async () => 'data:image/png;base64,test')
+  const { html } = await renderWithBindings(QRCodeModal, {
+    show: true,
+    uri: 'https://panel.example.com/sub/token/auto',
+    title: 'Refrain Cloud',
+    modalTitle: '扫描二维码订阅',
+    instruction: '使用支持订阅二维码的客户端扫描导入。',
+  })
+  assert.match(html, /扫描二维码订阅/)
+  assert.match(html, /使用支持订阅二维码的客户端扫描导入。/)
+})
+
 function relay(overrides = {}) {
   return {
     id: 1, server_id: 1, name: '中转', server_name: '源服务器', server_public_ipv4: '',

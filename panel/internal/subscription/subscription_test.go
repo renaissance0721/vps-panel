@@ -67,7 +67,7 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mutations) != 0 || generated.Upload != 16 || generated.Download != 20 ||
+	if len(mutations) != 0 || generated.Title != "Premium" || generated.Upload != 16 || generated.Download != 20 ||
 		generated.Total != trafficLimit || generated.Expire != expiresAt.Unix() {
 		t.Fatalf("generated metadata = %+v, mutations = %+v", generated, mutations)
 	}
@@ -95,6 +95,44 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 	if strings.Contains(string(decoded), "internal source") || strings.Contains(string(decoded), "internal target") ||
 		strings.Contains(string(decoded), "subscriber-100") {
 		t.Fatalf("subscription leaked internal names: %q", decoded)
+	}
+}
+
+func TestGenerateSubscriptionTitleFallbackAndOverride(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
+	proxyValue := createSubscriptionTestRealityProxy(t, db, 1, "internal", 443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	node, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "公开节点名称", Mode: NodeModeDirect, TargetProxyID: proxyValue.ID, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "50G 月付套餐", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{node.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Title != plan.Name || len(data.Nodes) != 1 || data.Nodes[0].DisplayName != node.Name {
+		t.Fatalf("fallback subscription data = %+v", data)
+	}
+	title := "我的机场"
+	if _, _, err := service.UpdatePlan(t.Context(), plan.ID, UpdatePlanInput{SubscriptionTitle: &title}); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err = service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || data.Title != title {
+		t.Fatalf("custom subscription title = %q, error = %v", data.Title, err)
 	}
 }
 

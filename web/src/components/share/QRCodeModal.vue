@@ -8,6 +8,8 @@ const props = defineProps<{
   uri: string
   title: string
   subtitle?: string
+  modalTitle?: string
+  instruction?: string
 }>()
 const emit = defineEmits<{ 'update:show': [show: boolean] }>()
 
@@ -44,14 +46,14 @@ function setShow(show: boolean) {
 
 <template>
   <n-modal :show="show" @update:show="setShow">
-    <n-card class="qr-modal-card" title="二维码" :bordered="false" closable @close="setShow(false)">
+    <n-card class="qr-modal-card" :title="modalTitle || '二维码'" :bordered="false" closable @close="setShow(false)">
       <div class="qr-modal-content">
         <strong>{{ title }}</strong>
         <small v-if="subtitle">{{ subtitle }}</small>
         <n-alert v-if="error" type="error">{{ error }}</n-alert>
         <img v-else-if="image" class="qr-modal-image" :src="image" :alt="`${title} 二维码`" />
         <n-spin v-else-if="show && uri" size="small" />
-        <p>使用支持该协议的客户端扫描二维码即可导入</p>
+        <p>{{ instruction || '使用支持该协议的客户端扫描二维码即可导入' }}</p>
       </div>
       <div class="modal-actions"><n-button @click="setShow(false)">关闭</n-button></div>
     </n-card>

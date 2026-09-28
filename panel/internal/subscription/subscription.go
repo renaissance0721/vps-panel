@@ -3,38 +3,47 @@ package subscription
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"strings"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
 
 func (s *Service) GenerateSubscription(ctx context.Context, tokenValue string) (GeneratedSubscription, []proxystore.Mutation, error) {
+	data, mutations, err := s.GenerateSubscriptionData(ctx, tokenValue)
+	if err != nil {
+		return GeneratedSubscription{}, mutations, err
+	}
+	return GeneratedSubscription{
+		Title: data.Title, Body: RenderBase64Subscription(data),
+		Upload: data.Upload, Download: data.Download, Total: data.Total, Expire: data.Expire,
+	}, mutations, nil
+}
+
+func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue string) (SubscriptionData, []proxystore.Mutation, error) {
 	if tokenValue == "" {
-		return GeneratedSubscription{}, nil, ErrSubscriptionNotFound
+		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
 	var userID int64
 	err := s.db.QueryRowContext(ctx, `SELECT profiles.user_id
 		FROM subscriber_profiles AS profiles JOIN users ON users.id = profiles.user_id
 		WHERE profiles.subscription_token = ? AND users.role = 'subscriber'`, tokenValue).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return GeneratedSubscription{}, nil, ErrSubscriptionNotFound
+		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
 	if err != nil {
-		return GeneratedSubscription{}, nil, fmt.Errorf("find subscription token: %w", err)
+		return SubscriptionData{}, nil, fmt.Errorf("find subscription token: %w", err)
 	}
 	mutations, err := s.ReconcileSubscriber(ctx, userID)
 	if err != nil {
-		return GeneratedSubscription{}, nil, err
+		return SubscriptionData{}, nil, err
 	}
 	subscriber, err := s.GetSubscriber(ctx, userID)
 	if err != nil {
-		return GeneratedSubscription{}, nil, err
+		return SubscriptionData{}, nil, err
 	}
 	if !subscriber.Active {
-		return GeneratedSubscription{}, mutations, ErrSubscriptionUnavailable
+		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
 
 	type subscriptionNode struct {
@@ -58,26 +67,29 @@ func (s *Service) GenerateSubscription(ctx context.Context, tokenValue string) (
 		WHERE profiles.user_id = ? AND nodes.enabled = 1
 		ORDER BY mapping.position`, userID)
 	if err != nil {
-		return GeneratedSubscription{}, mutations, fmt.Errorf("list subscription nodes: %w", err)
+		return SubscriptionData{}, mutations, fmt.Errorf("list subscription nodes: %w", err)
 	}
 	nodes := make([]subscriptionNode, 0)
 	for rows.Next() {
 		var value subscriptionNode
 		if err := rows.Scan(&value.name, &value.mode, &value.clientID, &value.entryAddress, &value.entryPort); err != nil {
 			rows.Close()
-			return GeneratedSubscription{}, mutations, fmt.Errorf("scan subscription node: %w", err)
+			return SubscriptionData{}, mutations, fmt.Errorf("scan subscription node: %w", err)
 		}
 		nodes = append(nodes, value)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return GeneratedSubscription{}, mutations, fmt.Errorf("iterate subscription nodes: %w", err)
+		return SubscriptionData{}, mutations, fmt.Errorf("iterate subscription nodes: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return GeneratedSubscription{}, mutations, fmt.Errorf("close subscription nodes: %w", err)
+		return SubscriptionData{}, mutations, fmt.Errorf("close subscription nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
 
-	URIs := make([]string, 0, len(nodes))
+	shares := make([]proxystore.ClientShare, 0, len(nodes))
 	for _, node := range nodes {
 		options := proxystore.ShareOptions{DisplayName: node.name}
 		var share proxystore.ClientShare
@@ -88,20 +100,19 @@ func (s *Service) GenerateSubscription(ctx context.Context, tokenValue string) (
 				Address: node.entryAddress, Port: node.entryPort,
 			}, options)
 		} else {
-			return GeneratedSubscription{}, mutations, ErrSubscriptionUnavailable
+			return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 		}
 		if err != nil {
-			return GeneratedSubscription{}, mutations, fmt.Errorf("build subscription node share: %w", err)
+			return SubscriptionData{}, mutations, fmt.Errorf("build subscription node share: %w", err)
 		}
-		URIs = append(URIs, share.URI)
+		shares = append(shares, share)
 	}
 	upload, download, err := s.subscriberUsageBreakdown(ctx, userID)
 	if err != nil {
-		return GeneratedSubscription{}, mutations, err
+		return SubscriptionData{}, mutations, err
 	}
-	result := GeneratedSubscription{
-		Body:   base64.StdEncoding.EncodeToString([]byte(strings.Join(URIs, "\n"))),
-		Upload: upload, Download: download,
+	result := SubscriptionData{
+		Title: subscriber.SubscriptionTitle, Nodes: shares, Upload: upload, Download: download,
 	}
 	if subscriber.TrafficLimitBytes != nil {
 		result.Total = *subscriber.TrafficLimitBytes

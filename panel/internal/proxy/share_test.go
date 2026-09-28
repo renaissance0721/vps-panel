@@ -273,6 +273,9 @@ func TestShadowsocksSIP002ShareUsesMasterAndUserPassword(t *testing.T) {
 		parsed.Fragment != "东京 节点 - 手机 + 用户" || share.Protocol != ProtocolShadowsocks || share.Network != ShadowsocksNetwork {
 		t.Fatalf("Shadowsocks share = %+v, URI %q", share, share.URI)
 	}
+	if share.ShadowsocksPassword != master+":"+userPassword {
+		t.Fatalf("Shadowsocks full password = %q", share.ShadowsocksPassword)
+	}
 	if strings.Contains(share.URI, base64.RawURLEncoding.EncodeToString([]byte(ShadowsocksMethodAES128GCM+":"+master+":"+userPassword))) {
 		t.Fatal("SS2022 URI incorrectly used legacy whole-userinfo Base64")
 	}

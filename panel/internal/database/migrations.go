@@ -106,10 +106,29 @@ func migrate(db *sql.DB) error {
 	if err := migrateClientRelayPorts(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateSubscriptionPlanTitle(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateSubscriberProfiles(ctx, db); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func migrateSubscriptionPlanTitle(ctx context.Context, db *sql.DB) error {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_plans') WHERE name = 'subscription_title'`,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("inspect subscription_plans.subscription_title: %w", err)
+	}
+	if count != 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE subscription_plans ADD COLUMN subscription_title TEXT`); err != nil {
+		return fmt.Errorf("add subscription_plans.subscription_title: %w", err)
+	}
 	return nil
 }
 

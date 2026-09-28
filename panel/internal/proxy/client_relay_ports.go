@@ -142,15 +142,20 @@ func (s *Service) UpdateClientRelayPortCount(ctx context.Context, clientID int64
 	var serverID int64
 	var assignedUserID sql.NullInt64
 	var currentCount int
+	var subscriptionManaged bool
 	err = tx.QueryRowContext(ctx, `SELECT proxies.server_id, clients.assigned_user_id,
-		(SELECT COUNT(*) FROM client_relay_ports WHERE client_id = clients.id)
+		(SELECT COUNT(*) FROM client_relay_ports WHERE client_id = clients.id),
+		EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id)
 		FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE clients.id = ?`, clientID,
-	).Scan(&serverID, &assignedUserID, &currentCount)
+	).Scan(&serverID, &assignedUserID, &currentCount, &subscriptionManaged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Client{}, ErrClientNotFound
 	}
 	if err != nil {
 		return Client{}, fmt.Errorf("read client relay port allocation: %w", err)
+	}
+	if subscriptionManaged {
+		return Client{}, ErrSubscriptionManagedClient
 	}
 	if !assignedUserID.Valid {
 		return Client{}, ErrClientNotAssigned

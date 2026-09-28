@@ -95,6 +95,15 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	s.startSession(w, r, user, http.StatusCreated)
 }
 
+func (s *server) getInvitation(w http.ResponseWriter, r *http.Request) {
+	invitation, err := s.authService.GetInvitation(r.Context(), r.URL.Query().Get("token"))
+	if err != nil {
+		writeAuthError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invitation": toInvitationResponse(invitation)})
+}
+
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if readSessionToken(r) != "" && !s.validateSessionRequestOrigin(r) {
 		writeError(w, http.StatusForbidden, "请求来源无效")
@@ -241,6 +250,18 @@ func (s *server) requireUser(
 	})
 }
 
+func (s *server) requireSubscriber(
+	next func(http.ResponseWriter, *http.Request, auth.User),
+) http.HandlerFunc {
+	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
+		if user.Role != auth.RoleSubscriber {
+			writeError(w, http.StatusForbidden, "仅订阅用户可以访问订阅门户 API")
+			return
+		}
+		next(w, r, user)
+	})
+}
+
 func readSessionToken(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
@@ -272,7 +293,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvitationNotFound):
 		writeError(w, http.StatusNotFound, "邀请不存在、已使用或已过期")
 	case errors.Is(err, auth.ErrInvalidInvitationRole):
-		writeError(w, http.StatusBadRequest, "邀请角色仅支持 VIP 或用户")
+		writeError(w, http.StatusBadRequest, "邀请角色仅支持 VIP、普通用户或订阅用户")
 	case errors.Is(err, auth.ErrInvalidUsername):
 		writeError(w, http.StatusBadRequest, "用户名需为 3–64 位字母、数字、点、下划线或连字符")
 	case errors.Is(err, auth.ErrInvalidPassword):

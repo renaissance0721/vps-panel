@@ -58,6 +58,7 @@ var (
 	ErrReferencedByRelay              = errors.New("proxy is referenced by a relay")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
+	ErrSubscriptionManagedClient      = errors.New("client is managed by the subscription system")
 )
 
 type Proxy struct {
@@ -112,6 +113,7 @@ type ClientSummary struct {
 	TrafficResetDay     int
 	TrafficResetTime    string
 	Metrics             *ClientMetrics
+	SubscriptionManaged bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -143,6 +145,7 @@ type Client struct {
 	TrafficResetDay     int
 	TrafficResetTime    string
 	Metrics             *ClientMetrics
+	SubscriptionManaged bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	effectiveEnabled    bool

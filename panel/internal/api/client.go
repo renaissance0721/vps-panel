@@ -43,7 +43,8 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 			TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 			TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 			TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
-			CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+			SubscriptionManaged: value.SubscriptionManaged,
+			CreatedAt:           value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"clients": response})
@@ -127,6 +128,8 @@ func writeClientAssignmentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "客户端只能分配给普通用户账号")
 	case errors.Is(err, proxystore.ErrInvalidBillingPeriod):
 		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
+	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
+		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
 	default:
 		writeProxyError(w, err)
 	}

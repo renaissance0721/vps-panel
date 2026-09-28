@@ -13,22 +13,24 @@ import (
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
 type server struct {
-	db           *sql.DB
-	authService  *auth.Service
-	servers      *serverstore.Service
-	proxies      *proxystore.Service
-	landings     *landingstore.Service
-	relays       *relaystore.Service
-	orders       *listorder.Store
-	webRoot      string
-	panelVersion string
-	agents       *agentcontrol.Service
-	backup       BackupConfig
-	backupMu     sync.Mutex
-	loginLimiter *loginLimiter
+	db            *sql.DB
+	authService   *auth.Service
+	servers       *serverstore.Service
+	proxies       *proxystore.Service
+	landings      *landingstore.Service
+	relays        *relaystore.Service
+	subscriptions *subscriptionstore.Service
+	orders        *listorder.Store
+	webRoot       string
+	panelVersion  string
+	agents        *agentcontrol.Service
+	backup        BackupConfig
+	backupMu      sync.Mutex
+	loginLimiter  *loginLimiter
 }
 
 type BackupConfig struct {
@@ -48,26 +50,30 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 }
 
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) http.Handler {
+	relays := relaystore.NewService(db)
 	s := &server{
-		db:           db,
-		authService:  auth.NewService(db),
-		servers:      serverstore.NewService(db),
-		proxies:      proxystore.NewService(db),
-		landings:     landingstore.NewService(db),
-		relays:       relaystore.NewService(db),
-		orders:       listorder.NewStore(db),
-		webRoot:      webRoot,
-		panelVersion: panelVersion,
-		agents:       agentcontrol.NewService(db, time.Now),
-		backup:       backupConfig,
-		loginLimiter: newLoginLimiter(),
+		db:            db,
+		authService:   auth.NewService(db),
+		servers:       serverstore.NewService(db),
+		proxies:       proxystore.NewService(db),
+		landings:      landingstore.NewService(db),
+		relays:        relays,
+		subscriptions: subscriptionstore.NewService(db, relays),
+		orders:        listorder.NewStore(db),
+		webRoot:       webRoot,
+		panelVersion:  panelVersion,
+		agents:        agentcontrol.NewService(db, time.Now),
+		backup:        backupConfig,
+		loginLimiter:  newLoginLimiter(),
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sub/{token}", s.getPublicSubscription)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)
 	mux.HandleFunc("POST /api/auth/initialize", s.initialize)
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/register", s.register)
+	mux.HandleFunc("GET /api/auth/invitation", s.getInvitation)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/agent/config", s.getAgentConfig)
@@ -87,6 +93,26 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("POST /api/admin/password-change-requests/{id}/reject", s.requireAdmin(s.rejectPasswordChangeRequest))
 	mux.HandleFunc("GET /api/admin/user-relays", s.requireAdmin(s.listAdminUserRelays))
 	mux.HandleFunc("DELETE /api/admin/user-relays/{id}", s.requireAdmin(s.deleteAdminUserRelay))
+	mux.HandleFunc("GET /api/admin/subscription/nodes", s.requireAdmin(s.listSubscriptionPublishedNodes))
+	mux.HandleFunc("POST /api/admin/subscription/nodes", s.requireAdmin(s.createSubscriptionPublishedNode))
+	mux.HandleFunc("PATCH /api/admin/subscription/nodes/{id}", s.requireAdmin(s.updateSubscriptionPublishedNode))
+	mux.HandleFunc("DELETE /api/admin/subscription/nodes/{id}", s.requireAdmin(s.deleteSubscriptionPublishedNode))
+	mux.HandleFunc("GET /api/admin/subscription/plans", s.requireAdmin(s.listSubscriptionPlans))
+	mux.HandleFunc("POST /api/admin/subscription/plans", s.requireAdmin(s.createSubscriptionPlan))
+	mux.HandleFunc("GET /api/admin/subscription/plans/{id}", s.requireAdmin(s.getSubscriptionPlan))
+	mux.HandleFunc("PATCH /api/admin/subscription/plans/{id}", s.requireAdmin(s.updateSubscriptionPlan))
+	mux.HandleFunc("DELETE /api/admin/subscription/plans/{id}", s.requireAdmin(s.deleteSubscriptionPlan))
+	mux.HandleFunc("PUT /api/admin/subscription/plans/{id}/nodes", s.requireAdmin(s.setSubscriptionPlanNodes))
+	mux.HandleFunc("GET /api/admin/subscription/users", s.requireAdmin(s.listSubscriptionUsers))
+	mux.HandleFunc("GET /api/admin/subscription/users/{id}", s.requireAdmin(s.getSubscriptionUser))
+	mux.HandleFunc("PATCH /api/admin/subscription/users/{id}", s.requireAdmin(s.updateSubscriptionUser))
+	mux.HandleFunc("POST /api/admin/subscription/users/{id}/token/regenerate", s.requireAdmin(s.regenerateSubscriptionUserToken))
+	mux.HandleFunc("POST /api/admin/subscription/users/{id}/traffic/reset", s.requireAdmin(s.resetSubscriptionUserTraffic))
+	mux.HandleFunc("GET /api/subscriber/me", s.requireSubscriber(s.getSubscriberMe))
+	mux.HandleFunc("GET /api/subscriber/nodes", s.requireSubscriber(s.listSubscriberNodes))
+	mux.HandleFunc("POST /api/subscriber/subscription/regenerate", s.requireSubscriber(s.regenerateSubscriberToken))
+	mux.HandleFunc("GET /api/subscriber/password-change-request", s.requireSubscriber(s.getMyPasswordChangeRequest))
+	mux.HandleFunc("POST /api/subscriber/password-change-request", s.requireSubscriber(s.createMyPasswordChangeRequest))
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.listAdminUsers))
 	mux.HandleFunc("GET /api/admin/users/{id}", s.requireAdmin(s.getAdminUserDetail))
 	mux.HandleFunc("POST /api/admin/users/{id}/nodes", s.requireAdmin(s.createAdminUserNode))

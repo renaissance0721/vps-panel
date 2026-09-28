@@ -30,6 +30,7 @@ func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, err
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
+		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
@@ -208,6 +209,7 @@ func (s *Service) GetClient(ctx context.Context, id int64) (Client, error) {
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
+		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
@@ -241,6 +243,7 @@ func (s *Service) ListAssignedClients(ctx context.Context, userID int64) ([]Clie
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
+		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.server_id, servers.name, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.protocol, proxies.config_json,
@@ -299,6 +302,11 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 	if err := validateClientAssignment(ctx, tx, userID, billingPeriodMonths); err != nil {
 		return Client{}, err
 	}
+	if managed, err := subscriptionManagedClient(ctx, tx, id); err != nil {
+		return Client{}, err
+	} else if managed {
+		return Client{}, ErrSubscriptionManagedClient
+	}
 	now := s.now().UTC().Truncate(time.Second)
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE clients SET assigned_user_id = ?, billing_period_months = ?, updated_at = ? WHERE id = ?`,
@@ -355,6 +363,9 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 	value, serverID, err := getClientForMutation(ctx, tx, id)
 	if err != nil {
 		return Client{}, Mutation{}, err
+	}
+	if value.SubscriptionManaged {
+		return Client{}, Mutation{}, ErrSubscriptionManagedClient
 	}
 	if input.Name != nil {
 		value.Name, err = validateName(*input.Name)
@@ -417,6 +428,11 @@ func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) 
 	_, serverID, err := getClientForMutation(ctx, tx, id)
 	if err != nil {
 		return Mutation{}, err
+	}
+	if managed, err := subscriptionManagedClient(ctx, tx, id); err != nil {
+		return Mutation{}, err
+	} else if managed {
+		return Mutation{}, ErrSubscriptionManagedClient
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM clients WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete client: %w", err)
@@ -492,7 +508,7 @@ func decodeCredential(protocol, value string) (storedCredential, error) {
 func scanClient(row rowScanner) (Client, error) {
 	var value Client
 	var credentialJSON, configJSON string
-	var udp443, enabled, effectiveEnabled int
+	var udp443, enabled, effectiveEnabled, subscriptionManaged int
 	var expiresAt, trafficLimit sql.NullInt64
 	var assignedUserID, billingPeriod, relayPortStart, relayPortEnd sql.NullInt64
 	var assignedUsername sql.NullString
@@ -504,7 +520,7 @@ func scanClient(row rowScanner) (Client, error) {
 		&expiresAt, &trafficLimit, &assignedUserID, &assignedUsername, &billingPeriod,
 		&value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &value.ProxyName, &value.ServerID, &value.ServerName,
+		&effectiveEnabled, &subscriptionManaged, &createdAt, &updatedAt, &value.ProxyName, &value.ServerID, &value.ServerName,
 		&value.ProxyEntryHostMode, &value.ProxyEntryHost, &value.Protocol, &configJSON,
 		&relayPortStart, &relayPortEnd, &value.UserRelayPortCount,
 		&xrayUplink, &xrayDownlink, &cycleUplink, &cycleDownlink,
@@ -546,6 +562,7 @@ func scanClient(row rowScanner) (Client, error) {
 		value.UserRelayPortEnd = &end
 	}
 	value.effectiveEnabled = effectiveEnabled != 0
+	value.SubscriptionManaged = subscriptionManaged != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -572,7 +589,8 @@ func summarizeClient(value Client) ClientSummary {
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, Metrics: value.Metrics,
-		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		SubscriptionManaged: value.SubscriptionManaged,
+		CreatedAt:           value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -595,7 +613,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 	var decommissionStatus string
 	var value Client
 	var credentialJSON, configJSON string
-	var udp443, enabled, effectiveEnabled int
+	var udp443, enabled, effectiveEnabled, subscriptionManaged int
 	var expiresAt, trafficLimit sql.NullInt64
 	var cycleUplink, cycleDownlink int64
 	var createdAt, updatedAt int64
@@ -605,6 +623,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
+		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
 		 proxies.protocol, proxies.config_json, proxies.server_id, servers.decommission_status,
 		 COALESCE(metrics.cycle_uplink_bytes, 0), COALESCE(metrics.cycle_downlink_bytes, 0)
@@ -616,7 +635,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &udp443, &enabled,
 		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID, &decommissionStatus,
+		&effectiveEnabled, &subscriptionManaged, &createdAt, &updatedAt, &value.Protocol, &configJSON, &serverID, &decommissionStatus,
 		&cycleUplink, &cycleDownlink,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -642,6 +661,7 @@ func getClientForMutation(ctx context.Context, tx *sql.Tx, id int64) (Client, in
 	value.UUID, value.Password, value.ClientUDP443, value.Enabled = credential.UUID, credential.Password, udp443 != 0, enabled != 0
 	value.ExpiresAt = nullableTimeValue(expiresAt)
 	value.effectiveEnabled = effectiveEnabled != 0
+	value.SubscriptionManaged = subscriptionManaged != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit

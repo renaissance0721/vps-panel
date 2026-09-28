@@ -8,7 +8,7 @@ export type Invitation = {
   id: number
   created_by: number
   created_by_username: string
-	role: 'vip' | 'user'
+	role: 'vip' | 'user' | 'subscriber'
   expires_at: string
   created_at: string
   token?: string
@@ -17,7 +17,7 @@ export type Invitation = {
 export type Overview = {
   server_count: number
   proxy_count: number
-  users: { username: string; role: 'admin' | 'vip' | 'user' }[]
+  users: { username: string; role: 'admin' | 'vip' | 'user' | 'subscriber' }[]
 }
 
 export type PasswordChangeRequest = {

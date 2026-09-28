@@ -81,6 +81,7 @@ type relayResponse struct {
 	Enabled                 bool      `json:"enabled"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
+	SubscriptionPublished   bool      `json:"subscription_published"`
 	RedactPrivateTarget     bool      `json:"-"`
 }
 
@@ -330,6 +331,10 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		writeRelayError(w, err)
 		return
 	}
+	if current.SubscriptionPublished {
+		writeRelayError(w, relaystore.ErrSubscriptionManaged)
+		return
+	}
 	var request updateRelayRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -401,6 +406,10 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		writeRelayError(w, err)
 		return
 	}
+	if value.SubscriptionPublished {
+		writeRelayError(w, relaystore.ErrSubscriptionManaged)
+		return
+	}
 	server, err := s.servers.Get(r.Context(), value.ServerID)
 	if err != nil {
 		writeServerError(w, err)
@@ -445,7 +454,8 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 		TargetPort:              value.TargetPort, TargetAddressReady: value.TargetAddressReady,
 		Network: value.Network, Enabled: value.Enabled,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
-		RedactPrivateTarget: value.OwnerUserID != nil && value.TargetType == relaystore.TargetManual,
+		SubscriptionPublished: value.SubscriptionPublished,
+		RedactPrivateTarget:   value.OwnerUserID != nil && value.TargetType == relaystore.TargetManual,
 	}
 }
 
@@ -459,6 +469,8 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "服务器正在退役，不能继续修改配置")
 	case errors.Is(err, relaystore.ErrManagedRuntimePurgeUnsupported):
 		writeError(w, http.StatusConflict, "当前 Agent 不支持受管运行时清理，请先升级 Agent")
+	case errors.Is(err, relaystore.ErrSubscriptionManaged):
+		writeError(w, http.StatusConflict, "该中转正在用于订阅发布节点，请从订阅管理中操作")
 	case errors.Is(err, relaystore.ErrProxyNotFound):
 		writeError(w, http.StatusNotFound, "目标代理节点不存在或已移除")
 	case errors.Is(err, relaystore.ErrLandingNotFound):

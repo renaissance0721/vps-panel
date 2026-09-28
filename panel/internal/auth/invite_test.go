@@ -91,7 +91,7 @@ func TestInvitationRoleControlsRegisteredUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{RoleVIP, RoleUser} {
+	for _, role := range []string{RoleVIP, RoleUser, RoleSubscriber} {
 		created, err := service.CreateInvitation(ctx, owner.ID, role)
 		if err != nil {
 			t.Fatalf("CreateInvitation(%q): %v", role, err)
@@ -108,5 +108,52 @@ func TestInvitationRoleControlsRegisteredUser(t *testing.T) {
 		if _, err := service.CreateInvitation(ctx, owner.ID, role); !errors.Is(err, ErrInvalidInvitationRole) {
 			t.Fatalf("CreateInvitation(%q) error = %v, want ErrInvalidInvitationRole", role, err)
 		}
+	}
+}
+
+func TestGetInvitationReturnsRoleWithoutConsumingToken(t *testing.T) {
+	service, db := newTestService(t)
+	ctx := context.Background()
+	owner, err := service.Initialize(ctx, "admin", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateInvitation(ctx, owner.ID, RoleSubscriber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invitation, err := service.GetInvitation(ctx, created.Token)
+	if err != nil || invitation.Role != RoleSubscriber {
+		t.Fatalf("GetInvitation() = (%+v, %v)", invitation, err)
+	}
+	registered, err := service.RegisterWithInvitation(ctx, created.Token, "subscriber", testPassword)
+	if err != nil || registered.Role != RoleSubscriber {
+		t.Fatalf("RegisterWithInvitation() = (%+v, %v)", registered, err)
+	}
+	if _, err := service.GetInvitation(ctx, created.Token); !errors.Is(err, ErrInvalidInvitation) {
+		t.Fatalf("used GetInvitation() error = %v", err)
+	}
+	var firstToken string
+	var enabled int
+	if err := db.QueryRow(`SELECT subscription_token, enabled FROM subscriber_profiles WHERE user_id = ?`, registered.ID).
+		Scan(&firstToken, &enabled); err != nil || len(firstToken) != 43 || enabled != 1 {
+		t.Fatalf("subscriber profile token length/enabled = %d/%d, error = %v", len(firstToken), enabled, err)
+	}
+	var usageRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM subscriber_usage WHERE user_id = ?`, registered.ID).Scan(&usageRows); err != nil || usageRows != 1 {
+		t.Fatalf("subscriber usage rows = %d, error = %v", usageRows, err)
+	}
+	secondInvitation, err := service.CreateInvitation(ctx, owner.ID, RoleSubscriber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.RegisterWithInvitation(ctx, secondInvitation.Token, "subscriber-two", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondToken string
+	if err := db.QueryRow(`SELECT subscription_token FROM subscriber_profiles WHERE user_id = ?`, second.ID).Scan(&secondToken); err != nil ||
+		len(secondToken) != 43 || secondToken == firstToken {
+		t.Fatalf("second subscriber token length/unique = %d/%v, error = %v", len(secondToken), secondToken != firstToken, err)
 	}
 }

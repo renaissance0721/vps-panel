@@ -25,7 +25,7 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
   const invitations = ref<Invitation[]>([])
   const overview = ref<Overview | null>(null)
   const generatedLink = ref('')
-	const invitationRole = ref<'vip' | 'user'>('vip')
+	const invitationRole = ref<'vip' | 'user' | 'subscriber'>('vip')
 	const passwordChangeRequests = ref<PasswordChangeRequest[]>([])
 	const userRelays = ref<AdminUserRelay[]>([])
   const copied = ref(false)

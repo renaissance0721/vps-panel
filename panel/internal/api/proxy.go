@@ -248,8 +248,17 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 }
 
 func (s *server) notifyProxyMutation(mutation proxystore.Mutation) {
+	if mutation.Version == 0 {
+		return
+	}
 	if err := s.agents.NotifyConfigChanged(mutation.ServerID, mutation.Version); err != nil {
 		log.Printf("notify Agent for server %d config version %d: %v", mutation.ServerID, mutation.Version, err)
+	}
+}
+
+func (s *server) notifyProxyMutations(mutations []proxystore.Mutation) {
+	for _, mutation := range mutations {
+		s.notifyProxyMutation(mutation)
 	}
 }
 
@@ -307,6 +316,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "客户端到期时间无效")
 	case errors.Is(err, proxystore.ErrReferencedByRelay):
 		writeError(w, http.StatusConflict, "代理节点正在被中转规则使用，请先修改或删除相关中转规则")
+	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
+		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
 	default:
 		writeInternalError(w)
 	}

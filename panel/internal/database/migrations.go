@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
 func migrate(db *sql.DB) error {
@@ -104,7 +106,67 @@ func migrate(db *sql.DB) error {
 	if err := migrateClientRelayPorts(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateSubscriberProfiles(ctx, db); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func migrateSubscriberProfiles(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT users.id, users.created_at FROM users
+		LEFT JOIN subscriber_profiles ON subscriber_profiles.user_id = users.id
+		WHERE users.role = 'subscriber' AND subscriber_profiles.user_id IS NULL ORDER BY users.id`)
+	if err != nil {
+		return fmt.Errorf("list subscribers without profiles: %w", err)
+	}
+	type missingProfile struct {
+		userID    int64
+		createdAt int64
+	}
+	missing := make([]missingProfile, 0)
+	for rows.Next() {
+		var value missingProfile
+		if err := rows.Scan(&value.userID, &value.createdAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan subscriber without profile: %w", err)
+		}
+		missing = append(missing, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate subscribers without profiles: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close subscribers without profiles: %w", err)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscriber profile migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, value := range missing {
+		tokenValue, _, err := token.New()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO subscriber_profiles
+			(user_id, enabled, subscription_token, created_at, updated_at) VALUES (?, 1, ?, ?, ?)`,
+			value.userID, tokenValue, value.createdAt, value.createdAt); err != nil {
+			return fmt.Errorf("create migrated subscriber profile: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO subscriber_usage
+			(user_id, cycle_started_at, updated_at) VALUES (?, ?, ?)`,
+			value.userID, value.createdAt, value.createdAt); err != nil {
+			return fmt.Errorf("create migrated subscriber usage: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscriber profile migration: %w", err)
+	}
 	return nil
 }
 
@@ -854,7 +916,7 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 	if roleColumnCount == 0 {
 		if _, err := db.ExecContext(ctx,
 			`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
-			 CHECK (role IN ('admin', 'vip', 'user'))`,
+			 CHECK (role IN ('admin', 'vip', 'user', 'subscriber'))`,
 		); err != nil {
 			return fmt.Errorf("add user role column: %w", err)
 		}
@@ -875,7 +937,7 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 	).Scan(&tableSQL); err != nil {
 		return fmt.Errorf("inspect users table: %w", err)
 	}
-	if strings.Contains(strings.ToLower(tableSQL), "'user'") {
+	if strings.Contains(strings.ToLower(tableSQL), "'subscriber'") {
 		return nil
 	}
 
@@ -899,7 +961,7 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -936,14 +998,74 @@ func migrateInvitationRoles(ctx context.Context, db *sql.DB) error {
 	).Scan(&count); err != nil {
 		return fmt.Errorf("inspect admin_invitations.role: %w", err)
 	}
-	if count != 0 {
+	if count == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE admin_invitations ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
+			 CHECK (role IN ('vip', 'user', 'subscriber'))`,
+		); err != nil {
+			return fmt.Errorf("add admin_invitations.role: %w", err)
+		}
 		return nil
 	}
-	if _, err := db.ExecContext(ctx,
-		`ALTER TABLE admin_invitations ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
-		 CHECK (role IN ('vip', 'user'))`,
-	); err != nil {
-		return fmt.Errorf("add admin_invitations.role: %w", err)
+	var tableSQL string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admin_invitations'`,
+	).Scan(&tableSQL); err != nil {
+		return fmt.Errorf("inspect admin_invitations table: %w", err)
 	}
-	return nil
+	if strings.Contains(strings.ToLower(tableSQL), "'subscriber'") {
+		return nil
+	}
+
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open invitation role migration connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for invitation role migration: %w", err)
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin invitation role migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE admin_invitations_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_hash TEXT NOT NULL UNIQUE,
+			created_by INTEGER NOT NULL REFERENCES users(id),
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user', 'subscriber')),
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO admin_invitations_new
+			(id, token_hash, created_by, expires_at, used_at, role, created_at)
+		 SELECT id, token_hash, created_by, expires_at, used_at, role, created_at
+		 FROM admin_invitations`,
+		`DROP TABLE admin_invitations`,
+		`ALTER TABLE admin_invitations_new RENAME TO admin_invitations`,
+		`CREATE INDEX idx_admin_invitations_active ON admin_invitations(used_at, expires_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate invitation role constraint: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit invitation role migration: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after invitation role migration: %w", err)
+	}
+	rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check invitation role migration foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("invitation role migration left invalid foreign keys")
+	}
+	return rows.Err()
 }

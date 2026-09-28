@@ -39,6 +39,7 @@ var (
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
 	ErrUserRelayLimit                 = errors.New("user relay limit reached")
+	ErrSubscriptionManaged            = errors.New("relay is managed by a subscription published node")
 )
 
 type Relay struct {
@@ -73,6 +74,7 @@ type Relay struct {
 	Enabled                 bool
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+	SubscriptionPublished   bool
 }
 
 type CreateInput struct {

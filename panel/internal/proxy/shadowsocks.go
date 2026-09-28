@@ -88,6 +88,6 @@ func buildShadowsocksURI(share ClientShare, masterPassword string) string {
 		Scheme:   "ss",
 		User:     url.UserPassword(share.Method, masterPassword+":"+share.Password),
 		Host:     net.JoinHostPort(share.Address, strconv.Itoa(share.Port)),
-		Fragment: share.ProxyName + " - " + share.Name,
+		Fragment: share.DisplayName,
 	}).String()
 }

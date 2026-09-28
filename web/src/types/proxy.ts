@@ -40,6 +40,7 @@ export type ClientSummary = {
   expired: boolean
   quota_exhausted: boolean
   effective_enabled: boolean
+  subscription_managed: boolean
   status: ClientStatus
   traffic_limit_bytes: number | null
   traffic_reset_mode: ClientTrafficResetMode
@@ -68,6 +69,7 @@ export type ClientRecord = {
   expired: boolean
   quota_exhausted: boolean
   effective_enabled: boolean
+  subscription_managed: boolean
   status: ClientStatus
   traffic_limit_bytes: number | null
   traffic_reset_mode: ClientTrafficResetMode

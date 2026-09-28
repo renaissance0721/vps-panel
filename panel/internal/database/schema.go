@@ -7,7 +7,7 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -17,7 +17,7 @@ func schemaStatements() []string {
 			created_by INTEGER NOT NULL REFERENCES users(id),
 			expires_at INTEGER NOT NULL,
 			used_at INTEGER,
-			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user')),
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user', 'subscriber')),
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_invitations_active
@@ -219,6 +219,50 @@ func schemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_server_id ON relays(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_relays_target_proxy_id ON relays(target_proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS subscription_published_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			mode TEXT NOT NULL CHECK (mode IN ('direct', 'relay')),
+			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+			source_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK (
+				(mode = 'direct' AND source_proxy_id IS NULL AND relay_id IS NULL)
+				OR
+				(mode = 'relay' AND source_proxy_id IS NOT NULL AND relay_id IS NOT NULL)
+			)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_target_proxy
+			ON subscription_published_nodes(target_proxy_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_published_nodes_relay
+			ON subscription_published_nodes(relay_id) WHERE relay_id IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS subscription_plans (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes IS NULL OR traffic_limit_bytes >= 0),
+			traffic_reset_mode TEXT NOT NULL DEFAULT 'monthly'
+				CHECK (traffic_reset_mode IN ('never', 'monthly')),
+			traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31),
+			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
+			default_validity_days INTEGER CHECK (default_validity_days IS NULL OR default_validity_days > 0),
+			billing_period_months INTEGER
+				CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS subscription_plan_nodes (
+			plan_id INTEGER NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
+			published_node_id INTEGER NOT NULL REFERENCES subscription_published_nodes(id) ON DELETE RESTRICT,
+			position INTEGER NOT NULL CHECK (position > 0),
+			PRIMARY KEY (plan_id, published_node_id),
+			UNIQUE (plan_id, position)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_plan_nodes_node
+			ON subscription_plan_nodes(published_node_id)`,
 		`CREATE TABLE IF NOT EXISTS user_relay_order (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			relay_id INTEGER NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
@@ -259,6 +303,31 @@ func schemaStatements() []string {
 			UNIQUE (server_id, port)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_client_relay_ports_server_id ON client_relay_ports(server_id)`,
+		`CREATE TABLE IF NOT EXISTS subscriber_profiles (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			plan_id INTEGER REFERENCES subscription_plans(id) ON DELETE SET NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			expires_at INTEGER,
+			subscription_token TEXT NOT NULL UNIQUE,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriber_profiles_plan_id ON subscriber_profiles(plan_id)`,
+		`CREATE TABLE IF NOT EXISTS subscriber_clients (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+			client_id INTEGER NOT NULL UNIQUE REFERENCES clients(id) ON DELETE CASCADE,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, proxy_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriber_clients_proxy_id ON subscriber_clients(proxy_id)`,
+		`CREATE TABLE IF NOT EXISTS subscriber_usage (
+			user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			archived_uplink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (archived_uplink_bytes >= 0),
+			archived_downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (archived_downlink_bytes >= 0),
+			cycle_started_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS client_metrics (
 			client_id INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
 			xray_uplink_bytes INTEGER NOT NULL CHECK (xray_uplink_bytes >= 0),

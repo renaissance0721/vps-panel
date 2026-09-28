@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
@@ -43,7 +45,21 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		}
 		return state, nil
 	}
-	if _, err := proxystore.ReconcileClientLifecycle(ctx, tx, serverID, s.now()); err != nil {
+	now := s.now().UTC()
+	affectedServerIDs, err := subscriptionstore.NewService(s.db, relaystore.NewService(s.db)).
+		ReconcileServerSubscribersTx(ctx, tx, serverID, now)
+	if err != nil {
+		return DesiredState{}, err
+	}
+	ordinaryChanged, err := proxystore.ReconcileClientLifecycleStateTx(ctx, tx, serverID, now)
+	if err != nil {
+		return DesiredState{}, err
+	}
+	if ordinaryChanged {
+		affectedServerIDs = append(affectedServerIDs, serverID)
+	}
+	mutations, err := proxystore.BumpServerVersionsTx(ctx, tx, affectedServerIDs, now)
+	if err != nil {
 		return DesiredState{}, err
 	}
 	if err := tx.QueryRowContext(ctx,
@@ -71,6 +87,14 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	}
 	if err := tx.Commit(); err != nil {
 		return DesiredState{}, fmt.Errorf("commit desired state read: %w", err)
+	}
+	for _, mutation := range mutations {
+		if mutation.ServerID == serverID {
+			continue
+		}
+		if err := s.NotifyConfigChanged(mutation.ServerID, mutation.Version); err != nil {
+			log.Printf("notify Agent for server %d config version %d: %v", mutation.ServerID, mutation.Version, err)
+		}
 	}
 	return state, nil
 }

@@ -36,12 +36,14 @@ import ServersView from './views/ServersView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
 import UserPortalView from './views/UserPortalView.vue'
+import SubscriberPortalView from './views/SubscriberPortalView.vue'
 import UserManagementView from './views/UserManagementView.vue'
+import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'users'
+type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'users' | 'subscriptions'
 const currentPage = ref<AdminPage>('overview')
 const loading = ref(true)
 const submitting = ref(false)
@@ -49,6 +51,7 @@ const error = ref('')
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const invitationRole = ref<'vip' | 'user' | 'subscriber' | null>(null)
 
 const serverState = useServers(state, users, health, submitting, error, submit)
 const serverView = reactive(serverState)
@@ -67,8 +70,14 @@ const isInvitationPage = computed(
 
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
+  if (!state.value.authenticated && isInvitationPage.value) {
+    const response = await api<{ invitation: { role: 'vip' | 'user' | 'subscriber' } }>(
+      `/api/auth/invitation?token=${encodeURIComponent(invitationToken)}`,
+    )
+    invitationRole.value = response.invitation.role
+  }
   if (state.value.authenticated) {
-	if (state.value.user?.role === 'user') {
+	if (state.value.user?.role === 'user' || state.value.user?.role === 'subscriber') {
 	  stopServerPolling()
 	  return
 	}
@@ -241,7 +250,7 @@ onUnmounted(stopServerPolling)
       >
         <p class="eyebrow">账号邀请</p>
         <h1>创建受邀账户</h1>
-        <p class="description">此邀请仅可使用一次。</p>
+        <p class="description">此邀请将创建{{ invitationRole === 'vip' ? ' VIP' : invitationRole === 'subscriber' ? '订阅用户' : '普通用户' }}账号，仅可使用一次。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="register">
           <label>
@@ -342,6 +351,7 @@ onUnmounted(stopServerPolling)
       </n-card>
 
       <UserPortalView v-else-if="state.user?.role === 'user'" :user="state.user" @logout="logout" />
+      <SubscriberPortalView v-else-if="state.user?.role === 'subscriber'" :user="state.user" @logout="logout" />
 
       <div v-else class="app-layout">
         <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
@@ -378,6 +388,14 @@ onUnmounted(stopServerPolling)
             <button
               v-if="state.user?.role === 'admin'"
               type="button"
+              :class="{ active: currentPage === 'subscriptions' }"
+              @click="selectPage('subscriptions')"
+            >
+              订阅管理
+            </button>
+            <button
+              v-if="state.user?.role === 'admin'"
+              type="button"
               :class="{ active: currentPage === 'users' }"
               @click="selectPage('users')"
             >
@@ -404,7 +422,7 @@ onUnmounted(stopServerPolling)
           </header>
           <div class="admin-page">
             <header class="page-heading">
-              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : currentPage === 'relays' ? '中转' : '用户管理' }}</h1>
+              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : currentPage === 'relays' ? '中转' : currentPage === 'subscriptions' ? '订阅管理' : '用户管理' }}</h1>
             </header>
 
             <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
@@ -412,6 +430,7 @@ onUnmounted(stopServerPolling)
         <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
         <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
         <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
+        <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
         <UserManagementView v-if="currentPage === 'users' && state.user?.role === 'admin'" />
         <ServersView :active="currentPage === 'servers'" :model="serverView" />
 

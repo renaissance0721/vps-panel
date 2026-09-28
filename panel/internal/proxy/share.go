@@ -27,6 +27,7 @@ type ClientShare struct {
 	Method           string
 	Network          string
 	URI              string
+	DisplayName      string
 }
 
 type ShareEndpoint struct {
@@ -34,20 +35,32 @@ type ShareEndpoint struct {
 	Port    int
 }
 
+type ShareOptions struct {
+	DisplayName string
+}
+
 func (s *Service) GetClientShare(ctx context.Context, id int64) (ClientShare, error) {
-	return s.getClientShare(ctx, id, nil)
+	return s.getClientShare(ctx, id, nil, ShareOptions{})
 }
 
 func (s *Service) GetClientShareAtEndpoint(ctx context.Context, id int64, endpoint ShareEndpoint) (ClientShare, error) {
-	return s.getClientShare(ctx, id, &endpoint)
+	return s.getClientShare(ctx, id, &endpoint, ShareOptions{})
 }
 
-func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareEndpoint) (ClientShare, error) {
+func (s *Service) GetClientShareWithOptions(ctx context.Context, id int64, options ShareOptions) (ClientShare, error) {
+	return s.getClientShare(ctx, id, nil, options)
+}
+
+func (s *Service) GetClientShareAtEndpointWithOptions(ctx context.Context, id int64, endpoint ShareEndpoint, options ShareOptions) (ClientShare, error) {
+	return s.getClientShare(ctx, id, &endpoint, options)
+}
+
+func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareEndpoint, options ShareOptions) (ClientShare, error) {
 	var value Client
 	var credentialJSON, configJSON string
 	var proxyName, protocol, entryHostMode, entryHost, publicIPv4 string
 	var listenPort int
-	var clientUDP443, enabled, effectiveEnabled int
+	var clientUDP443, enabled, effectiveEnabled, subscriptionManaged int
 	var expiresAt, trafficLimit sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
@@ -56,6 +69,7 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		 clients.traffic_reset_mode, clients.traffic_reset_weekday,
 		 clients.traffic_reset_day, clients.traffic_reset_time,
 		 clients.effective_enabled_snapshot,
+		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
 		 proxies.name, proxies.protocol, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
 		 proxies.config_json, COALESCE(system_info.public_ipv4, '')
@@ -68,7 +82,7 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &clientUDP443, &enabled,
 		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
+		&effectiveEnabled, &subscriptionManaged, &createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClientShare{}, ErrClientNotFound
@@ -94,6 +108,7 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 	value.Enabled = enabled != 0
 	value.ExpiresAt = nullableTimeValue(expiresAt)
 	value.effectiveEnabled = effectiveEnabled != 0
+	value.SubscriptionManaged = subscriptionManaged != 0
 	if trafficLimit.Valid && trafficLimit.Int64 > 0 {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -125,6 +140,10 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		Client: value, ProxyName: proxyName, Address: address, Port: port,
 		Security: config.Security, ServerName: config.ServerName, Fingerprint: config.Fingerprint,
 		Flow: flow, Protocol: protocol,
+	}
+	share.DisplayName = strings.TrimSpace(options.DisplayName)
+	if share.DisplayName == "" {
+		share.DisplayName = share.ProxyName + " - " + share.Name
 	}
 	if config.Reality != nil {
 		share.RealityPublicKey = config.Reality.PublicKey
@@ -174,6 +193,6 @@ func buildVLESSURI(share ClientShare) string {
 	}
 	return (&url.URL{
 		Scheme: "vless", User: url.User(share.UUID), Host: net.JoinHostPort(share.Address, strconv.Itoa(share.Port)),
-		RawQuery: query.Encode(), Fragment: share.ProxyName + " - " + share.Name,
+		RawQuery: query.Encode(), Fragment: share.DisplayName,
 	}).String()
 }

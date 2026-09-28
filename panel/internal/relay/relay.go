@@ -58,25 +58,49 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 		return Relay{}, Mutation{}, fmt.Errorf("begin relay creation: %w", err)
 	}
 	defer tx.Rollback()
-	if err := ensureActiveServer(ctx, tx, value.ServerID); err != nil {
+	id, mutation, err := s.createTx(ctx, tx, value, now)
+	if err != nil {
 		return Relay{}, Mutation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Relay{}, Mutation{}, fmt.Errorf("commit relay creation: %w", err)
+	}
+	created, err := s.Get(ctx, id)
+	return created, mutation, err
+}
+
+func (s *Service) CreateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, input CreateInput, now time.Time) (int64, Mutation, error) {
+	value, err := normalizeCreate(input)
+	if err != nil {
+		return 0, Mutation{}, err
+	}
+	if value.OwnerUserID != nil || value.SourceClientID != nil || value.TargetType != TargetProxy ||
+		value.TargetProxyID == nil || value.TargetClientID != nil {
+		return 0, Mutation{}, ErrInvalidTarget
+	}
+	return s.createTx(ctx, tx, value, now.UTC().Truncate(time.Second))
+}
+
+func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now time.Time) (int64, Mutation, error) {
+	if err := ensureActiveServer(ctx, tx, value.ServerID); err != nil {
+		return 0, Mutation{}, err
 	}
 	if value.OwnerUserID != nil {
 		var count int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM relays WHERE owner_user_id = ?`, *value.OwnerUserID,
 		).Scan(&count); err != nil {
-			return Relay{}, Mutation{}, fmt.Errorf("count user relays: %w", err)
+			return 0, Mutation{}, fmt.Errorf("count user relays: %w", err)
 		}
 		if count >= MaxUserRelays {
-			return Relay{}, Mutation{}, ErrUserRelayLimit
+			return 0, Mutation{}, ErrUserRelayLimit
 		}
 	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
-		return Relay{}, Mutation{}, err
+		return 0, Mutation{}, err
 	}
 	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, 0, value.SourceClientID); err != nil {
-		return Relay{}, Mutation{}, err
+		return 0, Mutation{}, err
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO relays
@@ -88,21 +112,17 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 		value.Enabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
-		return Relay{}, Mutation{}, fmt.Errorf("create relay: %w", err)
+		return 0, Mutation{}, fmt.Errorf("create relay: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return Relay{}, Mutation{}, fmt.Errorf("read relay id: %w", err)
+		return 0, Mutation{}, fmt.Errorf("read relay id: %w", err)
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
-		return Relay{}, Mutation{}, err
+		return 0, Mutation{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return Relay{}, Mutation{}, fmt.Errorf("commit relay creation: %w", err)
-	}
-	created, err := s.Get(ctx, id)
-	return created, Mutation{ServerID: value.ServerID, Version: version}, err
+	return id, Mutation{ServerID: value.ServerID, Version: version}, nil
 }
 
 func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Relay, Mutation, error) {
@@ -115,6 +135,11 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	value, err := getForMutation(ctx, tx, id)
 	if err != nil {
 		return Relay{}, Mutation{}, err
+	}
+	if managed, err := subscriptionManaged(ctx, tx, id); err != nil {
+		return Relay{}, Mutation{}, err
+	} else if managed {
+		return Relay{}, Mutation{}, ErrSubscriptionManaged
 	}
 	value, err = ValidateUpdateInput(value, input)
 	if err != nil {
@@ -163,6 +188,11 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	if err != nil {
 		return Mutation{}, err
 	}
+	if managed, err := subscriptionManaged(ctx, tx, id); err != nil {
+		return Mutation{}, err
+	} else if managed {
+		return Mutation{}, ErrSubscriptionManaged
+	}
 	var relayCount int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM relays WHERE server_id = ?`, value.ServerID,
@@ -185,6 +215,55 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	return Mutation{ServerID: value.ServerID, Version: version}, nil
 }
 
+func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, name string, enabled bool, now time.Time) (int64, bool, error) {
+	value, err := getForMutation(ctx, tx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	managed, err := subscriptionManaged(ctx, tx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	if !managed {
+		return 0, false, ErrSubscriptionManaged
+	}
+	now = now.UTC().Truncate(time.Second)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE relays SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		name, enabled, now.Unix(), id,
+	); err != nil {
+		return 0, false, fmt.Errorf("update subscription relay: %w", err)
+	}
+	return value.ServerID, value.Name != name || value.Enabled != enabled, nil
+}
+
+func (s *Service) DeleteSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (Mutation, error) {
+	value, err := getForMutation(ctx, tx, id)
+	if err != nil {
+		return Mutation{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, id); err != nil {
+		return Mutation{}, fmt.Errorf("delete subscription relay: %w", err)
+	}
+	version, err := bumpVersion(ctx, tx, value.ServerID, now.UTC().Truncate(time.Second))
+	if err != nil {
+		return Mutation{}, err
+	}
+	return Mutation{ServerID: value.ServerID, Version: version}, nil
+}
+
+func subscriptionManaged(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, relayID int64) (bool, error) {
+	var managed bool
+	if err := query.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM subscription_published_nodes WHERE relay_id = ?)`, relayID,
+	).Scan(&managed); err != nil {
+		return false, fmt.Errorf("check subscription relay: %w", err)
+	}
+	return managed, nil
+}
+
 func list(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, condition string, arguments ...any) ([]Relay, error) {
@@ -197,7 +276,8 @@ func list(ctx context.Context, query interface {
 		 relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
 		 target_proxy.name, target_server.name, target_proxy.listen_port, target_proxy.entry_host_mode,
-		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at
+		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at,
+		 EXISTS(SELECT 1 FROM subscription_published_nodes WHERE relay_id = relays.id)
 		 FROM relays
 		 JOIN servers AS source ON source.id = relays.server_id
 		 LEFT JOIN users AS owner ON owner.id = relays.owner_user_id
@@ -234,6 +314,7 @@ func list(ctx context.Context, query interface {
 			&value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
 			&targetProxyName, &targetServerName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
+			&value.SubscriptionPublished,
 		); err != nil {
 			return nil, fmt.Errorf("scan relay: %w", err)
 		}

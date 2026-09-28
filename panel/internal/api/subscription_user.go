@@ -1,0 +1,189 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
+)
+
+type updateSubscriptionUserRequest struct {
+	PlanID    json.RawMessage `json:"plan_id"`
+	Enabled   *bool           `json:"enabled"`
+	ExpiresAt json.RawMessage `json:"expires_at"`
+}
+
+type subscriptionUserResponse struct {
+	UserID              int64                          `json:"user_id"`
+	Username            string                         `json:"username"`
+	PlanID              *int64                         `json:"plan_id"`
+	PlanName            string                         `json:"plan_name"`
+	PlanEnabled         bool                           `json:"plan_enabled"`
+	Enabled             bool                           `json:"enabled"`
+	ExpiresAt           *time.Time                     `json:"expires_at"`
+	ClientCount         int                            `json:"client_count"`
+	EnabledNodeCount    int                            `json:"enabled_node_count"`
+	TrafficLimitBytes   *int64                         `json:"traffic_limit_bytes"`
+	UsedBytes           int64                          `json:"used_bytes"`
+	CycleStartedAt      time.Time                      `json:"cycle_started_at"`
+	NextResetAt         *time.Time                     `json:"next_reset_at"`
+	BillingPeriodMonths *int                           `json:"billing_period_months"`
+	Active              bool                           `json:"active"`
+	Status              string                         `json:"status"`
+	SubscriptionToken   string                         `json:"subscription_token,omitempty"`
+	SubscriptionURL     string                         `json:"subscription_url,omitempty"`
+	PasswordRequest     *passwordChangeRequestResponse `json:"password_request,omitempty"`
+	CreatedAt           time.Time                      `json:"created_at"`
+	UpdatedAt           time.Time                      `json:"updated_at"`
+}
+
+func (s *server) listSubscriptionUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	values, err := s.subscriptions.ListSubscribers(r.Context())
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	response := make([]subscriptionUserResponse, 0, len(values))
+	for _, value := range values {
+		response = append(response, toSubscriptionUserResponse(value, "", false))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": response})
+}
+
+func (s *server) getSubscriptionUser(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
+	if !ok {
+		return
+	}
+	value, err := s.subscriptions.GetSubscriber(r.Context(), id)
+	if err != nil {
+		writeSubscriptionUserError(w, err)
+		return
+	}
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
+	response := toSubscriptionUserResponse(value, baseURL, true)
+	passwordRequest, err := s.authService.LatestPasswordChangeRequest(r.Context(), id)
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	if passwordRequest != nil {
+		formatted := toPasswordChangeRequestResponse(*passwordRequest)
+		response.PasswordRequest = &formatted
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": response})
+}
+
+func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
+	if !ok {
+		return
+	}
+	var request updateSubscriptionUserRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	planID, planIDSet, err := decodeNullableInt64(request.PlanID)
+	if err != nil || planID != nil && *planID <= 0 {
+		writeError(w, http.StatusBadRequest, "套餐格式无效")
+		return
+	}
+	expiresAt, expiresAtSet, err := parseClientExpiration(request.ExpiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "到期时间格式无效")
+		return
+	}
+	value, mutations, err := s.subscriptions.UpdateSubscriber(r.Context(), id, subscriptionstore.UpdateSubscriberInput{
+		PlanIDSet: planIDSet, PlanID: planID, Enabled: request.Enabled,
+		ExpiresAtSet: expiresAtSet, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		writeSubscriptionUserError(w, err)
+		return
+	}
+	s.notifyProxyMutations(mutations)
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": toSubscriptionUserResponse(value, baseURL, true)})
+}
+
+func (s *server) regenerateSubscriptionUserToken(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
+	if !ok {
+		return
+	}
+	tokenValue, err := s.subscriptions.RegenerateSubscriptionToken(r.Context(), id)
+	if err != nil {
+		writeSubscriptionUserError(w, err)
+		return
+	}
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subscription_token": tokenValue,
+		"subscription_url":   baseURL + "/sub/" + url.PathEscape(tokenValue),
+	})
+}
+
+func (s *server) resetSubscriptionUserTraffic(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
+	if !ok {
+		return
+	}
+	value, mutations, err := s.subscriptions.ResetSubscriberTraffic(r.Context(), id)
+	if err != nil {
+		writeSubscriptionUserError(w, err)
+		return
+	}
+	s.notifyProxyMutations(mutations)
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": toSubscriptionUserResponse(value, baseURL, true)})
+}
+
+func toSubscriptionUserResponse(value subscriptionstore.Subscriber, baseURL string, includeToken bool) subscriptionUserResponse {
+	response := subscriptionUserResponse{
+		UserID: value.UserID, Username: value.Username, PlanID: value.PlanID, PlanName: value.PlanName,
+		PlanEnabled: value.PlanEnabled, Enabled: value.ProfileEnabled, ExpiresAt: value.ExpiresAt,
+		ClientCount: value.ClientCount, EnabledNodeCount: value.EnabledNodeCount,
+		TrafficLimitBytes: value.TrafficLimitBytes, UsedBytes: value.UsedBytes,
+		CycleStartedAt: value.CycleStartedAt, NextResetAt: value.NextResetAt,
+		BillingPeriodMonths: value.BillingPeriodMonths, Active: value.Active, Status: value.Status,
+		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
+	if includeToken {
+		response.SubscriptionToken = value.SubscriptionToken
+		response.SubscriptionURL = baseURL + "/sub/" + url.PathEscape(value.SubscriptionToken)
+	}
+	return response
+}
+
+func writeSubscriptionUserError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, subscriptionstore.ErrSubscriberNotFound):
+		writeError(w, http.StatusNotFound, "订阅用户不存在")
+	case errors.Is(err, subscriptionstore.ErrInvalidSubscriberPlan):
+		writeError(w, http.StatusBadRequest, "套餐不存在")
+	case errors.Is(err, subscriptionstore.ErrInvalidSubscriberExpiry):
+		writeError(w, http.StatusBadRequest, "到期时间无效")
+	default:
+		writeInternalError(w)
+	}
+}

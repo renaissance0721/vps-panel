@@ -27,7 +27,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
               <div class="overview-users">
                 <div v-for="account in orderedUsers" :key="account.username" class="overview-user">
                   <span>{{ account.username }}</span>
-                  <n-tag :type="account.role === 'admin' ? 'info' : 'default'" size="small">{{ account.role }}</n-tag>
+                  <n-tag :type="account.role === 'admin' ? 'info' : 'default'" size="small">{{ account.role === 'admin' ? '管理员' : account.role === 'vip' ? 'VIP' : account.role === 'subscriber' ? '订阅用户' : '普通用户' }}</n-tag>
                 </div>
               </div>
             </n-card>
@@ -59,7 +59,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 
             <n-card v-if="state?.user?.role === 'admin'" title="邀请账号" :bordered="true">
               <p class="card-copy">生成 24 小时有效的一次性注册链接。</p>
-			  <label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP</option><option value="user">用户</option></select></label>
+			  <label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP</option><option value="user">普通用户</option><option value="subscriber">订阅用户</option></select></label>
               <n-button type="primary" :loading="submitting" @click="createInvitation">
                 生成邀请链接
               </n-button>
@@ -80,7 +80,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
                 <div>
                   <strong>邀请 #{{ invitation.id }}</strong>
                   <span>
-					角色：{{ invitation.role === 'vip' ? 'VIP' : '用户' }} · {{ invitation.created_by_username }} 创建 ·
+					角色：{{ invitation.role === 'vip' ? 'VIP' : invitation.role === 'subscriber' ? '订阅用户' : '普通用户' }} · {{ invitation.created_by_username }} 创建 ·
                     {{ formatTime(invitation.expires_at) }} 过期
                   </span>
                 </div>

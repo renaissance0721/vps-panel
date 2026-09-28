@@ -204,6 +204,12 @@ func TestOpenExpandsUserRoleConstraintWithoutBreakingReferences(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('user', 'u', 'user', 50, 50)`); err != nil {
 		t.Fatalf("insert user role: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('subscriber', 's', 'subscriber', 50, 50)`); err != nil {
+		t.Fatalf("insert subscriber role: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO admin_invitations (token_hash, created_by, expires_at, role, created_at) VALUES ('subscriber-invite', 7, 9999, 'subscriber', 50)`); err != nil {
+		t.Fatalf("insert subscriber invitation role: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('bad', 'b', 'unknown', 50, 50)`); err == nil {
 		t.Fatal("unknown role was accepted")
 	}
@@ -224,7 +230,7 @@ func TestOpenExpandsUserRoleConstraintWithoutBreakingReferences(t *testing.T) {
 		t.Fatalf("legacy invitation role = %q, %v; want vip", invitationRole, err)
 	}
 	var tableSQL string
-	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).Scan(&tableSQL); err != nil || !strings.Contains(tableSQL, "'user'") {
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).Scan(&tableSQL); err != nil || !strings.Contains(tableSQL, "'subscriber'") {
 		t.Fatalf("migrated users SQL = %q, %v", tableSQL, err)
 	}
 	rows, err := db.Query(`PRAGMA foreign_key_check`)
@@ -234,5 +240,49 @@ func TestOpenExpandsUserRoleConstraintWithoutBreakingReferences(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("migration left an invalid foreign key")
+	}
+}
+
+func TestOpenBackfillsSubscriberProfileAndUsage(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users
+		(username, password_hash, role, created_at, updated_at)
+		VALUES ('subscriber', 'hash', 'subscriber', 50, 51)`); err != nil {
+		db.Close()
+		t.Fatalf("insert subscriber: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close initial database: %v", err)
+	}
+
+	db, err = Open(dataDir)
+	if err != nil {
+		t.Fatalf("reopen database: %v", err)
+	}
+	defer db.Close()
+
+	var tokenValue string
+	var enabled, profileCreatedAt, profileUpdatedAt int64
+	if err := db.QueryRow(`SELECT subscription_token, enabled, created_at, updated_at
+		FROM subscriber_profiles WHERE user_id = (SELECT id FROM users WHERE username = 'subscriber')`).
+		Scan(&tokenValue, &enabled, &profileCreatedAt, &profileUpdatedAt); err != nil {
+		t.Fatalf("load backfilled subscriber profile: %v", err)
+	}
+	if len(tokenValue) != 43 || enabled != 1 || profileCreatedAt != 50 || profileUpdatedAt != 50 {
+		t.Fatalf("backfilled profile = token length %d, enabled %d, timestamps %d/%d", len(tokenValue), enabled, profileCreatedAt, profileUpdatedAt)
+	}
+
+	var archivedUplink, archivedDownlink, cycleStartedAt, usageUpdatedAt int64
+	if err := db.QueryRow(`SELECT archived_uplink_bytes, archived_downlink_bytes, cycle_started_at, updated_at
+		FROM subscriber_usage WHERE user_id = (SELECT id FROM users WHERE username = 'subscriber')`).
+		Scan(&archivedUplink, &archivedDownlink, &cycleStartedAt, &usageUpdatedAt); err != nil {
+		t.Fatalf("load backfilled subscriber usage: %v", err)
+	}
+	if archivedUplink != 0 || archivedDownlink != 0 || cycleStartedAt != 50 || usageUpdatedAt != 50 {
+		t.Fatalf("backfilled usage = %d/%d, timestamps %d/%d", archivedUplink, archivedDownlink, cycleStartedAt, usageUpdatedAt)
 	}
 }

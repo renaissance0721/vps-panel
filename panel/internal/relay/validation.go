@@ -2,14 +2,58 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
+
+func RandomUserRelayPort(ctx context.Context, query interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, serverID int64) (int, error) {
+	rows, err := query.QueryContext(ctx, `
+		SELECT listen_port FROM proxies WHERE server_id = ? AND listen_port BETWEEN ? AND ?
+		UNION SELECT listen_port FROM relays WHERE server_id = ? AND listen_port BETWEEN ? AND ?
+		UNION SELECT port FROM client_relay_ports WHERE server_id = ? AND port BETWEEN ? AND ?`,
+		serverID, UserRelayPortStart, UserRelayPortEnd,
+		serverID, UserRelayPortStart, UserRelayPortEnd,
+		serverID, UserRelayPortStart, UserRelayPortEnd,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("list occupied relay ports: %w", err)
+	}
+	defer rows.Close()
+	occupied := make(map[int]struct{})
+	for rows.Next() {
+		var port int
+		if err := rows.Scan(&port); err != nil {
+			return 0, fmt.Errorf("scan occupied relay port: %w", err)
+		}
+		occupied[port] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate occupied relay ports: %w", err)
+	}
+	available := make([]int, 0, UserRelayPortEnd-UserRelayPortStart+1-len(occupied))
+	for port := UserRelayPortStart; port <= UserRelayPortEnd; port++ {
+		if _, exists := occupied[port]; !exists {
+			available = append(available, port)
+		}
+	}
+	if len(available) == 0 {
+		return 0, ErrPortConflict
+	}
+	choice, err := rand.Int(rand.Reader, big.NewInt(int64(len(available))))
+	if err != nil {
+		return 0, fmt.Errorf("choose relay port: %w", err)
+	}
+	return available[choice.Int64()], nil
+}
 
 func normalizeCreate(input CreateInput) (Relay, error) {
 	listenAddress := input.ListenAddress

@@ -1041,6 +1041,50 @@ h1 {
   margin: 4px 0 0;
 }
 
+.subscriber-node-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.subscriber-node-list > div {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.subscription-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.subscription-section {
+  display: grid;
+  gap: 16px;
+}
+
+.subscription-form-card {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+.subscription-node-picker {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.subscription-node-option {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .user-management-toolbar {
   grid-template-columns: minmax(220px, 420px) auto;
   justify-content: space-between;

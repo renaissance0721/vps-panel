@@ -62,6 +62,7 @@ type clientSummaryResponse struct {
 	Metrics             clientMetricsResponse `json:"metrics"`
 	CreatedAt           time.Time             `json:"created_at"`
 	UpdatedAt           time.Time             `json:"updated_at"`
+	SubscriptionManaged bool                  `json:"subscription_managed"`
 }
 
 type clientResponse struct {
@@ -90,6 +91,7 @@ type clientResponse struct {
 	Metrics             clientMetricsResponse `json:"metrics"`
 	CreatedAt           time.Time             `json:"created_at"`
 	UpdatedAt           time.Time             `json:"updated_at"`
+	SubscriptionManaged bool                  `json:"subscription_managed"`
 }
 
 type clientMetricsResponse struct {
@@ -136,6 +138,7 @@ func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryRespon
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: client.NextResetAt(time.Now()),
 		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		SubscriptionManaged: value.SubscriptionManaged,
 	}
 }
 
@@ -154,6 +157,7 @@ func toClientResponse(value proxystore.Client) clientResponse {
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: value.NextResetAt(time.Now()),
 		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		SubscriptionManaged: value.SubscriptionManaged,
 	}
 }
 

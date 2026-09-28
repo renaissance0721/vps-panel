@@ -87,33 +87,15 @@ func (s *Service) RecordClientTraffic(ctx context.Context, serverID int64, repor
 }
 
 func (s *Service) RecordClientTrafficWithMutation(ctx context.Context, serverID int64, reports []ClientTrafficReport) (Mutation, error) {
-	if serverID <= 0 {
-		return Mutation{}, ErrInvalidClientTraffic
-	}
-	seen := make(map[int64]struct{}, len(reports))
-	for _, report := range reports {
-		if report.ClientID <= 0 || report.UplinkBytes < 0 || report.DownlinkBytes < 0 {
-			return Mutation{}, ErrInvalidClientTraffic
-		}
-		if _, exists := seen[report.ClientID]; exists {
-			return Mutation{}, ErrInvalidClientTraffic
-		}
-		seen[report.ClientID] = struct{}{}
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Mutation{}, fmt.Errorf("begin client traffic report: %w", err)
 	}
 	defer tx.Rollback()
 	now := s.now().UTC().Truncate(time.Second)
-	lifecycleChanged := false
-	for _, report := range reports {
-		changed, err := recordClientTraffic(ctx, tx, serverID, report, now)
-		if err != nil {
-			return Mutation{}, err
-		}
-		lifecycleChanged = lifecycleChanged || changed
+	lifecycleChanged, err := RecordClientTrafficTx(ctx, tx, serverID, reports, now)
+	if err != nil {
+		return Mutation{}, err
 	}
 	var mutation Mutation
 	if lifecycleChanged {
@@ -127,6 +109,33 @@ func (s *Service) RecordClientTrafficWithMutation(ctx context.Context, serverID 
 		return Mutation{}, fmt.Errorf("commit client traffic report: %w", err)
 	}
 	return mutation, nil
+}
+
+func RecordClientTrafficTx(ctx context.Context, tx *sql.Tx, serverID int64, reports []ClientTrafficReport, now time.Time) (bool, error) {
+	if serverID <= 0 {
+		return false, ErrInvalidClientTraffic
+	}
+	seen := make(map[int64]struct{}, len(reports))
+	for _, report := range reports {
+		if report.ClientID <= 0 || report.UplinkBytes < 0 || report.DownlinkBytes < 0 {
+			return false, ErrInvalidClientTraffic
+		}
+		if _, exists := seen[report.ClientID]; exists {
+			return false, ErrInvalidClientTraffic
+		}
+		seen[report.ClientID] = struct{}{}
+	}
+
+	now = now.UTC().Truncate(time.Second)
+	lifecycleChanged := false
+	for _, report := range reports {
+		changed, err := recordClientTraffic(ctx, tx, serverID, report, now)
+		if err != nil {
+			return false, err
+		}
+		lifecycleChanged = lifecycleChanged || changed
+	}
+	return lifecycleChanged, nil
 }
 
 func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report ClientTrafficReport, now time.Time) (bool, error) {
@@ -384,6 +393,9 @@ func (s *Service) ResetClientTrafficWithMutation(ctx context.Context, clientID i
 	if err != nil {
 		return Client{}, Mutation{}, err
 	}
+	if value.SubscriptionManaged {
+		return Client{}, Mutation{}, ErrSubscriptionManagedClient
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE client_metrics
 		 SET cycle_uplink_bytes = 0, cycle_downlink_bytes = 0,
@@ -418,6 +430,18 @@ func (s *Service) ResetClientTrafficWithMutation(ctx context.Context, clientID i
 }
 
 func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) (Mutation, error) {
+	changed, err := ReconcileClientLifecycleStateTx(ctx, tx, serverID, now)
+	if err != nil || !changed {
+		return Mutation{}, err
+	}
+	version, err := bumpVersion(ctx, tx, serverID, now.UTC().Truncate(time.Second))
+	if err != nil {
+		return Mutation{}, err
+	}
+	return Mutation{ServerID: serverID, Version: version}, nil
+}
+
+func ReconcileClientLifecycleStateTx(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) (bool, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT clients.id, clients.enabled, clients.expires_at, clients.traffic_limit_bytes,
 		 clients.effective_enabled_snapshot, clients.traffic_reset_mode, clients.traffic_reset_weekday,
@@ -428,10 +452,11 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
-		 WHERE proxies.server_id = ? AND servers.archived_at IS NULL`, serverID,
+		 WHERE proxies.server_id = ? AND servers.archived_at IS NULL
+		 AND NOT EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id)`, serverID,
 	)
 	if err != nil {
-		return Mutation{}, fmt.Errorf("list client lifecycle state: %w", err)
+		return false, fmt.Errorf("list client lifecycle state: %w", err)
 	}
 	type lifecycleUpdate struct {
 		id               int64
@@ -452,7 +477,7 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 			&usedUplink, &usedDownlink,
 		); err != nil {
 			rows.Close()
-			return Mutation{}, fmt.Errorf("scan client lifecycle state: %w", err)
+			return false, fmt.Errorf("scan client lifecycle state: %w", err)
 		}
 		value := Client{
 			Enabled: enabled != 0, ExpiresAt: nullableTimeValue(expiresAt),
@@ -467,7 +492,7 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 			currentCycleStart, err := currentClientCycleStart(now, resetMode, resetWeekday, resetDay, resetTime)
 			if err != nil {
 				rows.Close()
-				return Mutation{}, err
+				return false, err
 			}
 			if time.Unix(cycleStartedAt.Int64, 0).UTC().Before(currentCycleStart) {
 				usedUplink, usedDownlink = 0, 0
@@ -485,10 +510,10 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return Mutation{}, fmt.Errorf("iterate client lifecycle state: %w", err)
+		return false, fmt.Errorf("iterate client lifecycle state: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return Mutation{}, fmt.Errorf("close client lifecycle state: %w", err)
+		return false, fmt.Errorf("close client lifecycle state: %w", err)
 	}
 	effectiveChanged := false
 	for _, update := range updates {
@@ -498,7 +523,7 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 				 cycle_started_at = ?, updated_at = ? WHERE client_id = ?`,
 				update.cycleStart.Unix(), now.Unix(), update.id,
 			); err != nil {
-				return Mutation{}, fmt.Errorf("reconcile client traffic cycle: %w", err)
+				return false, fmt.Errorf("reconcile client traffic cycle: %w", err)
 			}
 		}
 		if update.effectiveChanged {
@@ -506,18 +531,14 @@ func ReconcileClientLifecycle(ctx context.Context, tx *sql.Tx, serverID int64, n
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE clients SET effective_enabled_snapshot = ? WHERE id = ?`, update.effective, update.id,
 			); err != nil {
-				return Mutation{}, fmt.Errorf("reconcile client effective state: %w", err)
+				return false, fmt.Errorf("reconcile client effective state: %w", err)
 			}
 		}
 	}
 	if !effectiveChanged {
-		return Mutation{}, nil
+		return false, nil
 	}
-	version, err := bumpVersion(ctx, tx, serverID, now.UTC().Truncate(time.Second))
-	if err != nil {
-		return Mutation{}, err
-	}
-	return Mutation{ServerID: serverID, Version: version}, nil
+	return true, nil
 }
 
 func counterDelta(previous, current int64) int64 {

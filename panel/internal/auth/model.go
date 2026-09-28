@@ -12,6 +12,7 @@ const (
 	RoleAdmin          = "admin"
 	RoleVIP            = "vip"
 	RoleUser           = "user"
+	RoleSubscriber     = "subscriber"
 )
 
 var (
@@ -19,7 +20,7 @@ var (
 	ErrInvalidCredentials      = errors.New("invalid credentials")
 	ErrInvalidInvitation       = errors.New("invalid or expired invitation")
 	ErrInvitationNotFound      = errors.New("invitation not found")
-	ErrInvalidInvitationRole   = errors.New("invitation role must be vip or user")
+	ErrInvalidInvitationRole   = errors.New("invitation role must be vip, user, or subscriber")
 	ErrInvalidUsername         = errors.New("username must be 3-64 characters using letters, numbers, dot, underscore, or hyphen")
 	ErrInvalidPassword         = errors.New("password must be 10-72 bytes")
 	ErrUsernameTaken           = errors.New("username is already in use")

@@ -197,6 +197,47 @@ func TestClientShareEndpointOverridePreservesCredentialsAndProtocolParameters(t 
 	}
 }
 
+func TestClientShareDisplayNameOverride(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	value := createRealityProxy(t, service, serverID, 443, "internal proxy")
+
+	defaultShare, err := service.GetClientShareAtEndpoint(t.Context(), value.Clients[0].ID,
+		ShareEndpoint{Address: "target.example.com", Port: 443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideShare, err := service.GetClientShareAtEndpointWithOptions(t.Context(), value.Clients[0].ID,
+		ShareEndpoint{Address: "relay.example.com", Port: 23456}, ShareOptions{DisplayName: "🇭🇰 HK-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultURI, _ := url.Parse(defaultShare.URI)
+	overrideURI, _ := url.Parse(overrideShare.URI)
+	if defaultURI.Fragment != "internal proxy - 默认客户端" || overrideURI.Fragment != "🇭🇰 HK-01" ||
+		overrideShare.DisplayName != "🇭🇰 HK-01" || defaultURI.User.String() != overrideURI.User.String() ||
+		defaultURI.RawQuery != overrideURI.RawQuery {
+		t.Fatalf("display-name shares = default %q, override %q", defaultShare.URI, overrideShare.URI)
+	}
+
+	shadowsocks, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "internal ss", Protocol: ProtocolShadowsocks,
+		Method: ShadowsocksMethodAES128GCM, ListenPort: 8388,
+		EntryHostMode: EntryHostManual, EntryHost: "ss.example.com", Enabled: true, FirstClientName: "internal client",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowsocksShare, err := service.GetClientShareWithOptions(t.Context(), shadowsocks.Clients[0].ID,
+		ShareOptions{DisplayName: "🇸🇬 SG-SS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowsocksURI, _ := url.Parse(shadowsocksShare.URI)
+	if shadowsocksURI.Fragment != "🇸🇬 SG-SS" {
+		t.Fatalf("Shadowsocks display name = %q", shadowsocksShare.URI)
+	}
+}
+
 func TestShadowsocksSIP002ShareUsesMasterAndUserPassword(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	value, _, err := service.Create(t.Context(), CreateInput{

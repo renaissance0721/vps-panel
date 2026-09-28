@@ -15,7 +15,7 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64, roles .
 	if len(roles) == 1 {
 		role = roles[0]
 	}
-	if len(roles) > 1 || (role != RoleVIP && role != RoleUser) {
+	if len(roles) > 1 || !validInvitationRole(role) {
 		return CreatedInvitation{}, ErrInvalidInvitationRole
 	}
 	tokenValue, tokenHash, err := token.New()
@@ -39,6 +39,41 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64, roles .
 		Invitation: Invitation{ID: id, CreatedBy: createdBy, Role: role, ExpiresAt: expiresAt, CreatedAt: now},
 		Token:      tokenValue,
 	}, nil
+}
+
+func validInvitationRole(role string) bool {
+	return role == RoleVIP || role == RoleUser || role == RoleSubscriber
+}
+
+func (s *Service) GetInvitation(ctx context.Context, tokenValue string) (Invitation, error) {
+	if tokenValue == "" {
+		return Invitation{}, ErrInvalidInvitation
+	}
+	var invitation Invitation
+	var expiresAt, createdAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT invitations.id, invitations.created_by, users.username,
+		       invitations.role, invitations.expires_at, invitations.created_at
+		FROM admin_invitations AS invitations
+		JOIN users ON users.id = invitations.created_by
+		WHERE invitations.token_hash = ? AND invitations.used_at IS NULL AND invitations.expires_at > ?`,
+		token.Hash(tokenValue), s.now().UTC().Unix(),
+	).Scan(
+		&invitation.ID, &invitation.CreatedBy, &invitation.CreatedByUsername,
+		&invitation.Role, &expiresAt, &createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Invitation{}, ErrInvalidInvitation
+	}
+	if err != nil {
+		return Invitation{}, fmt.Errorf("get invitation: %w", err)
+	}
+	if !validInvitationRole(invitation.Role) {
+		return Invitation{}, ErrInvalidInvitation
+	}
+	invitation.ExpiresAt = time.Unix(expiresAt, 0).UTC()
+	invitation.CreatedAt = time.Unix(createdAt, 0).UTC()
+	return invitation, nil
 }
 
 func (s *Service) ListActiveInvitations(ctx context.Context) ([]Invitation, error) {
@@ -124,6 +159,9 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 	if err != nil {
 		return User{}, fmt.Errorf("find invitation: %w", err)
 	}
+	if !validInvitationRole(invitationRole) {
+		return User{}, ErrInvalidInvitation
+	}
 
 	var existing int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE username = ?`, username).Scan(&existing)
@@ -144,6 +182,22 @@ func (s *Service) RegisterWithInvitation(ctx context.Context, tokenValue, userna
 	userID, err := result.LastInsertId()
 	if err != nil {
 		return User{}, fmt.Errorf("read invited user id: %w", err)
+	}
+	if invitationRole == RoleSubscriber {
+		subscriptionToken, _, err := token.New()
+		if err != nil {
+			return User{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO subscriber_profiles
+			(user_id, enabled, subscription_token, created_at, updated_at) VALUES (?, 1, ?, ?, ?)`,
+			userID, subscriptionToken, now.Unix(), now.Unix()); err != nil {
+			return User{}, fmt.Errorf("create subscriber profile: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO subscriber_usage
+			(user_id, cycle_started_at, updated_at) VALUES (?, ?, ?)`,
+			userID, now.Unix(), now.Unix()); err != nil {
+			return User{}, fmt.Errorf("create subscriber usage: %w", err)
+		}
 	}
 
 	result, err = tx.ExecContext(ctx,

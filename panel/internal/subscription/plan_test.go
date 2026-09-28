@@ -27,20 +27,14 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	}
 
 	limit := int64(100 * 1024 * 1024 * 1024)
-	validityDays, billingPeriod := 30, 1
 	created, err := service.CreatePlan(t.Context(), CreatePlanInput{
 		Name: " Basic ", SubscriptionTitle: " Refrain Cloud ", Enabled: true, TrafficLimitBytes: &limit,
-		TrafficResetMode: ResetModeMonthly, TrafficResetDay: 15, TrafficResetTime: "03:30",
-		DefaultValidityDays: &validityDays, BillingPeriodMonths: &billingPeriod,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.Name != "Basic" || created.SubscriptionTitle != "Refrain Cloud" || !created.Enabled ||
-		created.TrafficLimitBytes == nil || *created.TrafficLimitBytes != limit ||
-		created.TrafficResetMode != ResetModeMonthly || created.TrafficResetDay != 15 || created.TrafficResetTime != "03:30" ||
-		created.DefaultValidityDays == nil || *created.DefaultValidityDays != 30 ||
-		created.BillingPeriodMonths == nil || *created.BillingPeriodMonths != 1 || len(created.Nodes) != 0 {
+		created.TrafficLimitBytes == nil || *created.TrafficLimitBytes != limit || len(created.Nodes) != 0 {
 		t.Fatalf("created subscription plan = %+v", created)
 	}
 
@@ -66,7 +60,6 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	emptyTitle := "  "
 	updated, mutations, err = service.UpdatePlan(t.Context(), created.ID, UpdatePlanInput{
 		SubscriptionTitle: &emptyTitle, Enabled: &disabled, TrafficLimitBytesSet: true,
-		DefaultValidityDaysSet: true, BillingPeriodMonthsSet: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +67,7 @@ func TestPlanCRUDAndOrderedNodes(t *testing.T) {
 	if len(mutations) != 0 {
 		t.Fatalf("unexpected plan update mutations = %+v", mutations)
 	}
-	if updated.SubscriptionTitle != "" || updated.Enabled || updated.TrafficLimitBytes != nil ||
-		updated.DefaultValidityDays != nil || updated.BillingPeriodMonths != nil {
+	if updated.SubscriptionTitle != "" || updated.Enabled || updated.TrafficLimitBytes != nil {
 		t.Fatalf("updated subscription plan = %+v", updated)
 	}
 
@@ -99,13 +91,43 @@ func TestPlanValidation(t *testing.T) {
 		t.Fatalf("negative traffic limit error = %v", err)
 	}
 	if _, err := service.CreatePlan(t.Context(), CreatePlanInput{
-		Name: "invalid", Enabled: true, TrafficResetMode: ResetModeMonthly, TrafficResetDay: 1, TrafficResetTime: "3:00",
-	}); !errors.Is(err, ErrInvalidTrafficReset) {
-		t.Fatalf("invalid reset time error = %v", err)
-	}
-	if _, err := service.CreatePlan(t.Context(), CreatePlanInput{
 		Name: "invalid title", SubscriptionTitle: strings.Repeat("长", 101), Enabled: true,
 	}); !errors.Is(err, ErrInvalidSubscriptionTitle) {
 		t.Fatalf("invalid subscription title error = %v", err)
+	}
+}
+
+func TestDifferentPlansMayUseDifferentNodesForSameTargetProxy(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
+	insertSubscriptionTestProxy(t, db, 10, 1, "SG", 443, relay.EntryHostAuto, "")
+	first, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Half", Mode: NodeModeDirect, TargetProxyID: 10, TrafficMultiplierBP: 50, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Double", Mode: NodeModeDirect, TargetProxyID: 10, TrafficMultiplierBP: 200, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planA, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "A", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "B", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), planA.ID, []int64{first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), planB.ID, []int64{second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), planA.ID, []int64{first.ID, second.ID}); !errors.Is(err, ErrInvalidPlanNodes) {
+		t.Fatalf("same-plan duplicate target error = %v", err)
 	}
 }

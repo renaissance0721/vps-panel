@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -74,7 +75,8 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 	}
 	subscriptions := subscriptionstore.NewService(db, relaystore.NewService(db))
 	node, _, err := subscriptions.CreatePublishedNode(t.Context(), subscriptionstore.CreatePublishedNodeInput{
-		Name: "🇸🇬 SG-01", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID, Enabled: true,
+		Name: "🇸🇬 SG-01", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID,
+		TrafficMultiplierBP: 50, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +95,16 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	updated := performRequest(t, handler, http.MethodPatch,
+		"/api/admin/subscription/users/"+strconv.FormatInt(userID, 10), map[string]any{
+			"traffic_reset_mode": "monthly", "traffic_reset_day": 5,
+			"traffic_reset_time": "03:00", "billing_period_months": 3,
+		}, adminCookie)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), `"traffic_reset_mode":"monthly"`) ||
+		!strings.Contains(updated.Body.String(), `"traffic_reset_day":5`) ||
+		!strings.Contains(updated.Body.String(), `"billing_period_months":3`) {
+		t.Fatalf("update subscriber lifecycle = %d, %s", updated.Code, updated.Body.String())
+	}
 
 	me := performRequest(t, handler, http.MethodGet, "/api/subscriber/me", nil, subscriberCookie)
 	if me.Code != http.StatusOK || !strings.Contains(me.Body.String(), `"plan_name":"Premium"`) ||
@@ -100,11 +112,14 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		!strings.Contains(me.Body.String(), `"subscription_base64_url":"http://example.com/sub/`) ||
 		!strings.Contains(me.Body.String(), `"subscription_mihomo_url":"http://example.com/sub/`) ||
 		!strings.Contains(me.Body.String(), `"subscription_auto_url":"http://example.com/sub/`) ||
+		!strings.Contains(me.Body.String(), `"traffic_reset_mode":"monthly"`) ||
+		!strings.Contains(me.Body.String(), `"billing_period_months":3`) ||
 		!strings.Contains(me.Body.String(), `"enabled_node_count":1`) {
 		t.Fatalf("configured subscriber = %d, %s", me.Code, me.Body.String())
 	}
 	nodes := performRequest(t, handler, http.MethodGet, "/api/subscriber/nodes", nil, subscriberCookie)
 	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"name":"🇸🇬 SG-01"`) ||
+		!strings.Contains(nodes.Body.String(), `"traffic_multiplier":0.5`) ||
 		strings.Contains(nodes.Body.String(), "internal proxy") || strings.Contains(nodes.Body.String(), "target_proxy") {
 		t.Fatalf("subscriber nodes = %d, %s", nodes.Code, nodes.Body.String())
 	}

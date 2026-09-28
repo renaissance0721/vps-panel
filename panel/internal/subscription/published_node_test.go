@@ -22,7 +22,8 @@ func TestDirectPublishedNodeCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mutation != nil || created.Name != "🇸🇬 SG-01" || created.Mode != NodeModeDirect ||
-		created.TargetProxyID != 10 || created.SourceProxyID != nil || created.RelayID != nil || !created.Enabled {
+		created.TargetProxyID != 10 || created.SourceProxyID != nil || created.RelayID != nil ||
+		created.TrafficMultiplierBP != 100 || !created.Enabled {
 		t.Fatalf("created direct published node = %+v, mutation = %+v", created, mutation)
 	}
 
@@ -36,6 +37,59 @@ func TestDirectPublishedNodeCRUD(t *testing.T) {
 	}
 	if _, err := service.GetPublishedNode(t.Context(), created.ID); !errors.Is(err, ErrPublishedNodeNotFound) {
 		t.Fatalf("deleted node error = %v", err)
+	}
+}
+
+func TestPublishedNodeTrafficMultiplierValidationAndMetadataUpdate(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Target", "203.0.113.10")
+	insertSubscriptionTestProxy(t, db, 10, 1, "SG Native", 443, relay.EntryHostAuto, "")
+	for _, multiplier := range []int{10, 50, 125, 500} {
+		created, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: "Node", Mode: NodeModeDirect, TargetProxyID: 10,
+			TrafficMultiplierBP: multiplier, Enabled: true,
+		})
+		if err != nil || created.TrafficMultiplierBP != multiplier {
+			t.Fatalf("create multiplier %d = %+v, error = %v", multiplier, created, err)
+		}
+	}
+	for _, multiplier := range []int{9, 501} {
+		if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: "Invalid", Mode: NodeModeDirect, TargetProxyID: 10,
+			TrafficMultiplierBP: multiplier, Enabled: true,
+		}); !errors.Is(err, ErrInvalidTrafficMultiplier) {
+			t.Fatalf("invalid create multiplier %d error = %v", multiplier, err)
+		}
+	}
+	created, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Mutable", Mode: NodeModeDirect, TargetProxyID: 10, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versionBefore int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&versionBefore); err != nil {
+		t.Fatal(err)
+	}
+	multiplier := 200
+	updated, mutations, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{
+		TrafficMultiplierBP: &multiplier,
+	})
+	if err != nil || updated.TrafficMultiplierBP != 200 || len(mutations) != 0 {
+		t.Fatalf("multiplier-only update = %+v, mutations = %+v, error = %v", updated, mutations, err)
+	}
+	var versionAfter int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&versionAfter); err != nil {
+		t.Fatal(err)
+	}
+	if versionAfter != versionBefore {
+		t.Fatalf("multiplier-only update bumped desired config version from %d to %d", versionBefore, versionAfter)
+	}
+	invalid := 0
+	if _, _, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{
+		TrafficMultiplierBP: &invalid,
+	}); !errors.Is(err, ErrInvalidTrafficMultiplier) {
+		t.Fatalf("zero update multiplier error = %v", err)
 	}
 }
 
@@ -108,6 +162,20 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 	updated, mutations, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{Name: &renamed})
 	if err != nil || updated.Name != renamed || len(mutations) != 1 || mutations[0].Version != 3 {
 		t.Fatalf("renamed published Relay = %+v, mutations = %+v, error = %v", updated, mutations, err)
+	}
+	multiplier := 50
+	updated, mutations, err = service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{
+		TrafficMultiplierBP: &multiplier,
+	})
+	if err != nil || updated.TrafficMultiplierBP != 50 || len(mutations) != 0 {
+		t.Fatalf("updated published Relay multiplier = %+v, mutations = %+v, error = %v", updated, mutations, err)
+	}
+	var versionAfterMultiplier int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&versionAfterMultiplier); err != nil {
+		t.Fatal(err)
+	}
+	if versionAfterMultiplier != 3 {
+		t.Fatalf("relay multiplier update version = %d, want 3", versionAfterMultiplier)
 	}
 
 	desired, err := relayService.ListDesired(t.Context(), db, 1)

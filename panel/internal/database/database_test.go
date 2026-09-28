@@ -42,6 +42,12 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"clients",
 		"client_relay_ports",
 		"client_metrics",
+		"subscription_published_nodes",
+		"subscription_plans",
+		"subscription_plan_nodes",
+		"subscriber_profiles",
+		"subscriber_clients",
+		"subscriber_usage",
 	} {
 		var name string
 		if err := db.QueryRow(
@@ -85,6 +91,13 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
 			"cycle_started_at", "last_activity_at", "updated_at",
 		},
+		"subscription_published_nodes": {"traffic_multiplier_bp"},
+		"subscriber_profiles": {
+			"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "billing_period_months",
+		},
+		"subscriber_clients": {
+			"charged_uplink_bytes", "charged_downlink_bytes", "charge_uplink_remainder", "charge_downlink_remainder",
+		},
 	} {
 		for _, column := range columns {
 			var count int
@@ -96,6 +109,19 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			if count != 1 {
 				t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
 			}
+		}
+	}
+	for _, legacy := range []string{
+		"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "default_validity_days", "billing_period_months",
+	} {
+		var count int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('subscription_plans') WHERE name = ?`, legacy,
+		).Scan(&count); err != nil {
+			t.Fatalf("inspect legacy subscription_plans.%s: %v", legacy, err)
+		}
+		if count != 0 {
+			t.Fatalf("fresh subscription_plans.%s column count = %d, want 0", legacy, count)
 		}
 	}
 	var legacyPublicHostCount int

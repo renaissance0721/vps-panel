@@ -43,4 +43,14 @@ func TestSubscriptionPlanTitleAPI(t *testing.T) {
 	if cleared.Code != http.StatusOK || !strings.Contains(cleared.Body.String(), `"subscription_title":""`) {
 		t.Fatalf("clear plan title = %d %s", cleared.Code, cleared.Body.String())
 	}
+	for _, field := range []string{
+		"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "default_validity_days", "billing_period_months",
+	} {
+		legacy := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/plans", map[string]any{
+			"name": "Legacy", field: 1,
+		}, adminCookie)
+		if legacy.Code != http.StatusBadRequest {
+			t.Fatalf("legacy plan field %s accepted = %d %s", field, legacy.Code, legacy.Body.String())
+		}
+	}
 }

@@ -90,16 +90,33 @@ test('套餐保存使用 Modal 独立错误、前端校验和防重复提交', (
   assert.match(managementSource, /async function savePlan\(\) \{\s*if \(busy\.value\) return\s*planFormError\.value = ''/)
   assert.match(managementSource, /套餐名称不能为空/)
   assert.match(managementSource, /流量额度必须是有限且不小于 0 的数字/)
-  assert.match(managementSource, /默认有效天数必须是大于等于 1 的整数/)
-  assert.match(managementSource, /每月重置日期必须是 1–31 的整数/)
-  assert.match(managementSource, /每月重置时间必须是有效的 HH:mm/)
-  assert.match(managementSource, /付款周期仅支持未设置、1、3、6 或 12 个月/)
   assert.match(managementSource, /String\(planTrafficGiB\.value \?\? ''\)\.trim\(\)/)
-  assert.match(managementSource, /String\(planValidityDays\.value \?\? ''\)\.trim\(\)/)
   assert.match(managementSource, /<form class="auth-form" novalidate @submit\.prevent="savePlan">/)
   assert.match(managementSource, /v-if="planFormError"[\s\S]*\{\{ planFormError \}\}/)
   assert.match(managementSource, /:loading="busy" :disabled="busy">保存<\/n-button>/)
   assert.doesNotMatch(managementSource, /planNodeIDs\.value\.length\s*(?:===?|<=?)\s*0/)
+})
+
+test('发布节点可手动输入并显示流量倍率', () => {
+  assert.match(managementSource, /NInputNumber/)
+  assert.match(managementSource, /v-model:value="nodeTrafficMultiplier"/)
+  assert.match(managementSource, /:min="0\.1"/)
+  assert.match(managementSource, /:max="5"/)
+  assert.match(managementSource, /:precision="2"/)
+  assert.match(managementSource, /实际使用 1 GB 时，按该倍率计入套餐流量。允许 0\.10×–5\.00×。/)
+  assert.match(managementSource, /traffic_multiplier: multiplier/)
+  assert.match(managementSource, /multiplierLabel\(value\.traffic_multiplier\)/)
+  assert.match(portalSource, /multiplierLabel\(node\.traffic_multiplier\)/)
+})
+
+test('生命周期字段只在订阅用户表单管理', () => {
+  for (const field of ['userResetMode', 'userResetDay', 'userResetTime', 'userBillingMonths']) {
+    assert.match(managementSource, new RegExp(field))
+  }
+  assert.match(managementSource, /traffic_reset_mode: userResetMode\.value/)
+  assert.match(managementSource, /billing_period_months: userBillingMonths\.value \|\| null/)
+  assert.doesNotMatch(managementSource, /planResetMode|planResetDay|planResetTime|planValidityDays|planBillingMonths/)
+  assert.doesNotMatch(managementSource, /默认有效天数/)
 })
 
 test('套餐节点保存失败保留 Modal、说明部分成功并刷新服务端状态', () => {

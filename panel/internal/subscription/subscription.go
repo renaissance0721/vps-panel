@@ -131,10 +131,9 @@ func (s *Service) subscriberUsageBreakdown(ctx context.Context, userID int64) (i
 	} else if err != nil {
 		return 0, 0, fmt.Errorf("read subscriber archived usage: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(metrics.cycle_uplink_bytes, 0),
-		COALESCE(metrics.cycle_downlink_bytes, 0)
+	rows, err := s.db.QueryContext(ctx, `SELECT mapping.charged_uplink_bytes,
+		mapping.charged_downlink_bytes
 		FROM subscriber_clients AS mapping
-		LEFT JOIN client_metrics AS metrics ON metrics.client_id = mapping.client_id
 		WHERE mapping.user_id = ?`, userID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("list subscription userinfo usage: %w", err)

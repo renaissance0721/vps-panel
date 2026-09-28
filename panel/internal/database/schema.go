@@ -226,6 +226,8 @@ func schemaStatements() []string {
 			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
 			source_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
 			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+			traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
+				CHECK (traffic_multiplier_bp BETWEEN 10 AND 500),
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
@@ -245,13 +247,6 @@ func schemaStatements() []string {
 			subscription_title TEXT,
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			traffic_limit_bytes INTEGER CHECK (traffic_limit_bytes IS NULL OR traffic_limit_bytes >= 0),
-			traffic_reset_mode TEXT NOT NULL DEFAULT 'monthly'
-				CHECK (traffic_reset_mode IN ('never', 'monthly')),
-			traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31),
-			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
-			default_validity_days INTEGER CHECK (default_validity_days IS NULL OR default_validity_days > 0),
-			billing_period_months INTEGER
-				CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12)),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -309,6 +304,12 @@ func schemaStatements() []string {
 			plan_id INTEGER REFERENCES subscription_plans(id) ON DELETE SET NULL,
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			expires_at INTEGER,
+			traffic_reset_mode TEXT NOT NULL DEFAULT 'never'
+				CHECK (traffic_reset_mode IN ('never', 'monthly')),
+			traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31),
+			traffic_reset_time TEXT NOT NULL DEFAULT '00:00',
+			billing_period_months INTEGER
+				CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12)),
 			subscription_token TEXT NOT NULL UNIQUE,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
@@ -318,6 +319,10 @@ func schemaStatements() []string {
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
 			client_id INTEGER NOT NULL UNIQUE REFERENCES clients(id) ON DELETE CASCADE,
+			charged_uplink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (charged_uplink_bytes >= 0),
+			charged_downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (charged_downlink_bytes >= 0),
+			charge_uplink_remainder INTEGER NOT NULL DEFAULT 0 CHECK (charge_uplink_remainder BETWEEN 0 AND 99),
+			charge_downlink_remainder INTEGER NOT NULL DEFAULT 0 CHECK (charge_downlink_remainder BETWEEN 0 AND 99),
 			created_at INTEGER NOT NULL,
 			PRIMARY KEY (user_id, proxy_id)
 		)`,

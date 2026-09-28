@@ -26,13 +26,6 @@ func (s *Service) RecordClientTraffic(
 	}
 	defer tx.Rollback()
 	affected := make(map[int64]struct{})
-	ordinaryChanged, err := proxystore.RecordClientTrafficTx(ctx, tx, serverID, reports, now)
-	if err != nil {
-		return nil, err
-	}
-	if ordinaryChanged {
-		affected[serverID] = struct{}{}
-	}
 	userIDs := make(map[int64]struct{})
 	for _, report := range reports {
 		var userID int64
@@ -46,6 +39,23 @@ func (s *Service) RecordClientTraffic(
 			return nil, fmt.Errorf("find subscriber traffic owner: %w", err)
 		}
 		userIDs[userID] = struct{}{}
+	}
+	for userID := range userIDs {
+		if _, err := resetSubscriberCycleIfDueTx(ctx, tx, userID, now); err != nil {
+			return nil, err
+		}
+	}
+	for _, report := range reports {
+		if err := recordSubscriberChargeTx(ctx, tx, report); err != nil {
+			return nil, err
+		}
+	}
+	ordinaryChanged, err := proxystore.RecordClientTrafficTx(ctx, tx, serverID, reports, now)
+	if err != nil {
+		return nil, err
+	}
+	if ordinaryChanged {
+		affected[serverID] = struct{}{}
 	}
 	for userID := range userIDs {
 		if err := s.reconcileSubscriberTx(ctx, tx, userID, now, affected); err != nil {
@@ -85,6 +95,11 @@ func (s *Service) ResetSubscriberTraffic(ctx context.Context, userID int64) (Sub
 		WHERE client_id IN (SELECT client_id FROM subscriber_clients WHERE user_id = ?)`,
 		now.Unix(), now.Unix(), userID); err != nil {
 		return Subscriber{}, nil, fmt.Errorf("reset subscriber client traffic: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscriber_clients SET charged_uplink_bytes = 0,
+		charged_downlink_bytes = 0, charge_uplink_remainder = 0, charge_downlink_remainder = 0
+		WHERE user_id = ?`, userID); err != nil {
+		return Subscriber{}, nil, fmt.Errorf("reset subscriber charged traffic: %w", err)
 	}
 	affected := make(map[int64]struct{})
 	if err := s.reconcileSubscriberTx(ctx, tx, userID, now, affected); err != nil {
@@ -143,14 +158,147 @@ func (s *Service) ReconcileServerSubscribersTx(
 	return serverIDs, nil
 }
 
+func recordSubscriberChargeTx(ctx context.Context, tx *sql.Tx, report proxystore.ClientTrafficReport) error {
+	var userID, proxyID int64
+	var chargedUplink, chargedDownlink, uplinkRemainder, downlinkRemainder int64
+	var previousUplink, previousDownlink, multiplier sql.NullInt64
+	var multiplierCount int
+	err := tx.QueryRowContext(ctx, `SELECT mapping.user_id, mapping.proxy_id,
+		mapping.charged_uplink_bytes, mapping.charged_downlink_bytes,
+		mapping.charge_uplink_remainder, mapping.charge_downlink_remainder,
+		metrics.xray_uplink_bytes, metrics.xray_downlink_bytes,
+		(SELECT COUNT(*) FROM subscriber_profiles AS profiles
+		 JOIN subscription_plan_nodes AS plan_nodes ON plan_nodes.plan_id = profiles.plan_id
+		 JOIN subscription_published_nodes AS nodes ON nodes.id = plan_nodes.published_node_id
+		 WHERE profiles.user_id = mapping.user_id AND nodes.target_proxy_id = mapping.proxy_id),
+		(SELECT MIN(nodes.traffic_multiplier_bp) FROM subscriber_profiles AS profiles
+		 JOIN subscription_plan_nodes AS plan_nodes ON plan_nodes.plan_id = profiles.plan_id
+		 JOIN subscription_published_nodes AS nodes ON nodes.id = plan_nodes.published_node_id
+		 WHERE profiles.user_id = mapping.user_id AND nodes.target_proxy_id = mapping.proxy_id)
+		FROM subscriber_clients AS mapping
+		LEFT JOIN client_metrics AS metrics ON metrics.client_id = mapping.client_id
+		WHERE mapping.client_id = ?`, report.ClientID).Scan(
+		&userID, &proxyID, &chargedUplink, &chargedDownlink, &uplinkRemainder, &downlinkRemainder,
+		&previousUplink, &previousDownlink, &multiplierCount, &multiplier,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read subscriber charge baseline: %w", err)
+	}
+	if multiplierCount != 1 || !multiplier.Valid {
+		return fmt.Errorf("resolve subscriber traffic multiplier for user %d proxy %d: %w",
+			userID, proxyID, ErrInvalidPlanNodes)
+	}
+	if _, err := validateTrafficMultiplierBP(int(multiplier.Int64)); err != nil {
+		return err
+	}
+	if !previousUplink.Valid || !previousDownlink.Valid {
+		return nil
+	}
+	deltaUplink := subscriberCounterDelta(previousUplink.Int64, report.UplinkBytes)
+	deltaDownlink := subscriberCounterDelta(previousDownlink.Int64, report.DownlinkBytes)
+	chargeUplink, nextUplinkRemainder, err := applyTrafficMultiplierDelta(
+		deltaUplink, int(multiplier.Int64), uplinkRemainder,
+	)
+	if err != nil {
+		return err
+	}
+	chargeDownlink, nextDownlinkRemainder, err := applyTrafficMultiplierDelta(
+		deltaDownlink, int(multiplier.Int64), downlinkRemainder,
+	)
+	if err != nil {
+		return err
+	}
+	if chargedUplink > math.MaxInt64-chargeUplink || chargedDownlink > math.MaxInt64-chargeDownlink {
+		return errors.New("subscriber charged traffic overflow")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscriber_clients
+		SET charged_uplink_bytes = ?, charged_downlink_bytes = ?,
+		 charge_uplink_remainder = ?, charge_downlink_remainder = ? WHERE client_id = ?`,
+		chargedUplink+chargeUplink, chargedDownlink+chargeDownlink,
+		nextUplinkRemainder, nextDownlinkRemainder, report.ClientID); err != nil {
+		return fmt.Errorf("record subscriber charged traffic: %w", err)
+	}
+	return nil
+}
+
+func applyTrafficMultiplierDelta(delta int64, multiplierBP int, remainder int64) (int64, int64, error) {
+	if delta < 0 || remainder < 0 || remainder > 99 {
+		return 0, 0, errors.New("invalid subscriber charged traffic state")
+	}
+	if _, err := validateTrafficMultiplierBP(multiplierBP); err != nil {
+		return 0, 0, err
+	}
+	bp := int64(multiplierBP)
+	tail := delta%100*bp + remainder
+	extra := tail / 100
+	whole := delta / 100
+	if whole > (math.MaxInt64-extra)/bp {
+		return 0, 0, errors.New("subscriber charged traffic overflow")
+	}
+	return whole*bp + extra, tail % 100, nil
+}
+
+func subscriberCounterDelta(previous, current int64) int64 {
+	if current < previous {
+		return 0
+	}
+	return current - previous
+}
+
+func resetSubscriberCycleIfDueTx(ctx context.Context, tx *sql.Tx, userID int64, now time.Time) (bool, error) {
+	var mode, resetTime string
+	var day int
+	var storedCycleStart int64
+	err := tx.QueryRowContext(ctx, `SELECT profiles.traffic_reset_mode, profiles.traffic_reset_day,
+		profiles.traffic_reset_time, usage.cycle_started_at
+		FROM subscriber_profiles AS profiles
+		JOIN subscriber_usage AS usage ON usage.user_id = profiles.user_id
+		WHERE profiles.user_id = ?`, userID).Scan(&mode, &day, &resetTime, &storedCycleStart)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrSubscriberNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("read subscriber usage cycle: %w", err)
+	}
+	if mode == ResetModeNever {
+		return false, nil
+	}
+	cycleStart, err := currentSubscriberCycleStart(now, mode, day, resetTime)
+	if err != nil {
+		return false, err
+	}
+	if storedCycleStart >= cycleStart.Unix() {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscriber_usage SET archived_uplink_bytes = 0,
+		archived_downlink_bytes = 0, cycle_started_at = ?, updated_at = ? WHERE user_id = ?`,
+		cycleStart.Unix(), now.Unix(), userID); err != nil {
+		return false, fmt.Errorf("reset subscriber usage cycle: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscriber_clients SET charged_uplink_bytes = 0,
+		charged_downlink_bytes = 0, charge_uplink_remainder = 0, charge_downlink_remainder = 0
+		WHERE user_id = ?`, userID); err != nil {
+		return false, fmt.Errorf("reset subscriber charged usage cycle: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE client_metrics SET cycle_uplink_bytes = 0,
+		cycle_downlink_bytes = 0, cycle_started_at = ?, updated_at = ?
+		WHERE client_id IN (SELECT client_id FROM subscriber_clients WHERE user_id = ?)`,
+		cycleStart.Unix(), now.Unix(), userID); err != nil {
+		return false, fmt.Errorf("reset subscriber client usage cycle: %w", err)
+	}
+	return true, nil
+}
+
 func currentSubscriberUsage(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, userID, archivedUplink, archivedDownlink int64) (int64, error) {
 	used := saturatingAdd(archivedUplink, archivedDownlink)
-	rows, err := query.QueryContext(ctx, `SELECT COALESCE(metrics.cycle_uplink_bytes, 0),
-		COALESCE(metrics.cycle_downlink_bytes, 0)
+	rows, err := query.QueryContext(ctx, `SELECT mapping.charged_uplink_bytes,
+		mapping.charged_downlink_bytes
 		FROM subscriber_clients AS mapping
-		LEFT JOIN client_metrics AS metrics ON metrics.client_id = mapping.client_id
 		WHERE mapping.user_id = ?`, userID)
 	if err != nil {
 		return 0, fmt.Errorf("list subscriber client usage: %w", err)

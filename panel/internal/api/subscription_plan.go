@@ -11,27 +11,17 @@ import (
 )
 
 type createSubscriptionPlanRequest struct {
-	Name                string `json:"name"`
-	SubscriptionTitle   string `json:"subscription_title"`
-	Enabled             *bool  `json:"enabled"`
-	TrafficLimitBytes   *int64 `json:"traffic_limit_bytes"`
-	TrafficResetMode    string `json:"traffic_reset_mode"`
-	TrafficResetDay     int    `json:"traffic_reset_day"`
-	TrafficResetTime    string `json:"traffic_reset_time"`
-	DefaultValidityDays *int   `json:"default_validity_days"`
-	BillingPeriodMonths *int   `json:"billing_period_months"`
+	Name              string `json:"name"`
+	SubscriptionTitle string `json:"subscription_title"`
+	Enabled           *bool  `json:"enabled"`
+	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
 }
 
 type updateSubscriptionPlanRequest struct {
-	Name                *string         `json:"name"`
-	SubscriptionTitle   *string         `json:"subscription_title"`
-	Enabled             *bool           `json:"enabled"`
-	TrafficLimitBytes   json.RawMessage `json:"traffic_limit_bytes"`
-	TrafficResetMode    *string         `json:"traffic_reset_mode"`
-	TrafficResetDay     *int            `json:"traffic_reset_day"`
-	TrafficResetTime    *string         `json:"traffic_reset_time"`
-	DefaultValidityDays json.RawMessage `json:"default_validity_days"`
-	BillingPeriodMonths json.RawMessage `json:"billing_period_months"`
+	Name              *string         `json:"name"`
+	SubscriptionTitle *string         `json:"subscription_title"`
+	Enabled           *bool           `json:"enabled"`
+	TrafficLimitBytes json.RawMessage `json:"traffic_limit_bytes"`
 }
 
 type setSubscriptionPlanNodesRequest struct {
@@ -39,19 +29,14 @@ type setSubscriptionPlanNodesRequest struct {
 }
 
 type subscriptionPlanResponse struct {
-	ID                  int64                               `json:"id"`
-	Name                string                              `json:"name"`
-	SubscriptionTitle   string                              `json:"subscription_title"`
-	Enabled             bool                                `json:"enabled"`
-	TrafficLimitBytes   *int64                              `json:"traffic_limit_bytes"`
-	TrafficResetMode    string                              `json:"traffic_reset_mode"`
-	TrafficResetDay     int                                 `json:"traffic_reset_day"`
-	TrafficResetTime    string                              `json:"traffic_reset_time"`
-	DefaultValidityDays *int                                `json:"default_validity_days"`
-	BillingPeriodMonths *int                                `json:"billing_period_months"`
-	Nodes               []subscriptionPublishedNodeResponse `json:"nodes"`
-	CreatedAt           time.Time                           `json:"created_at"`
-	UpdatedAt           time.Time                           `json:"updated_at"`
+	ID                int64                               `json:"id"`
+	Name              string                              `json:"name"`
+	SubscriptionTitle string                              `json:"subscription_title"`
+	Enabled           bool                                `json:"enabled"`
+	TrafficLimitBytes *int64                              `json:"traffic_limit_bytes"`
+	Nodes             []subscriptionPublishedNodeResponse `json:"nodes"`
+	CreatedAt         time.Time                           `json:"created_at"`
+	UpdatedAt         time.Time                           `json:"updated_at"`
 }
 
 func (s *server) listSubscriptionPlans(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -79,9 +64,6 @@ func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 	value, err := s.subscriptions.CreatePlan(r.Context(), subscriptionstore.CreatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle,
 		Enabled: enabled, TrafficLimitBytes: request.TrafficLimitBytes,
-		TrafficResetMode: request.TrafficResetMode, TrafficResetDay: request.TrafficResetDay,
-		TrafficResetTime: request.TrafficResetTime, DefaultValidityDays: request.DefaultValidityDays,
-		BillingPeriodMonths: request.BillingPeriodMonths,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
@@ -117,23 +99,9 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "流量额度格式无效")
 		return
 	}
-	validityDays, validityDaysSet, err := decodeNullableInt(request.DefaultValidityDays)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "默认有效天数格式无效")
-		return
-	}
-	billingPeriod, billingPeriodSet, err := decodeNullableInt(request.BillingPeriodMonths)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "付款周期格式无效")
-		return
-	}
 	value, mutations, err := s.subscriptions.UpdatePlan(r.Context(), id, subscriptionstore.UpdatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: request.Enabled,
 		TrafficLimitBytesSet: trafficLimitSet, TrafficLimitBytes: trafficLimit,
-		TrafficResetMode: request.TrafficResetMode, TrafficResetDay: request.TrafficResetDay,
-		TrafficResetTime:       request.TrafficResetTime,
-		DefaultValidityDaysSet: validityDaysSet, DefaultValidityDays: validityDays,
-		BillingPeriodMonthsSet: billingPeriodSet, BillingPeriodMonths: billingPeriod,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
@@ -182,10 +150,8 @@ func toSubscriptionPlanResponse(value subscriptionstore.Plan) subscriptionPlanRe
 	}
 	return subscriptionPlanResponse{
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
-		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
-		TrafficResetDay: value.TrafficResetDay, TrafficResetTime: value.TrafficResetTime,
-		DefaultValidityDays: value.DefaultValidityDays, BillingPeriodMonths: value.BillingPeriodMonths,
-		Nodes: nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		TrafficLimitBytes: value.TrafficLimitBytes,
+		Nodes:             nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -223,14 +189,8 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "订阅显示名称不能超过 100 个字符")
 	case errors.Is(err, subscriptionstore.ErrInvalidTrafficLimit):
 		writeError(w, http.StatusBadRequest, "流量额度不能小于 0")
-	case errors.Is(err, subscriptionstore.ErrInvalidTrafficReset):
-		writeError(w, http.StatusBadRequest, "流量重置配置无效")
-	case errors.Is(err, subscriptionstore.ErrInvalidValidityDays):
-		writeError(w, http.StatusBadRequest, "默认有效天数必须大于 0")
-	case errors.Is(err, subscriptionstore.ErrInvalidBillingPeriod):
-		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6 或 12 个月")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
-		writeError(w, http.StatusBadRequest, "套餐节点列表无效")
+		writeError(w, http.StatusBadRequest, "套餐节点列表无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):
 		writeError(w, http.StatusConflict, "请先切换或取消使用该套餐的订阅用户")
 	default:

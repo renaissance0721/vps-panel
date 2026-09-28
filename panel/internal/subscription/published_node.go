@@ -53,6 +53,10 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 	if mode == NodeModeRelay && (input.SourceProxyID == nil || *input.SourceProxyID <= 0) {
 		return PublishedNode{}, nil, ErrSourceProxyRequired
 	}
+	multiplierBP, err := normalizeTrafficMultiplierBP(input.TrafficMultiplierBP)
+	if err != nil {
+		return PublishedNode{}, nil, err
+	}
 
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -90,9 +94,10 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO subscription_published_nodes
-		 (name, mode, target_proxy_id, source_proxy_id, relay_id, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, mode, input.TargetProxyID, nullableID(input.SourceProxyID), relayID, input.Enabled, now.Unix(), now.Unix(),
+		 (name, mode, target_proxy_id, source_proxy_id, relay_id, traffic_multiplier_bp, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, mode, input.TargetProxyID, nullableID(input.SourceProxyID), relayID, multiplierBP,
+		input.Enabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return PublishedNode{}, nil, fmt.Errorf("create published node: %w", err)
@@ -109,7 +114,7 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 }
 
 func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input UpdatePublishedNodeInput) (PublishedNode, []proxystore.Mutation, error) {
-	if input.Name == nil && input.Enabled == nil {
+	if input.Name == nil && input.TrafficMultiplierBP == nil && input.Enabled == nil {
 		return PublishedNode{}, nil, ErrInvalidNodeUpdate
 	}
 	now := s.now().UTC().Truncate(time.Second)
@@ -120,11 +125,12 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 	defer tx.Rollback()
 
 	var currentName, mode string
-	var currentEnabled int
+	var currentMultiplierBP, currentEnabled int
 	var relayID sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT name, mode, relay_id, enabled FROM subscription_published_nodes WHERE id = ?`, id,
-	).Scan(&currentName, &mode, &relayID, &currentEnabled)
+		`SELECT name, mode, relay_id, traffic_multiplier_bp, enabled
+		 FROM subscription_published_nodes WHERE id = ?`, id,
+	).Scan(&currentName, &mode, &relayID, &currentMultiplierBP, &currentEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishedNode{}, nil, ErrPublishedNodeNotFound
 	}
@@ -142,9 +148,16 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 	if input.Enabled != nil {
 		enabled = *input.Enabled
 	}
+	multiplierBP := currentMultiplierBP
+	if input.TrafficMultiplierBP != nil {
+		multiplierBP, err = validateTrafficMultiplierBP(*input.TrafficMultiplierBP)
+		if err != nil {
+			return PublishedNode{}, nil, err
+		}
+	}
 
 	affected := make(map[int64]struct{})
-	if mode == NodeModeRelay {
+	if mode == NodeModeRelay && (input.Name != nil || input.Enabled != nil) {
 		if !relayID.Valid {
 			return PublishedNode{}, nil, ErrInvalidNodeTopology
 		}
@@ -157,8 +170,9 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE subscription_published_nodes SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		name, enabled, now.Unix(), id,
+		`UPDATE subscription_published_nodes
+		 SET name = ?, traffic_multiplier_bp = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		name, multiplierBP, enabled, now.Unix(), id,
 	); err != nil {
 		return PublishedNode{}, nil, fmt.Errorf("update published node: %w", err)
 	}
@@ -272,7 +286,8 @@ func listPublishedNodes(ctx context.Context, query interface {
 		 target.server_id, target_server.name, nodes.source_proxy_id, source.name,
 		 source.server_id, source_server.name, nodes.relay_id,
 		 relay.listen_port, relay.entry_host_mode, relay.entry_host,
-		 COALESCE(source_info.public_ipv4, ''), nodes.enabled, nodes.created_at, nodes.updated_at
+		 COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
+		 nodes.enabled, nodes.created_at, nodes.updated_at
 		FROM subscription_published_nodes AS nodes
 		JOIN proxies AS target ON target.id = nodes.target_proxy_id
 		JOIN servers AS target_server ON target_server.id = target.server_id
@@ -295,7 +310,7 @@ func listPublishedNodes(ctx context.Context, query interface {
 			&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
 			&value.TargetServerID, &value.TargetServerName, &sourceProxyID, &sourceProxyName,
 			&sourceServerID, &sourceServerName, &relayID, &entryPort, &entryHostMode, &entryHost,
-			&publicIPv4, &enabled, &createdAt, &updatedAt,
+			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan published node: %w", err)
 		}
@@ -352,6 +367,20 @@ func validatePublishedNodeName(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" || utf8.RuneCountInString(value) > maxNameRunes {
 		return "", ErrInvalidNodeName
+	}
+	return value, nil
+}
+
+func normalizeTrafficMultiplierBP(value int) (int, error) {
+	if value == 0 {
+		value = 100
+	}
+	return validateTrafficMultiplierBP(value)
+}
+
+func validateTrafficMultiplierBP(value int) (int, error) {
+	if value < 10 || value > 500 {
+		return 0, ErrInvalidTrafficMultiplier
 	}
 	return value, nil
 }

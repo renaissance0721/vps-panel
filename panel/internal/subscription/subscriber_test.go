@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
@@ -34,14 +35,16 @@ func TestSubscriberReconcileCreatesReusesAndRemovesClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validityDays := 30
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{
-		Name: "Premium", Enabled: true, DefaultValidityDays: &validityDays,
+		Name: "Premium", Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, mutations, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID, sgAlternate.ID}); err != nil || len(mutations) != 0 {
+	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID, sgAlternate.ID}); !errors.Is(err, ErrInvalidPlanNodes) {
+		t.Fatalf("duplicate target proxy error = %v", err)
+	}
+	if _, mutations, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID}); err != nil || len(mutations) != 0 {
 		t.Fatalf("initial plan nodes mutations = %+v, error = %v", mutations, err)
 	}
 
@@ -49,8 +52,7 @@ func TestSubscriberReconcileCreatesReusesAndRemovesClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mutations) != 1 || mutations[0].ServerID != 1 || updated.ClientCount != 1 || updated.ExpiresAt == nil ||
-		!updated.ExpiresAt.Equal(service.now().UTC().AddDate(0, 0, 30)) {
+	if len(mutations) != 1 || mutations[0].ServerID != 1 || updated.ClientCount != 1 || updated.ExpiresAt != nil {
 		t.Fatalf("assigned subscriber = %+v, mutations = %+v", updated, mutations)
 	}
 	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 100`, 1)
@@ -60,7 +62,7 @@ func TestSubscriberReconcileCreatesReusesAndRemovesClients(t *testing.T) {
 	}
 	assertSubscriberClientShape(t, db, sgClientID, 100, true)
 
-	plan, mutations, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID, sgAlternate.ID, usDirect.ID})
+	plan, mutations, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID, usDirect.ID})
 	if err != nil || len(mutations) != 1 || mutations[0].ServerID != 2 {
 		t.Fatalf("expanded plan = %+v, mutations = %+v, error = %v", plan, mutations, err)
 	}
@@ -74,8 +76,12 @@ func TestSubscriberReconcileCreatesReusesAndRemovesClients(t *testing.T) {
 		VALUES (?, 100, 200, 12, 34, 1, 1)`, usClientID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE subscriber_clients SET charged_uplink_bytes = 12,
+		charged_downlink_bytes = 34 WHERE client_id = ?`, usClientID); err != nil {
+		t.Fatal(err)
+	}
 
-	plan, mutations, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{sgAlternate.ID})
+	plan, mutations, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID})
 	if err != nil || len(mutations) != 1 || mutations[0].ServerID != 2 {
 		t.Fatalf("reduced plan = %+v, mutations = %+v, error = %v", plan, mutations, err)
 	}
@@ -89,7 +95,7 @@ func TestSubscriberReconcileCreatesReusesAndRemovesClients(t *testing.T) {
 	if archivedUplink != 12 || archivedDownlink != 34 {
 		t.Fatalf("archived usage = %d/%d", archivedUplink, archivedDownlink)
 	}
-	if _, mutations, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{sgDirect.ID}); err != nil || len(mutations) != 0 {
+	if _, mutations, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{sgAlternate.ID}); err != nil || len(mutations) != 0 {
 		t.Fatalf("same-target plan replacement mutations = %+v, error = %v", mutations, err)
 	}
 	var remainingClientID int64
@@ -181,6 +187,90 @@ func TestSubscriberLifecycleAndManagedClientProtection(t *testing.T) {
 	}
 	if storedToken != newToken {
 		t.Fatalf("stored token = %q, want regenerated token", storedToken)
+	}
+}
+
+func TestSubscriberLifecycleBelongsToProfileAndSurvivesPlanChanges(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		VALUES (101, 'bob', 'hash', 'subscriber', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscriber_profiles
+		(user_id, enabled, subscription_token, created_at, updated_at) VALUES (101, 1, 'bob-token', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscriber_usage (user_id, cycle_started_at, updated_at) VALUES (101, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	limitA, limitB := int64(100), int64(200)
+	planA, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "A", Enabled: true, TrafficLimitBytes: &limitA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "B", Enabled: true, TrafficLimitBytes: &limitB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monthly, never := ResetModeMonthly, ResetModeNever
+	dayFive, dayNine := 5, 9
+	resetTime := "03:00"
+	billingThree, billingTwelve := 3, 12
+	expiresAt := service.now().Add(30 * 24 * time.Hour)
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		PlanIDSet: true, PlanID: &planA.ID, ExpiresAtSet: true, ExpiresAt: &expiresAt,
+		TrafficResetMode: &monthly, TrafficResetDay: &dayFive, TrafficResetTime: &resetTime,
+		BillingPeriodMonthsSet: true, BillingPeriodMonths: &billingThree,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 101, UpdateSubscriberInput{
+		PlanIDSet: true, PlanID: &planA.ID, TrafficResetMode: &never,
+		TrafficResetDay: &dayNine, TrafficResetTime: &resetTime,
+		BillingPeriodMonthsSet: true, BillingPeriodMonths: &billingTwelve,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newLimit := int64(300)
+	if _, _, err := service.UpdatePlan(t.Context(), planA.ID, UpdatePlanInput{
+		TrafficLimitBytesSet: true, TrafficLimitBytes: &newLimit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		PlanIDSet: true, PlanID: &planB.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := service.GetSubscriber(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := service.GetSubscriber(t.Context(), 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.PlanID == nil || *alice.PlanID != planB.ID || alice.TrafficResetMode != ResetModeMonthly ||
+		alice.TrafficResetDay != 5 || alice.TrafficResetTime != "03:00" || alice.BillingPeriodMonths == nil ||
+		*alice.BillingPeriodMonths != 3 || alice.ExpiresAt == nil || !alice.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("alice lifecycle after plan changes = %+v", alice)
+	}
+	if bob.PlanID == nil || *bob.PlanID != planA.ID || bob.TrafficResetMode != ResetModeNever ||
+		bob.TrafficResetDay != 9 || bob.BillingPeriodMonths == nil || *bob.BillingPeriodMonths != 12 {
+		t.Fatalf("bob independent lifecycle = %+v", bob)
+	}
+	invalidDay := 32
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		TrafficResetDay: &invalidDay,
+	}); !errors.Is(err, ErrInvalidTrafficReset) {
+		t.Fatalf("invalid subscriber reset day error = %v", err)
+	}
+	invalidBilling := 2
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		BillingPeriodMonthsSet: true, BillingPeriodMonths: &invalidBilling,
+	}); !errors.Is(err, ErrInvalidBillingPeriod) {
+		t.Fatalf("invalid subscriber billing period error = %v", err)
 	}
 }
 

@@ -16,10 +16,11 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 	insertSubscriptionTestServer(t, db, 2, "SG", "203.0.113.20")
 	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "internal source", 8443)
 	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "internal target", 443)
+	directProxy := createSubscriptionTestRealityProxy(t, db, 2, "internal direct", 9443)
 	insertSubscriptionTestSubscriber(t, db, 100, "alice")
 
 	direct, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "🇸🇬 SG-01", Mode: NodeModeDirect, TargetProxyID: targetProxy.ID, Enabled: true,
+		Name: "🇸🇬 SG-01", Mode: NodeModeDirect, TargetProxyID: directProxy.ID, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -33,10 +34,8 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	trafficLimit := int64(1_000_000)
-	billingMonths := 1
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{
 		Name: "Premium", Enabled: true, TrafficLimitBytes: &trafficLimit,
-		BillingPeriodMonths: &billingMonths,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,18 +44,19 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	expiresAt := service.now().Add(24 * time.Hour)
+	billingMonths := 1
 	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
 		PlanIDSet: true, PlanID: &plan.ID, ExpiresAtSet: true, ExpiresAt: &expiresAt,
+		BillingPeriodMonthsSet: true, BillingPeriodMonths: &billingMonths,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var clientID int64
-	if err := db.QueryRow(`SELECT client_id FROM subscriber_clients WHERE user_id = 100`).Scan(&clientID); err != nil {
+	if err := db.QueryRow(`SELECT client_id FROM subscriber_clients WHERE user_id = 100 ORDER BY client_id LIMIT 1`).Scan(&clientID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO client_metrics
-		(client_id, xray_uplink_bytes, xray_downlink_bytes, cycle_uplink_bytes, cycle_downlink_bytes, cycle_started_at, updated_at)
-		VALUES (?, 500, 700, 11, 13, 1, 1)`, clientID); err != nil {
+	if _, err := db.Exec(`UPDATE subscriber_clients SET charged_uplink_bytes = 11,
+		charged_downlink_bytes = 13 WHERE client_id = ?`, clientID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE subscriber_usage SET archived_uplink_bytes = 5, archived_downlink_bytes = 7 WHERE user_id = 100`); err != nil {
@@ -88,8 +88,7 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if relayURI.Fragment != relayNode.Name || relayURI.Host != "198.51.100.10:"+strconv.Itoa(relayNode.EntryPort) ||
-		directURI.Fragment != direct.Name || directURI.Host != "203.0.113.20:443" ||
-		relayURI.User.String() != directURI.User.String() || relayURI.RawQuery != directURI.RawQuery {
+		directURI.Fragment != direct.Name || directURI.Host != "203.0.113.20:9443" {
 		t.Fatalf("subscription URIs = relay %q, direct %q", lines[0], lines[1])
 	}
 	if strings.Contains(string(decoded), "internal source") || strings.Contains(string(decoded), "internal target") ||
@@ -212,6 +211,9 @@ func TestGenerateSubscriptionTokenAndAvailability(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO client_metrics
 		(client_id, xray_uplink_bytes, xray_downlink_bytes, cycle_uplink_bytes, cycle_downlink_bytes, cycle_started_at, updated_at)
 		VALUES (?, 1, 0, 1, 0, 1, 1)`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE subscriber_clients SET charged_uplink_bytes = 1 WHERE client_id = ?`, clientID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := service.GenerateSubscription(t.Context(), newToken); !errors.Is(err, ErrSubscriptionUnavailable) {

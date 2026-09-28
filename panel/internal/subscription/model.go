@@ -30,14 +30,14 @@ var (
 	ErrSourceProxyRequired      = errors.New("source proxy is required for relay mode")
 	ErrInvalidNodeUpdate        = errors.New("published node update is empty")
 	ErrInvalidNodeTopology      = errors.New("published node topology is invalid")
+	ErrInvalidTrafficMultiplier = errors.New("published node traffic multiplier is invalid")
 	ErrPublishedNodeReferenced  = errors.New("published node is referenced by a plan")
 	ErrPlanNotFound             = errors.New("subscription plan not found")
 	ErrInvalidPlanName          = errors.New("subscription plan name must be 1-100 characters")
 	ErrInvalidSubscriptionTitle = errors.New("subscription title must not exceed 100 characters")
 	ErrInvalidTrafficLimit      = errors.New("subscription plan traffic limit is invalid")
-	ErrInvalidTrafficReset      = errors.New("subscription plan traffic reset is invalid")
-	ErrInvalidValidityDays      = errors.New("subscription plan validity days is invalid")
-	ErrInvalidBillingPeriod     = errors.New("subscription plan billing period is invalid")
+	ErrInvalidTrafficReset      = errors.New("subscriber traffic reset is invalid")
+	ErrInvalidBillingPeriod     = errors.New("subscriber billing period is invalid")
 	ErrInvalidPlanNodes         = errors.New("subscription plan nodes are invalid")
 	ErrPlanReferenced           = errors.New("subscription plan is referenced by a subscriber")
 	ErrSubscriberNotFound       = errors.New("subscriber not found")
@@ -48,52 +48,50 @@ var (
 )
 
 type PublishedNode struct {
-	ID               int64
-	Name             string
-	Mode             string
-	TargetProxyID    int64
-	TargetProxyName  string
-	TargetServerID   int64
-	TargetServerName string
-	SourceProxyID    *int64
-	SourceProxyName  string
-	SourceServerID   *int64
-	SourceServerName string
-	RelayID          *int64
-	EntryAddress     string
-	EntryPort        int
-	Enabled          bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                  int64
+	Name                string
+	Mode                string
+	TargetProxyID       int64
+	TargetProxyName     string
+	TargetServerID      int64
+	TargetServerName    string
+	SourceProxyID       *int64
+	SourceProxyName     string
+	SourceServerID      *int64
+	SourceServerName    string
+	RelayID             *int64
+	TrafficMultiplierBP int
+	EntryAddress        string
+	EntryPort           int
+	Enabled             bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type CreatePublishedNodeInput struct {
-	Name          string
-	Mode          string
-	TargetProxyID int64
-	SourceProxyID *int64
-	Enabled       bool
+	Name                string
+	Mode                string
+	TargetProxyID       int64
+	SourceProxyID       *int64
+	TrafficMultiplierBP int
+	Enabled             bool
 }
 
 type UpdatePublishedNodeInput struct {
-	Name    *string
-	Enabled *bool
+	Name                *string
+	TrafficMultiplierBP *int
+	Enabled             *bool
 }
 
 type Plan struct {
-	ID                  int64
-	Name                string
-	SubscriptionTitle   string
-	Enabled             bool
-	TrafficLimitBytes   *int64
-	TrafficResetMode    string
-	TrafficResetDay     int
-	TrafficResetTime    string
-	DefaultValidityDays *int
-	BillingPeriodMonths *int
-	Nodes               []PlanNode
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                int64
+	Name              string
+	SubscriptionTitle string
+	Enabled           bool
+	TrafficLimitBytes *int64
+	Nodes             []PlanNode
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type PlanNode struct {
@@ -102,30 +100,18 @@ type PlanNode struct {
 }
 
 type CreatePlanInput struct {
-	Name                string
-	SubscriptionTitle   string
-	Enabled             bool
-	TrafficLimitBytes   *int64
-	TrafficResetMode    string
-	TrafficResetDay     int
-	TrafficResetTime    string
-	DefaultValidityDays *int
-	BillingPeriodMonths *int
+	Name              string
+	SubscriptionTitle string
+	Enabled           bool
+	TrafficLimitBytes *int64
 }
 
 type UpdatePlanInput struct {
-	Name                   *string
-	SubscriptionTitle      *string
-	Enabled                *bool
-	TrafficLimitBytesSet   bool
-	TrafficLimitBytes      *int64
-	TrafficResetMode       *string
-	TrafficResetDay        *int
-	TrafficResetTime       *string
-	DefaultValidityDaysSet bool
-	DefaultValidityDays    *int
-	BillingPeriodMonthsSet bool
-	BillingPeriodMonths    *int
+	Name                 *string
+	SubscriptionTitle    *string
+	Enabled              *bool
+	TrafficLimitBytesSet bool
+	TrafficLimitBytes    *int64
 }
 
 type Subscriber struct {
@@ -137,6 +123,9 @@ type Subscriber struct {
 	PlanEnabled         bool
 	ProfileEnabled      bool
 	ExpiresAt           *time.Time
+	TrafficResetMode    string
+	TrafficResetDay     int
+	TrafficResetTime    string
 	SubscriptionToken   string
 	ClientCount         int
 	EnabledNodeCount    int
@@ -152,11 +141,16 @@ type Subscriber struct {
 }
 
 type UpdateSubscriberInput struct {
-	PlanIDSet    bool
-	PlanID       *int64
-	Enabled      *bool
-	ExpiresAtSet bool
-	ExpiresAt    *time.Time
+	PlanIDSet              bool
+	PlanID                 *int64
+	Enabled                *bool
+	ExpiresAtSet           bool
+	ExpiresAt              *time.Time
+	TrafficResetMode       *string
+	TrafficResetDay        *int
+	TrafficResetTime       *string
+	BillingPeriodMonthsSet bool
+	BillingPeriodMonths    *int
 }
 
 type GeneratedSubscription struct {
@@ -178,8 +172,9 @@ type SubscriptionData struct {
 }
 
 type SubscriberNode struct {
-	ID      int64
-	Name    string
-	Mode    string
-	Enabled bool
+	ID                  int64
+	Name                string
+	Mode                string
+	TrafficMultiplierBP int
+	Enabled             bool
 }

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -13,37 +15,40 @@ import (
 )
 
 type createSubscriptionPublishedNodeRequest struct {
-	Name          string `json:"name"`
-	Mode          string `json:"mode"`
-	TargetProxyID int64  `json:"target_proxy_id"`
-	SourceProxyID *int64 `json:"source_proxy_id"`
-	Enabled       *bool  `json:"enabled"`
+	Name              string          `json:"name"`
+	Mode              string          `json:"mode"`
+	TargetProxyID     int64           `json:"target_proxy_id"`
+	SourceProxyID     *int64          `json:"source_proxy_id"`
+	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
+	Enabled           *bool           `json:"enabled"`
 }
 
 type updateSubscriptionPublishedNodeRequest struct {
-	Name    *string `json:"name"`
-	Enabled *bool   `json:"enabled"`
+	Name              *string         `json:"name"`
+	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
+	Enabled           *bool           `json:"enabled"`
 }
 
 type subscriptionPublishedNodeResponse struct {
-	ID               int64     `json:"id"`
-	Name             string    `json:"name"`
-	Mode             string    `json:"mode"`
-	TargetProxyID    int64     `json:"target_proxy_id"`
-	TargetProxyName  string    `json:"target_proxy_name"`
-	TargetServerID   int64     `json:"target_server_id"`
-	TargetServerName string    `json:"target_server_name"`
-	SourceProxyID    *int64    `json:"source_proxy_id,omitempty"`
-	SourceProxyName  string    `json:"source_proxy_name,omitempty"`
-	SourceServerID   *int64    `json:"source_server_id,omitempty"`
-	SourceServerName string    `json:"source_server_name,omitempty"`
-	RelayID          *int64    `json:"relay_id,omitempty"`
-	EntryAddress     string    `json:"entry_address,omitempty"`
-	EntryPort        int       `json:"entry_port,omitempty"`
-	Enabled          bool      `json:"enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Position         int       `json:"position,omitempty"`
+	ID                int64     `json:"id"`
+	Name              string    `json:"name"`
+	Mode              string    `json:"mode"`
+	TargetProxyID     int64     `json:"target_proxy_id"`
+	TargetProxyName   string    `json:"target_proxy_name"`
+	TargetServerID    int64     `json:"target_server_id"`
+	TargetServerName  string    `json:"target_server_name"`
+	SourceProxyID     *int64    `json:"source_proxy_id,omitempty"`
+	SourceProxyName   string    `json:"source_proxy_name,omitempty"`
+	SourceServerID    *int64    `json:"source_server_id,omitempty"`
+	SourceServerName  string    `json:"source_server_name,omitempty"`
+	RelayID           *int64    `json:"relay_id,omitempty"`
+	EntryAddress      string    `json:"entry_address,omitempty"`
+	EntryPort         int       `json:"entry_port,omitempty"`
+	TrafficMultiplier float64   `json:"traffic_multiplier"`
+	Enabled           bool      `json:"enabled"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	Position          int       `json:"position,omitempty"`
 }
 
 func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -69,6 +74,14 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 		enabled = *request.Enabled
 	}
 	mode := strings.ToLower(strings.TrimSpace(request.Mode))
+	multiplierBP, multiplierSet, err := decodeTrafficMultiplier(request.TrafficMultiplier)
+	if err != nil {
+		writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrInvalidTrafficMultiplier)
+		return
+	}
+	if !multiplierSet {
+		multiplierBP = 100
+	}
 	if mode == subscriptionstore.NodeModeRelay && request.SourceProxyID != nil {
 		source, err := s.proxies.Get(r.Context(), *request.SourceProxyID)
 		if err != nil {
@@ -87,7 +100,7 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	}
 	value, mutation, err := s.subscriptions.CreatePublishedNode(r.Context(), subscriptionstore.CreatePublishedNodeInput{
 		Name: request.Name, Mode: mode, TargetProxyID: request.TargetProxyID,
-		SourceProxyID: request.SourceProxyID, Enabled: enabled,
+		SourceProxyID: request.SourceProxyID, TrafficMultiplierBP: multiplierBP, Enabled: enabled,
 	})
 	if err != nil {
 		writeSubscriptionPublishedNodeError(w, err)
@@ -106,8 +119,17 @@ func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	if !decodeJSON(w, r, &request) {
 		return
 	}
+	multiplierBP, multiplierSet, err := decodeTrafficMultiplier(request.TrafficMultiplier)
+	if err != nil {
+		writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrInvalidTrafficMultiplier)
+		return
+	}
+	var multiplier *int
+	if multiplierSet {
+		multiplier = &multiplierBP
+	}
 	value, mutations, err := s.subscriptions.UpdatePublishedNode(r.Context(), id, subscriptionstore.UpdatePublishedNodeInput{
-		Name: request.Name, Enabled: request.Enabled,
+		Name: request.Name, TrafficMultiplierBP: multiplier, Enabled: request.Enabled,
 	})
 	if err != nil {
 		writeSubscriptionPublishedNodeError(w, err)
@@ -145,7 +167,8 @@ func toSubscriptionPublishedNodeResponse(value subscriptionstore.PublishedNode) 
 		SourceProxyID: value.SourceProxyID, SourceProxyName: value.SourceProxyName,
 		SourceServerID: value.SourceServerID, SourceServerName: value.SourceServerName,
 		RelayID: value.RelayID, EntryAddress: value.EntryAddress, EntryPort: value.EntryPort,
-		Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		TrafficMultiplier: float64(value.TrafficMultiplierBP) / 100,
+		Enabled:           value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -155,6 +178,8 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "发布节点不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeName):
 		writeError(w, http.StatusBadRequest, "发布名称不能为空且不能超过 100 个字符")
+	case errors.Is(err, subscriptionstore.ErrInvalidTrafficMultiplier):
+		writeError(w, http.StatusBadRequest, "流量倍率必须为 0.10–5.00，且最多两位小数")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeMode):
 		writeError(w, http.StatusBadRequest, "发布模式仅支持单一节点或中转 + 落地")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
@@ -176,4 +201,27 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 	default:
 		writeInternalError(w)
 	}
+}
+
+func decodeTrafficMultiplier(raw json.RawMessage) (int, bool, error) {
+	if len(raw) == 0 {
+		return 0, false, nil
+	}
+	number := strings.TrimSpace(string(raw))
+	if !json.Valid(raw) || number == "" || number[0] == '"' || number == "null" {
+		return 0, true, subscriptionstore.ErrInvalidTrafficMultiplier
+	}
+	value, ok := new(big.Rat).SetString(number)
+	if !ok {
+		return 0, true, subscriptionstore.ErrInvalidTrafficMultiplier
+	}
+	value.Mul(value, big.NewRat(100, 1))
+	if !value.IsInt() || !value.Num().IsInt64() {
+		return 0, true, subscriptionstore.ErrInvalidTrafficMultiplier
+	}
+	bp := int(value.Num().Int64())
+	if bp < 10 || bp > 500 {
+		return 0, true, subscriptionstore.ErrInvalidTrafficMultiplier
+	}
+	return bp, true, nil
 }

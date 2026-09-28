@@ -13,8 +13,7 @@ import (
 )
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
-		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription plans: %w", err)
@@ -45,8 +44,7 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 }
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
-	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
-		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
+	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
@@ -65,22 +63,16 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	value, err := normalizePlan(Plan{
 		Name: input.Name, SubscriptionTitle: input.SubscriptionTitle,
 		Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
-		TrafficResetMode: input.TrafficResetMode, TrafficResetDay: input.TrafficResetDay,
-		TrafficResetTime: input.TrafficResetTime, DefaultValidityDays: input.DefaultValidityDays,
-		BillingPeriodMonths: input.BillingPeriodMonths,
 	})
 	if err != nil {
 		return Plan{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_plans
-		(name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode, traffic_reset_day, traffic_reset_time,
-		 default_validity_days, billing_period_months, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
 		value.Name, nullableString(value.SubscriptionTitle), value.Enabled,
-		nullableInt64(value.TrafficLimitBytes), value.TrafficResetMode,
-		value.TrafficResetDay, value.TrafficResetTime, nullableInt(value.DefaultValidityDays),
-		nullableInt(value.BillingPeriodMonths), now.Unix(), now.Unix())
+		nullableInt64(value.TrafficLimitBytes), now.Unix(), now.Unix())
 	if err != nil {
 		return Plan{}, fmt.Errorf("create subscription plan: %w", err)
 	}
@@ -98,8 +90,7 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 		return Plan{}, nil, fmt.Errorf("begin subscription plan update: %w", err)
 	}
 	defer tx.Rollback()
-	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, traffic_reset_mode,
-		traffic_reset_day, traffic_reset_time, default_validity_days, billing_period_months, created_at, updated_at
+	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
@@ -119,32 +110,14 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	if input.TrafficLimitBytesSet {
 		current.TrafficLimitBytes = input.TrafficLimitBytes
 	}
-	if input.TrafficResetMode != nil {
-		current.TrafficResetMode = *input.TrafficResetMode
-	}
-	if input.TrafficResetDay != nil {
-		current.TrafficResetDay = *input.TrafficResetDay
-	}
-	if input.TrafficResetTime != nil {
-		current.TrafficResetTime = *input.TrafficResetTime
-	}
-	if input.DefaultValidityDaysSet {
-		current.DefaultValidityDays = input.DefaultValidityDays
-	}
-	if input.BillingPeriodMonthsSet {
-		current.BillingPeriodMonths = input.BillingPeriodMonths
-	}
 	current, err = normalizePlan(current)
 	if err != nil {
 		return Plan{}, nil, err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET
-		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?, traffic_reset_mode = ?, traffic_reset_day = ?,
-		traffic_reset_time = ?, default_validity_days = ?, billing_period_months = ?, updated_at = ? WHERE id = ?`,
+		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?, updated_at = ? WHERE id = ?`,
 		current.Name, nullableString(current.SubscriptionTitle), current.Enabled,
-		nullableInt64(current.TrafficLimitBytes), current.TrafficResetMode,
-		current.TrafficResetDay, current.TrafficResetTime, nullableInt(current.DefaultValidityDays),
-		nullableInt(current.BillingPeriodMonths), now.Unix(), id)
+		nullableInt64(current.TrafficLimitBytes), now.Unix(), id)
 	if err != nil {
 		return Plan{}, nil, fmt.Errorf("update subscription plan: %w", err)
 	}
@@ -192,12 +165,18 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 	} else if err != nil {
 		return Plan{}, nil, fmt.Errorf("find subscription plan: %w", err)
 	}
+	targets := make(map[int64]struct{}, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM subscription_published_nodes WHERE id = ?`, nodeID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		var targetProxyID int64
+		if err := tx.QueryRowContext(ctx, `SELECT target_proxy_id FROM subscription_published_nodes WHERE id = ?`, nodeID).Scan(&targetProxyID); errors.Is(err, sql.ErrNoRows) {
 			return Plan{}, nil, ErrPublishedNodeNotFound
 		} else if err != nil {
 			return Plan{}, nil, fmt.Errorf("find published node for plan: %w", err)
 		}
+		if _, duplicate := targets[targetProxyID]; duplicate {
+			return Plan{}, nil, ErrInvalidPlanNodes
+		}
+		targets[targetProxyID] = struct{}{}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM subscription_plan_nodes WHERE plan_id = ?`, planID); err != nil {
 		return Plan{}, nil, fmt.Errorf("clear subscription plan nodes: %w", err)
@@ -302,7 +281,8 @@ func listPlanNodes(ctx context.Context, query interface {
 	rows, err := query.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
 		target.server_id, target_server.name, nodes.source_proxy_id, source.name, source.server_id, source_server.name,
 		nodes.relay_id, relay.listen_port, relay.entry_host_mode, relay.entry_host,
-		COALESCE(source_info.public_ipv4, ''), nodes.enabled, nodes.created_at, nodes.updated_at, mapping.position
+		COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
+		nodes.enabled, nodes.created_at, nodes.updated_at, mapping.position
 		FROM subscription_plan_nodes AS mapping
 		JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 		JOIN proxies AS target ON target.id = nodes.target_proxy_id
@@ -326,7 +306,7 @@ func listPlanNodes(ctx context.Context, query interface {
 		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
 			&value.TargetServerID, &value.TargetServerName, &sourceProxyID, &sourceProxyName,
 			&sourceServerID, &sourceServerName, &relayID, &entryPort, &entryHostMode, &entryHost,
-			&publicIPv4, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
+			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
 			return nil, fmt.Errorf("scan subscription plan node: %w", err)
 		}
 		populatePlanNode(&value, sourceProxyID, sourceServerID, relayID, entryPort, sourceProxyName,
@@ -372,12 +352,11 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanPlan(row rowScanner) (Plan, error) {
 	var value Plan
-	var trafficLimit, validityDays, billingPeriod sql.NullInt64
+	var trafficLimit sql.NullInt64
 	var subscriptionTitle sql.NullString
 	var enabled int
 	var createdAt, updatedAt int64
-	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit, &value.TrafficResetMode,
-		&value.TrafficResetDay, &value.TrafficResetTime, &validityDays, &billingPeriod, &createdAt, &updatedAt)
+	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -386,14 +365,6 @@ func scanPlan(row rowScanner) (Plan, error) {
 	if trafficLimit.Valid {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
-	}
-	if validityDays.Valid {
-		days := int(validityDays.Int64)
-		value.DefaultValidityDays = &days
-	}
-	if billingPeriod.Valid {
-		months := int(billingPeriod.Int64)
-		value.BillingPeriodMonths = &months
 	}
 	value.Nodes = make([]PlanNode, 0)
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -412,26 +383,6 @@ func normalizePlan(value Plan) (Plan, error) {
 	}
 	if value.TrafficLimitBytes != nil && *value.TrafficLimitBytes < 0 {
 		return Plan{}, ErrInvalidTrafficLimit
-	}
-	if value.TrafficResetMode == "" {
-		value.TrafficResetMode = ResetModeMonthly
-	}
-	if value.TrafficResetDay == 0 {
-		value.TrafficResetDay = 1
-	}
-	if value.TrafficResetTime == "" {
-		value.TrafficResetTime = "00:00"
-	}
-	if value.TrafficResetMode != ResetModeNever && value.TrafficResetMode != ResetModeMonthly ||
-		value.TrafficResetDay < 1 || value.TrafficResetDay > 31 || !validResetTime(value.TrafficResetTime) {
-		return Plan{}, ErrInvalidTrafficReset
-	}
-	if value.DefaultValidityDays != nil && *value.DefaultValidityDays <= 0 {
-		return Plan{}, ErrInvalidValidityDays
-	}
-	if value.BillingPeriodMonths != nil && *value.BillingPeriodMonths != 1 && *value.BillingPeriodMonths != 3 &&
-		*value.BillingPeriodMonths != 6 && *value.BillingPeriodMonths != 12 {
-		return Plan{}, ErrInvalidBillingPeriod
 	}
 	return value, nil
 }

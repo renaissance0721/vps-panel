@@ -6,7 +6,8 @@ import (
 )
 
 func (s *Service) ListSubscriberNodes(ctx context.Context, userID int64) ([]SubscriberNode, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.enabled
+	rows, err := s.db.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode,
+		nodes.traffic_multiplier_bp, nodes.enabled
 		FROM subscriber_profiles AS profiles
 		JOIN subscription_plan_nodes AS mapping ON mapping.plan_id = profiles.plan_id
 		JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
@@ -19,7 +20,7 @@ func (s *Service) ListSubscriberNodes(ctx context.Context, userID int64) ([]Subs
 	values := make([]SubscriberNode, 0)
 	for rows.Next() {
 		var value SubscriberNode
-		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.Enabled); err != nil {
+		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TrafficMultiplierBP, &value.Enabled); err != nil {
 			return nil, fmt.Errorf("scan subscriber portal node: %w", err)
 		}
 		values = append(values, value)

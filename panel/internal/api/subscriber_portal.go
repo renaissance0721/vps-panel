@@ -36,6 +36,7 @@ func (s *server) listSubscriberNodes(w http.ResponseWriter, r *http.Request, use
 	for _, value := range values {
 		nodes = append(nodes, map[string]any{
 			"id": value.ID, "name": value.Name, "mode": value.Mode, "enabled": value.Enabled,
+			"traffic_multiplier": float64(value.TrafficMultiplierBP) / 100,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})

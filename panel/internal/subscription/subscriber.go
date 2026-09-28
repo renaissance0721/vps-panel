@@ -65,12 +65,17 @@ func (s *Service) UpdateSubscriber(ctx context.Context, userID int64, input Upda
 		return Subscriber{}, nil, fmt.Errorf("begin subscriber update: %w", err)
 	}
 	defer tx.Rollback()
-	var currentPlanID, currentExpiresAt sql.NullInt64
+	var currentPlanID, currentExpiresAt, currentBillingPeriod sql.NullInt64
 	var profileEnabled int
-	err = tx.QueryRowContext(ctx, `SELECT profiles.plan_id, profiles.enabled, profiles.expires_at
+	var resetMode, resetTime string
+	var resetDay int
+	err = tx.QueryRowContext(ctx, `SELECT profiles.plan_id, profiles.enabled, profiles.expires_at,
+		profiles.traffic_reset_mode, profiles.traffic_reset_day, profiles.traffic_reset_time,
+		profiles.billing_period_months
 		FROM subscriber_profiles AS profiles JOIN users ON users.id = profiles.user_id
 		WHERE profiles.user_id = ? AND users.role = 'subscriber'`, userID).
-		Scan(&currentPlanID, &profileEnabled, &currentExpiresAt)
+		Scan(&currentPlanID, &profileEnabled, &currentExpiresAt, &resetMode, &resetDay, &resetTime,
+			&currentBillingPeriod)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Subscriber{}, nil, ErrSubscriberNotFound
 	}
@@ -82,18 +87,13 @@ func (s *Service) UpdateSubscriber(ctx context.Context, userID int64, input Upda
 		planID = input.PlanID
 	}
 	if planID != nil {
-		var defaultValidityDays sql.NullInt64
+		var planExists int
 		if err := tx.QueryRowContext(ctx,
-			`SELECT default_validity_days FROM subscription_plans WHERE id = ?`, *planID,
-		).Scan(&defaultValidityDays); errors.Is(err, sql.ErrNoRows) {
+			`SELECT 1 FROM subscription_plans WHERE id = ?`, *planID,
+		).Scan(&planExists); errors.Is(err, sql.ErrNoRows) {
 			return Subscriber{}, nil, ErrInvalidSubscriberPlan
 		} else if err != nil {
 			return Subscriber{}, nil, fmt.Errorf("validate subscriber plan: %w", err)
-		}
-		if input.PlanIDSet && !input.ExpiresAtSet && !currentExpiresAt.Valid && defaultValidityDays.Valid {
-			expiresAt := now.AddDate(0, 0, int(defaultValidityDays.Int64))
-			input.ExpiresAt = &expiresAt
-			input.ExpiresAtSet = true
 		}
 	}
 	enabled := profileEnabled != 0
@@ -104,9 +104,30 @@ func (s *Service) UpdateSubscriber(ctx context.Context, userID int64, input Upda
 	if input.ExpiresAtSet {
 		expiresAt = normalizeExpiration(input.ExpiresAt)
 	}
+	if input.TrafficResetMode != nil {
+		resetMode = *input.TrafficResetMode
+	}
+	if input.TrafficResetDay != nil {
+		resetDay = *input.TrafficResetDay
+	}
+	if input.TrafficResetTime != nil {
+		resetTime = *input.TrafficResetTime
+	}
+	billingPeriod := nullableIntValue(currentBillingPeriod)
+	if input.BillingPeriodMonthsSet {
+		billingPeriod = input.BillingPeriodMonths
+	}
+	resetMode, resetDay, resetTime, billingPeriod, err = normalizeSubscriberLifecycle(
+		resetMode, resetDay, resetTime, billingPeriod,
+	)
+	if err != nil {
+		return Subscriber{}, nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE subscriber_profiles
-		SET plan_id = ?, enabled = ?, expires_at = ?, updated_at = ? WHERE user_id = ?`,
-		nullableID(planID), enabled, nullableTime(expiresAt), now.Unix(), userID); err != nil {
+		SET plan_id = ?, enabled = ?, expires_at = ?, traffic_reset_mode = ?, traffic_reset_day = ?,
+		traffic_reset_time = ?, billing_period_months = ?, updated_at = ? WHERE user_id = ?`,
+		nullableID(planID), enabled, nullableTime(expiresAt), resetMode, resetDay, resetTime,
+		nullableInt(billingPeriod), now.Unix(), userID); err != nil {
 		return Subscriber{}, nil, fmt.Errorf("update subscriber profile: %w", err)
 	}
 	affected := make(map[int64]struct{})
@@ -176,46 +197,25 @@ func (s *Service) reconcileSubscriberTx(
 	var username string
 	var planID, expiresAt, trafficLimit sql.NullInt64
 	var profileEnabled, planEnabled int
-	var resetMode, resetTime string
-	var resetDay int
-	var archivedUplink, archivedDownlink, storedCycleStart int64
+	var archivedUplink, archivedDownlink int64
+	if _, err := resetSubscriberCycleIfDueTx(ctx, tx, userID, now); err != nil {
+		return err
+	}
 	err := tx.QueryRowContext(ctx, `SELECT users.username, profiles.plan_id, profiles.enabled, profiles.expires_at,
-		COALESCE(plans.enabled, 0), plans.traffic_limit_bytes,
-		COALESCE(plans.traffic_reset_mode, 'never'), COALESCE(plans.traffic_reset_day, 1),
-		COALESCE(plans.traffic_reset_time, '00:00'), usage.archived_uplink_bytes,
-		usage.archived_downlink_bytes, usage.cycle_started_at
+		COALESCE(plans.enabled, 0), plans.traffic_limit_bytes, usage.archived_uplink_bytes,
+		usage.archived_downlink_bytes
 		FROM subscriber_profiles AS profiles
 		JOIN users ON users.id = profiles.user_id
 		LEFT JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
 		JOIN subscriber_usage AS usage ON usage.user_id = profiles.user_id
 		WHERE profiles.user_id = ? AND users.role = 'subscriber'`, userID).
 		Scan(&username, &planID, &profileEnabled, &expiresAt, &planEnabled, &trafficLimit,
-			&resetMode, &resetDay, &resetTime, &archivedUplink, &archivedDownlink, &storedCycleStart)
+			&archivedUplink, &archivedDownlink)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrSubscriberNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("read subscriber reconciliation state: %w", err)
-	}
-	if resetMode == ResetModeMonthly {
-		cycleStart, err := currentSubscriberCycleStart(now, resetMode, resetDay, resetTime)
-		if err != nil {
-			return err
-		}
-		if storedCycleStart < cycleStart.Unix() {
-			if _, err := tx.ExecContext(ctx, `UPDATE subscriber_usage SET archived_uplink_bytes = 0,
-				archived_downlink_bytes = 0, cycle_started_at = ?, updated_at = ? WHERE user_id = ?`,
-				cycleStart.Unix(), now.Unix(), userID); err != nil {
-				return fmt.Errorf("reset subscriber usage cycle: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE client_metrics SET cycle_uplink_bytes = 0,
-				cycle_downlink_bytes = 0, cycle_started_at = ?, updated_at = ?
-				WHERE client_id IN (SELECT client_id FROM subscriber_clients WHERE user_id = ?)`,
-				cycleStart.Unix(), now.Unix(), userID); err != nil {
-				return fmt.Errorf("reset subscriber client usage cycle: %w", err)
-			}
-			archivedUplink, archivedDownlink = 0, 0
-		}
 	}
 	usedBytes, err := currentSubscriberUsage(ctx, tx, userID, archivedUplink, archivedDownlink)
 	if err != nil {
@@ -262,17 +262,16 @@ func (s *Service) reconcileSubscriberTx(
 		clientID         int64
 		serverID         int64
 		effectiveEnabled bool
-		cycleUplink      int64
-		cycleDownlink    int64
+		chargedUplink    int64
+		chargedDownlink  int64
 	}
 	existing := make(map[int64]existingClient)
 	rows, err := tx.QueryContext(ctx, `SELECT mapping.proxy_id, mapping.client_id, proxies.server_id,
-		clients.effective_enabled_snapshot, COALESCE(metrics.cycle_uplink_bytes, 0),
-		COALESCE(metrics.cycle_downlink_bytes, 0)
+		clients.effective_enabled_snapshot, mapping.charged_uplink_bytes,
+		mapping.charged_downlink_bytes
 		FROM subscriber_clients AS mapping
 		JOIN clients ON clients.id = mapping.client_id
 		JOIN proxies ON proxies.id = mapping.proxy_id
-		LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
 		WHERE mapping.user_id = ?`, userID)
 	if err != nil {
 		return fmt.Errorf("list subscriber clients for reconciliation: %w", err)
@@ -282,7 +281,7 @@ func (s *Service) reconcileSubscriberTx(
 		var value existingClient
 		var effective int
 		if err := rows.Scan(&proxyID, &value.clientID, &value.serverID, &effective,
-			&value.cycleUplink, &value.cycleDownlink); err != nil {
+			&value.chargedUplink, &value.chargedDownlink); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan subscriber client for reconciliation: %w", err)
 		}
@@ -299,8 +298,8 @@ func (s *Service) reconcileSubscriberTx(
 
 	for proxyID, client := range existing {
 		if _, needed := required[proxyID]; !needed {
-			archivedUplink = saturatingAdd(archivedUplink, client.cycleUplink)
-			archivedDownlink = saturatingAdd(archivedDownlink, client.cycleDownlink)
+			archivedUplink = saturatingAdd(archivedUplink, client.chargedUplink)
+			archivedDownlink = saturatingAdd(archivedDownlink, client.chargedDownlink)
 			if _, err := tx.ExecContext(ctx, `UPDATE subscriber_usage SET
 				archived_uplink_bytes = ?, archived_downlink_bytes = ?, updated_at = ? WHERE user_id = ?`,
 				archivedUplink, archivedDownlink, now.Unix(), userID); err != nil {
@@ -364,9 +363,9 @@ const subscriberSelect = `SELECT users.id, users.username, profiles.plan_id, pla
 	(SELECT COUNT(*) FROM subscription_plan_nodes AS mapping
 	 JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 	 WHERE mapping.plan_id = profiles.plan_id AND nodes.enabled = 1),
-	plans.traffic_limit_bytes, COALESCE(plans.traffic_reset_mode, 'never'),
-	COALESCE(plans.traffic_reset_day, 1), COALESCE(plans.traffic_reset_time, '00:00'),
-	plans.billing_period_months, usage.archived_uplink_bytes, usage.archived_downlink_bytes,
+	plans.traffic_limit_bytes, profiles.traffic_reset_mode,
+	profiles.traffic_reset_day, profiles.traffic_reset_time,
+	profiles.billing_period_months, usage.archived_uplink_bytes, usage.archived_downlink_bytes,
 	usage.cycle_started_at,
 	profiles.created_at, profiles.updated_at
 	FROM users JOIN subscriber_profiles AS profiles ON profiles.user_id = users.id
@@ -395,6 +394,9 @@ func scanSubscriber(row rowScanner, now time.Time) (Subscriber, error) {
 	value.PlanEnabled = planEnabled != 0
 	value.ProfileEnabled = profileEnabled != 0
 	value.ExpiresAt = nullableTimeValue(expiresAt)
+	value.TrafficResetMode = resetMode
+	value.TrafficResetDay = resetDay
+	value.TrafficResetTime = resetTime
 	if trafficLimit.Valid {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
@@ -413,6 +415,27 @@ func scanSubscriber(row rowScanner, now time.Time) (Subscriber, error) {
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return value, nil
+}
+
+func normalizeSubscriberLifecycle(mode string, day int, resetTime string, billingPeriod *int) (string, int, string, *int, error) {
+	mode = strings.TrimSpace(mode)
+	resetTime = strings.TrimSpace(resetTime)
+	if mode != ResetModeNever && mode != ResetModeMonthly || day < 1 || day > 31 || !validResetTime(resetTime) {
+		return "", 0, "", nil, ErrInvalidTrafficReset
+	}
+	if billingPeriod != nil && *billingPeriod != 1 && *billingPeriod != 3 &&
+		*billingPeriod != 6 && *billingPeriod != 12 {
+		return "", 0, "", nil, ErrInvalidBillingPeriod
+	}
+	return mode, day, resetTime, billingPeriod, nil
+}
+
+func nullableIntValue(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	result := int(value.Int64)
+	return &result
 }
 
 func (s *Service) loadSubscriberUsage(ctx context.Context, value *Subscriber) error {

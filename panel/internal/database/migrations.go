@@ -112,8 +112,143 @@ func migrate(db *sql.DB) error {
 	if err := migrateSubscriberProfiles(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateSubscriberLifecycle(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateSubscriptionTrafficCharging(ctx, db); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func migrateSubscriberLifecycle(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscriber lifecycle migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	columns := []struct {
+		name       string
+		definition string
+		legacy     string
+		fallback   string
+	}{
+		{"traffic_reset_mode", "traffic_reset_mode TEXT NOT NULL DEFAULT 'never' CHECK (traffic_reset_mode IN ('never', 'monthly'))", "traffic_reset_mode", "'never'"},
+		{"traffic_reset_day", "traffic_reset_day INTEGER NOT NULL DEFAULT 1 CHECK (traffic_reset_day BETWEEN 1 AND 31)", "traffic_reset_day", "1"},
+		{"traffic_reset_time", "traffic_reset_time TEXT NOT NULL DEFAULT '00:00'", "traffic_reset_time", "'00:00'"},
+		{"billing_period_months", "billing_period_months INTEGER CHECK (billing_period_months IS NULL OR billing_period_months IN (1, 3, 6, 12))", "billing_period_months", "NULL"},
+	}
+	for _, column := range columns {
+		exists, err := migrationColumnExists(ctx, tx, "subscriber_profiles", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE subscriber_profiles ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add subscriber_profiles.%s: %w", column.name, err)
+		}
+		legacyExists, err := migrationColumnExists(ctx, tx, "subscription_plans", column.legacy)
+		if err != nil {
+			return err
+		}
+		if legacyExists {
+			statement := fmt.Sprintf(`UPDATE subscriber_profiles
+				SET %s = COALESCE((SELECT plans.%s FROM subscription_plans AS plans
+					WHERE plans.id = subscriber_profiles.plan_id), %s)`, column.name, column.legacy, column.fallback)
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("backfill subscriber_profiles.%s: %w", column.name, err)
+			}
+		}
+	}
+	for _, name := range []string{
+		"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "default_validity_days", "billing_period_months",
+	} {
+		exists, err := migrationColumnExists(ctx, tx, "subscription_plans", name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE subscription_plans DROP COLUMN "+name); err != nil {
+			return fmt.Errorf("remove subscription_plans.%s: %w", name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscriber lifecycle migration: %w", err)
+	}
+	return nil
+}
+
+func migrateSubscriptionTrafficCharging(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscription traffic charging migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	multiplierExists, err := migrationColumnExists(ctx, tx, "subscription_published_nodes", "traffic_multiplier_bp")
+	if err != nil {
+		return err
+	}
+	if !multiplierExists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE subscription_published_nodes
+			ADD COLUMN traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
+			CHECK (traffic_multiplier_bp BETWEEN 10 AND 500)`); err != nil {
+			return fmt.Errorf("add subscription_published_nodes.traffic_multiplier_bp: %w", err)
+		}
+	}
+
+	columns := []struct {
+		name       string
+		definition string
+		backfill   string
+	}{
+		{"charged_uplink_bytes", "charged_uplink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (charged_uplink_bytes >= 0)",
+			`UPDATE subscriber_clients SET charged_uplink_bytes = COALESCE((SELECT metrics.cycle_uplink_bytes
+			 FROM client_metrics AS metrics WHERE metrics.client_id = subscriber_clients.client_id), 0)`},
+		{"charged_downlink_bytes", "charged_downlink_bytes INTEGER NOT NULL DEFAULT 0 CHECK (charged_downlink_bytes >= 0)",
+			`UPDATE subscriber_clients SET charged_downlink_bytes = COALESCE((SELECT metrics.cycle_downlink_bytes
+			 FROM client_metrics AS metrics WHERE metrics.client_id = subscriber_clients.client_id), 0)`},
+		{"charge_uplink_remainder", "charge_uplink_remainder INTEGER NOT NULL DEFAULT 0 CHECK (charge_uplink_remainder BETWEEN 0 AND 99)", ""},
+		{"charge_downlink_remainder", "charge_downlink_remainder INTEGER NOT NULL DEFAULT 0 CHECK (charge_downlink_remainder BETWEEN 0 AND 99)", ""},
+	}
+	for _, column := range columns {
+		exists, err := migrationColumnExists(ctx, tx, "subscriber_clients", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE subscriber_clients ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add subscriber_clients.%s: %w", column.name, err)
+		}
+		if column.backfill != "" {
+			if _, err := tx.ExecContext(ctx, column.backfill); err != nil {
+				return fmt.Errorf("backfill subscriber_clients.%s: %w", column.name, err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscription traffic charging migration: %w", err)
+	}
+	return nil
+}
+
+func migrationColumnExists(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, table, column string) (bool, error) {
+	var count int
+	statement := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?", table)
+	if err := query.QueryRowContext(ctx, statement, column).Scan(&count); err != nil {
+		return false, fmt.Errorf("inspect %s.%s: %w", table, column, err)
+	}
+	return count != 0, nil
 }
 
 func migrateSubscriptionPlanTitle(ctx context.Context, db *sql.DB) error {

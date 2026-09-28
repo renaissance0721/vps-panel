@@ -12,9 +12,13 @@ import (
 )
 
 type updateSubscriptionUserRequest struct {
-	PlanID    json.RawMessage `json:"plan_id"`
-	Enabled   *bool           `json:"enabled"`
-	ExpiresAt json.RawMessage `json:"expires_at"`
+	PlanID              json.RawMessage `json:"plan_id"`
+	Enabled             *bool           `json:"enabled"`
+	ExpiresAt           json.RawMessage `json:"expires_at"`
+	TrafficResetMode    *string         `json:"traffic_reset_mode"`
+	TrafficResetDay     *int            `json:"traffic_reset_day"`
+	TrafficResetTime    *string         `json:"traffic_reset_time"`
+	BillingPeriodMonths json.RawMessage `json:"billing_period_months"`
 }
 
 type subscriptionUserResponse struct {
@@ -26,6 +30,9 @@ type subscriptionUserResponse struct {
 	PlanEnabled           bool                           `json:"plan_enabled"`
 	Enabled               bool                           `json:"enabled"`
 	ExpiresAt             *time.Time                     `json:"expires_at"`
+	TrafficResetMode      string                         `json:"traffic_reset_mode"`
+	TrafficResetDay       int                            `json:"traffic_reset_day"`
+	TrafficResetTime      string                         `json:"traffic_reset_time"`
 	ClientCount           int                            `json:"client_count"`
 	EnabledNodeCount      int                            `json:"enabled_node_count"`
 	TrafficLimitBytes     *int64                         `json:"traffic_limit_bytes"`
@@ -105,9 +112,17 @@ func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "到期时间格式无效")
 		return
 	}
+	billingPeriod, billingPeriodSet, err := decodeNullableInt(request.BillingPeriodMonths)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "付款周期格式无效")
+		return
+	}
 	value, mutations, err := s.subscriptions.UpdateSubscriber(r.Context(), id, subscriptionstore.UpdateSubscriberInput{
 		PlanIDSet: planIDSet, PlanID: planID, Enabled: request.Enabled,
 		ExpiresAtSet: expiresAtSet, ExpiresAt: expiresAt,
+		TrafficResetMode: request.TrafficResetMode, TrafficResetDay: request.TrafficResetDay,
+		TrafficResetTime:       request.TrafficResetTime,
+		BillingPeriodMonthsSet: billingPeriodSet, BillingPeriodMonths: billingPeriod,
 	})
 	if err != nil {
 		writeSubscriptionUserError(w, err)
@@ -171,7 +186,9 @@ func toSubscriptionUserResponse(value subscriptionstore.Subscriber, baseURL stri
 		UserID: value.UserID, Username: value.Username, PlanID: value.PlanID, PlanName: value.PlanName,
 		SubscriptionTitle: value.SubscriptionTitle,
 		PlanEnabled:       value.PlanEnabled, Enabled: value.ProfileEnabled, ExpiresAt: value.ExpiresAt,
-		ClientCount: value.ClientCount, EnabledNodeCount: value.EnabledNodeCount,
+		TrafficResetMode: value.TrafficResetMode, TrafficResetDay: value.TrafficResetDay,
+		TrafficResetTime: value.TrafficResetTime,
+		ClientCount:      value.ClientCount, EnabledNodeCount: value.EnabledNodeCount,
 		TrafficLimitBytes: value.TrafficLimitBytes, UsedBytes: value.UsedBytes,
 		CycleStartedAt: value.CycleStartedAt, NextResetAt: value.NextResetAt,
 		BillingPeriodMonths: value.BillingPeriodMonths, Active: value.Active, Status: value.Status,
@@ -207,6 +224,10 @@ func writeSubscriptionUserError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "套餐不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidSubscriberExpiry):
 		writeError(w, http.StatusBadRequest, "到期时间无效")
+	case errors.Is(err, subscriptionstore.ErrInvalidTrafficReset):
+		writeError(w, http.StatusBadRequest, "流量重置配置无效")
+	case errors.Is(err, subscriptionstore.ErrInvalidBillingPeriod):
+		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6 或 12 个月")
 	default:
 		writeInternalError(w)
 	}

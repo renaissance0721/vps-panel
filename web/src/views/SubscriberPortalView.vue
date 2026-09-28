@@ -26,7 +26,7 @@ type Subscriber = {
   subscription_auto_url: string
   subscription_title: string
 }
-type PublishedNode = { id: number; name: string; mode: 'direct' | 'relay'; enabled: boolean }
+type PublishedNode = { id: number; name: string; mode: 'direct' | 'relay'; traffic_multiplier: number; enabled: boolean }
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected'; created_at: string; reviewed_at: string | null }
 
 const props = defineProps<{ user: User }>()
@@ -134,6 +134,10 @@ function billingLabel(months: number | null) {
   return ({ 1: '月付', 3: '季付', 6: '半年付', 12: '年付' } as Record<number, string>)[months ?? 0] ?? '未设置'
 }
 
+function multiplierLabel(value: number) {
+  return `${Number(value.toFixed(2))}×`
+}
+
 onMounted(async () => {
   try {
     await loadPortal()
@@ -182,7 +186,7 @@ onMounted(async () => {
         <h1>可用节点</h1>
         <n-empty v-if="nodes.length === 0" description="暂无可用节点" />
         <n-card v-else :bordered="true">
-          <div class="subscriber-node-list"><div v-for="node in nodes" :key="node.id">{{ node.name }}</div></div>
+          <div class="subscriber-node-list"><div v-for="node in nodes" :key="node.id"><span>{{ node.name }}</span><n-tag size="small">{{ multiplierLabel(node.traffic_multiplier) }}</n-tag></div></div>
         </n-card>
       </section>
       <section>

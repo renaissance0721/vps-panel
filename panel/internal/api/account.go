@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
@@ -55,6 +56,9 @@ func (s *server) deleteAdminUser(w http.ResponseWriter, r *http.Request, _ auth.
 	}
 	mutations, err := s.authService.DeleteUser(r.Context(), id)
 	if err != nil {
+		if !errors.Is(err, auth.ErrUserNotFound) && !errors.Is(err, auth.ErrCannotDeleteAdmin) {
+			log.Printf("delete user %d failed: %v", id, err)
+		}
 		writeAccountError(w, err)
 		return
 	}

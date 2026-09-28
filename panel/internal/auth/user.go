@@ -224,7 +224,7 @@ func (s *Service) DeleteUser(ctx context.Context, userID int64) ([]proxystore.Mu
 		return nil, ErrCannotDeleteAdmin
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT server_id FROM (
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT affected.server_id FROM (
 		SELECT proxies.server_id AS server_id FROM clients
 		JOIN proxies ON proxies.id = clients.proxy_id WHERE clients.assigned_user_id = ?
 		UNION
@@ -232,7 +232,10 @@ func (s *Service) DeleteUser(ctx context.Context, userID int64) ([]proxystore.Mu
 			OR relays.source_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
 			OR relays.target_client_id IN (SELECT id FROM clients WHERE assigned_user_id = ?)
 			OR relays.target_landing_id IN (SELECT id FROM landing_nodes WHERE owner_user_id = ?)
-	) ORDER BY server_id`, userID, userID, userID, userID, userID)
+	) AS affected
+	JOIN servers ON servers.id = affected.server_id
+	WHERE servers.archived_at IS NULL AND servers.decommission_status = ''
+	ORDER BY affected.server_id`, userID, userID, userID, userID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list user deletion servers: %w", err)
 	}
@@ -281,7 +284,7 @@ func (s *Service) DeleteUser(ctx context.Context, userID int64) ([]proxystore.Mu
 	}
 	mutations, err := proxystore.BumpServerVersionsTx(ctx, tx, serverIDs, s.now().UTC().Truncate(time.Second))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bump user deletion server versions: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit user deletion: %w", err)

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -241,5 +243,41 @@ func TestAdminDeleteSubscriberCleansRelatedDataAndPreventsLogin(t *testing.T) {
 	login := performRequest(t, handler, http.MethodPost, "/api/auth/login", map[string]string{"username": "delete-subscriber", "password": "current-password"}, nil)
 	if state.Code != http.StatusOK || strings.Contains(state.Body.String(), `"authenticated":true`) || login.Code != http.StatusUnauthorized {
 		t.Fatalf("deleted subscriber access = state %d %s, login %d %s", state.Code, state.Body.String(), login.Code, login.Body.String())
+	}
+}
+
+func TestAdminDeleteUserLogsInternalErrorWithoutExposingIt(t *testing.T) {
+	db, handler, adminCookie, _ := setupAccountTest(t)
+	defer db.Close()
+	_, userID := registerAccount(t, db, handler, adminCookie, "vip", "delete-log-user")
+	if _, err := db.Exec(`CREATE TRIGGER reject_user_delete BEFORE DELETE ON users
+		BEGIN SELECT RAISE(ABORT, 'sensitive delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	response := performRequest(t, handler, http.MethodDelete,
+		"/api/admin/users/"+strconv.FormatInt(userID, 10), nil, adminCookie)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "服务器内部错误") {
+		t.Fatalf("delete response = %d, %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "sensitive delete failure") {
+		t.Fatalf("delete response exposed database error: %s", response.Body.String())
+	}
+	wantPrefix := "delete user " + strconv.FormatInt(userID, 10) + " failed: delete user:"
+	if !strings.Contains(logs.String(), wantPrefix) || !strings.Contains(logs.String(), "sensitive delete failure") {
+		t.Fatalf("delete log = %q, want wrapped internal error", logs.String())
 	}
 }

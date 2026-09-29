@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
@@ -104,10 +106,14 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 		}
 	}
 
-	for range 2 {
-		if err := migrateSubscriptionSourceServer(context.Background(), db); err != nil {
-			t.Fatal(err)
-		}
+	if err := migrateSubscriptionSourceServer(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_subscription_published_nodes_source_server`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSubscriptionSourceServer(context.Background(), db); err != nil {
+		t.Fatal(err)
 	}
 	var sourceServerID, targetProxyID, relayID, multiplier int64
 	if err := db.QueryRow(`SELECT source_server_id, target_proxy_id, relay_id, traffic_multiplier_bp
@@ -128,10 +134,11 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 		t.Fatalf("migrated published node service result = %+v", legacyNode)
 	}
 	for query, want := range map[string]int{
-		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_proxy_id'`:  0,
-		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_server_id'`: 1,
-		`SELECT COUNT(*) FROM subscription_plan_nodes WHERE plan_id = 50 AND published_node_id = 40`:             1,
-		`SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 70 AND proxy_id = 20 AND client_id = 60`:        1,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_proxy_id'`:               0,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_server_id'`:              1,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_published_nodes_source_server'`: 1,
+		`SELECT COUNT(*) FROM subscription_plan_nodes WHERE plan_id = 50 AND published_node_id = 40`:                          1,
+		`SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 70 AND proxy_id = 20 AND client_id = 60`:                     1,
 	} {
 		var got int
 		if err := db.QueryRow(query).Scan(&got); err != nil {
@@ -154,6 +161,122 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("migration left a foreign key violation")
+	}
+}
+
+func TestOpenMigratesLegacySubscriptionSourceProxy(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDB.SetMaxOpenConns(1)
+	if _, err := legacyDB.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range schemaStatements() {
+		if strings.Contains(statement, "CREATE TABLE IF NOT EXISTS subscription_published_nodes") {
+			statement = `CREATE TABLE subscription_published_nodes (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT NOT NULL,
+				mode TEXT NOT NULL CHECK (mode IN ('direct', 'relay')),
+				target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+				source_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+				relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+				traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
+					CHECK (traffic_multiplier_bp BETWEEN 10 AND 500),
+				enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				CHECK (
+					(mode = 'direct' AND source_proxy_id IS NULL AND relay_id IS NULL)
+					OR
+					(mode = 'relay' AND source_proxy_id IS NOT NULL AND relay_id IS NOT NULL)
+				)
+			)`
+		}
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatalf("create legacy database: %v", err)
+		}
+	}
+	for _, statement := range []string{
+		`INSERT INTO servers (id, name, created_by_role, status, created_at, updated_at)
+		 VALUES (1, 'Source', 'admin', 'online', 1, 1), (2, 'Target', 'admin', 'online', 1, 1)`,
+		`INSERT INTO proxies (id, server_id, name, protocol, listen_port, config_json, created_at, updated_at)
+		 VALUES (10, 1, 'Legacy Source Proxy', 'vless', 443, '{}', 1, 1),
+		        (20, 2, 'Target Proxy', 'shadowsocks', 8443, '{}', 1, 1)`,
+		`INSERT INTO relays
+		 (id, server_id, name, listen_port, target_type, target_proxy_id, network, created_at, updated_at)
+		 VALUES (30, 1, 'Legacy Realm', 20000, 'proxy', 20, 'tcp', 1, 1)`,
+		`INSERT INTO subscription_published_nodes
+		 (id, name, mode, target_proxy_id, source_proxy_id, relay_id, traffic_multiplier_bp, enabled, created_at, updated_at)
+		 VALUES (40, 'Legacy Relay', 'relay', 20, 10, 30, 100, 1, 1, 1),
+		        (41, 'Legacy Direct', 'direct', 20, NULL, NULL, 100, 1, 1, 1)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() legacy subscription database: %v", err)
+	}
+	var relaySourceServerID, directSourceServerID sql.NullInt64
+	if err := db.QueryRow(`SELECT source_server_id FROM subscription_published_nodes WHERE id = 40`).Scan(&relaySourceServerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT source_server_id FROM subscription_published_nodes WHERE id = 41`).Scan(&directSourceServerID); err != nil {
+		t.Fatal(err)
+	}
+	for query, want := range map[string]int{
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_proxy_id'`:               0,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_server_id'`:              1,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_published_nodes_source_server'`: 1,
+	} {
+		var got int
+		if err := db.QueryRow(query).Scan(&got); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		if got != want {
+			db.Close()
+			t.Fatalf("count for %s = %d, want %d", query, got, want)
+		}
+	}
+	if !relaySourceServerID.Valid || relaySourceServerID.Int64 != 1 || directSourceServerID.Valid {
+		db.Close()
+		t.Fatalf("migrated source servers = relay %v, direct %v", relaySourceServerID, directSourceServerID)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		rows.Close()
+		db.Close()
+		t.Fatal("migration left a foreign key violation")
+	}
+	if err := rows.Close(); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migrated subscription database again: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

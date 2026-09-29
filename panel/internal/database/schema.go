@@ -242,8 +242,6 @@ func schemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_target_proxy
 			ON subscription_published_nodes(target_proxy_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_source_server
-			ON subscription_published_nodes(source_server_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_published_nodes_relay
 			ON subscription_published_nodes(relay_id) WHERE relay_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS subscription_plans (

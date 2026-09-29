@@ -11,6 +11,9 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
+const subscriptionSourceServerIndexStatement = `CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_source_server
+	ON subscription_published_nodes(source_server_id)`
+
 func migrate(db *sql.DB) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -134,7 +137,7 @@ func migrateSubscriptionSourceServer(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if exists {
-		return nil
+		return ensureSubscriptionSourceServerIndex(ctx, db)
 	}
 
 	connection, err := db.Conn(ctx)
@@ -181,11 +184,10 @@ func migrateSubscriptionSourceServer(ctx context.Context, db *sql.DB) error {
 		 LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id`,
 		`DROP TABLE subscription_published_nodes`,
 		`ALTER TABLE subscription_published_nodes_new RENAME TO subscription_published_nodes`,
-		`CREATE INDEX idx_subscription_published_nodes_target_proxy
+		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_target_proxy
 			ON subscription_published_nodes(target_proxy_id)`,
-		`CREATE INDEX idx_subscription_published_nodes_source_server
-			ON subscription_published_nodes(source_server_id)`,
-		`CREATE UNIQUE INDEX idx_subscription_published_nodes_relay
+		subscriptionSourceServerIndexStatement,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_published_nodes_relay
 			ON subscription_published_nodes(relay_id) WHERE relay_id IS NOT NULL`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -207,6 +209,13 @@ func migrateSubscriptionSourceServer(ctx context.Context, db *sql.DB) error {
 		return errors.New("subscription source server migration left invalid foreign keys")
 	}
 	return rows.Err()
+}
+
+func ensureSubscriptionSourceServerIndex(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, subscriptionSourceServerIndexStatement); err != nil {
+		return fmt.Errorf("ensure subscription source server index: %w", err)
+	}
+	return nil
 }
 
 func migrateSubscriberLifecycle(ctx context.Context, db *sql.DB) error {

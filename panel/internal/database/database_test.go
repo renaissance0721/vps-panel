@@ -91,7 +91,7 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
 			"cycle_started_at", "last_activity_at", "updated_at",
 		},
-		"subscription_published_nodes": {"traffic_multiplier_bp"},
+		"subscription_published_nodes": {"source_server_id", "traffic_multiplier_bp"},
 		"subscriber_profiles": {
 			"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "billing_period_months",
 		},
@@ -110,6 +110,16 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 				t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
 			}
 		}
+	}
+	var sourceServerIndexCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master
+		 WHERE type = 'index' AND name = 'idx_subscription_published_nodes_source_server'`,
+	).Scan(&sourceServerIndexCount); err != nil {
+		t.Fatalf("inspect subscription source server index: %v", err)
+	}
+	if sourceServerIndexCount != 1 {
+		t.Fatalf("subscription source server index count = %d, want 1", sourceServerIndexCount)
 	}
 	for _, legacy := range []string{
 		"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "default_validity_days", "billing_period_months",

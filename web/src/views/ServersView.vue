@@ -11,10 +11,7 @@ import type {
 import ServerForm from '../components/server/ServerForm.vue'
 import ServerList from '../components/server/ServerList.vue'
 import ServerDetail from '../components/server/ServerDetail.vue'
-import ServerAccessForm from '../components/server/ServerAccessForm.vue'
-import ServerNameForm from '../components/server/ServerNameForm.vue'
-import ServerOwnerForm from '../components/server/ServerOwnerForm.vue'
-import ServerExpirationForm from '../components/server/ServerExpirationForm.vue'
+import ServerBasicInfoForm from '../components/server/ServerBasicInfoForm.vue'
 import ServerTrafficForm from '../components/server/ServerTrafficForm.vue'
 import ServerTrafficAdjustmentForm from '../components/server/ServerTrafficAdjustmentForm.vue'
 import AgentBulkUpgradeModal from '../components/server/AgentBulkUpgradeModal.vue'
@@ -68,10 +65,7 @@ const {
 
           <ServerForm :model="model" /><ServerList :model="model" /></template>
 <ServerDetail :model="model" />
-<ServerAccessForm :model="model" />
-<ServerNameForm :model="model" />
-<ServerOwnerForm :model="model" />
-<ServerExpirationForm :model="model" />
+<ServerBasicInfoForm :model="model" />
 <ServerTrafficForm :model="model" />
 <ServerTrafficAdjustmentForm :model="model" />
 <AgentBulkUpgradeModal :model="model" />

@@ -14,6 +14,7 @@ import {
   NInput,
   NModal,
   NSpin,
+  NSwitch,
   NTag,
 } from 'naive-ui'
 
@@ -679,7 +680,7 @@ import {
           <label><span>目标端口</span><input v-model.number="targetPort" class="settings-input" type="number" min="1" max="65535" /></label>
         </template>
         <n-alert v-if="relayCapabilityWarning" type="warning">{{ relayCapabilityWarning }}</n-alert>
-        <label class="checkbox-row"><input v-model="enabled" type="checkbox" /><span>启用中转</span></label>
+        <div class="switch-row"><span>启用中转</span><n-switch v-model:value="enabled" /></div>
         <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="(enabled && !selectedServerSupportsRealm) || (targetType === 'proxy' && (targetClientID === null || targetClientsLoading || !!targetClientsError)) || (targetType === 'landing' && targetLandingID === null)">保存</n-button></div>
       </form>
     </n-card>

@@ -8,6 +8,7 @@ import {
   NInput,
   NButton,
   NAlert,
+  NSwitch,
 } from 'naive-ui'
 import type {
   ProxiesViewState,
@@ -109,12 +110,12 @@ const {
 		</template>
 		<ShadowsocksForm v-else :model="model" />
 		<n-alert v-if="proxyCapabilityWarning" type="warning">{{ proxyCapabilityWarning }}</n-alert>
-        <label class="checkbox-row"><input v-model="proxyEnabled" type="checkbox" /><span>启用代理节点</span></label>
+        <div class="switch-row"><span>启用代理节点</span><n-switch v-model:value="proxyEnabled" /></div>
         <fieldset v-if="proxyFormMode === 'create'" class="client-fieldset">
           <legend>首个客户端</legend>
           <label><span>客户端名称</span><n-input v-model:value="firstClientName" maxlength="100" /></label>
 			<p>客户端凭据由系统安全生成。</p>
-			<label v-if="proxyProtocol === 'vless'" class="checkbox-row"><input v-model="firstClientUDP443" type="checkbox" /><span>允许 UDP/443 / QUIC</span></label>
+			<div v-if="proxyProtocol === 'vless'" class="switch-row"><span>允许 UDP/443 / QUIC</span><n-switch v-model:value="firstClientUDP443" /></div>
         </fieldset>
         <div class="modal-actions"><n-button @click="proxyFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="proxyEnabled && !!proxyCapabilityWarning">保存</n-button></div>
       </form>

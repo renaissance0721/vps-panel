@@ -14,6 +14,7 @@ import {
   NInput,
   NButton,
   NModal,
+  type GlobalThemeOverrides,
 } from 'naive-ui'
 import {
   api,
@@ -42,6 +43,21 @@ import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AccountMenu from './components/AccountMenu.vue'
+
+const themeOverrides: GlobalThemeOverrides = {
+  common: {
+    primaryColor: '#4f9fe8',
+    primaryColorHover: '#69afea',
+    primaryColorPressed: '#3789d2',
+    primaryColorSuppl: '#4f9fe8',
+    bodyColor: '#f5f9fe',
+    cardColor: '#ffffff',
+    modalColor: '#ffffff',
+    popoverColor: '#ffffff',
+    borderRadius: '9px',
+    borderRadiusSmall: '7px',
+  },
+}
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
@@ -293,7 +309,7 @@ onUnmounted(stopServerPolling)
 </script>
 
 <template>
-<n-config-provider>
+<n-config-provider :theme-overrides="themeOverrides">
     <div class="page-shell" :class="{ 'admin-shell': state?.authenticated }">
       <n-card v-if="loading" class="auth-card" :bordered="true">
         <div class="loading-row">

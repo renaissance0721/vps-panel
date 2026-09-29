@@ -36,6 +36,7 @@ const error = ref('')
 const copied = ref<'base64' | 'mihomo' | ''>('')
 const importModalOpen = ref(false)
 const qrOpen = ref(false)
+const hasPlan = computed(() => (subscriber.value?.plan_name ?? '').trim() !== '')
 
 const usagePercent = computed(() => {
   const value = subscriber.value
@@ -110,16 +111,20 @@ onMounted(async () => {
 <template>
   <main class="user-portal subscriber-portal">
     <header class="user-portal-header">
-      <strong>夕凪云</strong>
+      <strong class="portal-brand">夕凪云</strong>
       <AccountMenu :user="props.user" @updated="emit('userUpdated', $event)" @logout="emit('logout')" />
     </header>
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅…</span></div>
     <template v-else-if="subscriber">
-      <section>
+      <section v-if="!hasPlan" class="subscriber-empty-state">
+        <h1>尚未开通套餐</h1>
+        <p>当前账号尚未开通任何套餐</p>
+      </section>
+      <section v-else>
         <h1 class="subscriber-plan-title">套餐信息</h1>
         <n-card :bordered="true">
-          <template #header><strong>{{ subscriber.plan_name || '尚未开通套餐' }}</strong></template>
+          <template #header><strong>{{ subscriber.plan_name }}</strong></template>
           <template #header-extra><n-tag :type="subscriber.active ? 'success' : 'warning'">{{ statusLabels[subscriber.status] ?? subscriber.status }}</n-tag></template>
           <n-progress v-if="subscriber.traffic_limit_bytes !== null" type="line" :percentage="usagePercent" />
           <strong>{{ formatClientTrafficBytes(subscriber.used_bytes) }} / {{ subscriber.traffic_limit_bytes !== null ? formatClientTrafficBytes(subscriber.traffic_limit_bytes) : '不限流量' }}</strong>
@@ -135,7 +140,7 @@ onMounted(async () => {
     </template>
   </main>
 
-  <n-modal v-model:show="importModalOpen">
+  <n-modal v-if="hasPlan" v-model:show="importModalOpen">
     <n-card class="client-form-card subscription-import-card" title="导入订阅" closable @close="importModalOpen = false">
       <div class="subscription-import-list">
         <section class="subscription-import-option">
@@ -156,6 +161,7 @@ onMounted(async () => {
   </n-modal>
 
   <QRCodeModal
+    v-if="hasPlan"
     :show="qrOpen"
     :uri="subscriber?.subscription_auto_url || ''"
     :title="subscriber?.subscription_title || subscriber?.plan_name || '订阅'"

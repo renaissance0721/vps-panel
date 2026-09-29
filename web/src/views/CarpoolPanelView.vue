@@ -4,11 +4,11 @@ import {
   NAlert,
   NButton,
   NCard,
-  NCheckbox,
   NEmpty,
   NInput,
   NModal,
   NSpin,
+  NSwitch,
   NTag,
 } from 'naive-ui'
 
@@ -146,8 +146,8 @@ onMounted(model.load)
           <label v-if="expirationMode === 'specified'"><span>到期时间</span><input v-model="expiresAt" class="settings-input" type="datetime-local" /></label>
           <label><span>付款周期</span><select v-model.number="billingPeriodMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">1 个月</option><option :value="3">3 个月</option><option :value="6">6 个月</option><option :value="12">12 个月</option></select></label>
           <label><span>用户中转端口数量</span><select v-model.number="userRelayPortCount" class="settings-input"><option v-for="count in 6" :key="count - 1" :value="count - 1">{{ count - 1 }}</option></select><small class="secondary-text">从 20000–29999 随机分配连续端口；设为 0 表示不允许该客户端创建用户中转。</small></label>
-          <n-checkbox v-model:checked="clientEnabled">启用节点</n-checkbox>
-          <n-checkbox v-if="editingNode?.protocol === 'vless'" v-model:checked="clientUDP443">允许 UDP/443</n-checkbox>
+          <div class="switch-row"><span>启用节点</span><n-switch v-model:value="clientEnabled" /></div>
+          <div v-if="editingNode?.protocol === 'vless'" class="switch-row"><span>允许 UDP/443</span><n-switch v-model:value="clientUDP443" /></div>
           <div class="modal-actions"><n-button @click="formOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting">保存</n-button></div>
         </form>
       </n-card>

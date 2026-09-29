@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NInputNumber, NModal, NSpin, NTag } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
@@ -470,7 +470,7 @@ onMounted(async () => {
     </template>
     <n-alert v-else type="info">创建后不能修改模式、中转 Proxy 或落地 Proxy；如需改变拓扑，请删除后重新创建。</n-alert>
     <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入套餐流量。允许 0.10×–5.00×。</small></label>
-    <n-checkbox v-model:checked="nodeEnabled">启用发布节点</n-checkbox>
+    <div class="switch-row"><span>启用发布节点</span><n-switch v-model:value="nodeEnabled" /></div>
     <div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="!nodeTargetProxyID || (nodeMode === 'relay' && !nodeSourceProxyID)">保存</n-button></div>
   </form></n-card></n-modal>
 
@@ -479,7 +479,7 @@ onMounted(async () => {
     <label><span>套餐名称</span><n-input v-model:value="planName" maxlength="100" /></label>
     <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用套餐名称。</small></label>
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
-    <n-checkbox v-model:checked="planEnabled">启用套餐</n-checkbox>
+    <div class="switch-row"><span>启用套餐</span><n-switch v-model:value="planEnabled" /></div>
     <fieldset class="subscription-node-picker"><legend>包含节点（上下调整订阅顺序）</legend>
       <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ nodeDisplayName(node) }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>
     </fieldset>
@@ -496,7 +496,7 @@ onMounted(async () => {
     <label v-if="userResetMode === 'monthly'"><span>重置日期</span><input v-model.number="userResetDay" class="settings-input" type="number" min="1" max="31" /></label>
     <label v-if="userResetMode === 'monthly'"><span>重置时间（上海时区）</span><input v-model="userResetTime" class="settings-input" type="time" /></label>
     <label><span>付款周期</span><select v-model.number="userBillingMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">月付</option><option :value="3">季付</option><option :value="6">半年付</option><option :value="12">年付</option></select></label>
-    <n-checkbox v-model:checked="userEnabled">启用账号</n-checkbox>
+    <div class="switch-row"><span>启用账号</span><n-switch v-model:value="userEnabled" /></div>
     <div v-if="selectedUser.password_request?.status === 'pending'" class="modal-actions"><span>密码重置申请等待审核</span><n-button secondary attr-type="button" @click="reviewUserPassword('reject')">拒绝</n-button><n-button type="primary" attr-type="button" @click="reviewUserPassword('approve')">批准</n-button></div>
     <label><span>Subscription URL</span><n-input :value="selectedUser.subscription_url" readonly /></label>
     <div class="modal-actions"><n-button secondary attr-type="button" @click="copyUserURL">{{ copiedUserURL ? '已复制' : '复制订阅链接' }}</n-button><n-button secondary attr-type="button" @click="regenerateUserToken">重置订阅链接</n-button><n-button secondary attr-type="button" @click="resetUserTraffic">重置流量</n-button></div>

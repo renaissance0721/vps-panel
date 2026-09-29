@@ -34,9 +34,9 @@ test('服务器续费周期使用固定中文标签', () => {
   assert.equal(renewalPeriodLabel(36), '三年付')
 })
 
-test('Server 续费字段只在到期 cell 展示，不增加独立列', async () => {
+test('Server 续费字段在统一基本信息表单编辑且列表不增加独立列', async () => {
   const [types, form, detail, list, composable] = await Promise.all([
-    'types/server.ts', 'components/server/ServerExpirationForm.vue',
+    'types/server.ts', 'components/server/ServerBasicInfoForm.vue',
     'components/server/ServerDetail.vue', 'components/server/ServerList.vue',
     'composables/useServers.ts',
   ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
@@ -46,10 +46,11 @@ test('Server 续费字段只在到期 cell 展示，不增加独立列', async (
   assert.equal((form.match(/label: '(?:月付|季付|半年付|年付|两年付|三年付)'/g) ?? []).length, 6)
   assert.match(form, /自动续费/)
   assert.match(form, /请先设置到期日期和续费周期/)
-  assert.match(detail, /setAutoRenew\(selectedServer, \$event\)/)
+  assert.match(detail, /selectedServer\.auto_renew \? '已开启' : '已关闭'/)
+  assert.doesNotMatch(detail, /setAutoRenew/)
   assert.match(list, /renewalPeriodLabel\(value\.renewal_period_months\)/)
   assert.doesNotMatch(list, /<th>续费周期<\/th>/)
-  assert.match(composable, /renewal_period_months: renewalPeriodMonths/)
+  assert.match(composable, /renewal_period_months: renewalPeriod/)
   assert.match(composable, /auto_renew: autoRenew/)
 })
 

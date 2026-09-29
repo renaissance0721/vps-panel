@@ -135,9 +135,9 @@ test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令�
   const { model, error } = serverModel()
   model.viewServer(serverRecord())
   model.createdServer.value = { enrollment_token: 'once' }
-  model.accessModalOpen.value = model.ownerModalOpen.value = model.trafficModalOpen.value = model.trafficAdjustmentModalOpen.value = true
+  model.basicInfoModalOpen.value = model.trafficModalOpen.value = model.trafficAdjustmentModalOpen.value = true
   await model.loadServers()
-  for (const key of ['serverModalOpen', 'accessModalOpen', 'ownerModalOpen', 'trafficModalOpen', 'trafficAdjustmentModalOpen']) assert.equal(model[key].value, false)
+  for (const key of ['serverModalOpen', 'basicInfoModalOpen', 'trafficModalOpen', 'trafficAdjustmentModalOpen']) assert.equal(model[key].value, false)
   assert.equal(model.createdServer.value, null)
   assert.equal(model.selectedServer.value, null)
   assert.equal(error.value, '服务器不存在或当前账号无权访问')
@@ -165,7 +165,7 @@ test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Mo
   assert.match(form, /type="number"/)
 })
 
-test('Server 到期与续费表单初始化、保存和列表摘要保持紧凑', async t => {
+test('Server 统一基本信息表单初始化、保存续费设置并保持列表摘要紧凑', async t => {
   const initial = serverRecord({
     expires_at: '2026-10-31T15:59:59Z', renewal_period_months: 1, auto_renew: false,
   })
@@ -179,18 +179,18 @@ test('Server 到期与续费表单初始化、保存和列表摘要保持紧凑'
   const { model } = serverModel()
   model.servers.value = [initial]
   model.viewServer(initial)
-  model.openExpirationModal()
+  model.openBasicInfoModal()
   assert.equal(model.expirationInput.value, '2026-10-31')
   assert.equal(model.renewalPeriodInput.value, 1)
   assert.equal(model.autoRenewInput.value, false)
 
-  let form = await render('components/server/ServerExpirationForm.vue', model)
+  let form = await render('components/server/ServerBasicInfoForm.vue', model)
   for (const label of ['不设置', '月付', '季付', '半年付', '年付', '两年付', '三年付']) assert.match(form, new RegExp(label))
   assert.match(form, /自动续费/)
   assert.match(form, /不会向 VPS 商家付款/)
 
   model.autoRenewInput.value = true
-  await model.saveExpiration()
+  await model.saveBasicInfo()
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     expires_at: '2026-10-31', renewal_period_months: 1, auto_renew: true,
   })
@@ -202,32 +202,29 @@ test('Server 到期与续费表单初始化、保存和列表摘要保持紧凑'
   assert.equal((list.match(/<th(?:\s|>)/g) ?? []).length, 7)
 
   model.viewServer(serverRecord())
-  model.openExpirationModal()
-  form = await render('components/server/ServerExpirationForm.vue', model)
+  model.openBasicInfoModal()
+  form = await render('components/server/ServerBasicInfoForm.vue', model)
   assert.match(form, /<button[^>]*disabled[^>]*role="switch"/)
 })
 
-test('Server 详情自动续费开关校验前置条件且归档状态只读', async t => {
+test('Server 详情基本信息只读且归档状态不显示统一修改入口', async () => {
   const active = serverRecord({
     expires_at: '2026-10-31T15:59:59Z', renewal_period_months: 1, auto_renew: false,
-  })
-  const calls = []
-  t.mock.method(globalThis, 'fetch', async (_url, init) => {
-    calls.push(init)
-    return json({ server: { ...active, auto_renew: true } })
   })
   const { model } = serverModel()
   model.servers.value = [active]
   model.viewServer(active)
-  await model.setAutoRenew(active, true)
-  assert.deepEqual(JSON.parse(calls[0].body), { auto_renew: true })
+  let detail = await render('components/server/ServerDetail.vue', model)
+  assert.match(detail, /自动续费/)
+  assert.match(detail, /已关闭/)
+  assert.match(detail, /> 修改 <\/button>/)
+  assert.doesNotMatch(detail, /aria-label="修改(?:名称|所有者|访问范围|到期日期)"/)
 
   const archived = { ...active, archived_at: '2026-11-01T00:00:00Z' }
   model.viewServer(archived)
-  const detail = await render('components/server/ServerDetail.vue', model)
+  detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /续费周期/)
-  assert.match(detail, /<button[^>]*disabled[^>]*role="switch"/)
-  assert.doesNotMatch(detail, /aria-label="修改到期日期"/)
+  assert.doesNotMatch(detail, /openBasicInfoModal/)
 })
 
 test('批量升级入口仅管理员可见，开发版本入口禁用且不能启动', async t => {
@@ -362,7 +359,62 @@ test('批量升级 Modal 展示实时计数和失败原因，运行中关闭继�
   assert.equal(model.bulkUpgradePhase.value, 'confirm')
 })
 
-test('服务器名称保存后详情保持打开且列表使用新名称', async t => {
+test('服务器统一基本信息表单按现有接口保存全部可编辑字段', async t => {
+  let current = serverRecord()
+  const patchCalls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'PATCH') {
+      const body = JSON.parse(init.body)
+      patchCalls.push({ url, body })
+      if (url.endsWith('/access')) {
+        current = { ...current, visibility: body.visibility, access_user_ids: body.user_ids }
+        return json({ access: { visibility: body.visibility, user_ids: body.user_ids } })
+      }
+      if ('name' in body) current = { ...current, name: body.name }
+      if ('owner_user_id' in body) current = { ...current, owner_user_id: body.owner_user_id, owner_username: 'member' }
+      if ('expires_at' in body) {
+        current = {
+          ...current,
+          expires_at: `${body.expires_at}T15:59:59Z`,
+          renewal_period_months: body.renewal_period_months,
+          auto_renew: body.auto_renew,
+        }
+      }
+      return json({ server: current })
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : [current] })
+  })
+  const { model } = serverModel()
+  model.users.value = [
+    { id: 1, username: 'admin', role: 'admin' },
+    { id: 2, username: 'member', role: 'vip' },
+  ]
+  model.viewServer(current)
+  model.openBasicInfoModal()
+  model.nameInput.value = '新名称'
+  model.ownerUserID.value = 2
+  model.accessVisibility.value = 'private'
+  model.accessUserIDs.value = [1, 2]
+  model.expirationInput.value = '2027-01-31'
+  model.renewalPeriodInput.value = 3
+  model.autoRenewInput.value = true
+
+  await model.saveBasicInfo()
+
+  assert.deepEqual(patchCalls.map(({ url, body }) => ({ path: url, body })), [
+    { path: '/api/servers/7', body: { name: '新名称' } },
+    { path: '/api/servers/7', body: { owner_user_id: 2 } },
+    { path: '/api/servers/7', body: { expires_at: '2027-01-31', renewal_period_months: 3, auto_renew: true } },
+    { path: '/api/servers/7/access', body: { visibility: 'private', user_ids: [1, 2] } },
+  ])
+  assert.equal(model.basicInfoModalOpen.value, false)
+  assert.equal(model.selectedServer.value.name, '新名称')
+  assert.equal(model.selectedServer.value.owner_username, 'member')
+  assert.deepEqual(model.selectedServer.value.access_user_ids, [1, 2])
+  assert.equal(model.selectedServer.value.auto_renew, true)
+})
+
+test('服务器统一基本信息保存名称后详情保持打开且列表使用新名称', async t => {
   const updated = serverRecord({ name: '新名称' })
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -372,21 +424,21 @@ test('服务器名称保存后详情保持打开且列表使用新名称', async
   })
   const { model } = serverModel()
   model.viewServer(serverRecord())
-  model.openNameModal()
+  model.openBasicInfoModal()
   assert.equal(model.nameInput.value, '测试服务器')
   model.nameInput.value = '  新名称  '
-  await model.saveServerName()
+  await model.saveBasicInfo()
   assert.deepEqual(JSON.parse(calls[0].init.body), { name: '新名称' })
   assert.equal(model.selectedServer.value.name, '新名称')
   assert.equal(model.servers.value[0].name, '新名称')
   assert.equal(model.serverModalOpen.value, true)
-  assert.equal(model.nameModalOpen.value, false)
+  assert.equal(model.basicInfoModalOpen.value, false)
   const detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /server-detail-grid/)
   for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
 })
 
-test('服务器所有者弹窗可选择账号或无所有者并立即刷新详情', async t => {
+test('服务器统一基本信息表单可选择所有者或无所有者并立即刷新详情', async t => {
   const users = [
     { id: 1, username: 'admin', role: 'admin' },
     { id: 2, username: 'member', role: 'vip' },
@@ -411,27 +463,27 @@ test('服务器所有者弹窗可选择账号或无所有者并立即刷新详�
   model.viewServer(current)
   let detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /admin/)
-  assert.match(detail, /aria-label="修改所有者"/)
+  assert.equal((detail.match(/> 修改 <\/button>/g) ?? []).length, 1)
 
-  model.openOwnerModal()
-  assert.equal(model.ownerModalOpen.value, true)
+  model.openBasicInfoModal()
+  assert.equal(model.basicInfoModalOpen.value, true)
   assert.equal(model.ownerUserID.value, 1)
-  const form = await render('components/server/ServerOwnerForm.vue', model)
-  assert.match(form, /修改所有者/)
+  const form = await render('components/server/ServerBasicInfoForm.vue', model)
+  assert.match(form, /修改基本信息/)
   assert.match(form, /无所有者/)
   assert.match(form, /admin（admin）/)
   assert.match(form, /member（vip）/)
 
   model.ownerUserID.value = 2
-  await model.saveServerOwner()
+  await model.saveBasicInfo()
   assert.deepEqual(patchBodies[0], { owner_user_id: 2 })
   assert.equal(model.selectedServer.value.owner_username, 'member')
   assert.equal(model.servers.value[0].owner_username, 'member')
-  assert.equal(model.ownerModalOpen.value, false)
+  assert.equal(model.basicInfoModalOpen.value, false)
 
-  model.openOwnerModal()
+  model.openBasicInfoModal()
   model.ownerUserID.value = 0
-  await model.saveServerOwner()
+  await model.saveBasicInfo()
   assert.deepEqual(patchBodies[1], { owner_user_id: null })
   assert.equal(model.selectedServer.value.owner_user_id, null)
   assert.equal(model.selectedServer.value.owner_username, '')

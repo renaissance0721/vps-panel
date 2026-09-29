@@ -95,19 +95,18 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const selectedServer = ref<ServerRecord | null>(null)
   const createdServer = ref<CreatedServer | null>(null)
   const serverModalOpen = ref(false)
-  const expirationModalOpen = ref(false)
+  const basicInfoModalOpen = ref(false)
+  const basicInfoFormError = ref('')
   const trafficAdjustmentModalOpen = ref(false)
   const diagnosticOpen = ref(false)
   const diagnosticLoading = ref(false)
   const diagnosticReport = ref<DiagnosticReport | null>(null)
   const diagnosticError = ref('')
-  const accessModalOpen = ref(false)
   const serverName = ref('')
   const serverVisibility = ref<ServerRecord['visibility']>('public')
   const serverAccessUserIDs = ref<number[]>([])
   const accessVisibility = ref<ServerRecord['visibility']>('public')
   const accessUserIDs = ref<number[]>([])
-  const accessFormError = ref('')
   const orderedUsers = computed(() => adminFirst(users.value))
   const serverListMode = ref<'active' | 'archived'>('active')
   const serverReorderingID = ref<number | null>(null)
@@ -116,12 +115,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const expirationInput = ref('')
   const renewalPeriodInput = ref<RenewalPeriodMonths | 0>(0)
   const autoRenewInput = ref(false)
-  const nameModalOpen = ref(false)
   const nameInput = ref('')
-  const nameFormError = ref('')
-  const ownerModalOpen = ref(false)
   const ownerUserID = ref(0)
-  const ownerFormError = ref('')
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
   const bulkUpgradeModalOpen = ref(false)
@@ -237,12 +232,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
           stopChinaInboundConfigPolling()
           createdServer.value = null
           serverModalOpen.value = false
-          accessModalOpen.value = false
-          nameModalOpen.value = false
-          ownerModalOpen.value = false
+          basicInfoModalOpen.value = false
+          basicInfoFormError.value = ''
           ownerUserID.value = 0
-          ownerFormError.value = ''
-          expirationModalOpen.value = false
           trafficModalOpen.value = false
           trafficAdjustmentModalOpen.value = false
           error.value = '服务器不存在或当前账号无权访问'
@@ -276,10 +268,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       serverVisibility.value = 'public'
       serverAccessUserIDs.value = []
       copiedCommand.value = false
-      expirationModalOpen.value = false
-      ownerModalOpen.value = false
+      basicInfoModalOpen.value = false
+      basicInfoFormError.value = ''
       ownerUserID.value = 0
-      ownerFormError.value = ''
       trafficModalOpen.value = false
       trafficAdjustmentModalOpen.value = false
       await loadServers()
@@ -293,11 +284,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     createdServer.value = null
     copiedCommand.value = false
     copiedUpgradeCommand.value = false
-    expirationModalOpen.value = false
-    nameModalOpen.value = false
-    ownerModalOpen.value = false
+    basicInfoModalOpen.value = false
+    basicInfoFormError.value = ''
     ownerUserID.value = 0
-    ownerFormError.value = ''
     trafficModalOpen.value = false
     trafficAdjustmentModalOpen.value = false
     diagnosticOpen.value = false
@@ -327,55 +316,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     return names.length > 0 ? names.join('、') : '—'
   }
 
-  function openAccessModal() {
-    if (!selectedServer.value) return
-    accessVisibility.value = selectedServer.value.visibility
-    accessUserIDs.value = withCurrentUser(selectedServer.value.access_user_ids)
-    accessFormError.value = ''
-    accessModalOpen.value = true
-  }
-
-  function closeAccessModal() {
-    accessModalOpen.value = false
-    accessFormError.value = ''
-  }
-
   function ensureAccessCurrentUser() {
     if (accessVisibility.value === 'private') {
       accessUserIDs.value = withCurrentUser(accessUserIDs.value)
-    }
-  }
-
-  async function saveServerAccess() {
-    if (!selectedServer.value || submitting.value) return
-    accessFormError.value = ''
-    submitting.value = true
-    try {
-      const response = await api<{ access: { visibility: ServerRecord['visibility']; user_ids: number[] } }>(
-        `/api/servers/${selectedServer.value.id}/access`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({
-            visibility: accessVisibility.value,
-            user_ids: accessVisibility.value === 'private' ? withCurrentUser(accessUserIDs.value) : [],
-          }),
-        },
-      )
-      selectedServer.value.visibility = response.access.visibility
-      selectedServer.value.access_user_ids = response.access.user_ids
-      accessModalOpen.value = false
-      await loadServers()
-    } catch (reason) {
-      accessFormError.value = reason instanceof Error ? reason.message : '访问范围保存失败'
-      if (reason instanceof APIError && reason.status === 404) {
-        accessModalOpen.value = false
-        serverModalOpen.value = false
-        selectedServer.value = null
-        createdServer.value = null
-        await loadServers().catch(() => undefined)
-      }
-    } finally {
-      submitting.value = false
     }
   }
 
@@ -607,7 +550,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       })
       selectedServer.value = createdServer.value.server
       copiedCommand.value = false
-      expirationModalOpen.value = false
+      basicInfoModalOpen.value = false
+      basicInfoFormError.value = ''
       trafficModalOpen.value = false
       trafficAdjustmentModalOpen.value = false
       await loadServers()
@@ -620,7 +564,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     selectedServer.value = null
     createdServer.value = null
     copiedCommand.value = false
-    expirationModalOpen.value = false
+    basicInfoModalOpen.value = false
+    basicInfoFormError.value = ''
     expirationInput.value = ''
     renewalPeriodInput.value = 0
     autoRenewInput.value = false
@@ -631,79 +576,127 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticLoading.value = false
     diagnosticReport.value = null
     diagnosticError.value = ''
-    accessModalOpen.value = false
-    accessFormError.value = ''
-    nameModalOpen.value = false
     nameInput.value = ''
-    nameFormError.value = ''
-    ownerModalOpen.value = false
     ownerUserID.value = 0
-    ownerFormError.value = ''
+    accessVisibility.value = 'public'
+    accessUserIDs.value = []
     resetTrafficAdjustmentForm()
   }
 
-  function openNameModal() {
+  function openBasicInfoModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     nameInput.value = selectedServer.value.name
-    nameFormError.value = ''
-    nameModalOpen.value = true
+    ownerUserID.value = selectedServer.value.owner_user_id ?? 0
+    accessVisibility.value = selectedServer.value.visibility
+    accessUserIDs.value = selectedServer.value.visibility === 'private'
+      ? withCurrentUser(selectedServer.value.access_user_ids)
+      : []
+    expirationInput.value = selectedServer.value.expires_at
+      ? formatExpirationDate(selectedServer.value.expires_at)
+      : ''
+    renewalPeriodInput.value = selectedServer.value.renewal_period_months ?? 0
+    autoRenewInput.value = selectedServer.value.auto_renew
+    basicInfoFormError.value = ''
+    basicInfoModalOpen.value = true
   }
 
-  function closeNameModal() {
-    nameModalOpen.value = false
+  function closeBasicInfoModal() {
+    basicInfoModalOpen.value = false
+    basicInfoFormError.value = ''
     nameInput.value = ''
-    nameFormError.value = ''
+    ownerUserID.value = 0
+    accessVisibility.value = 'public'
+    accessUserIDs.value = []
+    expirationInput.value = ''
+    renewalPeriodInput.value = 0
+    autoRenewInput.value = false
   }
 
-  async function saveServerName() {
+  function sameUserIDs(left: number[], right: number[]): boolean {
+    const leftSorted = [...left].sort((a, b) => a - b)
+    const rightSorted = [...right].sort((a, b) => a - b)
+    return leftSorted.length === rightSorted.length && leftSorted.every((value, index) => value === rightSorted[index])
+  }
+
+  async function saveBasicInfo() {
     if (!selectedServer.value || submitting.value) return
     const name = nameInput.value.trim()
     if (!name || [...name].length > 100) {
-      nameFormError.value = '服务器名称不能为空且不能超过 100 个字符'
+      basicInfoFormError.value = '服务器名称不能为空且不能超过 100 个字符'
       return
     }
+    const expiration = expirationInput.value.trim()
+    if (expiration && !/^\d{4}-\d{2}-\d{2}$/.test(expiration)) {
+      basicInfoFormError.value = '请选择有效的到期日期'
+      return
+    }
+
     const id = selectedServer.value.id
-    nameFormError.value = ''
-    await submit(async () => {
-      const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name }),
-      })
-      selectedServer.value = response.server
-      closeNameModal()
+    const ownerID = ownerUserID.value > 0 ? ownerUserID.value : null
+    const expiresAt = expiration || null
+    const renewalPeriod = expiresAt ? (renewalPeriodInput.value || null) : null
+    const autoRenew = expiresAt !== null && renewalPeriod !== null && autoRenewInput.value
+    const accessIDs = accessVisibility.value === 'private' ? withCurrentUser(accessUserIDs.value) : []
+    let current = selectedServer.value
+
+    basicInfoFormError.value = ''
+    submitting.value = true
+    try {
+      if (name !== current.name) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name }),
+        })
+        current = response.server
+      }
+      if (ownerID !== (current.owner_user_id ?? null)) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ owner_user_id: ownerID }),
+        })
+        current = response.server
+      }
+      const currentExpiration = current.expires_at ? formatExpirationDate(current.expires_at) : null
+      if (expiresAt !== currentExpiration || renewalPeriod !== current.renewal_period_months || autoRenew !== current.auto_renew) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            expires_at: expiresAt,
+            renewal_period_months: renewalPeriod,
+            auto_renew: autoRenew,
+          }),
+        })
+        current = response.server
+      }
+      if (accessVisibility.value !== current.visibility || !sameUserIDs(accessIDs, current.access_user_ids)) {
+        const response = await api<{ access: { visibility: ServerRecord['visibility']; user_ids: number[] } }>(
+          `/api/servers/${id}/access`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ visibility: accessVisibility.value, user_ids: accessIDs }),
+          },
+        )
+        current = {
+          ...current,
+          visibility: response.access.visibility,
+          access_user_ids: response.access.user_ids,
+        }
+      }
+      selectedServer.value = current
+      closeBasicInfoModal()
       await loadServers()
-    })
-    if (nameModalOpen.value && error.value) nameFormError.value = error.value
-  }
-
-  function openOwnerModal() {
-    if (!selectedServer.value || selectedServer.value.archived_at) return
-    ownerUserID.value = selectedServer.value.owner_user_id ?? 0
-    ownerFormError.value = ''
-    ownerModalOpen.value = true
-  }
-
-  function closeOwnerModal() {
-    ownerModalOpen.value = false
-    ownerUserID.value = 0
-    ownerFormError.value = ''
-  }
-
-  async function saveServerOwner() {
-    if (!selectedServer.value || submitting.value) return
-    const id = selectedServer.value.id
-    const selectedOwnerID = ownerUserID.value > 0 ? ownerUserID.value : null
-    ownerFormError.value = ''
-    await submit(async () => {
-      const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ owner_user_id: selectedOwnerID }),
-      })
-      selectedServer.value = response.server
-      closeOwnerModal()
-      await loadServers()
-    })
-    if (ownerModalOpen.value && error.value) ownerFormError.value = error.value
+    } catch (reason) {
+      selectedServer.value = current
+      basicInfoFormError.value = reason instanceof Error ? reason.message : '基本信息保存失败'
+      if (reason instanceof APIError && reason.status === 404) {
+        basicInfoModalOpen.value = false
+        await handleMissingServer()
+      } else {
+        await loadServers().catch(() => undefined)
+      }
+    } finally {
+      submitting.value = false
+    }
   }
 
   async function setOutboundPreference(server: ServerRecord, preference: ServerRecord['outbound_preference']) {
@@ -775,74 +768,6 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       stopChinaInboundConfigPolling()
       if (reason instanceof APIError && reason.status === 404) await handleMissingServer()
     }
-  }
-
-  function openExpirationModal() {
-    if (!selectedServer.value || selectedServer.value.archived_at) return
-    expirationInput.value = selectedServer.value.expires_at
-      ? formatExpirationDate(selectedServer.value.expires_at)
-      : ''
-    renewalPeriodInput.value = selectedServer.value.renewal_period_months ?? 0
-    autoRenewInput.value = selectedServer.value.auto_renew
-    expirationModalOpen.value = true
-  }
-
-  function closeExpirationModal() {
-    expirationModalOpen.value = false
-    expirationInput.value = ''
-    renewalPeriodInput.value = 0
-    autoRenewInput.value = false
-  }
-
-  async function saveExpiration() {
-    const value = expirationInput.value.trim()
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      error.value = '请选择有效的到期日期'
-      return
-    }
-    const renewalPeriod = renewalPeriodInput.value || null
-    await updateRenewalSettings(value, renewalPeriod, renewalPeriod !== null && autoRenewInput.value)
-  }
-
-  async function clearExpiration() {
-    await updateRenewalSettings(null, null, false)
-  }
-
-  async function updateRenewalSettings(
-    expiresAt: string | null,
-    renewalPeriodMonths: RenewalPeriodMonths | null,
-    autoRenew: boolean,
-  ) {
-    if (!selectedServer.value) return
-    const serverID = selectedServer.value.id
-    await submit(async () => {
-      const response = await api<{ server: ServerRecord }>(`/api/servers/${serverID}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          expires_at: expiresAt,
-          renewal_period_months: renewalPeriodMonths,
-          auto_renew: autoRenew,
-        }),
-      })
-      selectedServer.value = response.server
-      expirationModalOpen.value = false
-      expirationInput.value = ''
-      renewalPeriodInput.value = 0
-      autoRenewInput.value = false
-      await loadServers()
-    })
-  }
-
-  async function setAutoRenew(server: ServerRecord, enabled: boolean) {
-    if (submitting.value || server.archived_at || !server.expires_at || !server.renewal_period_months) return
-    await submit(async () => {
-      const response = await api<{ server: ServerRecord }>(`/api/servers/${server.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ auto_renew: enabled }),
-      })
-      servers.value = servers.value.map((value) => value.id === server.id ? response.server : value)
-      if (selectedServer.value?.id === server.id) selectedServer.value = response.server
-    })
   }
 
   function openTrafficAdjustmentModal() {
@@ -988,15 +913,13 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     selectedServer.value = null
     createdServer.value = null
     serverModalOpen.value = false
-    expirationModalOpen.value = false
-    nameModalOpen.value = false
+    basicInfoModalOpen.value = false
+    basicInfoFormError.value = ''
     nameInput.value = ''
-    nameFormError.value = ''
-    ownerModalOpen.value = false
     ownerUserID.value = 0
-    ownerFormError.value = ''
     trafficAdjustmentModalOpen.value = false
-    accessModalOpen.value = false
+    accessVisibility.value = 'public'
+    accessUserIDs.value = []
     diagnosticOpen.value = false
     diagnosticLoading.value = false
     diagnosticReport.value = null
@@ -1015,10 +938,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     if (!serverModalOpen.value) return
     stopChinaInboundConfigPolling()
     serverModalOpen.value = false
-    nameModalOpen.value = false
-    ownerModalOpen.value = false
+    basicInfoModalOpen.value = false
+    basicInfoFormError.value = ''
     ownerUserID.value = 0
-    ownerFormError.value = ''
     selectedServer.value = null
     createdServer.value = null
     await loadServers().catch(() => undefined)
@@ -1030,25 +952,20 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     selectedServer,
     createdServer,
     serverModalOpen,
-    expirationModalOpen,
-    nameModalOpen,
+    basicInfoModalOpen,
+    basicInfoFormError,
     nameInput,
-    nameFormError,
-    ownerModalOpen,
     ownerUserID,
-    ownerFormError,
     trafficAdjustmentModalOpen,
     diagnosticOpen,
     diagnosticLoading,
     diagnosticReport,
     diagnosticError,
-    accessModalOpen,
     serverName,
     serverVisibility,
     serverAccessUserIDs,
     accessVisibility,
     accessUserIDs,
-    accessFormError,
     serverListMode,
     serverReorderingID,
     copiedCommand,
@@ -1088,10 +1005,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     withCurrentUser,
     ensureCreateCurrentUser,
     accessUserNames,
-    openAccessModal,
-    closeAccessModal,
     ensureAccessCurrentUser,
-    saveServerAccess,
     upgradeAgent,
     openBulkAgentUpgrade,
     startBulkAgentUpgrade,
@@ -1103,20 +1017,11 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     forceRemoveServer,
     regenerateEnrollment,
     closeServerDetails,
-    openNameModal,
-    closeNameModal,
-    saveServerName,
-    openOwnerModal,
-    closeOwnerModal,
-    saveServerOwner,
+    openBasicInfoModal,
+    closeBasicInfoModal,
+    saveBasicInfo,
     setOutboundPreference,
     setBlockChinaInbound,
-    openExpirationModal,
-    closeExpirationModal,
-    saveExpiration,
-    clearExpiration,
-    updateRenewalSettings,
-    setAutoRenew,
     openTrafficAdjustmentModal,
     closeTrafficAdjustmentModal,
     resetTrafficAdjustmentForm,

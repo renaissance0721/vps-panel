@@ -7,6 +7,7 @@ const portalSource = await readFile(new URL('../src/views/SubscriberPortalView.v
 const managementSource = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
 const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const clientSource = await readFile(new URL('../src/components/proxy/ClientList.vue', import.meta.url), 'utf8')
+const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
 test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数据', () => {
   assert.match(appSource, /state\.value\.user\?\.role === 'user' \|\| state\.value\.user\?\.role === 'subscriber'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
@@ -40,6 +41,19 @@ test('Subscriber Portal 将套餐和导入入口收拢到单一卡片', () => {
   assert.doesNotMatch(portalSource, /server_name|proxy_name|client_name|UUID|SS Password|REALITY|Realm|添加中转|自定义落地/)
 })
 
+test('Subscriber Portal 无套餐时只渲染极简空态且不开放订阅操作', () => {
+  assert.match(portalSource, /const hasPlan = computed\(\(\) => \(subscriber\.value\?\.plan_name \?\? ''\)\.trim\(\) !== ''\)/)
+  assert.match(portalSource, /<section v-if="!hasPlan" class="subscriber-empty-state">[\s\S]*尚未开通套餐[\s\S]*当前账号尚未开通任何套餐[\s\S]*<section v-else>/)
+  assert.match(portalSource, /<n-modal v-if="hasPlan" v-model:show="importModalOpen">/)
+  assert.match(portalSource, /<QRCodeModal\s+v-if="hasPlan"/)
+})
+
+test('Subscriber Portal 品牌区域使用轻量玻璃风格', () => {
+  assert.match(portalSource, /class="portal-brand">夕凪云/)
+  assert.match(styleSource, /\.portal-brand\s*\{[\s\S]*background: linear-gradient[\s\S]*backdrop-filter: blur/)
+  assert.match(styleSource, /\.subscriber-empty-state\s*\{[\s\S]*place-content: center/)
+})
+
 test('订阅管理只在 Admin Sidebar 显示且包含三个 Tab', () => {
   assert.match(appSource, /v-if="state\.user\?\.role === 'admin'"[\s\S]*currentPage === 'subscriptions'[\s\S]*订阅管理/)
   assert.match(appSource, /currentPage === 'subscriptions' && state\.user\?\.role === 'admin'/)
@@ -65,11 +79,11 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
   assert.match(managementSource, /node_ids: planNodeIDs\.value/)
 })
 
-test('套餐启用状态使用 NCheckbox 双向绑定并原样写入保存请求', () => {
-  assert.match(managementSource, /import \{[^}]*NCheckbox[^}]*\} from 'naive-ui'/)
-  assert.match(managementSource, /<n-checkbox v-model:checked="planEnabled">启用套餐<\/n-checkbox>/)
-  assert.match(managementSource, /<n-checkbox v-model:checked="nodeEnabled">启用发布节点<\/n-checkbox>/)
-  assert.match(managementSource, /<n-checkbox v-model:checked="userEnabled">启用账号<\/n-checkbox>/)
+test('套餐布尔状态使用 NSwitch 双向绑定并原样写入保存请求', () => {
+  assert.match(managementSource, /import \{[^}]*NSwitch[^}]*\} from 'naive-ui'/)
+  assert.match(managementSource, /<n-switch v-model:value="planEnabled"/)
+  assert.match(managementSource, /<n-switch v-model:value="nodeEnabled"/)
+  assert.match(managementSource, /<n-switch v-model:value="userEnabled"/)
   assert.match(managementSource, /function openCreatePlan\(\)[\s\S]*planEnabled\.value = true/)
   assert.match(managementSource, /function openEditPlan\(value: Plan\)[\s\S]*populatePlanForm\(value\)/)
   assert.match(managementSource, /function populatePlanForm\(value: Plan\)[\s\S]*planEnabled\.value = value\.enabled/)

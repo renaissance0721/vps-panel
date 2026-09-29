@@ -43,13 +43,9 @@ const props = defineProps<{
     | 'visibilityLabel'
     | 'accessUserNames'
     | 'submitting'
-    | 'openAccessModal'
-    | 'openNameModal'
-    | 'openOwnerModal'
+    | 'openBasicInfoModal'
     | 'formatExpirationDate'
-    | 'openExpirationModal'
     | 'renewalPeriodLabel'
-    | 'setAutoRenew'
     | 'formatTime'
     | 'state'
     | 'panelReleaseVersion'
@@ -87,13 +83,9 @@ const {
   visibilityLabel,
   accessUserNames,
   submitting,
-  openAccessModal,
-  openNameModal,
-  openOwnerModal,
+  openBasicInfoModal,
   formatExpirationDate,
-  openExpirationModal,
   renewalPeriodLabel,
-  setAutoRenew,
   formatTime,
   state,
   panelReleaseVersion,
@@ -223,63 +215,37 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             </n-alert>
             <div class="server-detail-grid">
               <section class="server-detail-section">
-                <h3 class="system-info-title">基本信息</h3>
+                <div class="section-heading basic-info-heading">
+                  <h3 class="system-info-title">基本信息</h3>
+                  <n-button
+                    v-if="!selectedServer.archived_at"
+                    size="small"
+                    secondary
+                    :disabled="submitting || !!selectedServer.decommission_status"
+                    @click="openBasicInfoModal"
+                  >
+                    修改
+                  </n-button>
+                </div>
             <dl class="server-details">
-              <div><dt>名称</dt><dd class="expiration-display"><span>{{ selectedServer.name }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改名称" aria-label="修改名称" :disabled="submitting || !!selectedServer.decommission_status" @click="openNameModal">✎</n-button></dd></div>
+              <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
-              <div><dt>所有者</dt><dd class="expiration-display"><span>{{ selectedServer.owner_username || '—' }}</span><n-button v-if="!selectedServer.archived_at" class="expiration-edit-button" size="tiny" text title="修改所有者" aria-label="修改所有者" :disabled="submitting || !!selectedServer.decommission_status" @click="openOwnerModal">✎</n-button></dd></div>
+              <div><dt>所有者</dt><dd>{{ selectedServer.owner_username || '—' }}</dd></div>
               <div>
                 <dt>访问范围</dt>
-                <dd class="expiration-display">
-                  <span>
-                    {{ visibilityLabel(selectedServer.visibility) }}
-                    <template v-if="selectedServer.visibility === 'private'">
-                      · {{ accessUserNames(selectedServer.access_user_ids) }}
-                    </template>
-                  </span>
-                  <n-button
-                    class="expiration-edit-button"
-                    size="tiny"
-                    text
-                    title="修改访问范围"
-                    aria-label="修改访问范围"
-                    :disabled="submitting || !!selectedServer.decommission_status"
-                    @click="openAccessModal"
-                  >
-                    ✎
-                  </n-button>
+                <dd>
+                  {{ visibilityLabel(selectedServer.visibility) }}
+                  <template v-if="selectedServer.visibility === 'private'">
+                    · {{ accessUserNames(selectedServer.access_user_ids) }}
+                  </template>
                 </dd>
               </div>
               <div>
                 <dt>到期日期</dt>
-                <dd class="expiration-display">
-                  <span>{{ selectedServer.expires_at ? formatExpirationDate(selectedServer.expires_at) : '不限' }}</span>
-                  <n-button
-                    v-if="!selectedServer.archived_at"
-                    class="expiration-edit-button"
-                    size="tiny"
-                    text
-                    title="修改到期日期"
-                    aria-label="修改到期日期"
-                    :disabled="submitting || !!selectedServer.decommission_status"
-                    @click="openExpirationModal"
-                  >
-                    ✎
-                  </n-button>
-                </dd>
+                <dd>{{ selectedServer.expires_at ? formatExpirationDate(selectedServer.expires_at) : '不限' }}</dd>
               </div>
               <div><dt>续费周期</dt><dd>{{ renewalPeriodLabel(selectedServer.renewal_period_months) }}</dd></div>
-              <div>
-                <dt>自动续费</dt>
-                <dd>
-                  <n-switch
-                    :value="selectedServer.auto_renew"
-                    :disabled="serverReadOnly || submitting || !selectedServer.expires_at || !selectedServer.renewal_period_months"
-                    :title="!selectedServer.expires_at || !selectedServer.renewal_period_months ? '请先设置到期日期和续费周期' : '仅顺延 Panel 中记录的到期日期，不会向 VPS 商家付款。'"
-                    @update:value="setAutoRenew(selectedServer, $event)"
-                  />
-                </dd>
-              </div>
+              <div><dt>自动续费</dt><dd>{{ selectedServer.auto_renew ? '已开启' : '已关闭' }}</dd></div>
               <div>
                 <dt>最后通信</dt>
                 <dd>{{ selectedServer.last_seen_at ? formatTime(selectedServer.last_seen_at) : '—' }}</dd>

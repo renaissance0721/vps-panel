@@ -289,7 +289,7 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 	}
 }
 
-func TestRelayDerivedShadowsocksSharePreservesCredentialsAndWarnsForTCPOnly(t *testing.T) {
+func TestRelayDerivedShadowsocksSharePreservesCredentialsWithoutTCPNotice(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -347,8 +347,33 @@ func TestRelayDerivedShadowsocksSharePreservesCredentialsAndWarnsForTCPOnly(t *t
 	relayURI, _ := url.Parse(shares.Clients[0].URI)
 	if relayURI.Host != "relay.example.com:9502" || directURI.User.String() != relayURI.User.String() ||
 		directURI.Fragment != relayURI.Fragment || shares.Clients[0].Protocol != "shadowsocks" ||
-		!shares.Clients[0].NetworkCompatible || shares.Clients[0].NetworkNotice != "此中转仅转发 TCP，UDP 不可用" {
+		!shares.Clients[0].NetworkCompatible || shares.Clients[0].NetworkNotice != "" ||
+		strings.Contains(sharesResponse.Body.String(), "network_notice") {
 		t.Fatalf("derived SS share = %+v, direct %q, Relay %q", shares.Clients[0], direct.Share.URI, shares.Clients[0].URI)
+	}
+}
+
+func TestRelayNetworkCompatibilityOnlyReportsIncompatibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		network    string
+		protocol   string
+		compatible bool
+		notice     string
+	}{
+		{name: "Shadowsocks TCP", network: "tcp", protocol: "shadowsocks", compatible: true},
+		{name: "Shadowsocks UDP", network: "udp", protocol: "shadowsocks", compatible: true},
+		{name: "Shadowsocks TCP and UDP", network: "tcp,udp", protocol: "shadowsocks", compatible: true},
+		{name: "VLESS TCP", network: "tcp", protocol: "vless", compatible: true},
+		{name: "VLESS UDP", network: "udp", protocol: "vless", compatible: false, notice: "当前中转 Network 与该 Proxy 不兼容"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compatible, notice := relayNetworkCompatibility(test.network, test.protocol)
+			if compatible != test.compatible || notice != test.notice {
+				t.Fatalf("relayNetworkCompatibility(%q, %q) = %t, %q", test.network, test.protocol, compatible, notice)
+			}
+		})
 	}
 }
 

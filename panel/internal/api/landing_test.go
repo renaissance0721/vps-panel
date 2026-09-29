@@ -215,7 +215,8 @@ func TestLandingRelaySharePermissionsRewritesAndDependencyBumps(t *testing.T) {
 	parsed, err := url.Parse(shared.URI)
 	if err != nil || parsed.Host != "relay.example.com:9502" || parsed.User.String() != vlessSecret ||
 		parsed.Query().Get("pbk") != "abc" || parsed.Query().Get("sid") != "def" || parsed.Query().Get("sni") != "a.com" ||
-		parsed.Query().Get("flow") != "xtls-rprx-vision" || parsed.Fragment != "US Home - Tokyo Relay" || !shared.NetworkCompatible {
+		parsed.Query().Get("flow") != "xtls-rprx-vision" || parsed.Fragment != "US Home - Tokyo Relay" ||
+		!shared.NetworkCompatible || shared.NetworkNotice != "" || strings.Contains(share.Body.String(), "network_notice") {
 		t.Fatalf("landing share = %+v, URI %q, error %v", shared, shared.URI, err)
 	}
 	udp := "udp"

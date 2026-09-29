@@ -302,9 +302,6 @@ func relayNetworkCompatibility(network, protocol string) (bool, string) {
 	if protocol == proxystore.ProtocolVLESS && network == relaystore.NetworkUDP {
 		return false, "当前中转 Network 与该 Proxy 不兼容"
 	}
-	if protocol == proxystore.ProtocolShadowsocks && network == relaystore.NetworkTCP {
-		return true, "此中转仅转发 TCP，UDP 不可用"
-	}
 	return true, ""
 }
 

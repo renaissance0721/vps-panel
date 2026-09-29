@@ -414,6 +414,7 @@ async function loadRelayClientShares(value: RelayRecord) {
   relayClientsLoading.value = false
   relayShareError.value = ''
   copiedRelayClientID.value = null
+  if (value.subscription_published) return
   if (!value.entry_address || !value.target_address_ready) return
   if (value.target_type === 'landing') {
     relayClientsLoading.value = true
@@ -699,41 +700,43 @@ import {
         <div><dt>状态</dt><dd>{{ selectedRelay.enabled ? '启用' : '禁用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ formatTime(selectedRelay.updated_at) }}</dd></div>
       </dl>
-      <h3>{{ selectedRelay.target_type === 'landing' ? '外部节点中转链接' : '目标客户端' }}</h3>
-      <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
-      <n-alert v-else-if="selectedRelay.target_type === 'proxy' && selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
-      <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4</n-alert>
-      <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">目标代理节点入口地址不可用</n-alert>
-      <n-alert v-else-if="relayShareError" type="error">{{ relayShareError }}</n-alert>
-      <div v-else-if="relayClientsLoading" class="loading-row"><n-spin size="small" /><span>正在加载客户端节点…</span></div>
-      <div v-else-if="selectedRelay.target_type === 'landing' && relayLandingShare" class="relay-client-list">
-        <div class="relay-client-share">
-          <div class="relay-client-heading">
-            <strong>{{ relayLandingShare.landing.name }}</strong>
-            <span>{{ landingProtocolLabel(relayLandingShare.landing.protocol) }}</span>
-            <n-tag :type="relayLandingShare.network_compatible ? 'success' : 'error'" size="small">{{ relayLandingShare.network_compatible ? '可用' : 'Network 不兼容' }}</n-tag>
+      <template v-if="!selectedRelay.subscription_published">
+        <h3>{{ selectedRelay.target_type === 'landing' ? '外部节点中转链接' : '目标客户端' }}</h3>
+        <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
+        <n-alert v-else-if="selectedRelay.target_type === 'proxy' && selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
+        <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4</n-alert>
+        <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">目标代理节点入口地址不可用</n-alert>
+        <n-alert v-else-if="relayShareError" type="error">{{ relayShareError }}</n-alert>
+        <div v-else-if="relayClientsLoading" class="loading-row"><n-spin size="small" /><span>正在加载客户端节点…</span></div>
+        <div v-else-if="selectedRelay.target_type === 'landing' && relayLandingShare" class="relay-client-list">
+          <div class="relay-client-share">
+            <div class="relay-client-heading">
+              <strong>{{ relayLandingShare.landing.name }}</strong>
+              <span>{{ landingProtocolLabel(relayLandingShare.landing.protocol) }}</span>
+              <n-tag :type="relayLandingShare.network_compatible ? 'success' : 'error'" size="small">{{ relayLandingShare.network_compatible ? '可用' : 'Network 不兼容' }}</n-tag>
+            </div>
+            <n-alert v-if="relayLandingShare.network_notice" :type="relayLandingShare.network_compatible ? 'warning' : 'error'">{{ relayLandingShare.network_notice }}</n-alert>
+            <strong>中转 URI</strong>
+            <n-input :value="relayLandingShare.uri" type="textarea" readonly :autosize="{ minRows: 3 }" />
+            <div class="modal-actions"><n-button secondary :disabled="!relayLandingShare.network_compatible" @click="showLandingQRCode">二维码</n-button><n-button type="primary" :disabled="!relayLandingShare.network_compatible" @click="copyLandingURI">{{ copiedRelayClientID === 0 ? '链接已复制' : '复制链接' }}</n-button></div>
           </div>
-          <n-alert v-if="relayLandingShare.network_notice" :type="relayLandingShare.network_compatible ? 'warning' : 'error'">{{ relayLandingShare.network_notice }}</n-alert>
-          <strong>中转 URI</strong>
-          <n-input :value="relayLandingShare.uri" type="textarea" readonly :autosize="{ minRows: 3 }" />
-          <div class="modal-actions"><n-button secondary :disabled="!relayLandingShare.network_compatible" @click="showLandingQRCode">二维码</n-button><n-button type="primary" :disabled="!relayLandingShare.network_compatible" @click="copyLandingURI">{{ copiedRelayClientID === 0 ? '链接已复制' : '复制链接' }}</n-button></div>
         </div>
-      </div>
-      <n-empty v-else-if="relayClients.length === 0" description="目标客户端不可用" />
-      <div v-else class="relay-client-list">
-        <div v-for="client in relayClients" :key="client.client.id" class="relay-client-share">
-          <div class="relay-client-heading">
-            <strong>{{ client.client.name }}</strong>
-            <span>{{ client.protocol === 'vless' ? 'VLESS' : 'Shadowsocks 2022' }}</span>
-            <n-tag :type="relayClientStatusTagType(client)" size="small">{{ relayClientStatusLabel(client) }}</n-tag>
+        <n-empty v-else-if="relayClients.length === 0" description="目标客户端不可用" />
+        <div v-else class="relay-client-list">
+          <div v-for="client in relayClients" :key="client.client.id" class="relay-client-share">
+            <div class="relay-client-heading">
+              <strong>{{ client.client.name }}</strong>
+              <span>{{ client.protocol === 'vless' ? 'VLESS' : 'Shadowsocks 2022' }}</span>
+              <n-tag :type="relayClientStatusTagType(client)" size="small">{{ relayClientStatusLabel(client) }}</n-tag>
+            </div>
+            <n-alert v-if="client.network_notice" :type="client.network_compatible ? 'warning' : 'error'">{{ client.network_notice }}</n-alert>
+            <strong>中转 URI</strong>
+            <n-input :value="client.uri" type="textarea" readonly :autosize="{ minRows: 3 }" />
+            <div class="modal-actions"><n-button secondary :disabled="!client.network_compatible" @click="showRelayQRCode(client)">二维码</n-button><n-button type="primary" :disabled="!client.network_compatible" @click="copyRelayClientURI(client)">{{ copiedRelayClientID === client.client.id ? '链接已复制' : '复制链接' }}</n-button></div>
           </div>
-          <n-alert v-if="client.network_notice" :type="client.network_compatible ? 'warning' : 'error'">{{ client.network_notice }}</n-alert>
-          <strong>中转 URI</strong>
-          <n-input :value="client.uri" type="textarea" readonly :autosize="{ minRows: 3 }" />
-          <div class="modal-actions"><n-button secondary :disabled="!client.network_compatible" @click="showRelayQRCode(client)">二维码</n-button><n-button type="primary" :disabled="!client.network_compatible" @click="copyRelayClientURI(client)">{{ copiedRelayClientID === client.client.id ? '链接已复制' : '复制链接' }}</n-button></div>
         </div>
-      </div>
-      <div class="modal-actions"><n-button v-if="!selectedRelay.owner_username" secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
+      </template>
+      <div class="modal-actions"><n-button v-if="!selectedRelay.owner_username && !selectedRelay.subscription_published" secondary @click="openEdit(selectedRelay)">编辑</n-button><n-button @click="detailOpen = false">关闭</n-button></div>
     </n-card>
   </n-modal>
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="setQRCodeOpen" />

@@ -82,6 +82,18 @@ test('中转入口表单和派生客户端链接保持单一 canonical URI 流�
   assert.match(view, /clientStatusLabel\(value\.client\.status\)/)
 })
 
+test('订阅发布中转详情隐藏固定客户端区域且不加载分享', async () => {
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
+  const loadStart = view.indexOf('async function loadRelayClientShares')
+  const loadEnd = view.indexOf('\n}\n\nfunction setQRCodeOpen', loadStart)
+  const loader = view.slice(loadStart, loadEnd)
+  assert.match(view, /selectedRelay\.subscription_published[\s\S]*订阅发布/)
+  assert.match(loader, /if \(value\.subscription_published\) return/)
+  assert.ok(loader.indexOf('if (value.subscription_published) return') < loader.indexOf('/clients`'))
+  assert.match(view, /<template v-if="!selectedRelay\.subscription_published">[\s\S]*'目标客户端'[\s\S]*尚未选择目标客户端[\s\S]*中转 URI[\s\S]*showRelayQRCode\(client\)[\s\S]*copyRelayClientURI\(client\)[\s\S]*<\/template>/)
+  assert.match(view, /v-if="!selectedRelay\.owner_username && !selectedRelay\.subscription_published"/)
+})
+
 test('中转 Modal 保持小屏可用且列表只在自身容器横向滚动', async () => {
   const source = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
   assert.match(source, /\.relay-form-card\s*{[^}]*width:\s*min\(640px, calc\(100vw - 32px\)\)/s)

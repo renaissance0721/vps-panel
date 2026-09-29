@@ -111,7 +111,7 @@ onMounted(async () => {
 <template>
   <main class="user-portal subscriber-portal">
     <header class="user-portal-header">
-      <strong class="portal-brand">夕凪云</strong>
+      <strong class="app-brand app-brand--portal">夕凪云</strong>
       <AccountMenu :user="props.user" @updated="emit('userUpdated', $event)" @logout="emit('logout')" />
     </header>
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
@@ -122,7 +122,7 @@ onMounted(async () => {
         <p>当前账号尚未开通任何套餐</p>
       </section>
       <section v-else>
-        <h1 class="subscriber-plan-title">套餐信息</h1>
+        <h2 class="portal-section-title">套餐信息</h2>
         <n-card :bordered="true">
           <template #header><strong>{{ subscriber.plan_name }}</strong></template>
           <template #header-extra><n-tag :type="subscriber.active ? 'success' : 'warning'">{{ statusLabels[subscriber.status] ?? subscriber.status }}</n-tag></template>

@@ -251,14 +251,14 @@ onMounted(async () => {
 <template>
   <main class="user-portal">
     <header class="user-portal-header">
-      <strong>夕凪云</strong>
+      <strong class="app-brand app-brand--portal">夕凪云</strong>
       <AccountMenu :user="props.user" @updated="emit('userUpdated', $event)" @logout="emit('logout')" />
     </header>
     <n-alert v-if="error" type="error" class="page-alert">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载…</span></div>
     <template v-else>
       <section>
-        <h1>我的节点</h1>
+        <h2 class="portal-section-title">我的节点</h2>
         <n-empty v-if="nodes.length === 0" description="管理员尚未分配节点" />
         <div v-else class="user-card-grid">
           <n-card v-for="node in nodes" :key="node.client_id" :title="node.server_name" :bordered="true">
@@ -272,7 +272,7 @@ onMounted(async () => {
         </div>
       </section>
       <section>
-        <div class="section-heading"><h1>我的中转</h1><n-button type="primary" :disabled="relaySources.length === 0 || busy" @click="openRelayModal">添加中转</n-button></div>
+        <div class="section-heading"><h2 class="portal-section-title">我的中转</h2><n-button type="primary" :disabled="relaySources.length === 0 || busy" @click="openRelayModal">添加中转</n-button></div>
         <n-empty v-if="relays.length === 0" description="暂无中转" />
         <div v-else class="user-card-grid">
           <n-card v-for="relay in relays" :key="relay.id" :title="relay.name" :bordered="true">

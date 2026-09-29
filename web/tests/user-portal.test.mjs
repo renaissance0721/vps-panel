@@ -47,6 +47,13 @@ test('普通用户只通过专用接口修改自己的 Client Name', () => {
   assert.match(portalSource, /客户端名称/)
 })
 
+test('普通用户门户使用统一品牌和紧凑 section title', () => {
+  assert.match(portalSource, /class="app-brand app-brand--portal">夕凪云/)
+  assert.match(portalSource, /<h2 class="portal-section-title">我的节点<\/h2>/)
+  assert.match(portalSource, /<h2 class="portal-section-title">我的中转<\/h2>/)
+  assert.match(styleSource, /\.portal-section-title\s*\{[\s\S]*font-size: clamp\(22px, 3vw, 24px\);[\s\S]*font-weight: 650;/)
+})
+
 test('用户门户各区域独立加载且管理员中转页标记用户中转', () => {
   assert.match(portalSource, /Promise\.allSettled\(\[loadNodes\(\), loadRelaySources\(\), loadRelays\(\)\]\)/)
   for (const loader of ['loadNodes', 'loadRelaySources', 'loadRelays']) {

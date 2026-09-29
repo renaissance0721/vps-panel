@@ -435,7 +435,7 @@ onUnmounted(stopServerPolling)
 
       <div v-else class="app-layout">
         <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
-          <strong class="sidebar-brand">夕凪云</strong>
+          <strong class="app-brand app-brand--sidebar">夕凪云</strong>
           <nav class="sidebar-nav" aria-label="管理导航">
             <button
               type="button"
@@ -502,7 +502,7 @@ onUnmounted(stopServerPolling)
         <main class="admin-main">
           <header class="mobile-header">
             <button type="button" aria-label="打开菜单" @click="sidebarOpen = true">☰</button>
-            <strong>夕凪云</strong>
+            <strong class="app-brand app-brand--sidebar">夕凪云</strong>
           </header>
           <div class="admin-page">
             <header class="page-heading">

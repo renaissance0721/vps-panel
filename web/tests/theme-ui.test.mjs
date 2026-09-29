@@ -11,9 +11,34 @@ test('全局主题使用白色与淡蓝色 token 并统一柔和圆角', async (
   for (const token of ['--color-primary', '--color-primary-soft', '--color-surface', '--radius-control', '--radius-card']) {
     assert.match(style, new RegExp(token))
   }
-  assert.match(style, /\.sidebar\s*\{[\s\S]*linear-gradient[\s\S]*#edf6ff/)
+  assert.match(style, /\.sidebar\s*\{[\s\S]*linear-gradient[\s\S]*backdrop-filter: blur\(14px\)/)
   assert.match(style, /\.settings-input[\s\S]*border-radius: var\(--radius-control\)/)
   assert.doesNotMatch(style, /#168a55|#18a058|#237b4b|#eef8f2|#f2faf5|#c9e7d5/)
+})
+
+test('Sidebar 和 Portal 共用液态玻璃品牌语言', async () => {
+  const [app, userPortal, subscriberPortal, style] = await Promise.all([
+    source('App.vue'),
+    source('views/UserPortalView.vue'),
+    source('views/SubscriberPortalView.vue'),
+    source('style.css'),
+  ])
+  assert.match(app, /class="app-brand app-brand--sidebar">夕凪云/)
+  assert.match(userPortal, /class="app-brand app-brand--portal">夕凪云/)
+  assert.match(subscriberPortal, /class="app-brand app-brand--portal">夕凪云/)
+  assert.match(style, /\.app-brand\s*\{[\s\S]*?border: 1px solid[\s\S]*?\}/)
+  assert.match(style, /\.app-brand\s*\{[\s\S]*?background: linear-gradient[\s\S]*?\}/)
+  assert.match(style, /\.app-brand\s*\{[\s\S]*?box-shadow:[\s\S]*?\}/)
+  assert.match(style, /\.app-brand\s*\{[\s\S]*?backdrop-filter: blur\(10px\)[\s\S]*?\}/)
+  assert.match(style, /\.app-brand--portal\s*\{[\s\S]*font-size: 22px/)
+  assert.match(style, /\.app-brand--sidebar\s*\{[\s\S]*font-size: 18px/)
+  assert.doesNotMatch(style, /\.portal-brand|\.sidebar-brand/)
+})
+
+test('Sidebar hover 与 active 使用不同层级的玻璃背景', async () => {
+  const style = await source('style.css')
+  assert.match(style, /\.sidebar-nav button:hover\s*\{[\s\S]*border-color:[\s\S]*linear-gradient/)
+  assert.match(style, /\.sidebar-nav button\.active,[\s\S]*\.sidebar-nav button\.active:hover\s*\{[\s\S]*linear-gradient[\s\S]*box-shadow:/)
 })
 
 test('布尔型选项统一使用 NSwitch，真正的账号和节点多选保留 checkbox', async () => {

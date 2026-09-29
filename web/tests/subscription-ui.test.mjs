@@ -26,7 +26,7 @@ test('Subscriber Portal 将套餐和导入入口收拢到单一卡片', () => {
   assert.match(portalSource, /subscriber\.plan_name/)
   assert.match(portalSource, /subscriber\.used_bytes/)
   assert.match(portalSource, /subscriber\.traffic_limit_bytes/)
-  assert.match(portalSource, /subscriber-plan-title">套餐信息/)
+  assert.match(portalSource, /class="portal-section-title">套餐信息/)
   assert.match(portalSource, /<n-card[\s\S]*subscriber-plan-actions[\s\S]*importModalOpen = true/)
   assert.match(portalSource, /subscription-import-card[\s\S]*regenerateSubscription[\s\S]*重新生成订阅/)
   assert.match(portalSource, /copySubscription\('base64', subscriber\?\.subscription_base64_url/)
@@ -48,9 +48,9 @@ test('Subscriber Portal 无套餐时只渲染极简空态且不开放订阅操�
   assert.match(portalSource, /<QRCodeModal\s+v-if="hasPlan"/)
 })
 
-test('Subscriber Portal 品牌区域使用轻量玻璃风格', () => {
-  assert.match(portalSource, /class="portal-brand">夕凪云/)
-  assert.match(styleSource, /\.portal-brand\s*\{[\s\S]*background: linear-gradient[\s\S]*backdrop-filter: blur/)
+test('Subscriber Portal 品牌区域使用统一轻量玻璃风格', () => {
+  assert.match(portalSource, /class="app-brand app-brand--portal">夕凪云/)
+  assert.match(styleSource, /\.app-brand\s*\{[\s\S]*background: linear-gradient[\s\S]*backdrop-filter: blur/)
   assert.match(styleSource, /\.subscriber-empty-state\s*\{[\s\S]*place-content: center/)
 })
 

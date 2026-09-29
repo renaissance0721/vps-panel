@@ -75,26 +75,34 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	subscriptions := subscriptionstore.NewService(db, relaystore.NewService(db))
-	node, _, err := subscriptions.CreatePublishedNode(t.Context(), subscriptionstore.CreatePublishedNodeInput{
-		Name: "🇸🇬 SG-01", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID,
-		TrafficMultiplierBP: 50, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	plan, err := subscriptions.CreatePlan(t.Context(), subscriptionstore.CreatePlanInput{
 		Name: "Premium", SubscriptionTitle: "Refrain Cloud", Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := subscriptions.SetPlanNodes(t.Context(), plan.ID, []int64{node.ID}); err != nil {
-		t.Fatal(err)
-	}
 	if _, _, err := subscriptions.UpdateSubscriber(t.Context(), userID, subscriptionstore.UpdateSubscriberInput{
 		PlanIDSet: true, PlanID: &plan.ID,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	createdNode := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{
+		"name": "🇸🇬 SG-01", "mode": subscriptionstore.NodeModeDirect,
+		"target_proxy_id": proxyValue.ID, "traffic_multiplier": 0.5,
+		"enabled": true, "plan_ids": []int64{plan.ID},
+	}, adminCookie)
+	if createdNode.Code != http.StatusCreated || !strings.Contains(createdNode.Body.String(), `"name":"🇸🇬 SG-01"`) {
+		t.Fatalf("create published node with plan = %d, %s", createdNode.Code, createdNode.Body.String())
+	}
+	var mappedNodes, subscriberClients int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM subscription_plan_nodes WHERE plan_id = ?`, plan.ID).Scan(&mappedNodes); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM subscriber_clients WHERE user_id = ?`, userID).Scan(&subscriberClients); err != nil {
+		t.Fatal(err)
+	}
+	if mappedNodes != 1 || subscriberClients != 1 {
+		t.Fatalf("created published node mappings = plan %d subscriber clients %d", mappedNodes, subscriberClients)
 	}
 	updated := performRequest(t, handler, http.MethodPatch,
 		"/api/admin/subscription/users/"+strconv.FormatInt(userID, 10), map[string]any{

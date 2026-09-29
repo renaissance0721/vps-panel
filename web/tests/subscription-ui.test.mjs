@@ -127,6 +127,19 @@ test('发布节点可手动输入倍率且管理端统一显示最终名称', ()
   assert.doesNotMatch(portalSource, /traffic_multiplier|multiplierLabel/)
 })
 
+test('发布节点创建和编辑一次提交所属套餐并在列表展示关系', () => {
+  assert.match(managementSource, /const nodePlanIDs = ref<number\[]>\(\[]\)/)
+  assert.match(managementSource, /function openCreateNode\(\)[\s\S]*nodePlanIDs\.value = \[]/)
+  assert.match(managementSource, /function openEditNode\(value: PublishedNode\)[\s\S]*nodePlanIDs\.value = plans\.value\.filter/)
+  assert.match(managementSource, /function toggleNodePlan\(id: number, checked: boolean\)/)
+  assert.match(managementSource, /method: 'PATCH'[\s\S]*plan_ids: nodePlanIDs\.value/)
+  assert.match(managementSource, /method: 'POST'[\s\S]*plan_ids: nodePlanIDs\.value/)
+  assert.match(managementSource, /editingNode \? '所属套餐' : '加入套餐'/)
+  assert.match(managementSource, /v-for="plan in plans"[\s\S]*nodePlanIDs\.includes\(plan\.id\)/)
+  assert.match(managementSource, /所属套餐：\{\{ nodePlanNames\(value\.id\) \|\| '未加入套餐' \}\}/)
+  assert.match(managementSource, /nodeModalOpen\.value = false\s*await loadAll\(\)/)
+})
+
 test('生命周期字段只在订阅用户表单管理', () => {
   for (const field of ['userResetMode', 'userResetDay', 'userResetTime', 'userBillingMonths']) {
     assert.match(managementSource, new RegExp(field))

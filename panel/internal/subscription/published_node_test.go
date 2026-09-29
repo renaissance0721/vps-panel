@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
@@ -198,6 +199,211 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 	}
 	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscription_published_nodes`, 0)
 	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, *created.RelayID)
+}
+
+func TestPublishedNodeWithoutPlansDoesNotCreateSubscriberClients(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
+	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
+	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "Source Proxy", 8443)
+	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target Proxy", 443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Basic", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		PlanIDSet: true, PlanID: &plan.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Direct Backup", Mode: NodeModeDirect, TargetProxyID: targetProxy.ID, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := sourceProxy.ID
+	relayNode, relayMutation, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Relay Backup", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+		TargetProxyID: targetProxy.ID, Enabled: true,
+	})
+	if err != nil || relayMutation == nil || relayNode.RelayID == nil {
+		t.Fatalf("relay backup = %+v, mutation = %+v, error = %v", relayNode, relayMutation, err)
+	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscription_plan_nodes`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 100`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 1, *relayNode.RelayID)
+}
+
+func TestCreatePublishedNodeWithPlansReconcilesSubscribersAndPreservesPlanOrder(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "HK", "198.51.100.10")
+	insertSubscriptionTestServer(t, db, 2, "LA", "203.0.113.20")
+	insertSubscriptionTestServer(t, db, 3, "SG", "203.0.113.30")
+	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "HK Source", 8443)
+	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "LA Target", 443)
+	directProxy := createSubscriptionTestRealityProxy(t, db, 3, "SG Direct", 9443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		VALUES (101, 'bob', 'hash', 'subscriber', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscriber_profiles
+		(user_id, enabled, subscription_token, created_at, updated_at) VALUES (101, 1, 'bob-token', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscriber_usage (user_id, cycle_started_at, updated_at) VALUES (101, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Premium", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, userID := range []int64{100, 101} {
+		if _, _, err := service.UpdateSubscriber(t.Context(), userID, UpdateSubscriberInput{
+			PlanIDSet: true, PlanID: &plan.ID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	direct, directRelayMutation, directMutations, err := service.CreatePublishedNodeWithPlans(
+		t.Context(), CreatePublishedNodeInput{
+			Name: "SG Direct", Mode: NodeModeDirect, TargetProxyID: directProxy.ID,
+			PlanIDs: []int64{plan.ID}, Enabled: true,
+		},
+	)
+	if err != nil || directRelayMutation != nil || len(directMutations) != 1 || directMutations[0].ServerID != 3 {
+		t.Fatalf("direct node = %+v, relay mutation = %+v, proxy mutations = %+v, error = %v",
+			direct, directRelayMutation, directMutations, err)
+	}
+
+	sourceID := sourceProxy.ID
+	relayNode, relayMutation, proxyMutations, err := service.CreatePublishedNodeWithPlans(
+		t.Context(), CreatePublishedNodeInput{
+			Name: "HK via LA", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+			TargetProxyID: targetProxy.ID, PlanIDs: []int64{plan.ID}, Enabled: true,
+		},
+	)
+	if err != nil || relayMutation == nil || relayMutation.ServerID != 1 || relayNode.RelayID == nil ||
+		len(proxyMutations) != 1 || proxyMutations[0].ServerID != 2 {
+		t.Fatalf("relay node = %+v, relay mutation = %+v, proxy mutations = %+v, error = %v",
+			relayNode, relayMutation, proxyMutations, err)
+	}
+	updatedPlan, err := service.GetPlan(t.Context(), plan.ID)
+	if err != nil || len(updatedPlan.Nodes) != 2 || updatedPlan.Nodes[0].ID != direct.ID ||
+		updatedPlan.Nodes[0].Position != 1 || updatedPlan.Nodes[1].ID != relayNode.ID || updatedPlan.Nodes[1].Position != 2 {
+		t.Fatalf("plan after published node append = %+v, error = %v", updatedPlan, err)
+	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients WHERE proxy_id = ?`, 0, sourceProxy.ID)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients WHERE proxy_id = ?`, 2, targetProxy.ID)
+	for _, value := range []struct {
+		userID   int64
+		username string
+	}{{100, "alice"}, {101, "bob"}} {
+		var clientID int64
+		var name string
+		if err := db.QueryRow(`SELECT mapping.client_id, clients.name
+			FROM subscriber_clients AS mapping JOIN clients ON clients.id = mapping.client_id
+			WHERE mapping.user_id = ? AND mapping.proxy_id = ?`, value.userID, targetProxy.ID).
+			Scan(&clientID, &name); err != nil {
+			t.Fatal(err)
+		}
+		if name != subscriberClientName(value.username, targetProxy.Name) {
+			t.Fatalf("subscriber %s target client name = %q", value.username, name)
+		}
+		assertSubscriberClientShape(t, db, clientID, value.userID, true)
+		subscriber, err := service.GetSubscriber(t.Context(), value.userID)
+		if err != nil || subscriber.EnabledNodeCount != 2 || subscriber.ClientCount != 2 {
+			t.Fatalf("subscriber %s after node append = %+v, error = %v", value.username, subscriber, err)
+		}
+	}
+	desired, err := proxystore.ListDesired(t.Context(), db, 2)
+	if err != nil || len(desired) != 1 || desired[0].ID != targetProxy.ID || len(desired[0].Clients) != 3 {
+		t.Fatalf("target desired state = %+v, error = %v", desired, err)
+	}
+	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || len(data.Nodes) != 2 {
+		t.Fatalf("subscription after node append = %+v, error = %v", data, err)
+	}
+	var aliceTargetClientID int64
+	if err := db.QueryRow(`SELECT client_id FROM subscriber_clients WHERE user_id = 100 AND proxy_id = ?`, targetProxy.ID).
+		Scan(&aliceTargetClientID); err != nil {
+		t.Fatal(err)
+	}
+	targetShare, err := service.proxies.GetClientShare(t.Context(), aliceTargetClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayShare := data.Nodes[1]
+	if relayShare.Client.ID != aliceTargetClientID || relayShare.UUID != targetShare.UUID ||
+		relayShare.Address != relayNode.EntryAddress || relayShare.Port != relayNode.EntryPort {
+		t.Fatalf("relay subscription share = %+v, target share = %+v", relayShare, targetShare)
+	}
+
+	_, removalMutations, err := service.UpdatePublishedNode(t.Context(), relayNode.ID, UpdatePublishedNodeInput{
+		PlanIDsSet: true, PlanIDs: []int64{},
+	})
+	if err != nil || len(removalMutations) != 1 || removalMutations[0].ServerID != 2 {
+		t.Fatalf("remove relay node from plan mutations = %+v, error = %v", removalMutations, err)
+	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscription_plan_nodes WHERE published_node_id = ?`, 0, relayNode.ID)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients WHERE proxy_id = ?`, 0, targetProxy.ID)
+	updatedPlan, err = service.GetPlan(t.Context(), plan.ID)
+	if err != nil || len(updatedPlan.Nodes) != 1 || updatedPlan.Nodes[0].ID != direct.ID || updatedPlan.Nodes[0].Position != 1 {
+		t.Fatalf("plan after relay removal = %+v, error = %v", updatedPlan, err)
+	}
+}
+
+func TestCreatePublishedNodeWithPlansRollsBackAllChanges(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
+	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
+	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "Source Proxy", 8443)
+	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target Proxy", 443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Basic", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{
+		PlanIDSet: true, PlanID: &plan.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var sourceVersion, targetVersion int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&sourceVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 2`).Scan(&targetVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_subscriber_mapping BEFORE INSERT ON subscriber_clients
+		BEGIN SELECT RAISE(ABORT, 'reject subscriber mapping'); END`); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := sourceProxy.ID
+	if _, _, _, err := service.CreatePublishedNodeWithPlans(t.Context(), CreatePublishedNodeInput{
+		Name: "Rollback", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+		TargetProxyID: targetProxy.ID, PlanIDs: []int64{plan.ID}, Enabled: true,
+	}); err == nil {
+		t.Fatal("expected atomic published node creation failure")
+	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscription_published_nodes`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscription_plan_nodes`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM subscriber_clients`, 0)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM clients WHERE assigned_user_id = 100`, 0)
+	var sourceAfter, targetAfter int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&sourceAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 2`).Scan(&targetAfter); err != nil {
+		t.Fatal(err)
+	}
+	if sourceAfter != sourceVersion || targetAfter != targetVersion {
+		t.Fatalf("rolled back desired versions = source %d/%d target %d/%d",
+			sourceVersion, sourceAfter, targetVersion, targetAfter)
+	}
 }
 
 func TestRelayPublishedNodeCreationRollsBackRelay(t *testing.T) {

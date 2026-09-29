@@ -73,6 +73,7 @@ const nodeTargetProxyID = ref<number | null>(null)
 const nodeSourceProxyID = ref<number | null>(null)
 const nodeTrafficMultiplier = ref<number | null>(1)
 const nodeEnabled = ref(true)
+const nodePlanIDs = ref<number[]>([])
 const nodeFormError = ref('')
 
 const planModalOpen = ref(false)
@@ -151,6 +152,7 @@ function openCreateNode() {
   nodeSourceProxyID.value = null
   nodeTrafficMultiplier.value = 1
   nodeEnabled.value = true
+  nodePlanIDs.value = []
   nodeModalOpen.value = true
 }
 
@@ -163,7 +165,13 @@ function openEditNode(value: PublishedNode) {
   nodeSourceProxyID.value = value.source_proxy_id ?? null
   nodeTrafficMultiplier.value = value.traffic_multiplier
   nodeEnabled.value = value.enabled
+  nodePlanIDs.value = plans.value.filter((plan) => plan.nodes.some((node) => node.id === value.id)).map((plan) => plan.id)
   nodeModalOpen.value = true
+}
+
+function toggleNodePlan(id: number, checked: boolean) {
+  if (checked && !nodePlanIDs.value.includes(id)) nodePlanIDs.value.push(id)
+  if (!checked) nodePlanIDs.value = nodePlanIDs.value.filter((value) => value !== id)
 }
 
 async function saveNode() {
@@ -177,7 +185,10 @@ async function saveNode() {
   await run(async () => {
     if (editingNode.value) {
       await api(`/api/admin/subscription/nodes/${editingNode.value.id}`, {
-        method: 'PATCH', body: JSON.stringify({ name: nodeName.value, traffic_multiplier: multiplier, enabled: nodeEnabled.value }),
+        method: 'PATCH', body: JSON.stringify({
+          name: nodeName.value, traffic_multiplier: multiplier, enabled: nodeEnabled.value,
+          plan_ids: nodePlanIDs.value,
+        }),
       })
     } else {
       await api('/api/admin/subscription/nodes', {
@@ -185,7 +196,7 @@ async function saveNode() {
         body: JSON.stringify({
           name: nodeName.value, mode: nodeMode.value, target_proxy_id: nodeTargetProxyID.value,
           source_proxy_id: nodeMode.value === 'relay' ? nodeSourceProxyID.value : null,
-          traffic_multiplier: multiplier, enabled: nodeEnabled.value,
+          traffic_multiplier: multiplier, enabled: nodeEnabled.value, plan_ids: nodePlanIDs.value,
         }),
       })
     }
@@ -407,6 +418,10 @@ function nodeDisplayName(value: PublishedNode) {
   return `${value.name} [${Number(value.traffic_multiplier.toFixed(2))}×]`
 }
 
+function nodePlanNames(nodeID: number) {
+  return plans.value.filter((plan) => plan.nodes.some((node) => node.id === nodeID)).map((plan) => plan.name).join('、')
+}
+
 onMounted(async () => {
   try {
     await loadAll()
@@ -455,6 +470,7 @@ onMounted(async () => {
         <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · {{ value.source_proxy_name }} → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-if="value.mode === 'relay'">入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
+        <p>所属套餐：{{ nodePlanNames(value.id) || '未加入套餐' }}</p>
         <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
       </n-card>
     </div>
@@ -470,6 +486,10 @@ onMounted(async () => {
     </template>
     <n-alert v-else type="info">创建后不能修改模式、中转 Proxy 或落地 Proxy；如需改变拓扑，请删除后重新创建。</n-alert>
     <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入套餐流量。允许 0.10×–5.00×。</small></label>
+    <fieldset class="subscription-node-picker"><legend>{{ editingNode ? '所属套餐' : '加入套餐' }}</legend>
+      <span v-if="plans.length === 0" class="form-help">暂无套餐，可先创建备用发布节点。</span>
+      <label v-for="plan in plans" :key="plan.id" class="subscription-node-option"><input type="checkbox" :checked="nodePlanIDs.includes(plan.id)" @change="toggleNodePlan(plan.id, ($event.target as HTMLInputElement).checked)" /><span>{{ plan.name }}</span></label>
+    </fieldset>
     <div class="switch-row"><span>启用发布节点</span><n-switch v-model:value="nodeEnabled" /></div>
     <div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="!nodeTargetProxyID || (nodeMode === 'relay' && !nodeSourceProxyID)">保存</n-button></div>
   </form></n-card></n-modal>

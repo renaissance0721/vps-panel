@@ -75,6 +75,7 @@ type CreatePublishedNodeInput struct {
 	Mode                string
 	TargetProxyID       int64
 	SourceProxyID       *int64
+	PlanIDs             []int64
 	TrafficMultiplierBP int
 	Enabled             bool
 }
@@ -83,6 +84,8 @@ type UpdatePublishedNodeInput struct {
 	Name                *string
 	TrafficMultiplierBP *int
 	Enabled             *bool
+	PlanIDsSet          bool
+	PlanIDs             []int64
 }
 
 type Plan struct {

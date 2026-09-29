@@ -20,6 +20,7 @@ type createSubscriptionPublishedNodeRequest struct {
 	Mode              string          `json:"mode"`
 	TargetProxyID     int64           `json:"target_proxy_id"`
 	SourceProxyID     *int64          `json:"source_proxy_id"`
+	PlanIDs           []int64         `json:"plan_ids"`
 	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
 	Enabled           *bool           `json:"enabled"`
 }
@@ -28,6 +29,7 @@ type updateSubscriptionPublishedNodeRequest struct {
 	Name              *string         `json:"name"`
 	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
 	Enabled           *bool           `json:"enabled"`
+	PlanIDs           *[]int64        `json:"plan_ids"`
 }
 
 type subscriptionPublishedNodeResponse struct {
@@ -108,15 +110,17 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 			return
 		}
 	}
-	value, mutation, err := s.subscriptions.CreatePublishedNode(r.Context(), subscriptionstore.CreatePublishedNodeInput{
+	value, relayMutation, proxyMutations, err := s.subscriptions.CreatePublishedNodeWithPlans(r.Context(), subscriptionstore.CreatePublishedNodeInput{
 		Name: request.Name, Mode: mode, TargetProxyID: request.TargetProxyID,
-		SourceProxyID: request.SourceProxyID, TrafficMultiplierBP: multiplierBP, Enabled: enabled,
+		SourceProxyID: request.SourceProxyID, PlanIDs: request.PlanIDs,
+		TrafficMultiplierBP: multiplierBP, Enabled: enabled,
 	})
 	if err != nil {
 		writeSubscriptionPublishedNodeError(w, err)
 		return
 	}
-	s.notifySubscriptionRelayMutation(mutation)
+	s.notifySubscriptionRelayMutation(relayMutation)
+	s.notifyProxyMutations(proxyMutations)
 	writeJSON(w, http.StatusCreated, map[string]any{"node": toSubscriptionPublishedNodeResponse(value)})
 }
 
@@ -138,8 +142,13 @@ func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	if multiplierSet {
 		multiplier = &multiplierBP
 	}
+	var planIDs []int64
+	if request.PlanIDs != nil {
+		planIDs = *request.PlanIDs
+	}
 	value, mutations, err := s.subscriptions.UpdatePublishedNode(r.Context(), id, subscriptionstore.UpdatePublishedNodeInput{
 		Name: request.Name, TrafficMultiplierBP: multiplier, Enabled: request.Enabled,
+		PlanIDsSet: request.PlanIDs != nil, PlanIDs: planIDs,
 	})
 	if err != nil {
 		writeSubscriptionPublishedNodeError(w, err)
@@ -187,12 +196,16 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
 		writeError(w, http.StatusNotFound, "发布节点不存在")
+	case errors.Is(err, subscriptionstore.ErrPlanNotFound):
+		writeError(w, http.StatusNotFound, "选择的套餐不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeName):
 		writeError(w, http.StatusBadRequest, "发布名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, subscriptionstore.ErrInvalidTrafficMultiplier):
 		writeError(w, http.StatusBadRequest, "流量倍率必须为 0.10–5.00，且最多两位小数")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeMode):
 		writeError(w, http.StatusBadRequest, "发布模式仅支持单一节点或中转 + 落地")
+	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
+		writeError(w, http.StatusBadRequest, "所属套餐无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
 		writeError(w, http.StatusNotFound, "落地节点不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrSourceProxyNotFound):

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,42 +37,53 @@ func (s *Service) GetPublishedNode(ctx context.Context, id int64) (PublishedNode
 }
 
 func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublishedNodeInput) (PublishedNode, *relay.Mutation, error) {
+	created, relayMutation, _, err := s.CreatePublishedNodeWithPlans(ctx, input)
+	return created, relayMutation, err
+}
+
+func (s *Service) CreatePublishedNodeWithPlans(
+	ctx context.Context,
+	input CreatePublishedNodeInput,
+) (PublishedNode, *relay.Mutation, []proxystore.Mutation, error) {
 	name, err := validatePublishedNodeName(input.Name)
 	if err != nil {
-		return PublishedNode{}, nil, err
+		return PublishedNode{}, nil, nil, err
 	}
 	mode := strings.ToLower(strings.TrimSpace(input.Mode))
 	if mode != NodeModeDirect && mode != NodeModeRelay {
-		return PublishedNode{}, nil, ErrInvalidNodeMode
+		return PublishedNode{}, nil, nil, ErrInvalidNodeMode
 	}
 	if input.TargetProxyID <= 0 {
-		return PublishedNode{}, nil, ErrTargetProxyNotFound
+		return PublishedNode{}, nil, nil, ErrTargetProxyNotFound
 	}
 	if mode == NodeModeDirect && input.SourceProxyID != nil {
-		return PublishedNode{}, nil, ErrInvalidNodeTopology
+		return PublishedNode{}, nil, nil, ErrInvalidNodeTopology
 	}
 	if mode == NodeModeRelay && (input.SourceProxyID == nil || *input.SourceProxyID <= 0) {
-		return PublishedNode{}, nil, ErrSourceProxyRequired
+		return PublishedNode{}, nil, nil, ErrSourceProxyRequired
 	}
 	multiplierBP, err := normalizeTrafficMultiplierBP(input.TrafficMultiplierBP)
 	if err != nil {
-		return PublishedNode{}, nil, err
+		return PublishedNode{}, nil, nil, err
+	}
+	if err := validatePublishedNodePlanIDs(input.PlanIDs); err != nil {
+		return PublishedNode{}, nil, nil, err
 	}
 
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return PublishedNode{}, nil, fmt.Errorf("begin published node creation: %w", err)
+		return PublishedNode{}, nil, nil, fmt.Errorf("begin published node creation: %w", err)
 	}
 	defer tx.Rollback()
 	if _, err := getProxyTopology(ctx, tx, input.TargetProxyID, ErrTargetProxyNotFound); err != nil {
-		return PublishedNode{}, nil, err
+		return PublishedNode{}, nil, nil, err
 	}
 	if err := proxystore.RequireAdminCreatedProxy(ctx, tx, input.TargetProxyID); err != nil {
 		if errors.Is(err, proxystore.ErrNotDistributable) {
-			return PublishedNode{}, nil, ErrServerNotDistributable
+			return PublishedNode{}, nil, nil, ErrServerNotDistributable
 		}
-		return PublishedNode{}, nil, err
+		return PublishedNode{}, nil, nil, err
 	}
 
 	var relayID any
@@ -79,17 +91,17 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 	if mode == NodeModeRelay {
 		source, err := getProxyTopology(ctx, tx, *input.SourceProxyID, ErrSourceProxyNotFound)
 		if err != nil {
-			return PublishedNode{}, nil, err
+			return PublishedNode{}, nil, nil, err
 		}
 		if err := proxystore.RequireAdminCreatedProxy(ctx, tx, *input.SourceProxyID); err != nil {
 			if errors.Is(err, proxystore.ErrNotDistributable) {
-				return PublishedNode{}, nil, ErrServerNotDistributable
+				return PublishedNode{}, nil, nil, ErrServerNotDistributable
 			}
-			return PublishedNode{}, nil, err
+			return PublishedNode{}, nil, nil, err
 		}
 		port, err := relay.RandomUserRelayPort(ctx, tx, source.serverID)
 		if err != nil {
-			return PublishedNode{}, nil, err
+			return PublishedNode{}, nil, nil, err
 		}
 		createdRelayID, createdMutation, err := s.relays.CreateSubscriptionRelayTx(ctx, tx, relay.CreateInput{
 			ServerID: source.serverID, Name: name, ListenAddress: "0.0.0.0", ListenPort: port,
@@ -98,7 +110,7 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 			Network: relay.NetworkTCP, Enabled: input.Enabled,
 		}, now)
 		if err != nil {
-			return PublishedNode{}, nil, err
+			return PublishedNode{}, nil, nil, err
 		}
 		relayID = createdRelayID
 		mutation = &createdMutation
@@ -112,22 +124,43 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 		input.Enabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
-		return PublishedNode{}, nil, fmt.Errorf("create published node: %w", err)
+		return PublishedNode{}, nil, nil, fmt.Errorf("create published node: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return PublishedNode{}, nil, fmt.Errorf("read published node id: %w", err)
+		return PublishedNode{}, nil, nil, fmt.Errorf("read published node id: %w", err)
+	}
+	changedPlanIDs, err := syncPublishedNodePlansTx(
+		ctx, tx, id, input.TargetProxyID, input.PlanIDs, now,
+	)
+	if err != nil {
+		return PublishedNode{}, nil, nil, err
+	}
+	affected := make(map[int64]struct{})
+	for _, planID := range changedPlanIDs {
+		if err := s.reconcilePlanSubscribersTx(ctx, tx, planID, now, affected); err != nil {
+			return PublishedNode{}, nil, nil, err
+		}
+	}
+	mutations, err := bumpAffectedServers(ctx, tx, affected, now)
+	if err != nil {
+		return PublishedNode{}, nil, nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return PublishedNode{}, nil, fmt.Errorf("commit published node creation: %w", err)
+		return PublishedNode{}, nil, nil, fmt.Errorf("commit published node creation: %w", err)
 	}
 	created, err := s.GetPublishedNode(ctx, id)
-	return created, mutation, err
+	return created, mutation, mutations, err
 }
 
 func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input UpdatePublishedNodeInput) (PublishedNode, []proxystore.Mutation, error) {
-	if input.Name == nil && input.TrafficMultiplierBP == nil && input.Enabled == nil {
+	if input.Name == nil && input.TrafficMultiplierBP == nil && input.Enabled == nil && !input.PlanIDsSet {
 		return PublishedNode{}, nil, ErrInvalidNodeUpdate
+	}
+	if input.PlanIDsSet {
+		if err := validatePublishedNodePlanIDs(input.PlanIDs); err != nil {
+			return PublishedNode{}, nil, err
+		}
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -137,12 +170,13 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 	defer tx.Rollback()
 
 	var currentName, mode string
+	var targetProxyID int64
 	var currentMultiplierBP, currentEnabled int
 	var relayID sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT name, mode, relay_id, traffic_multiplier_bp, enabled
+		`SELECT name, mode, target_proxy_id, relay_id, traffic_multiplier_bp, enabled
 		 FROM subscription_published_nodes WHERE id = ?`, id,
-	).Scan(&currentName, &mode, &relayID, &currentMultiplierBP, &currentEnabled)
+	).Scan(&currentName, &mode, &targetProxyID, &relayID, &currentMultiplierBP, &currentEnabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishedNode{}, nil, ErrPublishedNodeNotFound
 	}
@@ -187,6 +221,17 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 		name, multiplierBP, enabled, now.Unix(), id,
 	); err != nil {
 		return PublishedNode{}, nil, fmt.Errorf("update published node: %w", err)
+	}
+	if input.PlanIDsSet {
+		changedPlanIDs, err := syncPublishedNodePlansTx(ctx, tx, id, targetProxyID, input.PlanIDs, now)
+		if err != nil {
+			return PublishedNode{}, nil, err
+		}
+		for _, planID := range changedPlanIDs {
+			if err := s.reconcilePlanSubscribersTx(ctx, tx, planID, now, affected); err != nil {
+				return PublishedNode{}, nil, err
+			}
+		}
 	}
 	if enabled != (currentEnabled != 0) {
 		if err := s.reconcilePublishedNodeSubscribersTx(ctx, tx, id, now, affected); err != nil {
@@ -358,6 +403,122 @@ func listPublishedNodes(ctx context.Context, query interface {
 		return nil, fmt.Errorf("iterate published nodes: %w", err)
 	}
 	return values, nil
+}
+
+func syncPublishedNodePlansTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID, targetProxyID int64,
+	planIDs []int64,
+	now time.Time,
+) ([]int64, error) {
+	if err := validatePublishedNodePlanIDs(planIDs); err != nil {
+		return nil, err
+	}
+	current := make(map[int64]struct{})
+	rows, err := tx.QueryContext(ctx,
+		`SELECT plan_id FROM subscription_plan_nodes WHERE published_node_id = ?`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list published node plans: %w", err)
+	}
+	for rows.Next() {
+		var planID int64
+		if err := rows.Scan(&planID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan published node plan: %w", err)
+		}
+		current[planID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate published node plans: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close published node plans: %w", err)
+	}
+
+	requested := make(map[int64]struct{}, len(planIDs))
+	for _, planID := range planIDs {
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM subscription_plans WHERE id = ?`, planID,
+		).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrPlanNotFound
+		} else if err != nil {
+			return nil, fmt.Errorf("find subscription plan for published node: %w", err)
+		}
+		var conflicts int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+			FROM subscription_plan_nodes AS mapping
+			JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
+			WHERE mapping.plan_id = ? AND nodes.target_proxy_id = ? AND nodes.id <> ?`,
+			planID, targetProxyID, nodeID,
+		).Scan(&conflicts); err != nil {
+			return nil, fmt.Errorf("check published node plan target: %w", err)
+		}
+		if conflicts != 0 {
+			return nil, ErrInvalidPlanNodes
+		}
+		requested[planID] = struct{}{}
+	}
+
+	changed := make(map[int64]struct{})
+	for planID := range current {
+		if _, keep := requested[planID]; keep {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM subscription_plan_nodes WHERE plan_id = ? AND published_node_id = ?`,
+			planID, nodeID,
+		); err != nil {
+			return nil, fmt.Errorf("remove published node from subscription plan: %w", err)
+		}
+		changed[planID] = struct{}{}
+	}
+	for _, planID := range planIDs {
+		if _, exists := current[planID]; exists {
+			continue
+		}
+		var position int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(position), 0) + 1 FROM subscription_plan_nodes WHERE plan_id = ?`, planID,
+		).Scan(&position); err != nil {
+			return nil, fmt.Errorf("read subscription plan append position: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO subscription_plan_nodes (plan_id, published_node_id, position) VALUES (?, ?, ?)`,
+			planID, nodeID, position,
+		); err != nil {
+			return nil, fmt.Errorf("add published node to subscription plan: %w", err)
+		}
+		changed[planID] = struct{}{}
+	}
+
+	changedPlanIDs := make([]int64, 0, len(changed))
+	for planID := range changed {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE subscription_plans SET updated_at = ? WHERE id = ?`, now.Unix(), planID,
+		); err != nil {
+			return nil, fmt.Errorf("touch subscription plan for published node: %w", err)
+		}
+		changedPlanIDs = append(changedPlanIDs, planID)
+	}
+	sort.Slice(changedPlanIDs, func(i, j int) bool { return changedPlanIDs[i] < changedPlanIDs[j] })
+	return changedPlanIDs, nil
+}
+
+func validatePublishedNodePlanIDs(planIDs []int64) error {
+	seen := make(map[int64]struct{}, len(planIDs))
+	for _, planID := range planIDs {
+		if planID <= 0 {
+			return ErrInvalidPlanNodes
+		}
+		if _, exists := seen[planID]; exists {
+			return ErrInvalidPlanNodes
+		}
+		seen[planID] = struct{}{}
+	}
+	return nil
 }
 
 func getProxyTopology(ctx context.Context, query interface {

@@ -29,14 +29,3 @@ export type PasswordChangeRequest = {
   created_at: string
   reviewed_at: string | null
 }
-
-export type AdminUserRelay = {
-  id: number
-  name: string
-  username: string
-  mode: 'assigned_node' | 'custom'
-  source: { server_name: string; proxy_name: string }
-  target?: { server_name: string; proxy_name: string }
-  entry_address: string
-  created_at: string
-}

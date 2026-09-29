@@ -15,7 +15,6 @@ import type {
   Invitation,
   Overview,
   PasswordChangeRequest,
-  AdminUserRelay,
 } from '../types/overview'
 
 import {
@@ -27,7 +26,6 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
   const generatedLink = ref('')
 	const invitationRole = ref<'vip' | 'user' | 'subscriber'>('vip')
 	const passwordChangeRequests = ref<PasswordChangeRequest[]>([])
-	const userRelays = ref<AdminUserRelay[]>([])
   const copied = ref(false)
   const backupFile = ref<File | null>(null)
   const backupBusy = ref(false)
@@ -67,19 +65,6 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
 	  await submit(async () => {
 		await api(`/api/admin/password-change-requests/${id}/${action}`, { method: 'POST' })
 		await loadPasswordChangeRequests()
-	  })
-	}
-
-	async function loadUserRelays() {
-	  const response = await api<{ relays: AdminUserRelay[] }>('/api/admin/user-relays')
-	  userRelays.value = response.relays
-	}
-
-	async function deleteUserRelay(id: number) {
-	  if (!window.confirm('确定删除这条普通用户中转吗？')) return
-	  await submit(async () => {
-		await api(`/api/admin/user-relays/${id}`, { method: 'DELETE' })
-		await loadUserRelays()
 	  })
 	}
 
@@ -165,14 +150,13 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
       backupBusy.value = false
     }
   }
-  function resetSession() { invitations.value = []; overview.value = null; generatedLink.value = ''; passwordChangeRequests.value = []; userRelays.value = []; backupFile.value = null; backupStatus.value = '' }
+  function resetSession() { invitations.value = []; overview.value = null; generatedLink.value = ''; passwordChangeRequests.value = []; backupFile.value = null; backupStatus.value = '' }
   return {
     invitations,
     overview,
     generatedLink,
 	invitationRole,
 	passwordChangeRequests,
-	userRelays,
     copied,
     backupFile,
     backupBusy,
@@ -184,9 +168,7 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
     loadOverview,
     loadInvitations,
 	loadPasswordChangeRequests,
-	loadUserRelays,
 	reviewPasswordChangeRequest,
-	deleteUserRelay,
     createInvitation,
     revokeInvitation,
     copyInvitation,

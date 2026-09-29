@@ -10,6 +10,7 @@ import {
 import type {
   ServersViewState,
 } from '../../composables/useServers'
+import { userRoleLabel } from '../../format'
 
 const props = defineProps<{
   model: Pick<ServersViewState,
@@ -71,7 +72,7 @@ const {
                       :value="user.id"
                       :disabled="submitting || user.id === state?.user?.id"
                     />
-                    <span>{{ user.username }}（{{ user.role }}）</span>
+                    <span>{{ user.username }}（{{ userRoleLabel(user.role) }}）</span>
                   </label>
                 </fieldset>
                 <n-button type="primary" attr-type="submit" :loading="submitting">

@@ -19,7 +19,7 @@ test('普通 user 使用独立门户且登录初始化不加载管理数据', ()
   assert.doesNotMatch(portalSource, /\/api\/me\/password-change-request/)
 })
 
-test('普通用户门户按需请求分享并只展示轻量节点与中转表单', () => {
+test('拼车用户门户按需请求分享并只展示轻量节点与中转表单', () => {
   assert.match(portalSource, /\/api\/me\/nodes\/\$\{node\.client_id\}\/share/)
   assert.match(portalSource, /\/api\/me\/relays\/\$\{relay\.id\}\/share/)
   assert.match(portalSource, /source_client_id: sourceClientID\.value/)
@@ -38,7 +38,7 @@ test('普通用户门户按需请求分享并只展示轻量节点与中转表�
   assert.doesNotMatch(portalSource, /REALITY Public Key|desired state|listen_address|server_id/)
 })
 
-test('普通用户只通过专用接口修改自己的 Client Name', () => {
+test('拼车用户只通过专用接口修改自己的 Client Name', () => {
   assert.ok(portalSource.includes('/api/me/nodes/${node.client_id}'))
   assert.match(portalSource, /body: JSON\.stringify\(\{ name: nodeName\.value\.trim\(\) \}\)/)
   assert.match(portalSource, /title="编辑节点"/)
@@ -47,7 +47,7 @@ test('普通用户只通过专用接口修改自己的 Client Name', () => {
   assert.match(portalSource, /客户端名称/)
 })
 
-test('普通用户门户使用统一品牌和紧凑 section title', () => {
+test('拼车用户门户使用统一品牌和紧凑 section title', () => {
   assert.match(portalSource, /class="app-brand app-brand--portal">夕凪云/)
   assert.match(portalSource, /<h2 class="portal-section-title">我的节点<\/h2>/)
   assert.match(portalSource, /<h2 class="portal-section-title">我的中转<\/h2>/)
@@ -60,7 +60,7 @@ test('用户门户各区域独立加载且管理员中转页标记用户中转',
     assert.match(portalSource, new RegExp(`async function ${loader}\\(`))
   }
   assert.doesNotMatch(portalSource, /loadPasswordRequest|申请修改密码|<h1>账号<\/h1>/)
-  assert.match(clientFormSource, /普通用户/)
+  assert.match(clientFormSource, /拼车用户/)
   assert.match(clientFormSource, /付款周期/)
   assert.doesNotMatch(serverDetailSource, /普通用户中转池|user-relay-pool/)
   assert.match(relayViewSource, /用户中转/)

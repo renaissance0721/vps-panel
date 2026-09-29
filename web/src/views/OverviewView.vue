@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  computed,
   toRefs,
 } from 'vue'
 import {
@@ -13,23 +12,17 @@ import {
 import type {
   OverviewViewState,
 } from '../composables/useOverview'
-import { adminFirst } from '../adminFirst'
+import { userRoleLabel } from '../format'
 
-const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'invitationRole' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation' | 'passwordChangeRequests' | 'reviewPasswordChangeRequest' | 'userRelays' | 'deleteUserRelay' | 'backupFile' | 'backupBusy' | 'backupStatus' | 'selectBackup' | 'exportBackup' | 'importBackup'> }>()
-const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, invitationRole, copyInvitation, copied, invitations, formatTime, revokeInvitation, passwordChangeRequests, reviewPasswordChangeRequest, userRelays, deleteUserRelay, backupFile, backupBusy, backupStatus, selectBackup, exportBackup, importBackup } = toRefs(props.model)
-const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
+const props = defineProps<{ model: Pick<OverviewViewState, 'overview' | 'isHealthy' | 'health' | 'state' | 'submitting' | 'createInvitation' | 'generatedLink' | 'invitationRole' | 'copyInvitation' | 'copied' | 'invitations' | 'formatTime' | 'revokeInvitation' | 'passwordChangeRequests' | 'reviewPasswordChangeRequest' | 'backupFile' | 'backupBusy' | 'backupStatus' | 'selectBackup' | 'exportBackup' | 'importBackup'> }>()
+const { overview, isHealthy, health, state, submitting, createInvitation, generatedLink, invitationRole, copyInvitation, copied, invitations, formatTime, revokeInvitation, passwordChangeRequests, reviewPasswordChangeRequest, backupFile, backupBusy, backupStatus, selectBackup, exportBackup, importBackup } = toRefs(props.model)
 </script>
 
 <template>
-<div class="overview-summary-grid">
+  <div class="overview-page">
+    <div class="overview-summary-grid">
             <n-card title="已注册账号" :bordered="true" class="overview-summary-card">
               <strong class="overview-summary-number">{{ overview?.users.length ?? '—' }}</strong>
-              <div class="overview-users">
-                <div v-for="account in orderedUsers" :key="account.username" class="overview-user">
-                  <span>{{ account.username }}</span>
-                  <n-tag :type="account.role === 'admin' ? 'info' : 'default'" size="small">{{ account.role === 'admin' ? '管理员' : account.role === 'vip' ? 'VIP' : account.role === 'subscriber' ? '订阅用户' : '普通用户' }}</n-tag>
-                </div>
-              </div>
             </n-card>
             <n-card title="服务器" :bordered="true" class="overview-summary-card">
               <span class="overview-summary-caption">当前账号可访问</span>
@@ -59,10 +52,12 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 
             <n-card v-if="state?.user?.role === 'admin'" title="邀请账号" :bordered="true">
               <p class="card-copy">生成 24 小时有效的一次性注册链接。</p>
-			  <label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP</option><option value="user">普通用户</option><option value="subscriber">订阅用户</option></select></label>
-              <n-button type="primary" :loading="submitting" @click="createInvitation">
-                生成邀请链接
-              </n-button>
+			  <div class="invitation-form">
+				<label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP用户</option><option value="user">拼车用户</option><option value="subscriber">订阅用户</option></select></label>
+                <n-button type="primary" :loading="submitting" @click="createInvitation">
+                  生成邀请链接
+                </n-button>
+			  </div>
               <div v-if="generatedLink" class="generated-link">
                 <strong>请立即保存，此链接不会再次显示</strong>
                 <n-input :value="generatedLink" readonly />
@@ -80,7 +75,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
                 <div>
                   <strong>邀请 #{{ invitation.id }}</strong>
                   <span>
-					角色：{{ invitation.role === 'vip' ? 'VIP' : invitation.role === 'subscriber' ? '订阅用户' : '普通用户' }} · {{ invitation.created_by_username }} 创建 ·
+                    角色：{{ userRoleLabel(invitation.role) }} · {{ invitation.created_by_username }} 创建 ·
                     {{ formatTime(invitation.expires_at) }} 过期
                   </span>
                 </div>
@@ -100,17 +95,8 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
 			<n-empty v-if="passwordChangeRequests.length === 0" description="当前没有待审核申请" />
 			<div v-else class="invitation-list">
 			  <div v-for="request in passwordChangeRequests" :key="request.id" class="invitation-row">
-				<div><strong>{{ request.username }}</strong><span>{{ request.role === 'vip' ? 'VIP' : request.role === 'subscriber' ? '订阅用户' : '普通用户' }} · {{ formatTime(request.created_at) }} 提交</span></div>
+				<div><strong>{{ request.username }}</strong><span>{{ userRoleLabel(request.role) }} · {{ formatTime(request.created_at) }} 提交</span></div>
 				<div class="modal-actions"><n-tag type="warning" size="small">待审核</n-tag><n-button size="small" type="error" secondary :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'reject')">拒绝</n-button><n-button size="small" type="primary" :disabled="submitting" @click="reviewPasswordChangeRequest(request.id, 'approve')">批准</n-button></div>
-			  </div>
-			</div>
-		  </n-card>
-		  <n-card v-if="state?.user?.role === 'admin'" title="普通用户中转" :bordered="true">
-			<n-empty v-if="userRelays.length === 0" description="当前没有普通用户中转" />
-			<div v-else class="invitation-list">
-			  <div v-for="relay in userRelays" :key="relay.id" class="invitation-row">
-				<div><strong>{{ relay.username }} · {{ relay.name }}</strong><span>{{ relay.source.server_name }} · {{ relay.source.proxy_name }} → {{ relay.mode === 'assigned_node' && relay.target ? `${relay.target.server_name} · ${relay.target.proxy_name}` : '自定义落地' }} · {{ relay.entry_address }}</span></div>
-				<n-button size="small" type="error" secondary :disabled="submitting" @click="deleteUserRelay(relay.id)">删除</n-button>
 			  </div>
 			</div>
 		  </n-card>
@@ -124,4 +110,5 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
             <n-button type="error" :disabled="!backupFile || backupBusy" :loading="backupBusy" @click="importBackup">导入并恢复</n-button>
             <p v-if="backupStatus" role="status">{{ backupStatus }}</p>
           </n-card>
+  </div>
 </template>

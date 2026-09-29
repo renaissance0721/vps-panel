@@ -9,6 +9,7 @@ import {
 } from 'naive-ui'
 
 import { api } from '../api/client'
+import { userRoleLabel } from '../format'
 import type { AccessUser } from '../types/auth'
 
 const accounts = ref<AccessUser[]>([])
@@ -47,10 +48,6 @@ async function deleteAccount(account: AccessUser) {
   }
 }
 
-function roleLabel(role: AccessUser['role']) {
-  return role === 'admin' ? '管理员' : role === 'vip' ? 'VIP' : role === 'subscriber' ? '订阅用户' : '普通用户'
-}
-
 onMounted(loadAccounts)
 </script>
 
@@ -62,7 +59,7 @@ onMounted(loadAccounts)
       <n-empty v-if="accounts.length === 0" description="暂无账号" />
       <div v-else class="invitation-list">
         <div v-for="account in accounts" :key="account.id" class="invitation-row">
-          <div><strong>{{ account.username }}</strong><span>{{ roleLabel(account.role) }}</span></div>
+          <div><strong>{{ account.username }}</strong><span>{{ userRoleLabel(account.role) }}</span></div>
           <n-button v-if="account.role !== 'admin'" type="error" secondary size="small" :disabled="deleting" @click="deleteAccount(account)">删除用户</n-button>
         </div>
       </div>

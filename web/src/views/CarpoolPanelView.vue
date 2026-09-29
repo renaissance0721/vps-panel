@@ -54,7 +54,7 @@ onMounted(model.load)
   <div class="user-management">
     <div class="relay-toolbar user-management-toolbar">
       <label>
-        <span>普通用户</span>
+        <span>拼车用户</span>
         <select v-model.number="selectedUserID" class="settings-input" :disabled="loading" @change="model.selectUser">
           <option v-for="user in users" :key="user.id" :value="user.id">{{ user.username }}</option>
         </select>
@@ -66,11 +66,11 @@ onMounted(model.load)
 
     <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载用户信息…</span></div>
-    <n-empty v-else-if="users.length === 0" description="暂无普通用户" />
+    <n-empty v-else-if="users.length === 0" description="暂无拼车用户" />
 
     <template v-else-if="detail">
       <n-card class="user-management-summary" size="small">
-        <strong>{{ detail.user.username }} · 普通用户</strong>
+        <strong>{{ detail.user.username }} · 拼车用户</strong>
         <span>已开通节点 {{ assignedNodes.length }} · 自建中转 {{ detail.relays.length }} · 密码重置申请 {{ detail.password_request ? '等待审核' : '无' }}</span>
       </n-card>
 

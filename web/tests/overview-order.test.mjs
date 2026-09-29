@@ -8,11 +8,10 @@ import { proxyAddressLines } from '../src/proxy.ts'
 
 const source = async (path) => readFile(new URL(`../src/${path}`, import.meta.url), 'utf8')
 
-test('admin 在概览和服务器私有访问列表优先，组内顺序稳定', async () => {
+test('admin 在服务器私有访问列表优先，组内顺序稳定', async () => {
   const users = [{ role: 'vip', id: 1 }, { role: 'admin', id: 2 }, { role: 'vip', id: 3 }, { role: 'admin', id: 4 }]
   assert.deepEqual(adminFirst(users).map((user) => user.id), [2, 4, 1, 3])
   assert.deepEqual(users.map((user) => user.id), [1, 2, 3, 4])
-  assert.match(await source('views/OverviewView.vue'), /v-for="account in orderedUsers"/)
   assert.match(await source('composables/useServers.ts'), /adminFirst\(users\.value\)/)
   for (const path of ['components/server/ServerForm.vue', 'components/server/ServerBasicInfoForm.vue']) {
     assert.match(await source(path), /v-for="user in orderedUsers"/)
@@ -20,11 +19,25 @@ test('admin 在概览和服务器私有访问列表优先，组内顺序稳定',
   assert.match(await source('components/server/ServerForm.vue'), /user\.id === state\?\.user\?\.id/)
 })
 
-test('概览卡片说明位于计数之前', async () => {
+test('概览顶部三张卡片统一展示汇总数据', async () => {
   const view = await source('views/OverviewView.vue')
+  assert.match(view, /title="已注册账号"[\s\S]*overview\?\.users\.length/)
+  assert.equal((view.match(/class="overview-summary-card"/g) ?? []).length, 3)
+  assert.doesNotMatch(view, /overview-users|orderedUsers|v-for="account/)
   for (const [title, field] of [['服务器', 'server_count'], ['代理节点', 'proxy_count']]) {
     const card = view.slice(view.indexOf(`<n-card title="${title}"`))
     assert.ok(card.indexOf('overview-summary-caption') < card.indexOf(field))
+  }
+})
+
+test('概览不再加载或显示拼车用户中转管理模块', async () => {
+  const [app, view, model] = await Promise.all([
+    source('App.vue'),
+    source('views/OverviewView.vue'),
+    source('composables/useOverview.ts'),
+  ])
+  for (const value of [app, view, model]) {
+    assert.doesNotMatch(value, /userRelays|loadUserRelays|deleteUserRelay|\/api\/admin\/user-relays/)
   }
 })
 

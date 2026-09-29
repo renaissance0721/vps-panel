@@ -11,7 +11,8 @@ test('全局主题使用白色与淡蓝色 token 并统一柔和圆角', async (
   for (const token of ['--color-primary', '--color-primary-soft', '--color-surface', '--radius-control', '--radius-card']) {
     assert.match(style, new RegExp(token))
   }
-  assert.match(style, /\.sidebar\s*\{[\s\S]*linear-gradient[\s\S]*backdrop-filter: blur\(14px\)/)
+  assert.match(style, /\.sidebar\s*\{[\s\S]*?background: transparent;[\s\S]*?\}/)
+  assert.match(style, /\.sidebar-nav\s*\{[\s\S]*linear-gradient[\s\S]*backdrop-filter: blur\(14px\)/)
   assert.match(style, /\.settings-input[\s\S]*border-radius: var\(--radius-control\)/)
   assert.doesNotMatch(style, /#168a55|#18a058|#237b4b|#eef8f2|#f2faf5|#c9e7d5/)
 })
@@ -39,6 +40,14 @@ test('Sidebar hover 与 active 使用不同层级的玻璃背景', async () => {
   const style = await source('style.css')
   assert.match(style, /\.sidebar-nav button:hover\s*\{[\s\S]*border-color:[\s\S]*linear-gradient/)
   assert.match(style, /\.sidebar-nav button\.active,[\s\S]*\.sidebar-nav button\.active:hover\s*\{[\s\S]*linear-gradient[\s\S]*box-shadow:/)
+})
+
+test('Sidebar 品牌与居中菜单使用相互独立的玻璃容器', async () => {
+  const [app, style] = await Promise.all([source('App.vue'), source('style.css')])
+  const sidebar = app.slice(app.indexOf('<aside class="sidebar"'), app.indexOf('</aside>'))
+  assert.ok(sidebar.indexOf('app-brand--sidebar') < sidebar.indexOf('<nav class="sidebar-nav"'))
+  assert.match(style, /\.sidebar-nav\s*\{[\s\S]*?margin: auto 0;[\s\S]*?padding: 10px;[\s\S]*?border: 1px solid/)
+  assert.match(style, /\.app-brand--sidebar\s*\{[\s\S]*?margin: 0 8px;/)
 })
 
 test('布尔型选项统一使用 NSwitch，真正的账号和节点多选保留 checkbox', async () => {

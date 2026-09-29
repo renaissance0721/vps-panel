@@ -43,6 +43,7 @@ import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AccountMenu from './components/AccountMenu.vue'
+import { userRoleLabel } from './format'
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -93,7 +94,7 @@ const serverView = reactive(serverState)
 const { servers, loadServers, serverReorderingID } = serverState
 const overviewState = useOverview(state, health, submitting, error, submit)
 const overviewView = reactive(overviewState)
-const { loadOverview, loadInvitations, loadPasswordChangeRequests, loadUserRelays } = overviewState
+const { loadOverview, loadInvitations, loadPasswordChangeRequests } = overviewState
 
 let serverPollTimer: number | undefined
 
@@ -118,7 +119,7 @@ async function loadState() {
 	}
     const requests = [loadHealth(), loadServers(), loadUsers(), loadOverview()]
     if (state.value.user?.role === 'admin') {
-	  requests.push(loadInvitations(), loadPasswordChangeRequests(), loadUserRelays())
+	  requests.push(loadInvitations(), loadPasswordChangeRequests())
     }
     await Promise.all(requests)
     startServerPolling()
@@ -288,7 +289,7 @@ function selectPage(page: AdminPage) {
   sidebarOpen.value = false
   if (page === 'overview') {
     const requests: Promise<void>[] = [loadOverview()]
-    if (state.value?.user?.role === 'admin') requests.push(loadUserRelays(), loadPasswordChangeRequests())
+    if (state.value?.user?.role === 'admin') requests.push(loadPasswordChangeRequests())
     void Promise.all(requests).catch((reason) => {
       error.value = reason instanceof Error ? reason.message : '无法加载概览'
     })
@@ -329,7 +330,7 @@ onUnmounted(stopServerPolling)
       >
         <p class="eyebrow">账号邀请</p>
         <h1>创建受邀账户</h1>
-        <p class="description">此邀请将创建{{ invitationRole === 'vip' ? ' VIP' : invitationRole === 'subscriber' ? '订阅用户' : '普通用户' }}账号，仅可使用一次。</p>
+        <p class="description">此邀请将创建{{ invitationRole ? userRoleLabel(invitationRole) : '' }}账号，仅可使用一次。</p>
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="register">
           <label>

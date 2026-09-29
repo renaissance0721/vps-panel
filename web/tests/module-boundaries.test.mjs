@@ -471,8 +471,8 @@ test('服务器统一基本信息表单可选择所有者或无所有者并立�
   const form = await render('components/server/ServerBasicInfoForm.vue', model)
   assert.match(form, /修改基本信息/)
   assert.match(form, /无所有者/)
-  assert.match(form, /admin（admin）/)
-  assert.match(form, /member（vip）/)
+  assert.match(form, /admin（管理员）/)
+  assert.match(form, /member（VIP用户）/)
 
   model.ownerUserID.value = 2
   await model.saveBasicInfo()

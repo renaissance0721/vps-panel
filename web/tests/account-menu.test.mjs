@@ -35,7 +35,7 @@ test('账户菜单显示当前用户名并提供改名、改密和退出', () =>
 test('管理员密码重置申请列表显示角色、时间和待审核状态', () => {
   assert.match(overviewSource, /密码重置申请/)
   assert.match(overviewSource, /request\.username/)
-  assert.match(overviewSource, /request\.role === 'vip'/)
+  assert.match(overviewSource, /userRoleLabel\(request\.role\)/)
   assert.match(overviewSource, /formatTime\(request\.created_at\)/)
   assert.match(overviewSource, /<n-tag type="warning" size="small">待审核<\/n-tag>/)
   assert.match(overviewSource, /reviewPasswordChangeRequest\(request\.id, 'reject'\)/)

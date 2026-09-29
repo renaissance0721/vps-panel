@@ -2,6 +2,7 @@
 import { toRefs, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { ServersViewState } from '../../composables/useServers'
+import { userRoleLabel } from '../../format'
 
 const props = defineProps<{
   model: Pick<ServersViewState,
@@ -81,7 +82,7 @@ watch(expirationInput, (value) => {
           <select v-model.number="ownerUserID" class="settings-input" :disabled="submitting">
             <option :value="0">无所有者</option>
             <option v-for="user in orderedUsers" :key="user.id" :value="user.id">
-              {{ user.username }}（{{ user.role }}）
+              {{ user.username }}（{{ userRoleLabel(user.role) }}）
             </option>
           </select>
         </label>
@@ -108,7 +109,7 @@ watch(expirationInput, (value) => {
               :value="user.id"
               :disabled="submitting || user.id === state?.user?.id"
             />
-            <span>{{ user.username }}（{{ user.role }}）</span>
+            <span>{{ user.username }}（{{ userRoleLabel(user.role) }}）</span>
           </label>
         </fieldset>
         <p v-if="accessVisibility === 'private'" class="switch-help">当前账号会自动保留访问权限。</p>

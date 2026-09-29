@@ -6,6 +6,7 @@ const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'ut
 const accountSource = await readFile(new URL('../src/views/AccountManagementView.vue', import.meta.url), 'utf8')
 const carpoolSource = await readFile(new URL('../src/views/CarpoolPanelView.vue', import.meta.url), 'utf8')
 const composableSource = await readFile(new URL('../src/composables/useUserManagement.ts', import.meta.url), 'utf8')
+const formatSource = await readFile(new URL('../src/format.ts', import.meta.url), 'utf8')
 
 test('Admin 左侧同时提供用户管理和拼车面板入口且页面保持 Admin-only', () => {
   assert.match(appSource, /currentPage === 'accounts'/)
@@ -28,11 +29,9 @@ test('独立用户管理页通过 /api/users 显示全部角色账号', () => {
   assert.match(accountSource, /api<\{ users: AccessUser\[\] \}>\('\/api\/users'\)/)
   assert.match(accountSource, /<n-card v-else title="账号列表"/)
   assert.match(accountSource, /v-for="account in accounts"/)
-  for (const role of ["role === 'admin'", "role === 'vip'", "role === 'subscriber'"]) {
-    assert.ok(accountSource.includes(role))
-  }
-  for (const label of ['管理员', 'VIP', '普通用户', '订阅用户']) {
-    assert.ok(accountSource.includes(label))
+  assert.match(accountSource, /userRoleLabel\(account\.role\)/)
+  for (const label of ['管理员', 'VIP用户', '拼车用户', '订阅用户']) {
+    assert.ok(formatSource.includes(label))
   }
 })
 
@@ -52,9 +51,9 @@ test('拼车面板不含账号列表且不再加载 /api/users', () => {
   assert.match(carpoolSource, /onMounted\(model\.load\)/)
 })
 
-test('拼车面板继续通过 /api/admin/users 加载普通用户', () => {
+test('拼车面板继续通过 /api/admin/users 加载拼车用户', () => {
   assert.match(composableSource, /api<\{ users: AccessUser\[\] \}>\('\/api\/admin\/users'\)/)
-  assert.match(carpoolSource, /<span>普通用户<\/span>/)
+  assert.match(carpoolSource, /<span>拼车用户<\/span>/)
   assert.match(carpoolSource, /@change="model\.selectUser"/)
   assert.match(carpoolSource, /@click="model\.load">刷新/)
 })

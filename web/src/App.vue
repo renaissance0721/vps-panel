@@ -38,14 +38,24 @@ import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
 import UserPortalView from './views/UserPortalView.vue'
 import SubscriberPortalView from './views/SubscriberPortalView.vue'
-import UserManagementView from './views/UserManagementView.vue'
+import AccountManagementView from './views/AccountManagementView.vue'
+import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'users' | 'subscriptions'
+type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool'
+const pageTitles: Record<AdminPage, string> = {
+  overview: '概览',
+  servers: '服务器',
+  proxies: '代理节点',
+  relays: '中转',
+  subscriptions: '订阅管理',
+  accounts: '用户管理',
+  carpool: '拼车面板',
+}
 const currentPage = ref<AdminPage>('overview')
 const loading = ref(true)
 const submitting = ref(false)
@@ -450,10 +460,18 @@ onUnmounted(stopServerPolling)
             <button
               v-if="state.user?.role === 'admin'"
               type="button"
-              :class="{ active: currentPage === 'users' }"
-              @click="selectPage('users')"
+              :class="{ active: currentPage === 'accounts' }"
+              @click="selectPage('accounts')"
             >
               用户管理
+            </button>
+            <button
+              v-if="state.user?.role === 'admin'"
+              type="button"
+              :class="{ active: currentPage === 'carpool' }"
+              @click="selectPage('carpool')"
+            >
+              拼车面板
             </button>
           </nav>
         </aside>
@@ -472,7 +490,7 @@ onUnmounted(stopServerPolling)
           </header>
           <div class="admin-page">
             <header class="page-heading">
-              <h1>{{ currentPage === 'overview' ? '概览' : currentPage === 'servers' ? '服务器' : currentPage === 'proxies' ? '代理节点' : currentPage === 'relays' ? '中转' : currentPage === 'subscriptions' ? '订阅管理' : '用户管理' }}</h1>
+              <h1>{{ pageTitles[currentPage] }}</h1>
               <AccountMenu v-if="state.user" :user="state.user" @updated="updateCurrentUser" @logout="logout" />
             </header>
 
@@ -482,7 +500,8 @@ onUnmounted(stopServerPolling)
         <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
         <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
         <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
-        <UserManagementView v-if="currentPage === 'users' && state.user?.role === 'admin'" />
+        <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
+        <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
         <ServersView :active="currentPage === 'servers'" :model="serverView" />
 
 

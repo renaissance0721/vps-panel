@@ -511,17 +511,19 @@ onUnmounted(stopServerPolling)
               <AccountMenu v-if="state.user" :user="state.user" @updated="updateCurrentUser" @logout="logout" />
             </header>
 
-            <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
+            <transition name="page-fade" mode="out-in" appear>
+              <div :key="currentPage" class="admin-page-content">
+                <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
-        <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
-        <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
-        <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
-        <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
-        <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
-        <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
-        <ServersView :active="currentPage === 'servers'" :model="serverView" />
-
-
+                <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
+                <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
+                <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
+                <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
+                <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
+                <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
+                <ServersView :active="currentPage === 'servers'" :model="serverView" />
+              </div>
+            </transition>
           </div>
         </main>
       </div>

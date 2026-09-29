@@ -38,8 +38,9 @@ test('Sidebar 和 Portal 共用液态玻璃品牌语言', async () => {
 
 test('Sidebar hover 与 active 使用不同层级的玻璃背景', async () => {
   const style = await source('style.css')
-  assert.match(style, /\.sidebar-nav button:hover\s*\{[\s\S]*border-color:[\s\S]*linear-gradient/)
-  assert.match(style, /\.sidebar-nav button\.active,[\s\S]*\.sidebar-nav button\.active:hover\s*\{[\s\S]*linear-gradient[\s\S]*box-shadow:/)
+  assert.match(style, /\.sidebar-nav button::before\s*\{[\s\S]*linear-gradient[\s\S]*opacity: 0;[\s\S]*transition: opacity/)
+  assert.match(style, /\.sidebar-nav button:hover\s*\{[\s\S]*border-color:[\s\S]*box-shadow:[\s\S]*translateX\(1px\)/)
+  assert.match(style, /\.sidebar-nav button\.active::before,[\s\S]*\.sidebar-nav button\.active:hover::before\s*\{[\s\S]*opacity: 1/)
 })
 
 test('Sidebar 品牌与居中菜单使用相互独立的玻璃容器', async () => {
@@ -48,6 +49,26 @@ test('Sidebar 品牌与居中菜单使用相互独立的玻璃容器', async () 
   assert.ok(sidebar.indexOf('app-brand--sidebar') < sidebar.indexOf('<nav class="sidebar-nav"'))
   assert.match(style, /\.sidebar-nav\s*\{[\s\S]*?margin: auto 0;[\s\S]*?padding: 10px;[\s\S]*?border: 1px solid/)
   assert.match(style, /\.app-brand--sidebar\s*\{[\s\S]*?margin: 0 8px;/)
+})
+
+test('主要交互使用统一克制动效并尊重减少动画设置', async () => {
+  const [app, style] = await Promise.all([source('App.vue'), source('style.css')])
+  for (const token of ['--motion-fast: 160ms', '--motion-base: 220ms', '--ease-standard', '--ease-out']) {
+    assert.match(style, new RegExp(token))
+  }
+  assert.match(app, /<transition name="page-fade" mode="out-in" appear>[\s\S]*:key="currentPage"[\s\S]*class="admin-page-content"/)
+  assert.match(style, /\.page-fade-enter-from\s*\{[\s\S]*opacity: 0;[\s\S]*translateY\(4px\)/)
+  assert.match(style, /\.n-button:not\([\s\S]*:hover\s*\{[\s\S]*translateY\(-1px\)/)
+  assert.match(style, /\.n-button:not\([\s\S]*:active,[\s\S]*scale\(0\.98\)/)
+  assert.match(style, /\.overview-page \.n-card:hover\s*\{[\s\S]*border-color:[\s\S]*translateY\(-1px\)/)
+  assert.match(style, /\.n-modal\.fade-in-scale-up-transition-enter-from,[\s\S]*scale\(0\.98\)/)
+  assert.match(style, /\.n-modal-mask\.fade-in-transition-enter-active,[\s\S]*transition: opacity var\(--motion-base\)/)
+  assert.match(style, /\.n-switch__rail\s*\{[\s\S]*background-color var\(--motion-base\)/)
+  assert.match(style, /\.n-switch__button\s*\{[\s\S]*left var\(--motion-base\)/)
+  assert.match(style, /\.server-table tbody tr:not\(\.row-dragging\):hover\s*\{[\s\S]*background-color:/)
+  assert.match(style, /\.app-brand:hover\s*\{[\s\S]*translateY\(-1px\)/)
+  assert.match(style, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation-iteration-count: 1 !important;[\s\S]*transition: none !important;/)
+  assert.doesNotMatch(style, /animation-iteration-count:\s*infinite/)
 })
 
 test('布尔型选项统一使用 NSwitch，真正的账号和节点多选保留 checkbox', async () => {

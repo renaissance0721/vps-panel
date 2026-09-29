@@ -10,6 +10,10 @@
   --color-surface-muted: #f7faff;
   --radius-control: 9px;
   --radius-card: 12px;
+  --motion-fast: 160ms;
+  --motion-base: 220ms;
+  --ease-standard: ease;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   color: var(--color-text);
   background: #f5f9fe;
   font-family:
@@ -169,30 +173,59 @@ h1 {
 }
 
 .sidebar-nav button {
+  position: relative;
+  z-index: 0;
   width: 100%;
   padding: 10px 12px;
+  overflow: hidden;
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   color: #52677d;
   text-align: left;
   cursor: pointer;
   background: transparent;
-  transition: color 150ms ease, background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  transition:
+    color var(--motion-base) var(--ease-standard),
+    background var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out),
+    transform var(--motion-base) var(--ease-out);
+}
+
+.sidebar-nav button::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(211, 235, 255, 0.76));
+  content: "";
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease-standard);
 }
 
 .sidebar-nav button:hover {
   color: #365c7c;
   border-color: rgba(148, 195, 235, 0.26);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(221, 239, 255, 0.52));
+  box-shadow: 0 5px 14px rgba(68, 139, 201, 0.08);
+  transform: translateX(1px);
+}
+
+.sidebar-nav button:hover::before {
+  opacity: 0.68;
 }
 
 .sidebar-nav button.active,
 .sidebar-nav button.active:hover {
   color: #285f8e;
   border-color: rgba(113, 175, 226, 0.48);
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(211, 235, 255, 0.76));
   box-shadow: 0 7px 18px rgba(68, 139, 201, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.92);
   font-weight: 650;
+  transform: translateX(1px);
+}
+
+.sidebar-nav button.active::before,
+.sidebar-nav button.active:hover::before {
+  opacity: 1;
 }
 
 .admin-main {
@@ -204,6 +237,21 @@ h1 {
 .admin-page {
   width: 100%;
   padding: 32px;
+}
+
+.page-fade-enter-active {
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-out);
+}
+
+.page-fade-leave-active {
+  transition: none;
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 .page-heading {
@@ -262,6 +310,24 @@ h1 {
   border-radius: var(--radius-card);
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(245, 250, 255, 0.94));
   box-shadow: 0 10px 28px rgba(81, 132, 181, 0.08);
+}
+
+.overview-page .n-card {
+  transition:
+    border-color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out),
+    transform var(--motion-base) var(--ease-out);
+}
+
+.overview-page .n-card:hover {
+  border-color: rgba(105, 175, 234, 0.52);
+  box-shadow: 0 12px 30px rgba(81, 132, 181, 0.11);
+  transform: translateY(-1px);
+}
+
+.overview-page .overview-summary-card:hover {
+  box-shadow: 0 14px 32px rgba(81, 132, 181, 0.13);
+  transform: translateY(-2px);
 }
 
 .overview-summary-card .n-card-header {
@@ -787,6 +853,14 @@ h1 {
   border-bottom: 0;
 }
 
+.server-table tbody tr {
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.server-table tbody tr:not(.row-dragging):hover {
+  background-color: rgba(234, 244, 255, 0.72);
+}
+
 .server-table .reorder-cell {
   width: 42px;
   padding: 8px 4px;
@@ -894,6 +968,11 @@ h1 {
   gap: 20px;
   padding: 16px 0;
   border-bottom: 1px solid #edf0f2;
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.invitation-row:hover {
+  background-color: rgba(245, 250, 255, 0.78);
 }
 
 .invitation-row:first-child {
@@ -1067,13 +1146,83 @@ h1 {
   letter-spacing: 0.02em;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+  transition:
+    border-color var(--motion-base) var(--ease-standard),
+    background var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out),
+    transform var(--motion-base) var(--ease-out);
 }
 
 .app-brand:hover {
   border-color: rgba(91, 163, 224, 0.6);
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(217, 238, 255, 0.88));
-  box-shadow: 0 9px 25px rgba(68, 139, 201, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 26px rgba(68, 139, 201, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  transform: translateY(-1px);
+}
+
+.n-button {
+  transition:
+    color var(--motion-base) var(--ease-standard),
+    background-color var(--motion-base) var(--ease-standard),
+    border-color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out),
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-out) !important;
+}
+
+.n-button:not(.n-button--disabled):not(.n-button--loading):hover {
+  box-shadow: 0 6px 16px rgba(68, 139, 201, 0.14);
+  transform: translateY(-1px);
+}
+
+.n-button:not(.n-button--disabled):not(.n-button--loading):active,
+.n-button.n-button--pressed:not(.n-button--disabled) {
+  box-shadow: 0 2px 7px rgba(68, 139, 201, 0.1);
+  transform: translateY(0) scale(0.98);
+}
+
+.n-modal.fade-in-scale-up-transition-enter-active,
+.n-modal.fade-in-scale-up-transition-leave-active {
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-out) !important;
+}
+
+.n-modal.fade-in-scale-up-transition-enter-from,
+.n-modal.fade-in-scale-up-transition-leave-to {
+  opacity: 0;
+  transform: scale(0.98) !important;
+}
+
+.n-modal-mask.fade-in-transition-enter-active,
+.n-modal-mask.fade-in-transition-leave-active {
+  transition: opacity var(--motion-base) var(--ease-standard) !important;
+}
+
+.n-switch__rail {
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    background-color var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out) !important;
+}
+
+.n-switch__button {
+  width: var(--n-button-width);
+  max-width: var(--n-button-width) !important;
+  transition:
+    background-color var(--motion-base) var(--ease-standard),
+    left var(--motion-base) var(--ease-out),
+    opacity var(--motion-base) var(--ease-standard),
+    box-shadow var(--motion-base) var(--ease-out) !important;
+}
+
+.n-switch--active .n-switch__button {
+  box-shadow: 0 2px 7px rgba(48, 120, 184, 0.2);
+}
+
+.n-switch.n-switch--active.n-switch--pressed .n-switch__button,
+.n-switch.n-switch--active .n-switch__rail:active .n-switch__button {
+  left: calc(100% - var(--n-button-width) - var(--n-offset)) !important;
 }
 
 .app-brand--portal {
@@ -1324,5 +1473,48 @@ h1 {
   .subscription-import-option {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+
+  .sidebar-nav button:hover,
+  .sidebar-nav button.active,
+  .overview-page .n-card:hover,
+  .app-brand:hover,
+  .n-button:not(.n-button--disabled):not(.n-button--loading):hover,
+  .n-button:not(.n-button--disabled):not(.n-button--loading):active,
+  .page-fade-enter-from,
+  .n-modal.fade-in-scale-up-transition-enter-from,
+  .n-modal.fade-in-scale-up-transition-leave-to {
+    transform: none !important;
+  }
+
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none !important;
+  }
+
+  .page-fade-enter-from {
+    opacity: 1 !important;
+  }
+
+  .n-button,
+  .n-switch__rail,
+  .n-switch__button,
+  .n-modal.fade-in-scale-up-transition-enter-active,
+  .n-modal.fade-in-scale-up-transition-leave-active,
+  .n-modal-mask.fade-in-transition-enter-active,
+  .n-modal-mask.fade-in-transition-leave-active {
+    transition: none !important;
   }
 }

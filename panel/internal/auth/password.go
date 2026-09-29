@@ -5,29 +5,55 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
-func (s *Service) RequestPasswordChange(ctx context.Context, userID int64, currentPassword, newPassword string) (PasswordChangeRequest, error) {
+func (s *Service) RequestPasswordResetForUser(ctx context.Context, userID int64, newPassword string) (PasswordChangeRequest, error) {
 	if err := validatePassword(newPassword); err != nil {
 		return PasswordChangeRequest{}, err
 	}
+	proposedHash, err := hashPassword(newPassword)
+	if err != nil {
+		return PasswordChangeRequest{}, err
+	}
+	return s.createPasswordResetRequest(ctx, userID, proposedHash)
+}
+
+func (s *Service) RequestPasswordResetByUsername(ctx context.Context, username, newPassword string) error {
+	if err := validatePassword(newPassword); err != nil {
+		return err
+	}
+	proposedHash, err := hashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	var userID int64
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM users WHERE username = ?`, strings.TrimSpace(username)).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find password reset user: %w", err)
+	}
+	_, err = s.createPasswordResetRequest(ctx, userID, proposedHash)
+	if errors.Is(err, ErrPasswordRequestPending) || errors.Is(err, ErrUserNotFound) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) createPasswordResetRequest(ctx context.Context, userID int64, proposedHash string) (PasswordChangeRequest, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("begin password change request: %w", err)
+		return PasswordChangeRequest{}, fmt.Errorf("begin password reset request: %w", err)
 	}
 	defer tx.Rollback()
-	var currentHash string
-	if err := tx.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&currentHash); err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("read current password: %w", err)
-	}
-	if bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(currentPassword)) != nil {
-		return PasswordChangeRequest{}, ErrInvalidCredentials
-	}
-	if currentPassword == newPassword {
-		return PasswordChangeRequest{}, ErrPasswordUnchanged
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return PasswordChangeRequest{}, ErrUserNotFound
+	} else if err != nil {
+		return PasswordChangeRequest{}, fmt.Errorf("read password reset user: %w", err)
 	}
 	var pending int
 	if err := tx.QueryRowContext(ctx,
@@ -38,24 +64,20 @@ func (s *Service) RequestPasswordChange(ctx context.Context, userID int64, curre
 	if pending != 0 {
 		return PasswordChangeRequest{}, ErrPasswordRequestPending
 	}
-	proposedHash, err := hashPassword(newPassword)
-	if err != nil {
-		return PasswordChangeRequest{}, err
-	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO password_change_requests (user_id, proposed_password_hash, status, created_at)
 		 VALUES (?, ?, 'pending', ?)`, userID, proposedHash, now.Unix(),
 	)
 	if err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("create password change request: %w", err)
+		return PasswordChangeRequest{}, fmt.Errorf("create password reset request: %w", err)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("read password change request id: %w", err)
+		return PasswordChangeRequest{}, fmt.Errorf("read password reset request id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PasswordChangeRequest{}, fmt.Errorf("commit password change request: %w", err)
+		return PasswordChangeRequest{}, fmt.Errorf("commit password reset request: %w", err)
 	}
 	return PasswordChangeRequest{ID: id, UserID: userID, Status: "pending", CreatedAt: now}, nil
 }
@@ -117,6 +139,9 @@ func (s *Service) ReviewPasswordChangeRequest(ctx context.Context, requestID, ad
 	}
 	if err != nil {
 		return fmt.Errorf("read pending password request: %w", err)
+	}
+	if userID == adminID {
+		return ErrPasswordRequestSelfReview
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	status := "rejected"

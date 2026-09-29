@@ -149,6 +149,9 @@ func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClient
 	if err != nil {
 		return Client{}, Mutation{}, err
 	}
+	if err := RequireAdminCreatedProxy(ctx, tx, input.ProxyID); err != nil {
+		return Client{}, Mutation{}, err
+	}
 	var duplicate int
 	err = tx.QueryRowContext(ctx,
 		`SELECT 1 FROM clients WHERE proxy_id = ? AND assigned_user_id = ? LIMIT 1`, input.ProxyID, input.UserID,
@@ -293,14 +296,20 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 		return Client{}, fmt.Errorf("begin client assignment: %w", err)
 	}
 	defer tx.Rollback()
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM clients WHERE id = ?`, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var proxyID int64
+	var currentUserID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT proxy_id, assigned_user_id FROM clients WHERE id = ?`, id).Scan(&proxyID, &currentUserID); errors.Is(err, sql.ErrNoRows) {
 		return Client{}, ErrClientNotFound
 	} else if err != nil {
 		return Client{}, fmt.Errorf("find client for assignment: %w", err)
 	}
 	if err := validateClientAssignment(ctx, tx, userID, billingPeriodMonths); err != nil {
 		return Client{}, err
+	}
+	if userID != nil && (!currentUserID.Valid || currentUserID.Int64 != *userID) {
+		if err := RequireAdminCreatedProxy(ctx, tx, proxyID); err != nil {
+			return Client{}, err
+		}
 	}
 	if managed, err := subscriptionManagedClient(ctx, tx, id); err != nil {
 		return Client{}, err

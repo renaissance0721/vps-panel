@@ -47,6 +47,9 @@ type serverResponse struct {
 	Name                      string              `json:"name"`
 	OwnerUserID               *int64              `json:"owner_user_id"`
 	OwnerUsername             string              `json:"owner_username"`
+	CreatedByUserID           *int64              `json:"created_by_user_id"`
+	CreatedByUsername         string              `json:"created_by_username"`
+	CreatedByRole             string              `json:"created_by_role"`
 	Status                    string              `json:"status"`
 	Visibility                string              `json:"visibility"`
 	OutboundPreference        string              `json:"outbound_preference"`
@@ -126,6 +129,9 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		Name:                     value.Name,
 		OwnerUserID:              value.OwnerUserID,
 		OwnerUsername:            value.OwnerUsername,
+		CreatedByUserID:          value.CreatedByUserID,
+		CreatedByUsername:        value.CreatedByUsername,
+		CreatedByRole:            value.CreatedByRole,
 		Status:                   value.Status,
 		Visibility:               value.Visibility,
 		OutboundPreference:       value.OutboundPreference,

@@ -67,12 +67,24 @@ func (s *Service) CreatePublishedNode(ctx context.Context, input CreatePublished
 	if _, err := getProxyTopology(ctx, tx, input.TargetProxyID, ErrTargetProxyNotFound); err != nil {
 		return PublishedNode{}, nil, err
 	}
+	if err := proxystore.RequireAdminCreatedProxy(ctx, tx, input.TargetProxyID); err != nil {
+		if errors.Is(err, proxystore.ErrNotDistributable) {
+			return PublishedNode{}, nil, ErrServerNotDistributable
+		}
+		return PublishedNode{}, nil, err
+	}
 
 	var relayID any
 	var mutation *relay.Mutation
 	if mode == NodeModeRelay {
 		source, err := getProxyTopology(ctx, tx, *input.SourceProxyID, ErrSourceProxyNotFound)
 		if err != nil {
+			return PublishedNode{}, nil, err
+		}
+		if err := proxystore.RequireAdminCreatedProxy(ctx, tx, *input.SourceProxyID); err != nil {
+			if errors.Is(err, proxystore.ErrNotDistributable) {
+				return PublishedNode{}, nil, ErrServerNotDistributable
+			}
 			return PublishedNode{}, nil, err
 		}
 		port, err := relay.RandomUserRelayPort(ctx, tx, source.serverID)
@@ -283,8 +295,9 @@ func listPublishedNodes(ctx context.Context, query interface {
 }, condition string, arguments ...any) ([]PublishedNode, error) {
 	rows, err := query.QueryContext(ctx, `
 		SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
-		 target.server_id, target_server.name, nodes.source_proxy_id, source.name,
-		 source.server_id, source_server.name, nodes.relay_id,
+		 target.server_id, target_server.name, target_server.created_by_role,
+		 nodes.source_proxy_id, source.name, source.server_id, source_server.name,
+		 source_server.created_by_role, nodes.relay_id,
 		 relay.listen_port, relay.entry_host_mode, relay.entry_host,
 		 COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
 		 nodes.enabled, nodes.created_at, nodes.updated_at
@@ -303,13 +316,14 @@ func listPublishedNodes(ctx context.Context, query interface {
 	for rows.Next() {
 		var value PublishedNode
 		var sourceProxyID, sourceServerID, relayID, entryPort sql.NullInt64
-		var sourceProxyName, sourceServerName, entryHostMode, entryHost, publicIPv4 sql.NullString
+		var sourceProxyName, sourceServerName, sourceCreatorRole, entryHostMode, entryHost, publicIPv4 sql.NullString
+		var targetCreatorRole string
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
-			&value.TargetServerID, &value.TargetServerName, &sourceProxyID, &sourceProxyName,
-			&sourceServerID, &sourceServerName, &relayID, &entryPort, &entryHostMode, &entryHost,
+			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole, &sourceProxyID, &sourceProxyName,
+			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID, &entryPort, &entryHostMode, &entryHost,
 			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan published node: %w", err)
@@ -335,6 +349,7 @@ func listPublishedNodes(ctx context.Context, query interface {
 			}
 		}
 		value.Enabled = enabled != 0
+		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		value.CreatedAt = time.Unix(createdAt, 0).UTC()
 		value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		values = append(values, value)

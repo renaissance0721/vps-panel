@@ -20,8 +20,8 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at)
-		VALUES (1, 'SG', 'offline', 1, 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO servers (id, name, created_by_role, status, created_at, updated_at)
+		VALUES (1, 'SG', 'admin', 'offline', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO server_system_info

@@ -228,6 +228,8 @@ func writeSubscriptionUserError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "流量重置配置无效")
 	case errors.Is(err, subscriptionstore.ErrInvalidBillingPeriod):
 		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6 或 12 个月")
+	case errors.Is(err, subscriptionstore.ErrServerNotDistributable):
+		writeError(w, http.StatusBadRequest, "订阅发布节点只能使用管理员创建的服务器")
 	default:
 		writeInternalError(w)
 	}

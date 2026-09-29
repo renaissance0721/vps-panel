@@ -48,7 +48,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	if !ok {
 		return
 	}
-	proxies, err := s.proxies.List(r.Context())
+	proxies, err := s.proxies.ListDistributable(r.Context())
 	if err != nil {
 		writeProxyError(w, err)
 		return
@@ -72,6 +72,25 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 		nodes = append(nodes, userManagementNodeResponse{
 			ProxyID: proxy.ID, ServerName: proxy.ServerName, ProxyName: proxy.Name,
 			Protocol: proxy.Protocol, Client: clientResponseValue,
+		})
+	}
+	for _, client := range assigned {
+		if _, eligible := assignedByProxy[client.ProxyID]; eligible {
+			found := false
+			for _, node := range nodes {
+				if node.ProxyID == client.ProxyID {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+		}
+		value := toClientResponse(client)
+		nodes = append(nodes, userManagementNodeResponse{
+			ProxyID: client.ProxyID, ServerName: client.ServerName, ProxyName: client.ProxyName,
+			Protocol: client.Protocol, Client: &value,
 		})
 	}
 	relays, err := s.relays.ListByOwner(r.Context(), user.ID)

@@ -47,6 +47,9 @@ type Server struct {
 	Name                      string
 	OwnerUserID               *int64
 	OwnerUsername             string
+	CreatedByUserID           *int64
+	CreatedByUsername         string
+	CreatedByRole             string
 	Status                    string
 	Visibility                string
 	OutboundPreference        string

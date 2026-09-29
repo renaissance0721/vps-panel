@@ -37,6 +37,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateServerOwner(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateServerCreator(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateServerAccess(ctx, db); err != nil {
 		return err
 	}
@@ -355,6 +358,46 @@ func migrateServerOwner(ctx context.Context, db *sql.DB) error {
 			`ALTER TABLE servers ADD COLUMN owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`,
 		); err != nil {
 			return fmt.Errorf("add servers.owner_user_id: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateServerCreator(ctx context.Context, db *sql.DB) error {
+	var creatorIDCount, creatorRoleCount int
+	for name, destination := range map[string]*int{
+		"created_by_user_id": &creatorIDCount,
+		"created_by_role":    &creatorRoleCount,
+	} {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name = ?`, name,
+		).Scan(destination); err != nil {
+			return fmt.Errorf("inspect servers.%s: %w", name, err)
+		}
+	}
+	if creatorIDCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`,
+		); err != nil {
+			return fmt.Errorf("add servers.created_by_user_id: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE servers SET created_by_user_id = owner_user_id`); err != nil {
+			return fmt.Errorf("backfill servers.created_by_user_id: %w", err)
+		}
+	}
+	if creatorRoleCount == 0 {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE servers ADD COLUMN created_by_role TEXT NOT NULL DEFAULT 'unknown'
+			 CHECK (created_by_role IN ('admin', 'vip', 'unknown'))`,
+		); err != nil {
+			return fmt.Errorf("add servers.created_by_role: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE servers
+			SET created_by_role = COALESCE((
+				SELECT CASE WHEN users.role IN ('admin', 'vip') THEN users.role ELSE 'unknown' END
+				FROM users WHERE users.id = servers.created_by_user_id
+			), 'unknown')`); err != nil {
+			return fmt.Errorf("backfill servers.created_by_role: %w", err)
 		}
 	}
 	return nil

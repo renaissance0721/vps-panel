@@ -15,7 +15,9 @@ func newTestService(t *testing.T) (*sql.DB, *Service, int64) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	result, err := db.Exec(`INSERT INTO servers (name, status, created_at, updated_at) VALUES ('test', 'offline', 1, 1)`)
+	result, err := db.Exec(`INSERT INTO servers
+		(name, created_by_role, status, created_at, updated_at)
+		VALUES ('test', 'admin', 'offline', 1, 1)`)
 	if err != nil {
 		t.Fatal(err)
 	}

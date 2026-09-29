@@ -55,19 +55,27 @@ func (s *Service) CreateForUser(
 	var ownerUserID *int64
 	var ownerUsername string
 	var ownerValue any
+	var creatorValue any
+	createdByRole := "unknown"
 	if creatorID > 0 {
-		if err := tx.QueryRowContext(ctx, `SELECT username FROM users WHERE id = ?`, creatorID).Scan(&ownerUsername); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT username, role FROM users WHERE id = ?`, creatorID).Scan(&ownerUsername, &createdByRole); errors.Is(err, sql.ErrNoRows) {
 			return CreatedServer{}, ErrInvalidServerAccess
 		} else if err != nil {
 			return CreatedServer{}, fmt.Errorf("read server owner: %w", err)
 		}
+		if createdByRole != "admin" && createdByRole != "vip" {
+			return CreatedServer{}, ErrInvalidServerAccess
+		}
 		ownerUserID = &creatorID
 		ownerValue = creatorID
+		creatorValue = creatorID
 	}
 
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO servers (name, owner_user_id, status, visibility, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		name, ownerValue, StatusPending, visibility, now.Unix(), now.Unix(),
+		`INSERT INTO servers
+		 (name, owner_user_id, created_by_user_id, created_by_role, status, visibility, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, ownerValue, creatorValue, createdByRole, StatusPending, visibility, now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return CreatedServer{}, fmt.Errorf("create server: %w", err)
@@ -97,6 +105,9 @@ func (s *Service) CreateForUser(
 			Name:                name,
 			OwnerUserID:         ownerUserID,
 			OwnerUsername:       ownerUsername,
+			CreatedByUserID:     ownerUserID,
+			CreatedByUsername:   ownerUsername,
+			CreatedByRole:       createdByRole,
 			Status:              StatusPending,
 			Visibility:          visibility,
 			OutboundPreference:  OutboundAuto,
@@ -152,6 +163,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
@@ -171,6 +183,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN users AS owner ON owner.id = servers.owner_user_id
+		 LEFT JOIN users AS creator ON creator.id = servers.created_by_user_id
 		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
@@ -198,6 +211,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
@@ -217,6 +231,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN users AS owner ON owner.id = servers.owner_user_id
+		 LEFT JOIN users AS creator ON creator.id = servers.created_by_user_id
 		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
@@ -239,6 +254,8 @@ func scanServer(row rowScanner) (Server, error) {
 	var value Server
 	var ownerUserID sql.NullInt64
 	var ownerUsername sql.NullString
+	var createdByUserID sql.NullInt64
+	var createdByUsername sql.NullString
 	var accessUserIDs string
 	var decommissioningAt, archivedAt, expiresAt, renewalPeriod, renewalAnchorDay, monthlyTrafficLimit, lastSeenAt sql.NullInt64
 	var implementation, storedAgentVersion, capabilitiesJSON sql.NullString
@@ -255,6 +272,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var createdAt, updatedAt int64
 	if err := row.Scan(
 		&value.ID, &value.Name, &ownerUserID, &ownerUsername,
+		&createdByUserID, &createdByUsername, &value.CreatedByRole,
 		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
 		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,
 		&renewalPeriod, &value.AutoRenew, &renewalAnchorDay,
@@ -274,6 +292,11 @@ func scanServer(row rowScanner) (Server, error) {
 		value.OwnerUserID = &ownerID
 	}
 	value.OwnerUsername = ownerUsername.String
+	if createdByUserID.Valid {
+		creatorID := createdByUserID.Int64
+		value.CreatedByUserID = &creatorID
+	}
+	value.CreatedByUsername = createdByUsername.String
 	if decommissioningAt.Valid {
 		decommissionTime := time.Unix(decommissioningAt.Int64, 0).UTC()
 		value.DecommissioningAt = &decommissionTime

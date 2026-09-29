@@ -31,22 +31,11 @@ func (s *server) changeMyPassword(w http.ResponseWriter, r *http.Request, user a
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	if user.Role == auth.RoleAdmin {
-		if err := s.authService.ChangePassword(r.Context(), user.ID, request.CurrentPassword, request.NewPassword); err != nil {
-			writeAccountError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
+	if err := s.authService.ChangePassword(r.Context(), user.ID, request.CurrentPassword, request.NewPassword); err != nil {
+		writeAccountError(w, err)
 		return
 	}
-	created, err := s.authService.RequestPasswordChange(r.Context(), user.ID, request.CurrentPassword, request.NewPassword)
-	if err != nil {
-		writePasswordRequestError(w, err)
-		return
-	}
-	created.Username = user.Username
-	created.Role = user.Role
-	writeJSON(w, http.StatusCreated, map[string]any{"request": toPasswordChangeRequestResponse(created)})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
 }
 
 func (s *server) deleteAdminUser(w http.ResponseWriter, r *http.Request, _ auth.User) {

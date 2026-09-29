@@ -17,20 +17,21 @@ import (
 )
 
 type server struct {
-	db            *sql.DB
-	authService   *auth.Service
-	servers       *serverstore.Service
-	proxies       *proxystore.Service
-	landings      *landingstore.Service
-	relays        *relaystore.Service
-	subscriptions *subscriptionstore.Service
-	orders        *listorder.Store
-	webRoot       string
-	panelVersion  string
-	agents        *agentcontrol.Service
-	backup        BackupConfig
-	backupMu      sync.Mutex
-	loginLimiter  *loginLimiter
+	db                   *sql.DB
+	authService          *auth.Service
+	servers              *serverstore.Service
+	proxies              *proxystore.Service
+	landings             *landingstore.Service
+	relays               *relaystore.Service
+	subscriptions        *subscriptionstore.Service
+	orders               *listorder.Store
+	webRoot              string
+	panelVersion         string
+	agents               *agentcontrol.Service
+	backup               BackupConfig
+	backupMu             sync.Mutex
+	loginLimiter         *loginLimiter
+	passwordResetLimiter *loginLimiter
 }
 
 type BackupConfig struct {
@@ -52,19 +53,20 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) http.Handler {
 	relays := relaystore.NewService(db)
 	s := &server{
-		db:            db,
-		authService:   auth.NewService(db),
-		servers:       serverstore.NewService(db),
-		proxies:       proxystore.NewService(db),
-		landings:      landingstore.NewService(db),
-		relays:        relays,
-		subscriptions: subscriptionstore.NewService(db, relays),
-		orders:        listorder.NewStore(db),
-		webRoot:       webRoot,
-		panelVersion:  panelVersion,
-		agents:        agentcontrol.NewService(db, time.Now),
-		backup:        backupConfig,
-		loginLimiter:  newLoginLimiter(),
+		db:                   db,
+		authService:          auth.NewService(db),
+		servers:              serverstore.NewService(db),
+		proxies:              proxystore.NewService(db),
+		landings:             landingstore.NewService(db),
+		relays:               relays,
+		subscriptions:        subscriptionstore.NewService(db, relays),
+		orders:               listorder.NewStore(db),
+		webRoot:              webRoot,
+		panelVersion:         panelVersion,
+		agents:               agentcontrol.NewService(db, time.Now),
+		backup:               backupConfig,
+		loginLimiter:         newLoginLimiter(),
+		passwordResetLimiter: newLoginLimiter(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /sub/{token}", s.getPublicSubscription)
@@ -74,11 +76,13 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("GET /api/auth/state", s.authState)
 	mux.HandleFunc("POST /api/auth/initialize", s.initialize)
 	mux.HandleFunc("POST /api/auth/login", s.login)
+	mux.HandleFunc("POST /api/auth/password-reset-request", s.requestPasswordReset)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("GET /api/auth/invitation", s.getInvitation)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
 	mux.HandleFunc("PATCH /api/account/username", s.requireAuthentication(s.renameMyAccount))
 	mux.HandleFunc("POST /api/account/password", s.requireAuthentication(s.changeMyPassword))
+	mux.HandleFunc("POST /api/account/password-reset-request", s.requireAuthentication(s.requestMyPasswordReset))
 	mux.HandleFunc("POST /api/agent/register", s.registerAgent)
 	mux.HandleFunc("GET /api/agent/config", s.getAgentConfig)
 	mux.HandleFunc("POST /api/agent/config/result", s.recordAgentConfigResult)
@@ -92,6 +96,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("POST /api/admin/backup/import", s.requireAdmin(s.importBackup))
 	mux.HandleFunc("PATCH /api/admin/clients/{id}/assignment", s.requireAdmin(s.assignProxyClient))
 	mux.HandleFunc("PATCH /api/admin/clients/{id}/relay-ports", s.requireAdmin(s.updateClientRelayPortCount))
+	mux.HandleFunc("GET /api/admin/distributable-proxies", s.requireAdmin(s.listDistributableProxies))
 	mux.HandleFunc("GET /api/admin/password-change-requests", s.requireAdmin(s.listPasswordChangeRequests))
 	mux.HandleFunc("POST /api/admin/password-change-requests/{id}/approve", s.requireAdmin(s.approvePasswordChangeRequest))
 	mux.HandleFunc("POST /api/admin/password-change-requests/{id}/reject", s.requireAdmin(s.rejectPasswordChangeRequest))
@@ -115,8 +120,6 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("GET /api/subscriber/me", s.requireSubscriber(s.getSubscriberMe))
 	mux.HandleFunc("GET /api/subscriber/nodes", s.requireSubscriber(s.listSubscriberNodes))
 	mux.HandleFunc("POST /api/subscriber/subscription/regenerate", s.requireSubscriber(s.regenerateSubscriberToken))
-	mux.HandleFunc("GET /api/subscriber/password-change-request", s.requireSubscriber(s.getMyPasswordChangeRequest))
-	mux.HandleFunc("POST /api/subscriber/password-change-request", s.requireSubscriber(s.createMyPasswordChangeRequest))
 	mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.listAdminUsers))
 	mux.HandleFunc("GET /api/admin/users/{id}", s.requireAdmin(s.getAdminUserDetail))
 	mux.HandleFunc("DELETE /api/admin/users/{id}", s.requireAdmin(s.deleteAdminUser))
@@ -124,8 +127,6 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("GET /api/me/nodes", s.requireUser(s.listMyNodes))
 	mux.HandleFunc("PATCH /api/me/nodes/{id}", s.requireUser(s.updateMyNode))
 	mux.HandleFunc("GET /api/me/nodes/{id}/share", s.requireUser(s.getMyNodeShare))
-	mux.HandleFunc("GET /api/me/password-change-request", s.requireUser(s.getMyPasswordChangeRequest))
-	mux.HandleFunc("POST /api/me/password-change-request", s.requireUser(s.createMyPasswordChangeRequest))
 	mux.HandleFunc("GET /api/me/relay-sources", s.requireUser(s.listMyRelaySources))
 	mux.HandleFunc("GET /api/me/relays", s.requireUser(s.listMyRelays))
 	mux.HandleFunc("POST /api/me/relays", s.requireUser(s.createMyRelay))

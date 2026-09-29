@@ -46,6 +46,9 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_by_role TEXT NOT NULL DEFAULT 'unknown'
+				CHECK (created_by_role IN ('admin', 'vip', 'unknown')),
 			status TEXT NOT NULL CHECK (status IN ('pending', 'online', 'offline')),
 			visibility TEXT NOT NULL DEFAULT 'public'
 				CHECK (visibility IN ('public', 'private')),

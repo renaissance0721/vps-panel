@@ -18,16 +18,22 @@ test('管理端、用户门户和订阅门户共用右上角账户菜单', () =>
 })
 
 test('账户菜单显示当前用户名并提供改名、改密和退出', () => {
-  for (const label of ['更改用户名', '更改密码', '退出登录', '新用户名', '当前密码', '确认新密码']) {
+  for (const label of ['更改用户名', '更改密码', '退出登录', '新用户名', '当前密码', '确认新密码', '忘记当前密码？']) {
     assert.match(accountSource, new RegExp(label))
   }
   assert.match(accountSource, /label: props\.user\.username, key: 'username', disabled: true/)
   assert.match(accountSource, /\/api\/account\/username[\s\S]*method: 'PATCH'/)
   assert.match(accountSource, /\/api\/account\/password[\s\S]*method: 'POST'/)
-  assert.match(accountSource, /props\.user\.role === 'admin' \? '密码已修改' : '密码修改申请已提交，等待管理员审核'/)
+  assert.match(accountSource, /密码修改成功，请重新登录。/)
+  assert.match(accountSource, /\/api\/account\/password-reset-request[\s\S]*method: 'POST'/)
+  assert.doesNotMatch(accountSource, /密码修改申请已提交/)
+  assert.match(appSource, /忘记密码？/)
+  assert.match(appSource, /\/api\/auth\/password-reset-request[\s\S]*method: 'POST'/)
+  assert.match(appSource, /如果该账号存在，重置申请已提交，请等待管理员审核。/)
 })
 
-test('管理员密码申请列表显示角色、时间和待审核状态', () => {
+test('管理员密码重置申请列表显示角色、时间和待审核状态', () => {
+  assert.match(overviewSource, /密码重置申请/)
   assert.match(overviewSource, /request\.username/)
   assert.match(overviewSource, /request\.role === 'vip'/)
   assert.match(overviewSource, /formatTime\(request\.created_at\)/)

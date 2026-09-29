@@ -18,6 +18,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
@@ -37,6 +38,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 servers.created_at, servers.updated_at
 		 FROM servers
 		 LEFT JOIN users AS owner ON owner.id = servers.owner_user_id
+		 LEFT JOIN users AS creator ON creator.id = servers.created_by_user_id
 		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id

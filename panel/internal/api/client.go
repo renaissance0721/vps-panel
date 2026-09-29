@@ -130,6 +130,8 @@ func writeClientAssignmentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
 	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
 		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
+	case errors.Is(err, proxystore.ErrNotDistributable):
+		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
 	default:
 		writeProxyError(w, err)
 	}

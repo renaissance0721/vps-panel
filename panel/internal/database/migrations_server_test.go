@@ -36,12 +36,14 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 		t.Fatalf("Open() migration error = %v", err)
 	}
 	defer db.Close()
-	var visibility, outboundPreference, decommissionStatus, decommissionError string
+	var visibility, outboundPreference, decommissionStatus, decommissionError, createdByRole string
 	var blockChinaInbound bool
-	var decommissioningAt, ownerUserID sql.NullInt64
+	var decommissioningAt, ownerUserID, createdByUserID sql.NullInt64
 	if err := db.QueryRow(`SELECT visibility, outbound_preference, block_china_inbound,
-		decommissioning_at, decommission_status, decommission_error, owner_user_id FROM servers WHERE id = 1`).
-		Scan(&visibility, &outboundPreference, &blockChinaInbound, &decommissioningAt, &decommissionStatus, &decommissionError, &ownerUserID); err != nil {
+		decommissioning_at, decommission_status, decommission_error, owner_user_id,
+		created_by_user_id, created_by_role FROM servers WHERE id = 1`).
+		Scan(&visibility, &outboundPreference, &blockChinaInbound, &decommissioningAt, &decommissionStatus,
+			&decommissionError, &ownerUserID, &createdByUserID, &createdByRole); err != nil {
 		t.Fatal(err)
 	}
 	if visibility != "public" {
@@ -58,6 +60,9 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if ownerUserID.Valid {
 		t.Fatalf("existing server owner_user_id = %d, want null", ownerUserID.Int64)
+	}
+	if createdByUserID.Valid || createdByRole != "unknown" {
+		t.Fatalf("existing server creator = (%v, %q), want (null, unknown)", createdByUserID, createdByRole)
 	}
 	var ownerDeleteAction string
 	if err := db.QueryRow(
@@ -77,6 +82,84 @@ func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("repeat migration: %v", err)
+	}
+}
+
+func TestOpenBackfillsServerCreatorFromLegacyOwnerOnce(t *testing.T) {
+	dataDir := t.TempDir()
+	legacyDB, err := sql.Open("sqlite", filepath.Join(dataDir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES
+			(1, 'admin', 'hash', 'admin', 1, 1),
+			(2, 'vip', 'hash', 'vip', 1, 1),
+			(3, 'user', 'hash', 'user', 1, 1)`,
+		`CREATE TABLE servers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO servers (id, name, owner_user_id, status, created_at, updated_at) VALUES
+			(1, 'Admin Legacy', 1, 'offline', 1, 1),
+			(2, 'VIP Legacy', 2, 'offline', 1, 1),
+			(3, 'User Legacy', 3, 'offline', 1, 1),
+			(4, 'Unknown Legacy', NULL, 'offline', 1, 1)`,
+	} {
+		if _, err := legacyDB.Exec(statement); err != nil {
+			legacyDB.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dataDir)
+	if err != nil {
+		t.Fatalf("Open() migration error = %v", err)
+	}
+	defer db.Close()
+	for _, test := range []struct {
+		id   int64
+		role string
+	}{
+		{id: 1, role: "admin"}, {id: 2, role: "vip"}, {id: 3, role: "unknown"}, {id: 4, role: "unknown"},
+	} {
+		var creatorID sql.NullInt64
+		var role string
+		if err := db.QueryRow(`SELECT created_by_user_id, created_by_role FROM servers WHERE id = ?`, test.id).Scan(&creatorID, &role); err != nil {
+			t.Fatal(err)
+		}
+		if creatorID.Valid != (test.id != 4) || creatorID.Valid && creatorID.Int64 != test.id || role != test.role {
+			t.Fatalf("server %d creator = (%v, %q), want owner snapshot role %q", test.id, creatorID, role, test.role)
+		}
+	}
+	if _, err := db.Exec(`UPDATE servers SET owner_user_id = 2 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var creatorID int64
+	var role string
+	if err := db.QueryRow(`SELECT created_by_user_id, created_by_role FROM servers WHERE id = 1`).Scan(&creatorID, &role); err != nil {
+		t.Fatal(err)
+	}
+	if creatorID != 1 || role != "admin" {
+		t.Fatalf("repeat migration rewrote creator = (%d, %q)", creatorID, role)
 	}
 }
 

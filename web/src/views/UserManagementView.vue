@@ -115,7 +115,7 @@ onMounted(loadPage)
     <template v-else-if="detail">
       <n-card class="user-management-summary" size="small">
         <strong>{{ detail.user.username }} · 普通用户</strong>
-        <span>已开通节点 {{ assignedNodes.length }} · 自建中转 {{ detail.relays.length }} · 密码申请 {{ detail.password_request ? '等待审核' : '无' }}</span>
+        <span>已开通节点 {{ assignedNodes.length }} · 自建中转 {{ detail.relays.length }} · 密码重置申请 {{ detail.password_request ? '等待审核' : '无' }}</span>
       </n-card>
 
       <section>
@@ -163,7 +163,7 @@ onMounted(loadPage)
       </section>
 
       <section>
-        <div class="section-heading"><h2>密码修改申请</h2></div>
+        <div class="section-heading"><h2>密码重置申请</h2></div>
         <n-empty v-if="!detail.password_request" description="无待处理申请" />
         <n-card v-else size="small">
           <p>{{ detail.password_request.username }} · {{ formatTime(detail.password_request.created_at) }}</p>

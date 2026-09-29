@@ -165,13 +165,46 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 	} else if err != nil {
 		return Plan{}, nil, fmt.Errorf("find subscription plan: %w", err)
 	}
+	existingNodes := make(map[int64]struct{})
+	rows, err := tx.QueryContext(ctx, `SELECT published_node_id FROM subscription_plan_nodes WHERE plan_id = ?`, planID)
+	if err != nil {
+		return Plan{}, nil, fmt.Errorf("list existing subscription plan nodes: %w", err)
+	}
+	for rows.Next() {
+		var nodeID int64
+		if err := rows.Scan(&nodeID); err != nil {
+			rows.Close()
+			return Plan{}, nil, fmt.Errorf("scan existing subscription plan node: %w", err)
+		}
+		existingNodes[nodeID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return Plan{}, nil, fmt.Errorf("iterate existing subscription plan nodes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return Plan{}, nil, fmt.Errorf("close existing subscription plan nodes: %w", err)
+	}
 	targets := make(map[int64]struct{}, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		var targetProxyID int64
-		if err := tx.QueryRowContext(ctx, `SELECT target_proxy_id FROM subscription_published_nodes WHERE id = ?`, nodeID).Scan(&targetProxyID); errors.Is(err, sql.ErrNoRows) {
+		var mode, targetRole string
+		var sourceRole sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT nodes.target_proxy_id, nodes.mode,
+			target_server.created_by_role, source_server.created_by_role
+			FROM subscription_published_nodes AS nodes
+			JOIN proxies AS target ON target.id = nodes.target_proxy_id
+			JOIN servers AS target_server ON target_server.id = target.server_id
+			LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id
+			LEFT JOIN servers AS source_server ON source_server.id = source.server_id
+			WHERE nodes.id = ?`, nodeID).Scan(&targetProxyID, &mode, &targetRole, &sourceRole); errors.Is(err, sql.ErrNoRows) {
 			return Plan{}, nil, ErrPublishedNodeNotFound
 		} else if err != nil {
 			return Plan{}, nil, fmt.Errorf("find published node for plan: %w", err)
+		}
+		_, alreadyIncluded := existingNodes[nodeID]
+		if !alreadyIncluded && (targetRole != "admin" || mode == NodeModeRelay && sourceRole.String != "admin") {
+			return Plan{}, nil, ErrServerNotDistributable
 		}
 		if _, duplicate := targets[targetProxyID]; duplicate {
 			return Plan{}, nil, ErrInvalidPlanNodes
@@ -279,7 +312,8 @@ func listPlanNodes(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, planID int64) ([]PlanNode, error) {
 	rows, err := query.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
-		target.server_id, target_server.name, nodes.source_proxy_id, source.name, source.server_id, source_server.name,
+		target.server_id, target_server.name, target_server.created_by_role,
+		nodes.source_proxy_id, source.name, source.server_id, source_server.name, source_server.created_by_role,
 		nodes.relay_id, relay.listen_port, relay.entry_host_mode, relay.entry_host,
 		COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
 		nodes.enabled, nodes.created_at, nodes.updated_at, mapping.position
@@ -300,17 +334,19 @@ func listPlanNodes(ctx context.Context, query interface {
 	for rows.Next() {
 		var value PlanNode
 		var sourceProxyID, sourceServerID, relayID, entryPort sql.NullInt64
-		var sourceProxyName, sourceServerName, entryHostMode, entryHost, publicIPv4 sql.NullString
+		var sourceProxyName, sourceServerName, sourceCreatorRole, entryHostMode, entryHost, publicIPv4 sql.NullString
+		var targetCreatorRole string
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
-			&value.TargetServerID, &value.TargetServerName, &sourceProxyID, &sourceProxyName,
-			&sourceServerID, &sourceServerName, &relayID, &entryPort, &entryHostMode, &entryHost,
+			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole, &sourceProxyID, &sourceProxyName,
+			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID, &entryPort, &entryHostMode, &entryHost,
 			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
 			return nil, fmt.Errorf("scan subscription plan node: %w", err)
 		}
 		populatePlanNode(&value, sourceProxyID, sourceServerID, relayID, entryPort, sourceProxyName,
 			sourceServerName, entryHostMode, entryHost, publicIPv4, enabled, createdAt, updatedAt)
+		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {

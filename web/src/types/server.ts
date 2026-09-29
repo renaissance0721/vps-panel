@@ -5,6 +5,9 @@ export type ServerRecord = {
   name: string
   owner_user_id: number | null
   owner_username: string
+  created_by_user_id: number | null
+  created_by_username: string
+  created_by_role: 'admin' | 'vip' | 'unknown'
   status: 'pending' | 'online' | 'offline'
   visibility: 'public' | 'private'
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'

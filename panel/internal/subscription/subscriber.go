@@ -226,16 +226,20 @@ func (s *Service) reconcileSubscriberTx(
 		(!expiresAt.Valid || now.Unix() < expiresAt.Int64) && !quotaExhausted
 
 	type requiredProxy struct {
-		serverID int64
-		name     string
+		serverID      int64
+		name          string
+		distributable bool
 	}
 	required := make(map[int64]requiredProxy)
 	if planID.Valid {
-		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT proxies.id, proxies.server_id, proxies.name
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT proxies.id, proxies.server_id, proxies.name,
+			servers.created_by_role, nodes.mode, source_server.created_by_role
 			FROM subscription_plan_nodes AS mapping
 			JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 			JOIN proxies ON proxies.id = nodes.target_proxy_id
 			JOIN servers ON servers.id = proxies.server_id
+			LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id
+			LEFT JOIN servers AS source_server ON source_server.id = source.server_id
 			WHERE mapping.plan_id = ? AND nodes.enabled = 1 AND servers.archived_at IS NULL`, planID.Int64)
 		if err != nil {
 			return fmt.Errorf("list required subscriber proxies: %w", err)
@@ -243,10 +247,13 @@ func (s *Service) reconcileSubscriberTx(
 		for rows.Next() {
 			var proxyID int64
 			var value requiredProxy
-			if err := rows.Scan(&proxyID, &value.serverID, &value.name); err != nil {
+			var targetRole, mode string
+			var sourceRole sql.NullString
+			if err := rows.Scan(&proxyID, &value.serverID, &value.name, &targetRole, &mode, &sourceRole); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan required subscriber proxy: %w", err)
 			}
+			value.distributable = targetRole == "admin" && (mode == NodeModeDirect || sourceRole.String == "admin")
 			required[proxyID] = value
 		}
 		if err := rows.Err(); err != nil {
@@ -323,6 +330,9 @@ func (s *Service) reconcileSubscriberTx(
 	for proxyID, target := range required {
 		if _, exists := existing[proxyID]; exists {
 			continue
+		}
+		if !target.distributable {
+			return ErrServerNotDistributable
 		}
 		clientID, serverID, err := s.proxies.CreateSubscriberClientTx(
 			ctx, tx, userID, proxyID, subscriberClientName(username, target.name), active, now,

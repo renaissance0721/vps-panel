@@ -241,7 +241,9 @@ func newSubscriptionTestService(t *testing.T) (*sql.DB, *Service) {
 
 func insertSubscriptionTestServer(t *testing.T, db *sql.DB, id int64, name, publicIPv4 string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (?, ?, 'offline', 1, 1)`, id, name); err != nil {
+	if _, err := db.Exec(`INSERT INTO servers
+		(id, name, created_by_role, status, created_at, updated_at)
+		VALUES (?, ?, 'admin', 'offline', 1, 1)`, id, name); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO server_system_info

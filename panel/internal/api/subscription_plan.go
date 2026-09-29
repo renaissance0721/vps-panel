@@ -191,6 +191,8 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "流量额度不能小于 0")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
 		writeError(w, http.StatusBadRequest, "套餐节点列表无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
+	case errors.Is(err, subscriptionstore.ErrServerNotDistributable):
+		writeError(w, http.StatusBadRequest, "套餐只能包含管理员创建服务器上的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):
 		writeError(w, http.StatusConflict, "请先切换或取消使用该套餐的订阅用户")
 	default:

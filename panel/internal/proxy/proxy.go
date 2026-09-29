@@ -137,6 +137,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 }
 
 func (s *Service) List(ctx context.Context) ([]Proxy, error) {
+	return s.list(ctx, "")
+}
+
+func (s *Service) ListDistributable(ctx context.Context) ([]Proxy, error) {
+	return s.list(ctx, " AND servers.created_by_role = 'admin'")
+}
+
+func (s *Service) list(ctx context.Context, originCondition string) ([]Proxy, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
@@ -145,7 +153,7 @@ func (s *Service) List(ctx context.Context) ([]Proxy, error) {
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
-		 WHERE servers.archived_at IS NULL
+		 WHERE servers.archived_at IS NULL`+originCondition+`
 		 ORDER BY proxies.created_at DESC, proxies.id DESC`,
 	)
 	if err != nil {
@@ -164,6 +172,25 @@ func (s *Service) List(ctx context.Context) ([]Proxy, error) {
 		return nil, fmt.Errorf("iterate proxies: %w", err)
 	}
 	return values, nil
+}
+
+func RequireAdminCreatedProxy(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, proxyID int64) error {
+	var role string
+	err := query.QueryRowContext(ctx, `SELECT servers.created_by_role
+		FROM proxies JOIN servers ON servers.id = proxies.server_id
+		WHERE proxies.id = ? AND servers.archived_at IS NULL`, proxyID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read proxy server creator: %w", err)
+	}
+	if role != "admin" {
+		return ErrNotDistributable
+	}
+	return nil
 }
 
 func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {

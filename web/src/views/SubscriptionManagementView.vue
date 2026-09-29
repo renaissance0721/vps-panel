@@ -20,6 +20,7 @@ type PublishedNode = {
   entry_port?: number
   traffic_multiplier: number
   enabled: boolean
+  distributable: boolean
   position?: number
 }
 type Plan = {
@@ -108,7 +109,7 @@ const orderedPlanNodes = computed(() => {
     return node ? [node] : []
   })
   const selectedIDs = new Set(planNodeIDs.value)
-  return [...selected, ...nodes.value.filter((node) => !selectedIDs.has(node.id))]
+  return [...selected, ...nodes.value.filter((node) => node.distributable && !selectedIDs.has(node.id))]
 })
 
 const statusLabels: Record<string, string> = {
@@ -121,7 +122,7 @@ async function loadAll() {
     api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
     api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
     api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
-    api<{ proxies: ProxyRecord[] }>('/api/proxies'),
+    api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
   ])
   users.value = userResult.users
   plans.value = planResult.plans
@@ -488,7 +489,7 @@ onMounted(async () => {
   <n-modal v-if="selectedUser" v-model:show="userModalOpen"><n-card class="client-form-card subscription-form-card" title="订阅用户" closable @close="userModalOpen = false"><form class="auth-form" @submit.prevent="saveUser">
     <n-alert v-if="userFormError" type="error" closable @close="userFormError = ''">{{ userFormError }}</n-alert>
     <strong>{{ selectedUser.username }}</strong>
-    <dl class="user-details"><div><dt>状态</dt><dd>{{ statusLabels[selectedUser.status] ?? selectedUser.status }}</dd></div><div><dt>已用 / 总量</dt><dd>{{ formatClientTrafficBytes(selectedUser.used_bytes) }} / {{ selectedUser.traffic_limit_bytes !== null ? formatClientTrafficBytes(selectedUser.traffic_limit_bytes) : '不限' }}</dd></div><div><dt>周期开始</dt><dd>{{ formatTime(selectedUser.cycle_started_at) }}</dd></div><div><dt>下次重置</dt><dd>{{ selectedUser.next_reset_at ? formatTime(selectedUser.next_reset_at) : '不重置' }}</dd></div><div><dt>可用节点</dt><dd>{{ selectedUser.enabled_node_count }}</dd></div><div><dt>密码申请</dt><dd>{{ selectedUser.password_request?.status === 'pending' ? '等待审核' : '无待审核申请' }}</dd></div></dl>
+    <dl class="user-details"><div><dt>状态</dt><dd>{{ statusLabels[selectedUser.status] ?? selectedUser.status }}</dd></div><div><dt>已用 / 总量</dt><dd>{{ formatClientTrafficBytes(selectedUser.used_bytes) }} / {{ selectedUser.traffic_limit_bytes !== null ? formatClientTrafficBytes(selectedUser.traffic_limit_bytes) : '不限' }}</dd></div><div><dt>周期开始</dt><dd>{{ formatTime(selectedUser.cycle_started_at) }}</dd></div><div><dt>下次重置</dt><dd>{{ selectedUser.next_reset_at ? formatTime(selectedUser.next_reset_at) : '不重置' }}</dd></div><div><dt>可用节点</dt><dd>{{ selectedUser.enabled_node_count }}</dd></div><div><dt>密码重置申请</dt><dd>{{ selectedUser.password_request?.status === 'pending' ? '等待审核' : '无待审核申请' }}</dd></div></dl>
     <label><span>套餐</span><select v-model.number="userPlanID" class="settings-input"><option :value="0">未开通</option><option v-for="plan in enabledPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
     <label><span>到期时间（留空不限）</span><input v-model="userExpiresAt" class="settings-input" type="datetime-local" /></label>
     <label><span>流量重置</span><select v-model="userResetMode" class="settings-input"><option value="monthly">每月</option><option value="never">不重置</option></select></label>
@@ -496,7 +497,7 @@ onMounted(async () => {
     <label v-if="userResetMode === 'monthly'"><span>重置时间（上海时区）</span><input v-model="userResetTime" class="settings-input" type="time" /></label>
     <label><span>付款周期</span><select v-model.number="userBillingMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">月付</option><option :value="3">季付</option><option :value="6">半年付</option><option :value="12">年付</option></select></label>
     <n-checkbox v-model:checked="userEnabled">启用账号</n-checkbox>
-    <div v-if="selectedUser.password_request?.status === 'pending'" class="modal-actions"><span>密码修改申请等待审核</span><n-button secondary attr-type="button" @click="reviewUserPassword('reject')">拒绝</n-button><n-button type="primary" attr-type="button" @click="reviewUserPassword('approve')">批准</n-button></div>
+    <div v-if="selectedUser.password_request?.status === 'pending'" class="modal-actions"><span>密码重置申请等待审核</span><n-button secondary attr-type="button" @click="reviewUserPassword('reject')">拒绝</n-button><n-button type="primary" attr-type="button" @click="reviewUserPassword('approve')">批准</n-button></div>
     <label><span>Subscription URL</span><n-input :value="selectedUser.subscription_url" readonly /></label>
     <div class="modal-actions"><n-button secondary attr-type="button" @click="copyUserURL">{{ copiedUserURL ? '已复制' : '复制订阅链接' }}</n-button><n-button secondary attr-type="button" @click="regenerateUserToken">重置订阅链接</n-button><n-button secondary attr-type="button" @click="resetUserTraffic">重置流量</n-button></div>
     <div class="modal-actions"><n-button @click="userModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>

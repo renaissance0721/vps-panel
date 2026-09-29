@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
@@ -11,6 +12,11 @@ import (
 type passwordChangeRequestBody struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
+}
+
+type passwordResetRequestBody struct {
+	Username    string `json:"username"`
+	NewPassword string `json:"new_password"`
 }
 
 type passwordChangeRequestResponse struct {
@@ -30,32 +36,40 @@ func toPasswordChangeRequestResponse(value auth.PasswordChangeRequest) passwordC
 	}
 }
 
-func (s *server) createMyPasswordChangeRequest(w http.ResponseWriter, r *http.Request, user auth.User) {
-	var request passwordChangeRequestBody
+func (s *server) requestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var request passwordResetRequestBody
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	created, err := s.authService.RequestPasswordChange(r.Context(), user.ID, request.CurrentPassword, request.NewPassword)
+	ip := clientIP(r)
+	now := time.Now()
+	if allowed, retryAfter := s.passwordResetLimiter.Allow(ip, request.Username, now); !allowed {
+		seconds := max(1, int((retryAfter+time.Second-1)/time.Second))
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeError(w, http.StatusTooManyRequests, "密码重置申请过于频繁，请稍后再试")
+		return
+	}
+	s.passwordResetLimiter.RecordFailure(ip, request.Username, now)
+	if err := s.authService.RequestPasswordResetByUsername(r.Context(), request.Username, request.NewPassword); err != nil {
+		writePasswordRequestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+func (s *server) requestMyPasswordReset(w http.ResponseWriter, r *http.Request, user auth.User) {
+	var request passwordResetRequestBody
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	created, err := s.authService.RequestPasswordResetForUser(r.Context(), user.ID, request.NewPassword)
 	if err != nil {
 		writePasswordRequestError(w, err)
 		return
 	}
 	created.Username = user.Username
 	created.Role = user.Role
-	writeJSON(w, http.StatusCreated, map[string]any{"request": toPasswordChangeRequestResponse(created)})
-}
-
-func (s *server) getMyPasswordChangeRequest(w http.ResponseWriter, r *http.Request, user auth.User) {
-	value, err := s.authService.LatestPasswordChangeRequest(r.Context(), user.ID)
-	if err != nil {
-		writeInternalError(w)
-		return
-	}
-	if value == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"request": nil})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"request": toPasswordChangeRequestResponse(*value)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "request": toPasswordChangeRequestResponse(created)})
 }
 
 func (s *server) listPasswordChangeRequests(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -100,9 +114,11 @@ func writePasswordRequestError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrPasswordUnchanged):
 		writeError(w, http.StatusBadRequest, "新密码不能与当前密码相同")
 	case errors.Is(err, auth.ErrPasswordRequestPending):
-		writeError(w, http.StatusConflict, "已有待审核的密码修改申请")
+		writeError(w, http.StatusConflict, "已有待审核的密码重置申请")
 	case errors.Is(err, auth.ErrPasswordRequestNotFound):
-		writeError(w, http.StatusNotFound, "密码修改申请不存在或已审核")
+		writeError(w, http.StatusNotFound, "密码重置申请不存在或已审核")
+	case errors.Is(err, auth.ErrPasswordRequestSelfReview):
+		writeError(w, http.StatusForbidden, "管理员不能审核自己的密码重置申请")
 	default:
 		writeInternalError(w)
 	}

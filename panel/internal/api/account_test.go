@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,70 +113,74 @@ func TestAccountRenameAndAdminPasswordChange(t *testing.T) {
 	}
 }
 
-func TestAllNonAdminRolesUseReviewedPasswordRequests(t *testing.T) {
+func TestAllRolesChangePasswordDirectlyAndLoseExistingSessions(t *testing.T) {
 	db, handler, adminCookie, _ := setupAccountTest(t)
 	defer db.Close()
-	type account struct {
+	for _, account := range []struct {
 		role     string
 		username string
-		cookie   *http.Cookie
-		request  int64
-	}
-	accounts := []account{{role: "vip", username: "vip-user"}, {role: "user", username: "normal-user"}, {role: "subscriber", username: "subscriber-user"}}
-	for index := range accounts {
-		accounts[index].cookie, _ = registerAccount(t, db, handler, adminCookie, accounts[index].role, accounts[index].username)
-		created := performRequest(t, handler, http.MethodPost, "/api/account/password", map[string]string{
+	}{
+		{role: "vip", username: "vip-user"},
+		{role: "user", username: "normal-user"},
+		{role: "subscriber", username: "subscriber-user"},
+	} {
+		cookie, userID := registerAccount(t, db, handler, adminCookie, account.role, account.username)
+		changed := performRequest(t, handler, http.MethodPost, "/api/account/password", map[string]string{
 			"current_password": "current-password", "new_password": "replacement-password",
-		}, accounts[index].cookie)
-		var body struct {
-			Request passwordChangeRequestResponse `json:"request"`
+		}, cookie)
+		if changed.Code != http.StatusOK || !strings.Contains(changed.Body.String(), `"status":"changed"`) {
+			t.Fatalf("change %s password = %d, %s", account.role, changed.Code, changed.Body.String())
 		}
-		if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &body) != nil || body.Request.Role != accounts[index].role {
-			t.Fatalf("create %s request = %d, %s", accounts[index].role, created.Code, created.Body.String())
+		state := performRequest(t, handler, http.MethodGet, "/api/auth/state", nil, cookie)
+		if state.Code != http.StatusOK || strings.Contains(state.Body.String(), `"authenticated":true`) {
+			t.Fatalf("%s session survived password change: %s", account.role, state.Body.String())
 		}
-		accounts[index].request = body.Request.ID
-		duplicate := performRequest(t, handler, http.MethodPost, "/api/account/password", map[string]string{
-			"current_password": "current-password", "new_password": "another-password",
-		}, accounts[index].cookie)
-		if duplicate.Code != http.StatusConflict {
-			t.Fatalf("duplicate %s request = %d, %s", accounts[index].role, duplicate.Code, duplicate.Body.String())
+		var requests int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM password_change_requests WHERE user_id = ?`, userID).Scan(&requests); err != nil || requests != 0 {
+			t.Fatalf("%s direct change requests = %d, %v", account.role, requests, err)
 		}
-	}
-	listed := performRequest(t, handler, http.MethodGet, "/api/admin/password-change-requests", nil, adminCookie)
-	if listed.Code != http.StatusOK {
-		t.Fatalf("list requests = %d, %s", listed.Code, listed.Body.String())
-	}
-	for _, account := range accounts {
-		if !strings.Contains(listed.Body.String(), `"username":"`+account.username+`","role":"`+account.role+`"`) {
-			t.Fatalf("password request list missing role for %s: %s", account.username, listed.Body.String())
+		oldLogin := performRequest(t, handler, http.MethodPost, "/api/auth/login", map[string]string{"username": account.username, "password": "current-password"}, nil)
+		newLogin := performRequest(t, handler, http.MethodPost, "/api/auth/login", map[string]string{"username": account.username, "password": "replacement-password"}, nil)
+		if oldLogin.Code != http.StatusUnauthorized || newLogin.Code != http.StatusOK {
+			t.Fatalf("%s logins after direct change = old %d, new %d", account.role, oldLogin.Code, newLogin.Code)
 		}
 	}
-	for index, account := range accounts {
-		action := "approve"
-		wantStatus := "approved"
-		if index == 0 {
-			action = "reject"
-			wantStatus = "rejected"
+}
+
+func TestPublicPasswordResetRequestIsOpaqueAndRateLimited(t *testing.T) {
+	db, handler, adminCookie, _ := setupAccountTest(t)
+	defer db.Close()
+	_, _ = registerAccount(t, db, handler, adminCookie, "user", "reset-user")
+
+	request := func(username, password string) *httptest.ResponseRecorder {
+		return performRequest(t, handler, http.MethodPost, "/api/auth/password-reset-request", map[string]string{
+			"username": username, "new_password": password,
+		}, nil)
+	}
+	real := request("reset-user", "replacement-password")
+	pending := request("reset-user", "another-password")
+	missing := request("missing-user", "replacement-password")
+	for name, response := range map[string]*httptest.ResponseRecorder{"real": real, "pending": pending, "missing": missing} {
+		if response.Code != http.StatusAccepted || response.Body.String() != "{\"status\":\"accepted\"}\n" {
+			t.Fatalf("%s reset response = %d, %s", name, response.Code, response.Body.String())
 		}
-		response := performRequest(t, handler, http.MethodPost,
-			"/api/admin/password-change-requests/"+strconv.FormatInt(account.request, 10)+"/"+action, nil, adminCookie)
-		if response.Code != http.StatusNoContent {
-			t.Fatalf("%s %s request = %d, %s", action, account.role, response.Code, response.Body.String())
+	}
+	var requests int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM password_change_requests`).Scan(&requests); err != nil || requests != 1 {
+		t.Fatalf("password reset request count = %d, %v", requests, err)
+	}
+	if unauthenticated := performRequest(t, handler, http.MethodPost, "/api/account/password-reset-request",
+		map[string]string{"new_password": "replacement-password"}, nil); unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated reset = %d, %s", unauthenticated.Code, unauthenticated.Body.String())
+	}
+	for attempt := 0; attempt < loginPairFailureLimit; attempt++ {
+		if response := request("rate-limited-user", "replacement-password"); response.Code != http.StatusAccepted {
+			t.Fatalf("reset attempt %d = %d, %s", attempt+1, response.Code, response.Body.String())
 		}
-		var status string
-		var proposed sql.NullString
-		if err := db.QueryRow(`SELECT status, proposed_password_hash FROM password_change_requests WHERE id = ?`, account.request).Scan(&status, &proposed); err != nil || status != wantStatus || proposed.Valid {
-			t.Fatalf("reviewed %s request = status %q hash %+v error %v", account.role, status, proposed, err)
-		}
-		password := "replacement-password"
-		want := http.StatusOK
-		if action == "reject" {
-			password = "current-password"
-		}
-		login := performRequest(t, handler, http.MethodPost, "/api/auth/login", map[string]string{"username": account.username, "password": password}, nil)
-		if login.Code != want {
-			t.Fatalf("%s login after %s = %d, %s", account.role, action, login.Code, login.Body.String())
-		}
+	}
+	limited := request("rate-limited-user", "replacement-password")
+	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
+		t.Fatalf("limited reset = %d, headers %v, body %s", limited.Code, limited.Header(), limited.Body.String())
 	}
 }
 
@@ -202,9 +207,9 @@ func TestAdminDeleteSubscriberCleansRelatedDataAndPreventsLogin(t *testing.T) {
 	if _, _, err := subscriptions.UpdateSubscriber(t.Context(), subscriberID, subscriptionstore.UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if response := performRequest(t, handler, http.MethodPost, "/api/account/password", map[string]string{
-		"current_password": "current-password", "new_password": "replacement-password",
-	}, subscriberCookie); response.Code != http.StatusCreated {
+	if response := performRequest(t, handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "replacement-password",
+	}, subscriberCookie); response.Code != http.StatusAccepted {
 		t.Fatalf("subscriber password request = %d, %s", response.Code, response.Body.String())
 	}
 	if response := performRequest(t, handler, http.MethodDelete, "/api/admin/users/"+strconv.FormatInt(subscriberID, 10), nil, subscriberCookie); response.Code != http.StatusForbidden {

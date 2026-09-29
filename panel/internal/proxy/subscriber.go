@@ -31,6 +31,9 @@ func (s *Service) CreateSubscriberClientTx(
 	if role != "subscriber" {
 		return 0, 0, ErrInvalidAssignmentRole
 	}
+	if err := RequireAdminCreatedProxy(ctx, tx, proxyID); err != nil {
+		return 0, 0, err
+	}
 	proxyValue, config, err := getProxyForMutation(ctx, tx, proxyID)
 	if err != nil {
 		return 0, 0, err

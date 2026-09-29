@@ -45,6 +45,7 @@ var (
 	ErrInvalidSubscriberExpiry  = errors.New("subscriber expiration is invalid")
 	ErrSubscriptionNotFound     = errors.New("subscription not found")
 	ErrSubscriptionUnavailable  = errors.New("subscription unavailable")
+	ErrServerNotDistributable   = errors.New("published nodes require administrator-created servers")
 )
 
 type PublishedNode struct {
@@ -64,6 +65,7 @@ type PublishedNode struct {
 	EntryAddress        string
 	EntryPort           int
 	Enabled             bool
+	Distributable       bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }

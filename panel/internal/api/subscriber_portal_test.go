@@ -57,7 +57,8 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		t.Fatalf("admin subscriber portal API = %d, %s", denied.Code, denied.Body.String())
 	}
 
-	if _, err := db.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (1, 'SG', 'offline', 1, 1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO servers (id, name, created_by_role, status, created_at, updated_at)
+		VALUES (1, 'SG', 'admin', 'offline', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO server_system_info
@@ -139,10 +140,10 @@ func TestSubscriberPortalAPIs(t *testing.T) {
 		t.Fatalf("regenerate subscriber token = %d, %s", regenerated.Code, regenerated.Body.String())
 	}
 	assertSubscriptionStatusForAllFormats(t, handler, oldToken, http.StatusNotFound)
-	passwordRequest := performRequest(t, handler, http.MethodPost, "/api/subscriber/password-change-request", map[string]string{
-		"current_password": "current-password", "new_password": "new-strong-password",
+	passwordRequest := performRequest(t, handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "new-strong-password",
 	}, subscriberCookie)
-	if passwordRequest.Code != http.StatusCreated {
+	if passwordRequest.Code != http.StatusAccepted {
 		t.Fatalf("subscriber password request = %d, %s", passwordRequest.Code, passwordRequest.Body.String())
 	}
 }

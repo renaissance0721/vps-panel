@@ -30,6 +30,7 @@ func TestServerOwnerLifecycle(t *testing.T) {
 	}
 	for _, value := range []Server{publicServer.Server, privateServer.Server} {
 		assertServerOwner(t, value, 5, "refrain")
+		assertServerCreator(t, value, 5, "refrain", "admin")
 		var storedOwner sql.NullInt64
 		if err := db.QueryRow(`SELECT owner_user_id FROM servers WHERE id = ?`, value.ID).Scan(&storedOwner); err != nil {
 			t.Fatal(err)
@@ -44,6 +45,7 @@ func TestServerOwnerLifecycle(t *testing.T) {
 		t.Fatalf("get private server: %v", err)
 	}
 	assertServerOwner(t, readPrivate, 5, "refrain")
+	assertServerCreator(t, readPrivate, 5, "refrain", "admin")
 	if _, err := service.CreateEnrollment(context.Background(), privateServer.ID); err != nil {
 		t.Fatalf("create enrollment with owner columns: %v", err)
 	}
@@ -64,6 +66,7 @@ func TestServerOwnerLifecycle(t *testing.T) {
 		t.Fatalf("list archived servers = (%+v, %v)", archived, err)
 	}
 	assertServerOwner(t, archived[0], 5, "refrain")
+	assertServerCreator(t, archived[0], 5, "refrain", "admin")
 
 	if _, err := db.Exec(`DELETE FROM users WHERE id = 5`); err != nil {
 		t.Fatalf("delete owner: %v", err)
@@ -74,6 +77,9 @@ func TestServerOwnerLifecycle(t *testing.T) {
 	}
 	if active.OwnerUserID != nil || active.OwnerUsername != "" {
 		t.Fatalf("deleted owner remained on active server: (%v, %q)", active.OwnerUserID, active.OwnerUsername)
+	}
+	if active.CreatedByUserID != nil || active.CreatedByUsername != "" || active.CreatedByRole != "admin" {
+		t.Fatalf("deleted creator snapshot = (%v, %q, %q), want (nil, empty, admin)", active.CreatedByUserID, active.CreatedByUsername, active.CreatedByRole)
 	}
 	archived, err = service.ListArchived(context.Background())
 	if err != nil || len(archived) != 1 || archived[0].OwnerUserID != nil || archived[0].OwnerUsername != "" {
@@ -108,6 +114,7 @@ func TestUpdateServerOwnerDoesNotChangeAccessOrRoles(t *testing.T) {
 		t.Fatalf("update owner: %v", err)
 	}
 	assertServerOwner(t, updated, 2, "member")
+	assertServerCreator(t, updated, 1, "admin", "admin")
 	if updated.Visibility != VisibilityPrivate || !equalInt64s(updated.AccessUserIDs, []int64{1}) {
 		t.Fatalf("owner update changed access = (%q, %v)", updated.Visibility, updated.AccessUserIDs)
 	}
@@ -133,6 +140,7 @@ func TestUpdateServerOwnerDoesNotChangeAccessOrRoles(t *testing.T) {
 	if cleared.OwnerUserID != nil || cleared.OwnerUsername != "" {
 		t.Fatalf("cleared owner = (%v, %q)", cleared.OwnerUserID, cleared.OwnerUsername)
 	}
+	assertServerCreator(t, cleared, 1, "admin", "admin")
 	for _, invalidID := range []int64{0, -1, 999} {
 		if _, err := service.UpdateOwner(context.Background(), created.ID, &invalidID); !errors.Is(err, ErrInvalidServerOwner) {
 			t.Fatalf("UpdateOwner(%d) error = %v", invalidID, err)
@@ -143,6 +151,16 @@ func TestUpdateServerOwnerDoesNotChangeAccessOrRoles(t *testing.T) {
 	}
 	if _, err := service.UpdateOwner(context.Background(), created.ID, &memberID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("archived UpdateOwner() error = %v", err)
+	}
+}
+
+func assertServerCreator(t *testing.T, value Server, wantID int64, wantUsername, wantRole string) {
+	t.Helper()
+	if value.CreatedByUserID == nil || *value.CreatedByUserID != wantID ||
+		value.CreatedByUsername != wantUsername || value.CreatedByRole != wantRole {
+		t.Fatalf("server %d creator = (%v, %q, %q), want (%d, %q, %q)",
+			value.ID, value.CreatedByUserID, value.CreatedByUsername, value.CreatedByRole,
+			wantID, wantUsername, wantRole)
 	}
 }
 

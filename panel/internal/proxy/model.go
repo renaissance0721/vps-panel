@@ -59,6 +59,7 @@ var (
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
 	ErrSubscriptionManagedClient      = errors.New("client is managed by the subscription system")
+	ErrNotDistributable               = errors.New("proxy server was not created by an administrator")
 )
 
 type Proxy struct {

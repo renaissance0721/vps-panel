@@ -10,6 +10,7 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
@@ -46,6 +47,7 @@ type subscriptionPublishedNodeResponse struct {
 	EntryPort         int       `json:"entry_port,omitempty"`
 	TrafficMultiplier float64   `json:"traffic_multiplier"`
 	Enabled           bool      `json:"enabled"`
+	Distributable     bool      `json:"distributable"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	Position          int       `json:"position,omitempty"`
@@ -83,6 +85,14 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 		multiplierBP = 100
 	}
 	if mode == subscriptionstore.NodeModeRelay && request.SourceProxyID != nil {
+		if err := proxystore.RequireAdminCreatedProxy(r.Context(), s.db, *request.SourceProxyID); err != nil {
+			if errors.Is(err, proxystore.ErrNotFound) {
+				writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrSourceProxyNotFound)
+			} else {
+				writeSubscriptionPublishedNodeError(w, err)
+			}
+			return
+		}
 		source, err := s.proxies.Get(r.Context(), *request.SourceProxyID)
 		if err != nil {
 			writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrSourceProxyNotFound)
@@ -168,7 +178,8 @@ func toSubscriptionPublishedNodeResponse(value subscriptionstore.PublishedNode) 
 		SourceServerID: value.SourceServerID, SourceServerName: value.SourceServerName,
 		RelayID: value.RelayID, EntryAddress: value.EntryAddress, EntryPort: value.EntryPort,
 		TrafficMultiplier: float64(value.TrafficMultiplierBP) / 100,
-		Enabled:           value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		Enabled:           value.Enabled, Distributable: value.Distributable,
+		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -188,6 +199,8 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "中转节点不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeReferenced):
 		writeError(w, http.StatusConflict, "请先从套餐中移除此发布节点")
+	case errors.Is(err, subscriptionstore.ErrServerNotDistributable), errors.Is(err, proxystore.ErrNotDistributable):
+		writeError(w, http.StatusBadRequest, "订阅发布节点只能使用管理员创建的服务器")
 	case errors.Is(err, subscriptionstore.ErrSourceProxyRequired),
 		errors.Is(err, subscriptionstore.ErrInvalidNodeTopology),
 		errors.Is(err, subscriptionstore.ErrInvalidNodeUpdate):

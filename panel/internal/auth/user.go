@@ -177,8 +177,13 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassw
 	if err := validatePassword(newPassword); err != nil {
 		return err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password change: %w", err)
+	}
+	defer tx.Rollback()
 	var currentHash string
-	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&currentHash); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&currentHash); errors.Is(err, sql.ErrNoRows) {
 		return ErrUserNotFound
 	} else if err != nil {
 		return fmt.Errorf("read current password: %w", err)
@@ -193,7 +198,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassw
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
 		passwordHash, s.now().UTC().Truncate(time.Second).Unix(), userID)
 	if err != nil {
 		return fmt.Errorf("change password: %w", err)
@@ -203,6 +208,12 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassw
 			return fmt.Errorf("read changed password count: %w", err)
 		}
 		return ErrUserNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("invalidate changed password sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password change: %w", err)
 	}
 	return nil
 }

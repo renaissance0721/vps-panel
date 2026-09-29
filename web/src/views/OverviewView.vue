@@ -96,7 +96,7 @@ const orderedUsers = computed(() => adminFirst(overview.value?.users ?? []))
               </div>
             </div>
           </n-card>
-		  <n-card v-if="state?.user?.role === 'admin'" title="密码修改申请" :bordered="true">
+		  <n-card v-if="state?.user?.role === 'admin'" title="密码重置申请" :bordered="true">
 			<n-empty v-if="passwordChangeRequests.length === 0" description="当前没有待审核申请" />
 			<div v-else class="invitation-list">
 			  <div v-for="request in passwordChangeRequests" :key="request.id" class="invitation-row">

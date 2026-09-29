@@ -253,28 +253,28 @@ func TestAssignedNodesMetricsAndShareAreOwnerScoped(t *testing.T) {
 	}
 }
 
-func TestPasswordChangeRequestApprovalAndRejection(t *testing.T) {
+func TestPasswordResetRequestApprovalAndRejection(t *testing.T) {
 	fixture := setupUserPortalFixture(t)
 	defer fixture.db.Close()
-	wrong := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "wrong-password", "new_password": "replacement-password",
+	removed := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
+		"new_password": "replacement-password",
 	}, fixture.userCookie)
-	if wrong.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong current password = %d, %s", wrong.Code, wrong.Body.String())
+	if removed.Code != http.StatusNotFound {
+		t.Fatalf("removed password endpoint = %d, %s", removed.Code, removed.Body.String())
 	}
-	short := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "current-password", "new_password": "short",
+	short := performRequest(t, fixture.handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "short",
 	}, fixture.userCookie)
 	if short.Code != http.StatusBadRequest {
 		t.Fatalf("short password = %d, %s", short.Code, short.Body.String())
 	}
-	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "current-password", "new_password": "replacement-password",
+	created := performRequest(t, fixture.handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "replacement-password",
 	}, fixture.userCookie)
 	var createdBody struct {
 		Request passwordChangeRequestResponse `json:"request"`
 	}
-	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &createdBody) != nil {
+	if created.Code != http.StatusAccepted || json.Unmarshal(created.Body.Bytes(), &createdBody) != nil {
 		t.Fatalf("create password request = %d, %s", created.Code, created.Body.String())
 	}
 	var storedHash string
@@ -282,8 +282,8 @@ func TestPasswordChangeRequestApprovalAndRejection(t *testing.T) {
 		storedHash == "replacement-password" || strings.Contains(storedHash, "replacement-password") {
 		t.Fatalf("stored proposed password = %q, %v", storedHash, err)
 	}
-	duplicate := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "current-password", "new_password": "another-password",
+	duplicate := performRequest(t, fixture.handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "another-password",
 	}, fixture.userCookie)
 	if duplicate.Code != http.StatusConflict {
 		t.Fatalf("duplicate request = %d, %s", duplicate.Code, duplicate.Body.String())
@@ -314,13 +314,13 @@ func TestPasswordChangeRequestApprovalAndRejection(t *testing.T) {
 		t.Fatalf("logins after approve: old=%d new=%d", oldLogin.Code, newLogin.Code)
 	}
 	newCookie := newLogin.Result().Cookies()[0]
-	rejectedRequest := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "replacement-password", "new_password": "rejected-password",
+	rejectedRequest := performRequest(t, fixture.handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "rejected-password",
 	}, newCookie)
 	var rejectedBody struct {
 		Request passwordChangeRequestResponse `json:"request"`
 	}
-	if rejectedRequest.Code != http.StatusCreated || json.Unmarshal(rejectedRequest.Body.Bytes(), &rejectedBody) != nil {
+	if rejectedRequest.Code != http.StatusAccepted || json.Unmarshal(rejectedRequest.Body.Bytes(), &rejectedBody) != nil {
 		t.Fatalf("create rejected request = %d, %s", rejectedRequest.Code, rejectedRequest.Body.String())
 	}
 	rejected := performRequest(t, fixture.handler, http.MethodPost,
@@ -1082,10 +1082,10 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 			t.Fatalf("assigned client share = %d, %s", share.Code, share.Body.String())
 		}
 	}
-	passwordRequest := performRequest(t, fixture.handler, http.MethodPost, "/api/me/password-change-request", map[string]string{
-		"current_password": "current-password", "new_password": "management-password",
+	passwordRequest := performRequest(t, fixture.handler, http.MethodPost, "/api/account/password-reset-request", map[string]string{
+		"new_password": "management-password",
 	}, fixture.userCookie)
-	if passwordRequest.Code != http.StatusCreated {
+	if passwordRequest.Code != http.StatusAccepted {
 		t.Fatalf("password request = %d, %s", passwordRequest.Code, passwordRequest.Body.String())
 	}
 	detail := performRequest(t, fixture.handler, http.MethodGet,
@@ -1129,5 +1129,81 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 	if config.Code != http.StatusOK || json.Unmarshal(config.Body.Bytes(), &desired) != nil || len(desired.Realm.Relays) != 0 ||
 		len(desired.Xray.Proxies) != 1 || len(desired.Xray.Proxies[0].Clients) != 1 {
 		t.Fatalf("user management desired state = %d, %s", config.Code, config.Body.String())
+	}
+}
+
+func TestAdminUserManagementOnlyOffersAdminCreatedServersButKeepsLegacyAssignments(t *testing.T) {
+	fixture := setupUserPortalFixture(t)
+	defer fixture.db.Close()
+	_, adminProxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, 8443)
+
+	vipInvitation := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/invitations",
+		map[string]string{"role": "vip"}, fixture.adminCookie)
+	var invitation invitationResponse
+	if vipInvitation.Code != http.StatusCreated || json.Unmarshal(vipInvitation.Body.Bytes(), &invitation) != nil {
+		t.Fatalf("create VIP invitation = %d, %s", vipInvitation.Code, vipInvitation.Body.String())
+	}
+	vipRegistration := performRequest(t, fixture.handler, http.MethodPost, "/api/auth/register", map[string]string{
+		"token": invitation.Token, "username": "resource-vip", "password": "current-password",
+	}, nil)
+	if vipRegistration.Code != http.StatusCreated {
+		t.Fatalf("register VIP = %d, %s", vipRegistration.Code, vipRegistration.Body.String())
+	}
+	vipCookie := vipRegistration.Result().Cookies()[0]
+	vipServerResponse := performRequest(t, fixture.handler, http.MethodPost, "/api/servers",
+		map[string]string{"name": "VIP Public Server"}, vipCookie)
+	var vipServer createdServerResponse
+	if vipServerResponse.Code != http.StatusCreated || json.Unmarshal(vipServerResponse.Body.Bytes(), &vipServer) != nil {
+		t.Fatalf("create VIP server = %d, %s", vipServerResponse.Code, vipServerResponse.Body.String())
+	}
+	vipProxyResponse := performRequest(t, fixture.handler, http.MethodPost, "/api/proxies", createProxyRequest{
+		ServerID: vipServer.Server.ID, Name: "VIP Proxy", Protocol: proxystore.ProtocolVLESS, ListenPort: 9443,
+		EntryHostMode: "manual", EntryHost: "vip.example.com", FirstClientName: "Legacy",
+		Security: proxystore.SecurityReality, ServerName: "www.example.com", RealityTarget: "www.example.com:443",
+	}, vipCookie)
+	var vipProxyBody struct {
+		Proxy proxyResponse `json:"proxy"`
+	}
+	if vipProxyResponse.Code != http.StatusCreated || json.Unmarshal(vipProxyResponse.Body.Bytes(), &vipProxyBody) != nil {
+		t.Fatalf("create VIP proxy = %d, %s", vipProxyResponse.Code, vipProxyResponse.Body.String())
+	}
+
+	if denied := performRequest(t, fixture.handler, http.MethodGet, "/api/admin/distributable-proxies", nil, vipCookie); denied.Code != http.StatusForbidden {
+		t.Fatalf("VIP distributable proxy list = %d, %s", denied.Code, denied.Body.String())
+	}
+	distributable := performRequest(t, fixture.handler, http.MethodGet, "/api/admin/distributable-proxies", nil, fixture.adminCookie)
+	if distributable.Code != http.StatusOK || !strings.Contains(distributable.Body.String(), `"id":`+strconv.FormatInt(adminProxy.ID, 10)) ||
+		strings.Contains(distributable.Body.String(), `"id":`+strconv.FormatInt(vipProxyBody.Proxy.ID, 10)) {
+		t.Fatalf("distributable proxy list = %d, %s", distributable.Code, distributable.Body.String())
+	}
+	blocked := performRequest(t, fixture.handler, http.MethodPost,
+		"/api/admin/users/"+strconv.FormatInt(fixture.userID, 10)+"/nodes", map[string]any{
+			"proxy_id": vipProxyBody.Proxy.ID, "name": "blocked-client",
+		}, fixture.adminCookie)
+	if blocked.Code != http.StatusBadRequest || !strings.Contains(blocked.Body.String(), "仅管理员创建的服务器节点可分配给普通用户") {
+		t.Fatalf("VIP-origin assignment = %d, %s", blocked.Code, blocked.Body.String())
+	}
+	blockedPublishedNode := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{
+		"name": "blocked", "mode": "direct", "target_proxy_id": vipProxyBody.Proxy.ID,
+	}, fixture.adminCookie)
+	if blockedPublishedNode.Code != http.StatusBadRequest || !strings.Contains(blockedPublishedNode.Body.String(), "订阅发布节点只能使用管理员创建的服务器") {
+		t.Fatalf("VIP-origin published node = %d, %s", blockedPublishedNode.Code, blockedPublishedNode.Body.String())
+	}
+	blockedRelayNode := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{
+		"name": "blocked-relay", "mode": "relay", "source_proxy_id": vipProxyBody.Proxy.ID, "target_proxy_id": adminProxy.ID,
+	}, fixture.adminCookie)
+	if blockedRelayNode.Code != http.StatusBadRequest || !strings.Contains(blockedRelayNode.Body.String(), "订阅发布节点只能使用管理员创建的服务器") {
+		t.Fatalf("VIP-origin relay source = %d, %s", blockedRelayNode.Code, blockedRelayNode.Body.String())
+	}
+	legacyClientID := vipProxyBody.Proxy.Clients[0].ID
+	if _, err := fixture.db.Exec(`UPDATE clients SET assigned_user_id = ? WHERE id = ?`, fixture.userID, legacyClientID); err != nil {
+		t.Fatal(err)
+	}
+	detail := performRequest(t, fixture.handler, http.MethodGet,
+		"/api/admin/users/"+strconv.FormatInt(fixture.userID, 10), nil, fixture.adminCookie)
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"proxy_id":`+strconv.FormatInt(adminProxy.ID, 10)) ||
+		!strings.Contains(detail.Body.String(), `"proxy_id":`+strconv.FormatInt(vipProxyBody.Proxy.ID, 10)) ||
+		!strings.Contains(detail.Body.String(), `"id":`+strconv.FormatInt(legacyClientID, 10)) {
+		t.Fatalf("legacy assignment detail = %d, %s", detail.Code, detail.Body.String())
 	}
 }

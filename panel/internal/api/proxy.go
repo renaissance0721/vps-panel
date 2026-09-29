@@ -42,6 +42,19 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 	writeJSON(w, http.StatusOK, map[string]any{"proxies": response})
 }
 
+func (s *server) listDistributableProxies(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	values, err := s.proxies.ListDistributable(r.Context())
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	response := make([]proxyResponse, 0, len(values))
+	for _, value := range values {
+		response = append(response, toProxyResponse(value))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxies": response})
+}
+
 func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createProxyRequest
 	if !decodeJSON(w, r, &request) {
@@ -318,6 +331,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "代理节点正在被中转规则使用，请先修改或删除相关中转规则")
 	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
 		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
+	case errors.Is(err, proxystore.ErrNotDistributable):
+		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
 	default:
 		writeInternalError(w)
 	}

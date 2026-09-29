@@ -13,6 +13,7 @@ import {
   NAlert,
   NInput,
   NButton,
+  NModal,
 } from 'naive-ui'
 import {
   api,
@@ -53,6 +54,13 @@ const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const invitationRole = ref<'vip' | 'user' | 'subscriber' | null>(null)
+const passwordResetOpen = ref(false)
+const passwordResetUsername = ref('')
+const passwordResetPassword = ref('')
+const passwordResetConfirm = ref('')
+const passwordResetError = ref('')
+const passwordResetStatus = ref('')
+const passwordResetBusy = ref(false)
 
 const serverState = useServers(state, users, health, submitting, error, submit)
 const serverView = reactive(serverState)
@@ -148,6 +156,46 @@ async function login() {
     clearCredentials()
     await loadState()
   })
+}
+
+function openPasswordReset() {
+  passwordResetUsername.value = username.value
+  passwordResetPassword.value = ''
+  passwordResetConfirm.value = ''
+  passwordResetError.value = ''
+  passwordResetStatus.value = ''
+  passwordResetOpen.value = true
+}
+
+async function requestPasswordReset() {
+  const passwordBytes = new TextEncoder().encode(passwordResetPassword.value).length
+  if (passwordBytes < 10 || passwordBytes > 72) {
+    passwordResetError.value = '新密码长度需为 10–72 字节'
+    return
+  }
+  if (passwordResetPassword.value !== passwordResetConfirm.value) {
+    passwordResetError.value = '两次输入的新密码不一致'
+    return
+  }
+  passwordResetBusy.value = true
+  passwordResetError.value = ''
+  passwordResetStatus.value = ''
+  try {
+    await api('/api/auth/password-reset-request', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: passwordResetUsername.value,
+        new_password: passwordResetPassword.value,
+      }),
+    })
+    passwordResetStatus.value = '如果该账号存在，重置申请已提交，请等待管理员审核。'
+    passwordResetPassword.value = ''
+    passwordResetConfirm.value = ''
+  } catch (reason) {
+    passwordResetError.value = reason instanceof Error ? reason.message : '密码重置申请提交失败'
+  } finally {
+    passwordResetBusy.value = false
+  }
 }
 
 async function register() {
@@ -352,6 +400,7 @@ onUnmounted(stopServerPolling)
           <n-button type="primary" attr-type="submit" block :loading="submitting">
             登录
           </n-button>
+          <n-button text type="primary" attr-type="button" @click="openPasswordReset">忘记密码？</n-button>
         </form>
       </n-card>
 
@@ -441,5 +490,18 @@ onUnmounted(stopServerPolling)
         </main>
       </div>
     </div>
+    <n-modal v-model:show="passwordResetOpen">
+      <n-card class="account-modal-card" title="申请重置密码" closable @close="passwordResetOpen = false">
+        <form class="auth-form" @submit.prevent="requestPasswordReset">
+          <n-alert type="info">提交后当前密码不会立即改变。管理员审核通过后，新密码才会生效。为保护账号信息，系统不会确认用户名是否存在。</n-alert>
+          <n-alert v-if="passwordResetError" type="error">{{ passwordResetError }}</n-alert>
+          <n-alert v-if="passwordResetStatus" type="success">{{ passwordResetStatus }}</n-alert>
+          <label><span>用户名</span><n-input v-model:value="passwordResetUsername" :input-props="{ autocomplete: 'username' }" /></label>
+          <label><span>新密码</span><n-input v-model:value="passwordResetPassword" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
+          <label><span>确认新密码</span><n-input v-model:value="passwordResetConfirm" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
+          <div class="modal-actions"><n-button @click="passwordResetOpen = false">关闭</n-button><n-button type="primary" attr-type="submit" :loading="passwordResetBusy">提交申请</n-button></div>
+        </form>
+      </n-card>
+    </n-modal>
   </n-config-provider>
 </template>

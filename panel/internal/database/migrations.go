@@ -121,8 +121,92 @@ func migrate(db *sql.DB) error {
 	if err := migrateSubscriptionTrafficCharging(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateSubscriptionSourceServer(ctx, db); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func migrateSubscriptionSourceServer(ctx context.Context, db *sql.DB) error {
+	exists, err := migrationColumnExists(ctx, db, "subscription_published_nodes", "source_server_id")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open subscription source server migration connection: %w", err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for subscription source server migration: %w", err)
+	}
+	defer connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscription source server migration: %w", err)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE subscription_published_nodes_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			mode TEXT NOT NULL CHECK (mode IN ('direct', 'relay')),
+			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+			source_server_id INTEGER REFERENCES servers(id) ON DELETE RESTRICT,
+			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+			traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
+				CHECK (traffic_multiplier_bp BETWEEN 10 AND 500),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK (
+				(mode = 'direct' AND source_server_id IS NULL AND relay_id IS NULL)
+				OR
+				(mode = 'relay' AND source_server_id IS NOT NULL AND relay_id IS NOT NULL)
+			)
+		)`,
+		`INSERT INTO subscription_published_nodes_new
+			(id, name, mode, target_proxy_id, source_server_id, relay_id,
+			 traffic_multiplier_bp, enabled, created_at, updated_at)
+		 SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id,
+			CASE WHEN nodes.mode = 'relay' THEN source.server_id ELSE NULL END,
+			nodes.relay_id, nodes.traffic_multiplier_bp, nodes.enabled, nodes.created_at, nodes.updated_at
+		 FROM subscription_published_nodes AS nodes
+		 LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id`,
+		`DROP TABLE subscription_published_nodes`,
+		`ALTER TABLE subscription_published_nodes_new RENAME TO subscription_published_nodes`,
+		`CREATE INDEX idx_subscription_published_nodes_target_proxy
+			ON subscription_published_nodes(target_proxy_id)`,
+		`CREATE INDEX idx_subscription_published_nodes_source_server
+			ON subscription_published_nodes(source_server_id)`,
+		`CREATE UNIQUE INDEX idx_subscription_published_nodes_relay
+			ON subscription_published_nodes(relay_id) WHERE relay_id IS NOT NULL`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate subscription source server: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscription source server migration: %w", err)
+	}
+	if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("restore foreign keys after subscription source server migration: %w", err)
+	}
+	rows, err := connection.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check subscription source server foreign keys: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("subscription source server migration left invalid foreign keys")
+	}
+	return rows.Err()
 }
 
 func migrateSubscriberLifecycle(ctx context.Context, db *sql.DB) error {

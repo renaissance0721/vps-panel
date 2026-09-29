@@ -227,7 +227,7 @@ func schemaStatements() []string {
 			name TEXT NOT NULL,
 			mode TEXT NOT NULL CHECK (mode IN ('direct', 'relay')),
 			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
-			source_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			source_server_id INTEGER REFERENCES servers(id) ON DELETE RESTRICT,
 			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
 			traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
 				CHECK (traffic_multiplier_bp BETWEEN 10 AND 500),
@@ -235,13 +235,15 @@ func schemaStatements() []string {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
 			CHECK (
-				(mode = 'direct' AND source_proxy_id IS NULL AND relay_id IS NULL)
+				(mode = 'direct' AND source_server_id IS NULL AND relay_id IS NULL)
 				OR
-				(mode = 'relay' AND source_proxy_id IS NOT NULL AND relay_id IS NOT NULL)
+				(mode = 'relay' AND source_server_id IS NOT NULL AND relay_id IS NOT NULL)
 			)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_target_proxy
 			ON subscription_published_nodes(target_proxy_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_source_server
+			ON subscription_published_nodes(source_server_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_published_nodes_relay
 			ON subscription_published_nodes(relay_id) WHERE relay_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS subscription_plans (

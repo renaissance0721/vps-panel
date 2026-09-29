@@ -356,6 +356,73 @@ func (s *server) deleteUserRelaysForClient(ctx context.Context, clientID int64) 
 	return nil
 }
 
+type userRelayDeletion struct {
+	value             relaystore.Relay
+	allowManagedPurge bool
+}
+
+func (s *server) prepareUserRelayDeletions(ctx context.Context, clientIDs []int64) ([]userRelayDeletion, error) {
+	seen := make(map[int64]struct{})
+	deletions := make([]userRelayDeletion, 0)
+	for _, clientID := range clientIDs {
+		values, err := s.relays.ListUserOwnedByClient(ctx, clientID)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range values {
+			if _, exists := seen[value.ID]; exists {
+				continue
+			}
+			seen[value.ID] = struct{}{}
+			deletions = append(deletions, userRelayDeletion{value: value})
+		}
+	}
+
+	allowByServer := make(map[int64]bool)
+	deleteCountByServer := make(map[int64]int)
+	for index := range deletions {
+		serverID := deletions[index].value.ServerID
+		allowManagedPurge, exists := allowByServer[serverID]
+		if !exists {
+			var err error
+			allowManagedPurge, err = s.allowManagedRelayPurge(ctx, serverID)
+			if err != nil {
+				return nil, err
+			}
+			allowByServer[serverID] = allowManagedPurge
+		}
+		deletions[index].allowManagedPurge = allowManagedPurge
+		if err := s.relays.ValidateDeleteWithManagedPurge(ctx, deletions[index].value.ID, allowManagedPurge); err != nil {
+			return nil, err
+		}
+		deleteCountByServer[serverID]++
+	}
+	for serverID, deleteCount := range deleteCountByServer {
+		if allowByServer[serverID] {
+			continue
+		}
+		var relayCount int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM relays WHERE server_id = ?`, serverID).Scan(&relayCount); err != nil {
+			return nil, err
+		}
+		if relayCount == deleteCount {
+			return nil, relaystore.ErrManagedRuntimePurgeUnsupported
+		}
+	}
+	return deletions, nil
+}
+
+func (s *server) deletePreparedUserRelays(ctx context.Context, deletions []userRelayDeletion) error {
+	for _, deletion := range deletions {
+		mutation, err := s.relays.DeleteWithManagedPurge(ctx, deletion.value.ID, deletion.allowManagedPurge)
+		if err != nil {
+			return err
+		}
+		s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	}
+	return nil
+}
+
 func (s *server) allowManagedRelayPurge(ctx context.Context, serverID int64) (bool, error) {
 	serverValue, err := s.servers.Get(ctx, serverID)
 	if err != nil {

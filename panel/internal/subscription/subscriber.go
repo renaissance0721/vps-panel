@@ -238,8 +238,7 @@ func (s *Service) reconcileSubscriberTx(
 			JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 			JOIN proxies ON proxies.id = nodes.target_proxy_id
 			JOIN servers ON servers.id = proxies.server_id
-			LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id
-			LEFT JOIN servers AS source_server ON source_server.id = source.server_id
+			LEFT JOIN servers AS source_server ON source_server.id = nodes.source_server_id
 			WHERE mapping.plan_id = ? AND nodes.enabled = 1 AND servers.archived_at IS NULL`, planID.Int64)
 		if err != nil {
 			return fmt.Errorf("list required subscriber proxies: %w", err)

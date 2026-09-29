@@ -23,7 +23,7 @@ func TestDirectPublishedNodeCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mutation != nil || created.Name != "🇸🇬 SG-01" || created.Mode != NodeModeDirect ||
-		created.TargetProxyID != 10 || created.SourceProxyID != nil || created.RelayID != nil ||
+		created.TargetProxyID != 10 || created.SourceServerID != nil || created.RelayID != nil ||
 		created.TrafficMultiplierBP != 100 || !created.Enabled {
 		t.Fatalf("created direct published node = %+v, mutation = %+v", created, mutation)
 	}
@@ -114,15 +114,15 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sourceID := int64(10)
+	sourceID := int64(1)
 	created, mutation, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "🇭🇰 HK-01", Mode: NodeModeRelay, SourceProxyID: &sourceID, TargetProxyID: 20, Enabled: true,
+		Name: "🇭🇰 HK-01", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: 20, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if mutation == nil || mutation.ServerID != 1 || mutation.Version != 2 || created.RelayID == nil ||
-		created.SourceServerID == nil || *created.SourceServerID != 1 || created.EntryAddress != "hk.example.com" ||
+		created.SourceServerID == nil || *created.SourceServerID != 1 || created.EntryAddress != "198.51.100.10" ||
 		created.EntryPort < relay.UserRelayPortStart || created.EntryPort > relay.UserRelayPortEnd {
 		t.Fatalf("created relay published node = %+v, mutation = %+v", created, mutation)
 	}
@@ -142,7 +142,7 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if relayServerID != 1 || ownerID.Valid || sourceClientID.Valid || targetClientID.Valid || targetProxyID != 20 ||
-		relayName != created.Name || entryHostMode != relay.EntryHostManual || entryHost != "hk.example.com" || network != relay.NetworkTCP {
+		relayName != created.Name || entryHostMode != relay.EntryHostAuto || entryHost != "" || network != relay.NetworkTCP {
 		t.Fatalf("shared Relay fields = server %d owner %v source client %v target proxy %d target client %v name %q entry %s/%q network %s",
 			relayServerID, ownerID, sourceClientID, targetProxyID, targetClientID, relayName, entryHostMode, entryHost, network)
 	}
@@ -205,7 +205,6 @@ func TestPublishedNodeWithoutPlansDoesNotCreateSubscriberClients(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
 	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
-	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "Source Proxy", 8443)
 	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target Proxy", 443)
 	insertSubscriptionTestSubscriber(t, db, 100, "alice")
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Basic", Enabled: true})
@@ -222,9 +221,9 @@ func TestPublishedNodeWithoutPlansDoesNotCreateSubscriberClients(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sourceID := sourceProxy.ID
+	sourceID := int64(1)
 	relayNode, relayMutation, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "Relay Backup", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+		Name: "Relay Backup", Mode: NodeModeRelay, SourceServerID: &sourceID,
 		TargetProxyID: targetProxy.ID, Enabled: true,
 	})
 	if err != nil || relayMutation == nil || relayNode.RelayID == nil {
@@ -277,10 +276,10 @@ func TestCreatePublishedNodeWithPlansReconcilesSubscribersAndPreservesPlanOrder(
 			direct, directRelayMutation, directMutations, err)
 	}
 
-	sourceID := sourceProxy.ID
+	sourceID := int64(1)
 	relayNode, relayMutation, proxyMutations, err := service.CreatePublishedNodeWithPlans(
 		t.Context(), CreatePublishedNodeInput{
-			Name: "HK via LA", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+			Name: "HK via LA", Mode: NodeModeRelay, SourceServerID: &sourceID,
 			TargetProxyID: targetProxy.ID, PlanIDs: []int64{plan.ID}, Enabled: true,
 		},
 	)
@@ -358,7 +357,6 @@ func TestCreatePublishedNodeWithPlansRollsBackAllChanges(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
 	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
-	sourceProxy := createSubscriptionTestRealityProxy(t, db, 1, "Source Proxy", 8443)
 	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target Proxy", 443)
 	insertSubscriptionTestSubscriber(t, db, 100, "alice")
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Basic", Enabled: true})
@@ -381,9 +379,9 @@ func TestCreatePublishedNodeWithPlansRollsBackAllChanges(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'reject subscriber mapping'); END`); err != nil {
 		t.Fatal(err)
 	}
-	sourceID := sourceProxy.ID
+	sourceID := int64(1)
 	if _, _, _, err := service.CreatePublishedNodeWithPlans(t.Context(), CreatePublishedNodeInput{
-		Name: "Rollback", Mode: NodeModeRelay, SourceProxyID: &sourceID,
+		Name: "Rollback", Mode: NodeModeRelay, SourceServerID: &sourceID,
 		TargetProxyID: targetProxy.ID, PlanIDs: []int64{plan.ID}, Enabled: true,
 	}); err == nil {
 		t.Fatal("expected atomic published node creation failure")
@@ -416,9 +414,9 @@ func TestRelayPublishedNodeCreationRollsBackRelay(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'reject published node'); END`); err != nil {
 		t.Fatal(err)
 	}
-	sourceID := int64(10)
+	sourceID := int64(1)
 	if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "rollback", Mode: NodeModeRelay, SourceProxyID: &sourceID, TargetProxyID: 20, Enabled: true,
+		Name: "rollback", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: 20, Enabled: true,
 	}); err == nil {
 		t.Fatal("expected published node creation failure")
 	}

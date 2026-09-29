@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
 func TestMigrateSubscriptionPlanTitle(t *testing.T) {
@@ -38,6 +41,119 @@ func TestMigrateSubscriptionPlanTitle(t *testing.T) {
 	}
 	if columnCount != 1 || name != "Legacy" || title.Valid {
 		t.Fatalf("migrated plan = columns %d, name %q, title %+v", columnCount, name, title)
+	}
+}
+
+func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_by_role TEXT NOT NULL)`,
+		`CREATE TABLE proxies (
+			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL)`,
+		`CREATE TABLE relays (
+			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			listen_port INTEGER NOT NULL, entry_host_mode TEXT NOT NULL, entry_host TEXT NOT NULL)`,
+		`CREATE TABLE server_system_info (server_id INTEGER PRIMARY KEY, public_ipv4 TEXT NOT NULL)`,
+		`CREATE TABLE subscription_published_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			mode TEXT NOT NULL CHECK (mode IN ('direct', 'relay')),
+			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+			source_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
+			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+			traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100,
+			enabled INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK ((mode = 'direct' AND source_proxy_id IS NULL AND relay_id IS NULL)
+				OR (mode = 'relay' AND source_proxy_id IS NOT NULL AND relay_id IS NOT NULL)))`,
+		`CREATE TABLE subscription_plans (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE subscription_plan_nodes (
+			plan_id INTEGER NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
+			published_node_id INTEGER NOT NULL REFERENCES subscription_published_nodes(id) ON DELETE RESTRICT,
+			position INTEGER NOT NULL, PRIMARY KEY (plan_id, published_node_id))`,
+		`CREATE TABLE clients (
+			id INTEGER PRIMARY KEY, proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE CASCADE)`,
+		`CREATE TABLE subscriber_clients (
+			user_id INTEGER NOT NULL, proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
+			client_id INTEGER NOT NULL UNIQUE REFERENCES clients(id) ON DELETE CASCADE,
+			created_at INTEGER NOT NULL, PRIMARY KEY (user_id, proxy_id))`,
+		`INSERT INTO servers VALUES (1, 'Source', 'admin'), (2, 'Target', 'admin')`,
+		`INSERT INTO proxies VALUES (10, 1, 'Legacy Source Proxy'), (20, 2, 'Target Proxy')`,
+		`INSERT INTO relays VALUES (30, 1, 20, 20000, 'auto', '')`,
+		`INSERT INTO server_system_info VALUES (1, '198.51.100.10')`,
+		`INSERT INTO subscription_published_nodes VALUES
+			(40, 'Legacy Relay', 'relay', 20, 10, 30, 125, 1, 1, 1)`,
+		`INSERT INTO subscription_plans VALUES (50)`,
+		`INSERT INTO subscription_plan_nodes VALUES (50, 40, 1)`,
+		`INSERT INTO clients VALUES (60, 20)`,
+		`INSERT INTO subscriber_clients VALUES (70, 20, 60, 1)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range 2 {
+		if err := migrateSubscriptionSourceServer(context.Background(), db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var sourceServerID, targetProxyID, relayID, multiplier int64
+	if err := db.QueryRow(`SELECT source_server_id, target_proxy_id, relay_id, traffic_multiplier_bp
+		FROM subscription_published_nodes WHERE id = 40`).
+		Scan(&sourceServerID, &targetProxyID, &relayID, &multiplier); err != nil {
+		t.Fatal(err)
+	}
+	if sourceServerID != 1 || targetProxyID != 20 || relayID != 30 || multiplier != 125 {
+		t.Fatalf("migrated published node = source server %d target %d relay %d multiplier %d",
+			sourceServerID, targetProxyID, relayID, multiplier)
+	}
+	legacyNode, err := subscriptionstore.NewService(db, relaystore.NewService(db)).GetPublishedNode(context.Background(), 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyNode.SourceServerID == nil || *legacyNode.SourceServerID != 1 ||
+		legacyNode.SourceServerName != "Source" || legacyNode.EntryAddress != "198.51.100.10" || legacyNode.EntryPort != 20000 {
+		t.Fatalf("migrated published node service result = %+v", legacyNode)
+	}
+	for query, want := range map[string]int{
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_proxy_id'`:  0,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_server_id'`: 1,
+		`SELECT COUNT(*) FROM subscription_plan_nodes WHERE plan_id = 50 AND published_node_id = 40`:             1,
+		`SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 70 AND proxy_id = 20 AND client_id = 60`:        1,
+	} {
+		var got int
+		if err := db.QueryRow(query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("count for %s = %d, want %d", query, got, want)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM proxies WHERE id = 10`); err != nil {
+		t.Fatalf("delete former source proxy: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM proxies WHERE id = 20`); err == nil {
+		t.Fatal("target proxy deletion unexpectedly succeeded")
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("migration left a foreign key violation")
 	}
 }
 

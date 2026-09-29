@@ -103,6 +103,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("GET /api/admin/user-relays", s.requireAdmin(s.listAdminUserRelays))
 	mux.HandleFunc("DELETE /api/admin/user-relays/{id}", s.requireAdmin(s.deleteAdminUserRelay))
 	mux.HandleFunc("GET /api/admin/subscription/nodes", s.requireAdmin(s.listSubscriptionPublishedNodes))
+	mux.HandleFunc("GET /api/admin/subscription/relay-servers", s.requireAdmin(s.listSubscriptionRelayServers))
 	mux.HandleFunc("POST /api/admin/subscription/nodes", s.requireAdmin(s.createSubscriptionPublishedNode))
 	mux.HandleFunc("PATCH /api/admin/subscription/nodes/{id}", s.requireAdmin(s.updateSubscriptionPublishedNode))
 	mux.HandleFunc("DELETE /api/admin/subscription/nodes/{id}", s.requireAdmin(s.deleteSubscriptionPublishedNode))

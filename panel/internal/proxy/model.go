@@ -56,6 +56,7 @@ var (
 	ErrClientRelayPortsActive         = errors.New("client has active user relays")
 	ErrClientNotAssigned              = errors.New("client is not assigned to a user")
 	ErrReferencedByRelay              = errors.New("proxy is referenced by a relay")
+	ErrReferencedBySubscription       = errors.New("proxy is referenced by a subscription published node")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
 	ErrSubscriptionManagedClient      = errors.New("client is managed by the subscription system")

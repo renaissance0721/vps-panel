@@ -26,8 +26,8 @@ var (
 	ErrInvalidNodeName          = errors.New("published node name must be 1-100 characters")
 	ErrInvalidNodeMode          = errors.New("published node mode must be direct or relay")
 	ErrTargetProxyNotFound      = errors.New("target proxy not found")
-	ErrSourceProxyNotFound      = errors.New("source proxy not found")
-	ErrSourceProxyRequired      = errors.New("source proxy is required for relay mode")
+	ErrSourceServerNotFound     = errors.New("source server not found")
+	ErrSourceServerRequired     = errors.New("source server is required for relay mode")
 	ErrInvalidNodeUpdate        = errors.New("published node update is empty")
 	ErrInvalidNodeTopology      = errors.New("published node topology is invalid")
 	ErrInvalidTrafficMultiplier = errors.New("published node traffic multiplier is invalid")
@@ -56,8 +56,6 @@ type PublishedNode struct {
 	TargetProxyName     string
 	TargetServerID      int64
 	TargetServerName    string
-	SourceProxyID       *int64
-	SourceProxyName     string
 	SourceServerID      *int64
 	SourceServerName    string
 	RelayID             *int64
@@ -74,7 +72,7 @@ type CreatePublishedNodeInput struct {
 	Name                string
 	Mode                string
 	TargetProxyID       int64
-	SourceProxyID       *int64
+	SourceServerID      *int64
 	PlanIDs             []int64
 	TrafficMultiplierBP int
 	Enabled             bool

@@ -31,8 +31,8 @@ func TestPublishedNodeCreationRequiresAdminCreatedServers(t *testing.T) {
 	}); !errors.Is(err, ErrServerNotDistributable) {
 		t.Fatalf("VIP direct error = %v", err)
 	}
-	adminSource := int64(10)
-	vipSource := int64(20)
+	adminSource := int64(1)
+	vipSource := int64(2)
 	for name, topology := range map[string]struct {
 		source int64
 		target int64
@@ -42,7 +42,7 @@ func TestPublishedNodeCreationRequiresAdminCreatedServers(t *testing.T) {
 	} {
 		sourceID := topology.source
 		if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-			Name: name, Mode: NodeModeRelay, SourceProxyID: &sourceID, TargetProxyID: topology.target, Enabled: true,
+			Name: name, Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: topology.target, Enabled: true,
 		}); !errors.Is(err, ErrServerNotDistributable) {
 			t.Fatalf("%s relay error = %v", name, err)
 		}

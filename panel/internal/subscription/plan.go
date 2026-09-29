@@ -195,8 +195,7 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 			FROM subscription_published_nodes AS nodes
 			JOIN proxies AS target ON target.id = nodes.target_proxy_id
 			JOIN servers AS target_server ON target_server.id = target.server_id
-			LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id
-			LEFT JOIN servers AS source_server ON source_server.id = source.server_id
+			LEFT JOIN servers AS source_server ON source_server.id = nodes.source_server_id
 			WHERE nodes.id = ?`, nodeID).Scan(&targetProxyID, &mode, &targetRole, &sourceRole); errors.Is(err, sql.ErrNoRows) {
 			return Plan{}, nil, ErrPublishedNodeNotFound
 		} else if err != nil {
@@ -313,7 +312,7 @@ func listPlanNodes(ctx context.Context, query interface {
 }, planID int64) ([]PlanNode, error) {
 	rows, err := query.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
 		target.server_id, target_server.name, target_server.created_by_role,
-		nodes.source_proxy_id, source.name, source.server_id, source_server.name, source_server.created_by_role,
+		nodes.source_server_id, source_server.name, source_server.created_by_role,
 		nodes.relay_id, relay.listen_port, relay.entry_host_mode, relay.entry_host,
 		COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
 		nodes.enabled, nodes.created_at, nodes.updated_at, mapping.position
@@ -321,9 +320,8 @@ func listPlanNodes(ctx context.Context, query interface {
 		JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 		JOIN proxies AS target ON target.id = nodes.target_proxy_id
 		JOIN servers AS target_server ON target_server.id = target.server_id
-		LEFT JOIN proxies AS source ON source.id = nodes.source_proxy_id
-		LEFT JOIN servers AS source_server ON source_server.id = source.server_id
-		LEFT JOIN server_system_info AS source_info ON source_info.server_id = source.server_id
+		LEFT JOIN servers AS source_server ON source_server.id = nodes.source_server_id
+		LEFT JOIN server_system_info AS source_info ON source_info.server_id = nodes.source_server_id
 		LEFT JOIN relays AS relay ON relay.id = nodes.relay_id
 		WHERE mapping.plan_id = ? ORDER BY mapping.position`, planID)
 	if err != nil {
@@ -333,19 +331,19 @@ func listPlanNodes(ctx context.Context, query interface {
 	values := make([]PlanNode, 0)
 	for rows.Next() {
 		var value PlanNode
-		var sourceProxyID, sourceServerID, relayID, entryPort sql.NullInt64
-		var sourceProxyName, sourceServerName, sourceCreatorRole, entryHostMode, entryHost, publicIPv4 sql.NullString
+		var sourceServerID, relayID, entryPort sql.NullInt64
+		var sourceServerName, sourceCreatorRole, entryHostMode, entryHost, publicIPv4 sql.NullString
 		var targetCreatorRole string
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
-			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole, &sourceProxyID, &sourceProxyName,
-			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID, &entryPort, &entryHostMode, &entryHost,
+			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole, &sourceServerID,
+			&sourceServerName, &sourceCreatorRole, &relayID, &entryPort, &entryHostMode, &entryHost,
 			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
 			return nil, fmt.Errorf("scan subscription plan node: %w", err)
 		}
-		populatePlanNode(&value, sourceProxyID, sourceServerID, relayID, entryPort, sourceProxyName,
-			sourceServerName, entryHostMode, entryHost, publicIPv4, enabled, createdAt, updatedAt)
+		populatePlanNode(&value, sourceServerID, relayID, entryPort, sourceServerName,
+			entryHostMode, entryHost, publicIPv4, enabled, createdAt, updatedAt)
 		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		values = append(values, value)
 	}
@@ -355,15 +353,10 @@ func listPlanNodes(ctx context.Context, query interface {
 	return values, nil
 }
 
-func populatePlanNode(value *PlanNode, sourceProxyID, sourceServerID, relayID, entryPort sql.NullInt64,
-	sourceProxyName, sourceServerName, entryHostMode, entryHost, publicIPv4 sql.NullString,
+func populatePlanNode(value *PlanNode, sourceServerID, relayID, entryPort sql.NullInt64,
+	sourceServerName, entryHostMode, entryHost, publicIPv4 sql.NullString,
 	enabled int, createdAt, updatedAt int64,
 ) {
-	if sourceProxyID.Valid {
-		id := sourceProxyID.Int64
-		value.SourceProxyID = &id
-		value.SourceProxyName = sourceProxyName.String
-	}
 	if sourceServerID.Valid {
 		id := sourceServerID.Int64
 		value.SourceServerID = &id

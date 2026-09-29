@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
 func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
@@ -206,6 +210,209 @@ func TestProxyAPIReturnsUsefulValidationErrors(t *testing.T) {
 		if response.Code != test.status || !strings.Contains(response.Body.String(), test.message) {
 			t.Fatalf("%s response = %d, %s", test.name, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestProxyDeleteReferenceHandling(t *testing.T) {
+	const subscriptionMessage = "代理节点正在被订阅发布节点使用，请先在订阅管理中删除或调整相关发布节点"
+
+	t.Run("unreferenced proxy", func(t *testing.T) {
+		fixture := newProxyDeleteFixture(t)
+		serverID := fixture.createServer(t, "unreferenced")
+		proxyValue := fixture.createProxy(t, serverID, 443, "unreferenced")
+
+		response := fixture.deleteProxy(t, proxyValue.ID)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("delete unreferenced proxy = %d, %s", response.Code, response.Body.String())
+		}
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM proxies WHERE id = ?`, 0, proxyValue.ID)
+	})
+
+	t.Run("ordinary relay target", func(t *testing.T) {
+		fixture := newProxyDeleteFixture(t)
+		serverID := fixture.createServer(t, "ordinary relay")
+		proxyValue := fixture.createProxy(t, serverID, 443, "target")
+		result, err := fixture.db.Exec(`INSERT INTO relays
+			(server_id, name, listen_address, listen_port, target_type, target_proxy_id, network, created_at, updated_at)
+			VALUES (?, 'ordinary', '0.0.0.0', 20000, 'proxy', ?, 'tcp', 1, 1)`, serverID, proxyValue.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		relayID, _ := result.LastInsertId()
+
+		response := fixture.deleteProxy(t, proxyValue.ID)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "代理节点正在被中转规则使用") {
+			t.Fatalf("delete relay target = %d, %s", response.Code, response.Body.String())
+		}
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM proxies WHERE id = ?`, 1, proxyValue.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 1, relayID)
+	})
+
+	t.Run("direct published target preserves related data", func(t *testing.T) {
+		fixture := newProxyDeleteFixture(t)
+		serverID := fixture.createServer(t, "direct")
+		proxyValue := fixture.createProxy(t, serverID, 443, "direct target")
+		plan, err := fixture.subscriptions.CreatePlan(t.Context(), subscriptionstore.CreatePlanInput{Name: "plan", Enabled: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.db.Exec(`INSERT INTO users
+			(id, username, password_hash, role, created_at, updated_at)
+			VALUES (100, 'subscriber', 'hash', 'subscriber', 1, 1),
+			       (101, 'relay-user', 'hash', 'user', 1, 1)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.db.Exec(`INSERT INTO subscriber_profiles
+			(user_id, plan_id, enabled, subscription_token, created_at, updated_at)
+			VALUES (100, ?, 1, 'subscriber-token', 1, 1)`, plan.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.db.Exec(`INSERT INTO subscriber_usage
+			(user_id, cycle_started_at, updated_at) VALUES (100, 1, 1)`); err != nil {
+			t.Fatal(err)
+		}
+		node, _, _, err := fixture.subscriptions.CreatePublishedNodeWithPlans(t.Context(), subscriptionstore.CreatePublishedNodeInput{
+			Name: "direct node", Mode: subscriptionstore.NodeModeDirect, TargetProxyID: proxyValue.ID,
+			PlanIDs: []int64{plan.ID}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.db.Exec(`INSERT INTO relays
+			(server_id, owner_user_id, source_client_id, name, listen_address, listen_port,
+			 target_type, target_host, target_port, network, created_at, updated_at)
+			VALUES (?, 101, ?, 'user relay', '0.0.0.0', 20000,
+			 'manual', 'example.com', 443, 'tcp', 1, 1)`, serverID, proxyValue.Clients[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userRelayID, _ := result.LastInsertId()
+
+		response := fixture.deleteProxy(t, proxyValue.ID)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), subscriptionMessage) {
+			t.Fatalf("delete direct published target = %d, %s", response.Code, response.Body.String())
+		}
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM proxies WHERE id = ?`, 1, proxyValue.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM subscription_published_nodes WHERE id = ?`, 1, node.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM subscription_plan_nodes WHERE plan_id = ? AND published_node_id = ?`, 1, plan.ID, node.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM subscriber_clients WHERE user_id = 100 AND proxy_id = ?`, 1, proxyValue.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 1, userRelayID)
+
+		if _, _, err := fixture.subscriptions.SetPlanNodes(t.Context(), plan.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.subscriptions.DeletePublishedNode(t.Context(), node.ID); err != nil {
+			t.Fatal(err)
+		}
+		response = fixture.deleteProxy(t, proxyValue.ID)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("delete proxy after published node removal = %d, %s", response.Code, response.Body.String())
+		}
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM proxies WHERE id = ?`, 0, proxyValue.ID)
+		assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, userRelayID)
+	})
+
+	for _, test := range []struct {
+		name       string
+		deleteID   func(source, target proxystore.Proxy) int64
+		wantStatus int
+	}{
+		{name: "relay source proxy is independent", deleteID: func(source, _ proxystore.Proxy) int64 { return source.ID }, wantStatus: http.StatusNoContent},
+		{name: "relay published target", deleteID: func(_, target proxystore.Proxy) int64 { return target.ID }, wantStatus: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newProxyDeleteFixture(t)
+			sourceServerID := fixture.createServer(t, "source")
+			targetServerID := fixture.createServer(t, "target")
+			sourceProxy := fixture.createProxy(t, sourceServerID, 8443, "source")
+			targetProxy := fixture.createProxy(t, targetServerID, 443, "target")
+			node, _, err := fixture.subscriptions.CreatePublishedNode(t.Context(), subscriptionstore.CreatePublishedNodeInput{
+				Name: "relay node", Mode: subscriptionstore.NodeModeRelay, SourceServerID: &sourceServerID,
+				TargetProxyID: targetProxy.ID, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleteID := test.deleteID(sourceProxy, targetProxy)
+			response := fixture.deleteProxy(t, deleteID)
+			if response.Code != test.wantStatus || test.wantStatus == http.StatusConflict && !strings.Contains(response.Body.String(), subscriptionMessage) {
+				t.Fatalf("delete subscription proxy = %d, %s", response.Code, response.Body.String())
+			}
+			wantProxyCount := 1
+			if test.wantStatus == http.StatusNoContent {
+				wantProxyCount = 0
+			}
+			assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM proxies WHERE id = ?`, wantProxyCount, deleteID)
+			assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM subscription_published_nodes WHERE id = ?`, 1, node.ID)
+		})
+	}
+}
+
+type proxyDeleteFixture struct {
+	db            *sql.DB
+	handler       http.Handler
+	cookie        *http.Cookie
+	proxies       *proxystore.Service
+	subscriptions *subscriptionstore.Service
+}
+
+func newProxyDeleteFixture(t *testing.T) proxyDeleteFixture {
+	t.Helper()
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	handler := NewHandler(db, t.TempDir())
+	initialization := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialization.Code != http.StatusCreated {
+		t.Fatalf("initialize = %d, %s", initialization.Code, initialization.Body.String())
+	}
+	return proxyDeleteFixture{
+		db: db, handler: handler, cookie: initialization.Result().Cookies()[0],
+		proxies: proxystore.NewService(db), subscriptions: subscriptionstore.NewService(db, relaystore.NewService(db)),
+	}
+}
+
+func (f proxyDeleteFixture) createServer(t *testing.T, name string) int64 {
+	t.Helper()
+	result, err := f.db.Exec(`INSERT INTO servers
+		(name, created_by_role, status, created_at, updated_at) VALUES (?, 'admin', 'offline', 1, 1)`, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
+func (f proxyDeleteFixture) createProxy(t *testing.T, serverID int64, port int, name string) proxystore.Proxy {
+	t.Helper()
+	value, _, err := f.proxies.Create(t.Context(), proxystore.CreateInput{
+		ServerID: serverID, Name: name, ListenPort: port, EntryHostMode: proxystore.EntryHostAuto,
+		Enabled: true, Security: proxystore.SecurityReality, ServerName: "www.example.com",
+		RealityTarget: "www.example.com:443", FirstClientName: "default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func (f proxyDeleteFixture) deleteProxy(t *testing.T, proxyID int64) *httptest.ResponseRecorder {
+	t.Helper()
+	return performRequest(t, f.handler, http.MethodDelete, "/api/proxies/"+strconv.FormatInt(proxyID, 10), nil, f.cookie)
+}
+
+func assertDatabaseCount(t *testing.T, db *sql.DB, query string, want int, arguments ...any) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(query, arguments...).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("database count = %d, want %d for %s", got, want, query)
 	}
 }
 

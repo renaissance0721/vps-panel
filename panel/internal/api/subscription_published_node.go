@@ -19,7 +19,7 @@ type createSubscriptionPublishedNodeRequest struct {
 	Name              string          `json:"name"`
 	Mode              string          `json:"mode"`
 	TargetProxyID     int64           `json:"target_proxy_id"`
-	SourceProxyID     *int64          `json:"source_proxy_id"`
+	SourceServerID    *int64          `json:"source_server_id"`
 	PlanIDs           []int64         `json:"plan_ids"`
 	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
 	Enabled           *bool           `json:"enabled"`
@@ -40,8 +40,6 @@ type subscriptionPublishedNodeResponse struct {
 	TargetProxyName   string    `json:"target_proxy_name"`
 	TargetServerID    int64     `json:"target_server_id"`
 	TargetServerName  string    `json:"target_server_name"`
-	SourceProxyID     *int64    `json:"source_proxy_id,omitempty"`
-	SourceProxyName   string    `json:"source_proxy_name,omitempty"`
 	SourceServerID    *int64    `json:"source_server_id,omitempty"`
 	SourceServerName  string    `json:"source_server_name,omitempty"`
 	RelayID           *int64    `json:"relay_id,omitempty"`
@@ -53,6 +51,32 @@ type subscriptionPublishedNodeResponse struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	Position          int       `json:"position,omitempty"`
+}
+
+type subscriptionRelayServerResponse struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+func (s *server) listSubscriptionRelayServers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	values, err := s.servers.List(r.Context())
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	response := make([]subscriptionRelayServerResponse, 0)
+	for _, value := range values {
+		if value.CreatedByRole != "admin" || value.DecommissionStatus != "" || !agentcontrol.SupportsCapability(agentcontrol.Metadata{
+			Implementation: value.AgentImplementation,
+			Version:        value.AgentVersion,
+			APIVersion:     value.AgentAPIVersion,
+			Capabilities:   value.AgentCapabilities,
+		}, agentcontrol.CapabilityRelayRealm) {
+			continue
+		}
+		response = append(response, subscriptionRelayServerResponse{ID: value.ID, Name: value.Name})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
 }
 
 func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -86,33 +110,29 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	if !multiplierSet {
 		multiplierBP = 100
 	}
-	if mode == subscriptionstore.NodeModeRelay && request.SourceProxyID != nil {
-		if err := proxystore.RequireAdminCreatedProxy(r.Context(), s.db, *request.SourceProxyID); err != nil {
-			if errors.Is(err, proxystore.ErrNotFound) {
-				writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrSourceProxyNotFound)
-			} else {
-				writeSubscriptionPublishedNodeError(w, err)
-			}
-			return
-		}
-		source, err := s.proxies.Get(r.Context(), *request.SourceProxyID)
+	if mode == subscriptionstore.NodeModeRelay && request.SourceServerID != nil {
+		source, err := s.servers.Get(r.Context(), *request.SourceServerID)
 		if err != nil {
-			writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrSourceProxyNotFound)
+			writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrSourceServerNotFound)
 			return
 		}
-		supported, err := s.serverSupportsCapability(r, source.ServerID, agentcontrol.CapabilityRelayRealm)
-		if err != nil {
-			writeServerError(w, err)
+		if source.CreatedByRole != "admin" {
+			writeSubscriptionPublishedNodeError(w, subscriptionstore.ErrServerNotDistributable)
 			return
 		}
-		if !supported {
+		if !agentcontrol.SupportsCapability(agentcontrol.Metadata{
+			Implementation: source.AgentImplementation,
+			Version:        source.AgentVersion,
+			APIVersion:     source.AgentAPIVersion,
+			Capabilities:   source.AgentCapabilities,
+		}, agentcontrol.CapabilityRelayRealm) {
 			writeError(w, http.StatusConflict, "中转节点所在 Agent 不支持 Realm 中转")
 			return
 		}
 	}
 	value, relayMutation, proxyMutations, err := s.subscriptions.CreatePublishedNodeWithPlans(r.Context(), subscriptionstore.CreatePublishedNodeInput{
 		Name: request.Name, Mode: mode, TargetProxyID: request.TargetProxyID,
-		SourceProxyID: request.SourceProxyID, PlanIDs: request.PlanIDs,
+		SourceServerID: request.SourceServerID, PlanIDs: request.PlanIDs,
 		TrafficMultiplierBP: multiplierBP, Enabled: enabled,
 	})
 	if err != nil {
@@ -183,7 +203,6 @@ func toSubscriptionPublishedNodeResponse(value subscriptionstore.PublishedNode) 
 		ID: value.ID, Name: value.Name, Mode: value.Mode,
 		TargetProxyID: value.TargetProxyID, TargetProxyName: value.TargetProxyName,
 		TargetServerID: value.TargetServerID, TargetServerName: value.TargetServerName,
-		SourceProxyID: value.SourceProxyID, SourceProxyName: value.SourceProxyName,
 		SourceServerID: value.SourceServerID, SourceServerName: value.SourceServerName,
 		RelayID: value.RelayID, EntryAddress: value.EntryAddress, EntryPort: value.EntryPort,
 		TrafficMultiplier: float64(value.TrafficMultiplierBP) / 100,
@@ -208,13 +227,13 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "所属套餐无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
 		writeError(w, http.StatusNotFound, "落地节点不存在或已移除")
-	case errors.Is(err, subscriptionstore.ErrSourceProxyNotFound):
-		writeError(w, http.StatusNotFound, "中转节点不存在或已移除")
+	case errors.Is(err, subscriptionstore.ErrSourceServerNotFound):
+		writeError(w, http.StatusNotFound, "中转服务器不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeReferenced):
 		writeError(w, http.StatusConflict, "请先从套餐中移除此发布节点")
 	case errors.Is(err, subscriptionstore.ErrServerNotDistributable), errors.Is(err, proxystore.ErrNotDistributable):
 		writeError(w, http.StatusBadRequest, "订阅发布节点只能使用管理员创建的服务器")
-	case errors.Is(err, subscriptionstore.ErrSourceProxyRequired),
+	case errors.Is(err, subscriptionstore.ErrSourceServerRequired),
 		errors.Is(err, subscriptionstore.ErrInvalidNodeTopology),
 		errors.Is(err, subscriptionstore.ErrInvalidNodeUpdate):
 		writeError(w, http.StatusBadRequest, "发布节点配置无效")

@@ -13,8 +13,7 @@ type PublishedNode = {
   target_proxy_id: number
   target_proxy_name: string
   target_server_name: string
-  source_proxy_id?: number
-  source_proxy_name?: string
+  source_server_id?: number
   source_server_name?: string
   entry_address?: string
   entry_port?: number
@@ -23,6 +22,7 @@ type PublishedNode = {
   distributable: boolean
   position?: number
 }
+type RelayServer = { id: number; name: string }
 type Plan = {
   id: number
   name: string
@@ -61,6 +61,7 @@ const users = ref<Subscriber[]>([])
 const plans = ref<Plan[]>([])
 const nodes = ref<PublishedNode[]>([])
 const proxies = ref<ProxyRecord[]>([])
+const relayServers = ref<RelayServer[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -70,7 +71,7 @@ const editingNode = ref<PublishedNode | null>(null)
 const nodeName = ref('')
 const nodeMode = ref<'direct' | 'relay'>('direct')
 const nodeTargetProxyID = ref<number | null>(null)
-const nodeSourceProxyID = ref<number | null>(null)
+const nodeSourceServerID = ref<number | null>(null)
 const nodeTrafficMultiplier = ref<number | null>(1)
 const nodeEnabled = ref(true)
 const nodePlanIDs = ref<number[]>([])
@@ -119,16 +120,18 @@ const statusLabels: Record<string, string> = {
 }
 
 async function loadAll() {
-  const [userResult, planResult, nodeResult, proxyResult] = await Promise.all([
+  const [userResult, planResult, nodeResult, proxyResult, relayServerResult] = await Promise.all([
     api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
     api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
     api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
     api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
+    api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
   ])
   users.value = userResult.users
   plans.value = planResult.plans
   nodes.value = nodeResult.nodes
   proxies.value = proxyResult.proxies
+  relayServers.value = relayServerResult.servers
 }
 
 async function run(action: () => Promise<void>) {
@@ -149,7 +152,7 @@ function openCreateNode() {
   nodeName.value = ''
   nodeMode.value = 'direct'
   nodeTargetProxyID.value = proxies.value[0]?.id ?? null
-  nodeSourceProxyID.value = null
+  nodeSourceServerID.value = null
   nodeTrafficMultiplier.value = 1
   nodeEnabled.value = true
   nodePlanIDs.value = []
@@ -162,7 +165,7 @@ function openEditNode(value: PublishedNode) {
   nodeName.value = value.name
   nodeMode.value = value.mode
   nodeTargetProxyID.value = value.target_proxy_id
-  nodeSourceProxyID.value = value.source_proxy_id ?? null
+  nodeSourceServerID.value = value.source_server_id ?? null
   nodeTrafficMultiplier.value = value.traffic_multiplier
   nodeEnabled.value = value.enabled
   nodePlanIDs.value = plans.value.filter((plan) => plan.nodes.some((node) => node.id === value.id)).map((plan) => plan.id)
@@ -195,7 +198,7 @@ async function saveNode() {
         method: 'POST',
         body: JSON.stringify({
           name: nodeName.value, mode: nodeMode.value, target_proxy_id: nodeTargetProxyID.value,
-          source_proxy_id: nodeMode.value === 'relay' ? nodeSourceProxyID.value : null,
+          source_server_id: nodeMode.value === 'relay' ? nodeSourceServerID.value : null,
           traffic_multiplier: multiplier, enabled: nodeEnabled.value, plan_ids: nodePlanIDs.value,
         }),
       })
@@ -467,7 +470,7 @@ onMounted(async () => {
       <n-card v-for="value in nodes" :key="value.id" :title="nodeDisplayName(value)">
         <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
         <p v-if="value.mode === 'direct'">单一节点</p><p v-else>中转 + 落地</p>
-        <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · {{ value.source_proxy_name }} → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
+        <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · Realm → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-if="value.mode === 'relay'">入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
         <p>所属套餐：{{ nodePlanNames(value.id) || '未加入套餐' }}</p>
@@ -481,17 +484,17 @@ onMounted(async () => {
     <label><span>发布名称</span><n-input v-model:value="nodeName" maxlength="100" /></label>
     <template v-if="!editingNode">
       <label><span>模式</span><select v-model="nodeMode" class="settings-input"><option value="direct">单一节点</option><option value="relay">中转 + 落地</option></select></label>
-      <label v-if="nodeMode === 'relay'"><span>中转 Proxy</span><select v-model.number="nodeSourceProxyID" class="settings-input"><option :value="null">请选择</option><option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">{{ proxy.server_name }} · {{ proxy.name }}</option></select></label>
+      <label v-if="nodeMode === 'relay'"><span>中转服务器</span><select v-model.number="nodeSourceServerID" class="settings-input"><option :value="null">请选择</option><option v-for="server in relayServers" :key="server.id" :value="server.id">{{ server.name }}</option></select></label>
       <label><span>落地 Proxy</span><select v-model.number="nodeTargetProxyID" class="settings-input"><option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">{{ proxy.server_name }} · {{ proxy.name }}</option></select></label>
     </template>
-    <n-alert v-else type="info">创建后不能修改模式、中转 Proxy 或落地 Proxy；如需改变拓扑，请删除后重新创建。</n-alert>
+    <n-alert v-else type="info">创建后不能修改模式、中转服务器或落地 Proxy；如需改变拓扑，请删除后重新创建。</n-alert>
     <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入套餐流量。允许 0.10×–5.00×。</small></label>
     <fieldset class="subscription-node-picker"><legend>{{ editingNode ? '所属套餐' : '加入套餐' }}</legend>
       <span v-if="plans.length === 0" class="form-help">暂无套餐，可先创建备用发布节点。</span>
       <label v-for="plan in plans" :key="plan.id" class="subscription-node-option"><input type="checkbox" :checked="nodePlanIDs.includes(plan.id)" @change="toggleNodePlan(plan.id, ($event.target as HTMLInputElement).checked)" /><span>{{ plan.name }}</span></label>
     </fieldset>
     <div class="switch-row"><span>启用发布节点</span><n-switch v-model:value="nodeEnabled" /></div>
-    <div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="!nodeTargetProxyID || (nodeMode === 'relay' && !nodeSourceProxyID)">保存</n-button></div>
+    <div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="!nodeTargetProxyID || (nodeMode === 'relay' && !nodeSourceServerID)">保存</n-button></div>
   </form></n-card></n-modal>
 
   <n-modal v-model:show="planModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPlan ? '编辑套餐' : '新增套餐'" closable @close="planModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePlan">

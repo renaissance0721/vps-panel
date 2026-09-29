@@ -240,16 +240,27 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		APIVersion:     server.AgentAPIVersion,
 		Capabilities:   server.AgentCapabilities,
 	}, agentcontrol.CapabilityManagedRuntimePurge)
+	if err := s.proxies.ValidateDeleteWithManagedPurge(r.Context(), id, allowManagedPurge); err != nil {
+		writeProxyError(w, err)
+		return
+	}
 	clients, err := s.proxies.ListClients(r.Context(), id)
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
+	clientIDs := make([]int64, 0, len(clients))
 	for _, client := range clients {
-		if err := s.deleteUserRelaysForClient(r.Context(), client.ID); err != nil {
-			writeRelayError(w, err)
-			return
-		}
+		clientIDs = append(clientIDs, client.ID)
+	}
+	userRelayDeletions, err := s.prepareUserRelayDeletions(r.Context(), clientIDs)
+	if err != nil {
+		writeRelayError(w, err)
+		return
+	}
+	if err := s.deletePreparedUserRelays(r.Context(), userRelayDeletions); err != nil {
+		writeRelayError(w, err)
+		return
 	}
 	mutation, err := s.proxies.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
 	if err != nil {
@@ -329,11 +340,14 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "客户端到期时间无效")
 	case errors.Is(err, proxystore.ErrReferencedByRelay):
 		writeError(w, http.StatusConflict, "代理节点正在被中转规则使用，请先修改或删除相关中转规则")
+	case errors.Is(err, proxystore.ErrReferencedBySubscription):
+		writeError(w, http.StatusConflict, "代理节点正在被订阅发布节点使用，请先在订阅管理中删除或调整相关发布节点")
 	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
 		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
 	case errors.Is(err, proxystore.ErrNotDistributable):
 		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
 	default:
+		log.Printf("proxy API error: %v", err)
 		writeInternalError(w)
 	}
 }

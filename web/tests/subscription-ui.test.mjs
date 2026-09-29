@@ -68,13 +68,18 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
     '/api/admin/subscription/users',
     '/api/admin/subscription/plans',
     '/api/admin/subscription/nodes',
+    '/api/admin/subscription/relay-servers',
     '/traffic/reset',
     '/token/regenerate',
   ]) {
     assert.match(managementSource, new RegExp(endpoint.replaceAll('/', '\\/')))
   }
-  assert.match(managementSource, /v-if="!editingNode"[\s\S]*中转 Proxy[\s\S]*落地 Proxy/)
-  assert.match(managementSource, /创建后不能修改模式、中转 Proxy 或落地 Proxy/)
+  assert.match(managementSource, /v-if="!editingNode"[\s\S]*中转服务器[\s\S]*落地 Proxy/)
+  assert.match(managementSource, /v-for="server in relayServers"[\s\S]*\{\{ server\.name \}\}/)
+  assert.match(managementSource, /创建后不能修改模式、中转服务器或落地 Proxy/)
+  assert.match(managementSource, /source_server_id: nodeMode\.value === 'relay' \? nodeSourceServerID\.value : null/)
+  assert.match(managementSource, /source_server_name \}\} · Realm →/)
+  assert.doesNotMatch(managementSource, /source_proxy_id|source_proxy_name|nodeSourceProxyID|中转 Proxy/)
   assert.match(managementSource, /movePlanNode/)
   assert.match(managementSource, /node_ids: planNodeIDs\.value/)
 })

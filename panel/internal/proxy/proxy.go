@@ -349,6 +349,11 @@ func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
 	return s.DeleteWithManagedPurge(ctx, id, true)
 }
 
+func (s *Service) ValidateDeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) error {
+	_, err := validateDelete(ctx, s.db, id, allowManagedPurge)
+	return err
+}
+
 func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) (Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -356,25 +361,9 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("begin proxy deletion: %w", err)
 	}
 	defer tx.Rollback()
-	value, _, err := getProxyForMutation(ctx, tx, id)
+	value, err := validateDelete(ctx, tx, id, allowManagedPurge)
 	if err != nil {
 		return Mutation{}, err
-	}
-	referenced, err := relaystore.IsProxyReferenced(ctx, tx, id)
-	if err != nil {
-		return Mutation{}, err
-	}
-	if referenced {
-		return Mutation{}, ErrReferencedByRelay
-	}
-	var proxyCount int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM proxies WHERE server_id = ?`, value.ServerID,
-	).Scan(&proxyCount); err != nil {
-		return Mutation{}, fmt.Errorf("count server proxies: %w", err)
-	}
-	if proxyCount == 1 && !allowManagedPurge {
-		return Mutation{}, ErrManagedRuntimePurgeUnsupported
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM proxies WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete proxy: %w", err)
@@ -387,6 +376,42 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("commit proxy deletion: %w", err)
 	}
 	return Mutation{ServerID: value.ServerID, Version: version}, nil
+}
+
+func validateDelete(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id int64, allowManagedPurge bool) (Proxy, error) {
+	value, _, err := getProxyForMutation(ctx, query, id)
+	if err != nil {
+		return Proxy{}, err
+	}
+	var subscriptionReferenced bool
+	if err := query.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM subscription_published_nodes
+		WHERE target_proxy_id = ?
+	)`, id).Scan(&subscriptionReferenced); err != nil {
+		return Proxy{}, fmt.Errorf("check subscription published node proxy references: %w", err)
+	}
+	if subscriptionReferenced {
+		return Proxy{}, ErrReferencedBySubscription
+	}
+	referenced, err := relaystore.IsProxyReferenced(ctx, query, id)
+	if err != nil {
+		return Proxy{}, err
+	}
+	if referenced {
+		return Proxy{}, ErrReferencedByRelay
+	}
+	var proxyCount int
+	if err := query.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM proxies WHERE server_id = ?`, value.ServerID,
+	).Scan(&proxyCount); err != nil {
+		return Proxy{}, fmt.Errorf("count server proxies: %w", err)
+	}
+	if proxyCount == 1 && !allowManagedPurge {
+		return Proxy{}, ErrManagedRuntimePurgeUnsupported
+	}
+	return value, nil
 }
 
 func scanProxy(row rowScanner) (Proxy, storedConfig, error) {

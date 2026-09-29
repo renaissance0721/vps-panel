@@ -1190,7 +1190,7 @@ func TestAdminUserManagementOnlyOffersAdminCreatedServersButKeepsLegacyAssignmen
 		t.Fatalf("VIP-origin published node = %d, %s", blockedPublishedNode.Code, blockedPublishedNode.Body.String())
 	}
 	blockedRelayNode := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{
-		"name": "blocked-relay", "mode": "relay", "source_proxy_id": vipProxyBody.Proxy.ID, "target_proxy_id": adminProxy.ID,
+		"name": "blocked-relay", "mode": "relay", "source_server_id": vipServer.Server.ID, "target_proxy_id": adminProxy.ID,
 	}, fixture.adminCookie)
 	if blockedRelayNode.Code != http.StatusBadRequest || !strings.Contains(blockedRelayNode.Body.String(), "订阅发布节点只能使用管理员创建的服务器") {
 		t.Fatalf("VIP-origin relay source = %d, %s", blockedRelayNode.Code, blockedRelayNode.Body.String())

@@ -177,6 +177,11 @@ func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
 	return s.DeleteWithManagedPurge(ctx, id, true)
 }
 
+func (s *Service) ValidateDeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) error {
+	_, err := validateDelete(ctx, s.db, id, allowManagedPurge)
+	return err
+}
+
 func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowManagedPurge bool) (Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -184,23 +189,9 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("begin relay deletion: %w", err)
 	}
 	defer tx.Rollback()
-	value, err := getForMutation(ctx, tx, id)
+	value, err := validateDelete(ctx, tx, id, allowManagedPurge)
 	if err != nil {
 		return Mutation{}, err
-	}
-	if managed, err := subscriptionManaged(ctx, tx, id); err != nil {
-		return Mutation{}, err
-	} else if managed {
-		return Mutation{}, ErrSubscriptionManaged
-	}
-	var relayCount int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM relays WHERE server_id = ?`, value.ServerID,
-	).Scan(&relayCount); err != nil {
-		return Mutation{}, fmt.Errorf("count server relays: %w", err)
-	}
-	if relayCount == 1 && !allowManagedPurge {
-		return Mutation{}, ErrManagedRuntimePurgeUnsupported
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, id); err != nil {
 		return Mutation{}, fmt.Errorf("delete relay: %w", err)
@@ -213,6 +204,30 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("commit relay deletion: %w", err)
 	}
 	return Mutation{ServerID: value.ServerID, Version: version}, nil
+}
+
+func validateDelete(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id int64, allowManagedPurge bool) (Relay, error) {
+	value, err := getForMutation(ctx, query, id)
+	if err != nil {
+		return Relay{}, err
+	}
+	if managed, err := subscriptionManaged(ctx, query, id); err != nil {
+		return Relay{}, err
+	} else if managed {
+		return Relay{}, ErrSubscriptionManaged
+	}
+	var relayCount int
+	if err := query.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM relays WHERE server_id = ?`, value.ServerID,
+	).Scan(&relayCount); err != nil {
+		return Relay{}, fmt.Errorf("count server relays: %w", err)
+	}
+	if relayCount == 1 && !allowManagedPurge {
+		return Relay{}, ErrManagedRuntimePurgeUnsupported
+	}
+	return value, nil
 }
 
 func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, name string, enabled bool, now time.Time) (int64, bool, error) {

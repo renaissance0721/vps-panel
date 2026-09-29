@@ -91,7 +91,9 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 			"xray_uplink_bytes", "xray_downlink_bytes", "cycle_uplink_bytes", "cycle_downlink_bytes",
 			"cycle_started_at", "last_activity_at", "updated_at",
 		},
-		"subscription_published_nodes": {"source_server_id", "traffic_multiplier_bp"},
+		"subscription_published_nodes": {
+			"source_server_id", "entry_host_mode", "entry_host", "entry_port_mode", "traffic_multiplier_bp",
+		},
 		"subscriber_profiles": {
 			"traffic_reset_mode", "traffic_reset_day", "traffic_reset_time", "billing_period_months",
 		},

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 	sourceServerID := fixture.createServer(t, "CoreNet HK")
 	targetServerID := fixture.createServer(t, "Legend SG")
 	targetProxy := fixture.createProxy(t, targetServerID, 443, "SG 原生落地")
+	fixture.createProxy(t, sourceServerID, 24443, "Occupied Source Port")
 	vipServerID := fixture.createServer(t, "VIP Server")
 	unsupportedServerID := fixture.createServer(t, "Unsupported Server")
 	decommissioningServerID := fixture.createServer(t, "Decommissioning Server")
@@ -49,10 +51,37 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 		listedIDs[unsupportedServerID] || listedIDs[decommissioningServerID] {
 		t.Fatalf("relay server ids = %+v", listedIDs)
 	}
+	for _, invalid := range []struct {
+		name     string
+		body     map[string]any
+		status   int
+		contains string
+	}{
+		{name: "host", body: map[string]any{
+			"name": "Invalid Host", "mode": "relay", "source_server_id": sourceServerID,
+			"target_proxy_id": targetProxy.ID, "entry_host_mode": "manual", "entry_host": "https://example.com",
+		}, status: http.StatusBadRequest, contains: "不能包含协议"},
+		{name: "port range", body: map[string]any{
+			"name": "Invalid Port", "mode": "relay", "source_server_id": sourceServerID,
+			"target_proxy_id": targetProxy.ID, "entry_port_mode": "manual", "entry_port": 0,
+		}, status: http.StatusBadRequest, contains: "1–65535"},
+		{name: "port conflict", body: map[string]any{
+			"name": "Conflict", "mode": "relay", "source_server_id": sourceServerID,
+			"target_proxy_id": targetProxy.ID, "entry_port_mode": "manual", "entry_port": 24443,
+		}, status: http.StatusConflict, contains: "入口端口已被代理节点、中转规则或保留端口占用"},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			response := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", invalid.body, fixture.cookie)
+			if response.Code != invalid.status || !strings.Contains(response.Body.String(), invalid.contains) {
+				t.Fatalf("invalid endpoint response = %d, %s", response.Code, response.Body.String())
+			}
+		})
+	}
 
 	creation := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{
 		"name": "HK Realm", "mode": "relay", "source_server_id": sourceServerID,
-		"target_proxy_id": targetProxy.ID,
+		"target_proxy_id": targetProxy.ID, "entry_host_mode": "manual", "entry_host": "realm.example.com",
+		"entry_port_mode": "manual", "entry_port": 24444,
 	}, fixture.cookie)
 	var created struct {
 		Node subscriptionPublishedNodeResponse `json:"node"`
@@ -61,7 +90,9 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 		t.Fatalf("create relay published node = %d, %s", creation.Code, creation.Body.String())
 	}
 	if created.Node.SourceServerID == nil || *created.Node.SourceServerID != sourceServerID ||
-		created.Node.SourceServerName != "CoreNet HK" || strings.Contains(creation.Body.String(), "source_proxy") {
+		created.Node.SourceServerName != "CoreNet HK" || created.Node.EntryAddress != "realm.example.com" ||
+		created.Node.EntryPort != 24444 || created.Node.EntryPortMode != "manual" || created.Node.RelayID == nil ||
+		strings.Contains(creation.Body.String(), "source_proxy") {
 		t.Fatalf("created relay published node = %+v", created.Node)
 	}
 	var relayServerID, relayTargetProxyID int64
@@ -73,6 +104,29 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 	}
 	if relayServerID != sourceServerID || relayTargetProxyID != targetProxy.ID {
 		t.Fatalf("subscription Relay = server %d target %d", relayServerID, relayTargetProxyID)
+	}
+	originalRelayID := *created.Node.RelayID
+	conflictingUpdate := performRequest(t, fixture.handler, http.MethodPatch,
+		"/api/admin/subscription/nodes/"+strconv.FormatInt(created.Node.ID, 10), map[string]any{
+			"entry_host_mode": "manual", "entry_host": "realm.example.com",
+			"entry_port_mode": "manual", "entry_port": 24443,
+		}, fixture.cookie)
+	if conflictingUpdate.Code != http.StatusConflict ||
+		!strings.Contains(conflictingUpdate.Body.String(), "入口端口已被代理节点、中转规则或保留端口占用") {
+		t.Fatalf("conflicting endpoint update = %d, %s", conflictingUpdate.Code, conflictingUpdate.Body.String())
+	}
+	update := performRequest(t, fixture.handler, http.MethodPatch,
+		"/api/admin/subscription/nodes/"+strconv.FormatInt(created.Node.ID, 10), map[string]any{
+			"entry_host_mode": "manual", "entry_host": "updated.example.com",
+			"entry_port_mode": "manual", "entry_port": 24445,
+		}, fixture.cookie)
+	var updated struct {
+		Node subscriptionPublishedNodeResponse `json:"node"`
+	}
+	if update.Code != http.StatusOK || json.Unmarshal(update.Body.Bytes(), &updated) != nil ||
+		updated.Node.RelayID == nil || *updated.Node.RelayID != originalRelayID ||
+		updated.Node.EntryAddress != "updated.example.com" || updated.Node.EntryPort != 24445 {
+		t.Fatalf("update relay endpoint = %d, %s", update.Code, update.Body.String())
 	}
 }
 

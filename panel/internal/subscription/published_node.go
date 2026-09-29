@@ -62,6 +62,22 @@ func (s *Service) CreatePublishedNodeWithPlans(
 	if mode == NodeModeRelay && (input.SourceServerID == nil || *input.SourceServerID <= 0) {
 		return PublishedNode{}, nil, nil, ErrSourceServerRequired
 	}
+	entryHostMode, entryHost, entryPortMode, err := normalizePublishedNodeEndpoint(
+		mode, input.EntryHostMode, input.EntryHost, input.EntryPortMode,
+	)
+	if err != nil {
+		return PublishedNode{}, nil, nil, err
+	}
+	if mode == NodeModeDirect && input.EntryPort != nil {
+		return PublishedNode{}, nil, nil, ErrInvalidEntryPortMode
+	}
+	if mode == NodeModeRelay && entryPortMode == EntryPortModeManual &&
+		(input.EntryPort == nil || *input.EntryPort < 1 || *input.EntryPort > 65535) {
+		return PublishedNode{}, nil, nil, relay.ErrInvalidPort
+	}
+	if mode == NodeModeRelay && entryPortMode == EntryPortModeAuto && input.EntryPort != nil {
+		return PublishedNode{}, nil, nil, ErrInvalidEntryPortMode
+	}
 	multiplierBP, err := normalizeTrafficMultiplierBP(input.TrafficMultiplierBP)
 	if err != nil {
 		return PublishedNode{}, nil, nil, err
@@ -92,14 +108,19 @@ func (s *Service) CreatePublishedNodeWithPlans(
 		if err := requireAdminSourceServer(ctx, tx, *input.SourceServerID); err != nil {
 			return PublishedNode{}, nil, nil, err
 		}
-		port, err := relay.RandomUserRelayPort(ctx, tx, *input.SourceServerID)
-		if err != nil {
-			return PublishedNode{}, nil, nil, err
+		port := 0
+		if entryPortMode == EntryPortModeAuto {
+			port, err = relay.RandomUserRelayPort(ctx, tx, *input.SourceServerID)
+			if err != nil {
+				return PublishedNode{}, nil, nil, err
+			}
+		} else {
+			port = *input.EntryPort
 		}
 		createdRelayID, createdMutation, err := s.relays.CreateSubscriptionRelayTx(ctx, tx, relay.CreateInput{
 			ServerID: *input.SourceServerID, Name: name, ListenAddress: "0.0.0.0", ListenPort: port,
-			EntryHostMode: relay.EntryHostAuto,
-			TargetType:    relay.TargetProxy, TargetProxyID: &input.TargetProxyID,
+			EntryHostMode: entryHostMode, EntryHost: entryHost,
+			TargetType: relay.TargetProxy, TargetProxyID: &input.TargetProxyID,
 			Network: relay.NetworkTCP, Enabled: input.Enabled,
 		}, now)
 		if err != nil {
@@ -111,9 +132,11 @@ func (s *Service) CreatePublishedNodeWithPlans(
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO subscription_published_nodes
-		 (name, mode, target_proxy_id, source_server_id, relay_id, traffic_multiplier_bp, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, mode, input.TargetProxyID, nullableID(input.SourceServerID), relayID, multiplierBP,
+		 (name, mode, target_proxy_id, source_server_id, relay_id, entry_host_mode, entry_host,
+		  entry_port_mode, traffic_multiplier_bp, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, mode, input.TargetProxyID, nullableID(input.SourceServerID), relayID,
+		entryHostMode, entryHost, entryPortMode, multiplierBP,
 		input.Enabled, now.Unix(), now.Unix(),
 	)
 	if err != nil {
@@ -147,7 +170,8 @@ func (s *Service) CreatePublishedNodeWithPlans(
 }
 
 func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input UpdatePublishedNodeInput) (PublishedNode, []proxystore.Mutation, error) {
-	if input.Name == nil && input.TrafficMultiplierBP == nil && input.Enabled == nil && !input.PlanIDsSet {
+	if input.Name == nil && input.EntryHostMode == nil && input.EntryHost == nil && input.EntryPortMode == nil &&
+		input.EntryPort == nil && input.TrafficMultiplierBP == nil && input.Enabled == nil && !input.PlanIDsSet {
 		return PublishedNode{}, nil, ErrInvalidNodeUpdate
 	}
 	if input.PlanIDsSet {
@@ -162,14 +186,19 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 	}
 	defer tx.Rollback()
 
-	var currentName, mode string
+	var currentName, mode, currentEntryHostMode, currentEntryHost, currentEntryPortMode string
 	var targetProxyID int64
 	var currentMultiplierBP, currentEnabled int
-	var relayID sql.NullInt64
+	var sourceServerID, relayID, currentEntryPort sql.NullInt64
 	err = tx.QueryRowContext(ctx,
-		`SELECT name, mode, target_proxy_id, relay_id, traffic_multiplier_bp, enabled
-		 FROM subscription_published_nodes WHERE id = ?`, id,
-	).Scan(&currentName, &mode, &targetProxyID, &relayID, &currentMultiplierBP, &currentEnabled)
+		`SELECT nodes.name, nodes.mode, nodes.target_proxy_id, nodes.source_server_id, nodes.relay_id,
+			nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode,
+			nodes.traffic_multiplier_bp, nodes.enabled, relay.listen_port
+		 FROM subscription_published_nodes AS nodes
+		 LEFT JOIN relays AS relay ON relay.id = nodes.relay_id WHERE nodes.id = ?`, id,
+	).Scan(&currentName, &mode, &targetProxyID, &sourceServerID, &relayID,
+		&currentEntryHostMode, &currentEntryHost, &currentEntryPortMode,
+		&currentMultiplierBP, &currentEnabled, &currentEntryPort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublishedNode{}, nil, ErrPublishedNodeNotFound
 	}
@@ -194,13 +223,63 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 			return PublishedNode{}, nil, err
 		}
 	}
+	entryHostMode := currentEntryHostMode
+	entryHost := currentEntryHost
+	entryPortMode := currentEntryPortMode
+	if input.EntryHostMode != nil {
+		entryHostMode = *input.EntryHostMode
+	}
+	if input.EntryHost != nil {
+		entryHost = *input.EntryHost
+	}
+	if input.EntryPortMode != nil {
+		entryPortMode = *input.EntryPortMode
+	}
+	entryHostMode, entryHost, entryPortMode, err = normalizePublishedNodeEndpoint(
+		mode, entryHostMode, entryHost, entryPortMode,
+	)
+	if err != nil {
+		return PublishedNode{}, nil, err
+	}
+	listenPort := int(currentEntryPort.Int64)
+	if mode == NodeModeDirect {
+		if input.EntryPort != nil {
+			return PublishedNode{}, nil, ErrInvalidEntryPortMode
+		}
+	} else {
+		if !relayID.Valid || !sourceServerID.Valid || !currentEntryPort.Valid {
+			return PublishedNode{}, nil, ErrInvalidNodeTopology
+		}
+		switch entryPortMode {
+		case EntryPortModeManual:
+			if input.EntryPort != nil {
+				listenPort = *input.EntryPort
+			}
+			if listenPort < 1 || listenPort > 65535 {
+				return PublishedNode{}, nil, relay.ErrInvalidPort
+			}
+		case EntryPortModeAuto:
+			if input.EntryPort != nil {
+				return PublishedNode{}, nil, ErrInvalidEntryPortMode
+			}
+			if currentEntryPortMode != EntryPortModeAuto {
+				listenPort, err = relay.RandomUserRelayPort(ctx, tx, sourceServerID.Int64)
+				if err != nil {
+					return PublishedNode{}, nil, err
+				}
+			}
+		}
+	}
 
 	affected := make(map[int64]struct{})
-	if mode == NodeModeRelay && (input.Name != nil || input.Enabled != nil) {
+	if mode == NodeModeRelay && (input.Name != nil || input.Enabled != nil || input.EntryHostMode != nil ||
+		input.EntryHost != nil || input.EntryPortMode != nil || input.EntryPort != nil) {
 		if !relayID.Valid {
 			return PublishedNode{}, nil, ErrInvalidNodeTopology
 		}
-		serverID, changed, err := s.relays.UpdateSubscriptionRelayTx(ctx, tx, relayID.Int64, name, enabled, now)
+		serverID, changed, err := s.relays.UpdateSubscriptionRelayTx(ctx, tx, relayID.Int64, relay.SubscriptionRelayUpdateInput{
+			Name: name, ListenPort: listenPort, EntryHostMode: entryHostMode, EntryHost: entryHost, Enabled: enabled,
+		}, now)
 		if err != nil {
 			return PublishedNode{}, nil, err
 		}
@@ -210,8 +289,9 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE subscription_published_nodes
-		 SET name = ?, traffic_multiplier_bp = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		name, multiplierBP, enabled, now.Unix(), id,
+		 SET name = ?, entry_host_mode = ?, entry_host = ?, entry_port_mode = ?,
+		     traffic_multiplier_bp = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		name, entryHostMode, entryHost, entryPortMode, multiplierBP, enabled, now.Unix(), id,
 	); err != nil {
 		return PublishedNode{}, nil, fmt.Errorf("update published node: %w", err)
 	}
@@ -334,13 +414,15 @@ func listPublishedNodes(ctx context.Context, query interface {
 	rows, err := query.QueryContext(ctx, `
 		SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
 		 target.server_id, target_server.name, target_server.created_by_role,
+		 target.entry_host_mode, target.entry_host, target.listen_port, COALESCE(target_info.public_ipv4, ''),
 		 nodes.source_server_id, source_server.name, source_server.created_by_role, nodes.relay_id,
-		 relay.listen_port, relay.entry_host_mode, relay.entry_host,
+		 nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode, relay.listen_port,
 		 COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
 		 nodes.enabled, nodes.created_at, nodes.updated_at
 		FROM subscription_published_nodes AS nodes
 		JOIN proxies AS target ON target.id = nodes.target_proxy_id
 		JOIN servers AS target_server ON target_server.id = target.server_id
+		LEFT JOIN server_system_info AS target_info ON target_info.server_id = target.server_id
 		LEFT JOIN servers AS source_server ON source_server.id = nodes.source_server_id
 		LEFT JOIN server_system_info AS source_info ON source_info.server_id = nodes.source_server_id
 		LEFT JOIN relays AS relay ON relay.id = nodes.relay_id `+condition, arguments...)
@@ -351,16 +433,19 @@ func listPublishedNodes(ctx context.Context, query interface {
 	values := make([]PublishedNode, 0)
 	for rows.Next() {
 		var value PublishedNode
-		var sourceServerID, relayID, entryPort sql.NullInt64
-		var sourceServerName, sourceCreatorRole, entryHostMode, entryHost, publicIPv4 sql.NullString
-		var targetCreatorRole string
+		var sourceServerID, relayID, relayEntryPort sql.NullInt64
+		var sourceServerName, sourceCreatorRole, sourcePublicIPv4 sql.NullString
+		var targetCreatorRole, targetEntryHostMode, targetEntryHost, targetPublicIPv4 string
+		var targetEntryPort int
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
-			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole, &sourceServerID,
-			&sourceServerName, &sourceCreatorRole, &relayID, &entryPort, &entryHostMode, &entryHost,
-			&publicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
+			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole,
+			&targetEntryHostMode, &targetEntryHost, &targetEntryPort, &targetPublicIPv4,
+			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID,
+			&value.EntryHostMode, &value.EntryHost, &value.EntryPortMode, &relayEntryPort,
+			&sourcePublicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan published node: %w", err)
 		}
@@ -372,13 +457,9 @@ func listPublishedNodes(ctx context.Context, query interface {
 		if relayID.Valid {
 			id := relayID.Int64
 			value.RelayID = &id
-			value.EntryPort = int(entryPort.Int64)
-			if entryHostMode.String == relay.EntryHostManual {
-				value.EntryAddress = entryHost.String
-			} else {
-				value.EntryAddress = publicIPv4.String
-			}
 		}
+		populatePublishedNodeEndpoint(&value, targetEntryHostMode, targetEntryHost, targetEntryPort,
+			targetPublicIPv4, sourcePublicIPv4.String, relayEntryPort)
 		value.Enabled = enabled != 0
 		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -389,6 +470,30 @@ func listPublishedNodes(ctx context.Context, query interface {
 		return nil, fmt.Errorf("iterate published nodes: %w", err)
 	}
 	return values, nil
+}
+
+func populatePublishedNodeEndpoint(value *PublishedNode, targetEntryHostMode, targetEntryHost string,
+	targetEntryPort int, targetPublicIPv4, sourcePublicIPv4 string, relayEntryPort sql.NullInt64,
+) {
+	if value.Mode == NodeModeDirect {
+		value.EntryPort = targetEntryPort
+		if value.EntryHostMode == EntryHostModeManual {
+			value.EntryAddress = value.EntryHost
+		} else if targetEntryHostMode == proxystore.EntryHostManual {
+			value.EntryAddress = targetEntryHost
+		} else {
+			value.EntryAddress = targetPublicIPv4
+		}
+		return
+	}
+	if relayEntryPort.Valid {
+		value.EntryPort = int(relayEntryPort.Int64)
+	}
+	if value.EntryHostMode == EntryHostModeManual {
+		value.EntryAddress = value.EntryHost
+	} else {
+		value.EntryAddress = sourcePublicIPv4
+	}
 }
 
 func syncPublishedNodePlansTx(
@@ -542,6 +647,48 @@ func requireAdminSourceServer(ctx context.Context, query interface {
 		return ErrServerNotDistributable
 	}
 	return nil
+}
+
+func normalizePublishedNodeEndpoint(mode, hostMode, host, portMode string) (string, string, string, error) {
+	hostMode = strings.ToLower(strings.TrimSpace(hostMode))
+	portMode = strings.ToLower(strings.TrimSpace(portMode))
+	if mode == NodeModeDirect {
+		if hostMode == "" {
+			hostMode = EntryHostModeInherit
+		}
+		if portMode == "" {
+			portMode = EntryPortModeInherit
+		}
+		if hostMode != EntryHostModeInherit && hostMode != EntryHostModeManual {
+			return "", "", "", ErrInvalidEntryHostMode
+		}
+		if portMode != EntryPortModeInherit {
+			return "", "", "", ErrInvalidEntryPortMode
+		}
+	} else {
+		if hostMode == "" {
+			hostMode = EntryHostModeAuto
+		}
+		if portMode == "" {
+			portMode = EntryPortModeAuto
+		}
+		if hostMode != EntryHostModeAuto && hostMode != EntryHostModeManual {
+			return "", "", "", ErrInvalidEntryHostMode
+		}
+		if portMode != EntryPortModeAuto && portMode != EntryPortModeManual {
+			return "", "", "", ErrInvalidEntryPortMode
+		}
+	}
+	if hostMode == EntryHostModeManual {
+		_, normalized, err := relay.NormalizeEntryHost(relay.EntryHostManual, host)
+		if err != nil {
+			return "", "", "", err
+		}
+		host = normalized
+	} else {
+		host = ""
+	}
+	return hostMode, host, portMode, nil
 }
 
 func validatePublishedNodeName(value string) (string, error) {

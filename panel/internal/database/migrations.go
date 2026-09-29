@@ -127,6 +127,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateSubscriptionSourceServer(ctx, db); err != nil {
 		return err
 	}
+	if err := migrateSubscriptionEndpoint(ctx, db); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -214,6 +217,58 @@ func migrateSubscriptionSourceServer(ctx context.Context, db *sql.DB) error {
 func ensureSubscriptionSourceServerIndex(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, subscriptionSourceServerIndexStatement); err != nil {
 		return fmt.Errorf("ensure subscription source server index: %w", err)
+	}
+	return nil
+}
+
+func migrateSubscriptionEndpoint(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin subscription endpoint migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"entry_host_mode", "entry_host_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (entry_host_mode IN ('inherit', 'auto', 'manual'))"},
+		{"entry_host", "entry_host TEXT NOT NULL DEFAULT ''"},
+		{"entry_port_mode", "entry_port_mode TEXT NOT NULL DEFAULT 'inherit' CHECK (entry_port_mode IN ('inherit', 'auto', 'manual'))"},
+	}
+	added := false
+	for _, column := range columns {
+		exists, err := migrationColumnExists(ctx, tx, "subscription_published_nodes", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE subscription_published_nodes ADD COLUMN "+column.definition); err != nil {
+			return fmt.Errorf("add subscription_published_nodes.%s: %w", column.name, err)
+		}
+		added = true
+	}
+	if added {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_published_nodes
+			SET entry_host_mode = CASE
+					WHEN mode = 'relay' AND COALESCE((SELECT entry_host_mode FROM relays WHERE id = relay_id), 'auto') = 'manual'
+						THEN 'manual'
+					WHEN mode = 'relay' THEN 'auto'
+					ELSE 'inherit'
+				END,
+				entry_host = CASE
+					WHEN mode = 'relay' AND COALESCE((SELECT entry_host_mode FROM relays WHERE id = relay_id), 'auto') = 'manual'
+						THEN COALESCE((SELECT entry_host FROM relays WHERE id = relay_id), '')
+					ELSE ''
+				END,
+				entry_port_mode = CASE WHEN mode = 'relay' THEN 'auto' ELSE 'inherit' END`); err != nil {
+			return fmt.Errorf("backfill subscription published node endpoints: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit subscription endpoint migration: %w", err)
 	}
 	return nil
 }

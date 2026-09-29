@@ -201,6 +201,139 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, *created.RelayID)
 }
 
+func TestPublishedNodeRelayEndpointCanBeCopiedEditedAndKeepsRelayIdentity(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
+	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
+	insertSubscriptionTestProxy(t, db, 10, 1, "Address Provider", 8443, relay.EntryHostManual, "source.example.com")
+	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target Proxy", 443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+
+	sourceID := int64(1)
+	port := 23011
+	created, mutation, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Manual Realm", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: targetProxy.ID,
+		EntryHostMode: EntryHostModeManual, EntryHost: "source.example.com",
+		EntryPortMode: EntryPortModeManual, EntryPort: &port, Enabled: true,
+	})
+	if err != nil || mutation == nil || created.RelayID == nil || created.EntryHostMode != EntryHostModeManual ||
+		created.EntryHost != "source.example.com" || created.EntryAddress != "source.example.com" ||
+		created.EntryPortMode != EntryPortModeManual || created.EntryPort != port {
+		t.Fatalf("created manual endpoint = %+v, mutation = %+v, error = %v", created, mutation, err)
+	}
+	originalRelayID := *created.RelayID
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Manual", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{created.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
+		t.Fatal(err)
+	}
+	var sourceVersion int64
+	if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&sourceVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	newHost := "new.example.com"
+	newPort := 25000
+	hostMode, portMode := EntryHostModeManual, EntryPortModeManual
+	updated, mutations, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{
+		EntryHostMode: &hostMode, EntryHost: &newHost, EntryPortMode: &portMode, EntryPort: &newPort,
+	})
+	if err != nil || updated.RelayID == nil || *updated.RelayID != originalRelayID ||
+		updated.EntryAddress != newHost || updated.EntryPort != newPort || len(mutations) != 1 ||
+		mutations[0].ServerID != 1 || mutations[0].Version != sourceVersion+1 {
+		t.Fatalf("updated manual endpoint = %+v, mutations = %+v, error = %v", updated, mutations, err)
+	}
+	var storedPort int
+	var storedMode, storedHost string
+	if err := db.QueryRow(`SELECT listen_port, entry_host_mode, entry_host FROM relays WHERE id = ?`, originalRelayID).
+		Scan(&storedPort, &storedMode, &storedHost); err != nil {
+		t.Fatal(err)
+	}
+	if storedPort != newPort || storedMode != relay.EntryHostManual || storedHost != newHost {
+		t.Fatalf("stored Relay endpoint = %s/%q:%d", storedMode, storedHost, storedPort)
+	}
+	if _, mutations, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{
+		EntryHostMode: &hostMode, EntryHost: &newHost, EntryPortMode: &portMode, EntryPort: &newPort,
+	}); err != nil || len(mutations) != 0 {
+		t.Fatalf("same endpoint update mutations = %+v, error = %v", mutations, err)
+	}
+	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || len(data.Nodes) != 1 || data.Nodes[0].Address != newHost || data.Nodes[0].Port != newPort {
+		t.Fatalf("updated subscription endpoint = %+v, error = %v", data.Nodes, err)
+	}
+	if _, err := db.Exec(`DELETE FROM proxies WHERE id = 10`); err != nil {
+		t.Fatalf("delete address provider Proxy: %v", err)
+	}
+	preserved, err := service.GetPublishedNode(t.Context(), created.ID)
+	if err != nil || preserved.EntryAddress != newHost || preserved.RelayID == nil || *preserved.RelayID != originalRelayID {
+		t.Fatalf("published node after provider deletion = %+v, error = %v", preserved, err)
+	}
+}
+
+func TestPublishedNodeRelayManualPortValidationAndConflicts(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
+	insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
+	insertSubscriptionTestProxy(t, db, 10, 1, "TCP Proxy", 23001, relay.EntryHostAuto, "")
+	if _, err := db.Exec(`INSERT INTO proxies
+		(id, server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		VALUES (11, 1, 'SS Proxy', 'shadowsocks', 23002, 'auto', '', 1, '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	targetProxy := createSubscriptionTestRealityProxy(t, db, 2, "Target", 443)
+	if _, err := db.Exec(`INSERT INTO relays
+		(id, server_id, name, listen_address, listen_port, target_type, target_host, target_port, network, created_at, updated_at)
+		VALUES (30, 1, 'TCP Relay', '0.0.0.0', 23003, 'manual', 'example.com', 443, 'tcp', 1, 1),
+		       (31, 1, 'UDP Relay', '0.0.0.0', 23004, 'manual', 'example.com', 443, 'udp', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO clients (id, proxy_id, name, credential_json, created_at, updated_at)
+		VALUES (40, ?, 'reserved', '{}', 1, 1)`, targetProxy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO client_relay_ports (client_id, server_id, port, created_at) VALUES (40, 1, 23005, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := int64(1)
+	for _, invalidHost := range []string{"https://example.com", "example.com:443"} {
+		if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: "Invalid Host", Mode: NodeModeDirect, TargetProxyID: targetProxy.ID,
+			EntryHostMode: EntryHostModeManual, EntryHost: invalidHost, Enabled: true,
+		}); !errors.Is(err, relay.ErrInvalidEntryHost) {
+			t.Fatalf("manual host %q error = %v", invalidHost, err)
+		}
+	}
+	for _, invalid := range []int{0, 65536} {
+		if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: "Invalid", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: targetProxy.ID,
+			EntryPortMode: EntryPortModeManual, EntryPort: &invalid, Enabled: true,
+		}); !errors.Is(err, relay.ErrInvalidPort) {
+			t.Fatalf("manual port %d error = %v", invalid, err)
+		}
+	}
+	for _, conflict := range []int{23001, 23002, 23003, 23005} {
+		if _, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: "Conflict", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: targetProxy.ID,
+			EntryPortMode: EntryPortModeManual, EntryPort: &conflict, Enabled: true,
+		}); !errors.Is(err, relay.ErrPortConflict) {
+			t.Fatalf("conflicting manual port %d error = %v", conflict, err)
+		}
+	}
+	udpSharedPort := 23004
+	created, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "TCP beside UDP", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: targetProxy.ID,
+		EntryPortMode: EntryPortModeManual, EntryPort: &udpSharedPort, Enabled: true,
+	})
+	if err != nil || created.EntryPort != udpSharedPort {
+		t.Fatalf("TCP Relay sharing UDP-only port = %+v, error = %v", created, err)
+	}
+}
+
 func TestPublishedNodeWithoutPlansDoesNotCreateSubscriberClients(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")

@@ -99,6 +99,54 @@ func TestGenerateSubscriptionDirectAndRelayInPlanOrder(t *testing.T) {
 	}
 }
 
+func TestDirectPublishedNodeCanInheritOrOverrideEntryHost(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "Target", "203.0.113.10")
+	inheritProxy := createSubscriptionTestRealityProxy(t, db, 1, "Inherited", 443)
+	overrideProxy := createSubscriptionTestRealityProxy(t, db, 1, "Overridden", 8443)
+	if _, err := db.Exec(`UPDATE proxies SET entry_host_mode = 'manual', entry_host = CASE id
+		WHEN ? THEN 'target.example.com' ELSE 'unchanged.example.com' END WHERE id IN (?, ?)`,
+		inheritProxy.ID, inheritProxy.ID, overrideProxy.ID); err != nil {
+		t.Fatal(err)
+	}
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	inheritNode, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Inherited", Mode: NodeModeDirect, TargetProxyID: inheritProxy.ID, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideNode, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "Overridden", Mode: NodeModeDirect, TargetProxyID: overrideProxy.ID,
+		EntryHostMode: EntryHostModeManual, EntryHost: "override.example.com", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Direct", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{inheritNode.ID, overrideNode.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || len(data.Nodes) != 2 || data.Nodes[0].Address != "target.example.com" || data.Nodes[0].Port != 443 ||
+		data.Nodes[1].Address != "override.example.com" || data.Nodes[1].Port != 8443 {
+		t.Fatalf("direct subscription endpoints = %+v, error = %v", data.Nodes, err)
+	}
+	var targetEntryHost string
+	if err := db.QueryRow(`SELECT entry_host FROM proxies WHERE id = ?`, overrideProxy.ID).Scan(&targetEntryHost); err != nil {
+		t.Fatal(err)
+	}
+	if targetEntryHost != "unchanged.example.com" {
+		t.Fatalf("direct override changed target Proxy entry host to %q", targetEntryHost)
+	}
+}
+
 func TestRelaySubscriptionKeepsTargetProtocolsAtRealmEndpoint(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertSubscriptionTestServer(t, db, 1, "Realm Source", "198.51.100.10")
@@ -115,16 +163,19 @@ func TestRelaySubscriptionKeepsTargetProtocolsAtRealmEndpoint(t *testing.T) {
 	}
 	insertSubscriptionTestSubscriber(t, db, 100, "alice")
 	sourceServerID := int64(1)
+	vlessPort, ssPort := 23011, 23012
 	vlessNode, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
 		Name: "VLESS Relay", Mode: NodeModeRelay, SourceServerID: &sourceServerID,
-		TargetProxyID: vlessProxy.ID, Enabled: true,
+		TargetProxyID: vlessProxy.ID, EntryHostMode: EntryHostModeManual, EntryHost: "realm.example.com",
+		EntryPortMode: EntryPortModeManual, EntryPort: &vlessPort, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ssNode, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
 		Name: "SS Relay", Mode: NodeModeRelay, SourceServerID: &sourceServerID,
-		TargetProxyID: ssProxy.ID, Enabled: true,
+		TargetProxyID: ssProxy.ID, EntryHostMode: EntryHostModeManual, EntryHost: "realm.example.com",
+		EntryPortMode: EntryPortModeManual, EntryPort: &ssPort, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +207,7 @@ func TestRelaySubscriptionKeepsTargetProtocolsAtRealmEndpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantHost := "198.51.100.10:" + strconv.Itoa(node.EntryPort)
+		wantHost := "realm.example.com:" + strconv.Itoa(node.EntryPort)
 		if parsed.Host != wantHost {
 			t.Fatalf("relay subscription endpoint %d = %q, want %q", index, parsed.Host, wantHost)
 		}

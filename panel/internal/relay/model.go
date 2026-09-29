@@ -116,3 +116,11 @@ type Mutation struct {
 	ServerID int64
 	Version  int64
 }
+
+type SubscriptionRelayUpdateInput struct {
+	Name          string
+	ListenPort    int
+	EntryHostMode string
+	EntryHost     string
+	Enabled       bool
+}

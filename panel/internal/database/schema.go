@@ -229,6 +229,11 @@ func schemaStatements() []string {
 			target_proxy_id INTEGER NOT NULL REFERENCES proxies(id) ON DELETE RESTRICT,
 			source_server_id INTEGER REFERENCES servers(id) ON DELETE RESTRICT,
 			relay_id INTEGER REFERENCES relays(id) ON DELETE SET NULL,
+			entry_host_mode TEXT NOT NULL DEFAULT 'inherit'
+				CHECK (entry_host_mode IN ('inherit', 'auto', 'manual')),
+			entry_host TEXT NOT NULL DEFAULT '',
+			entry_port_mode TEXT NOT NULL DEFAULT 'inherit'
+				CHECK (entry_port_mode IN ('inherit', 'auto', 'manual')),
 			traffic_multiplier_bp INTEGER NOT NULL DEFAULT 100
 				CHECK (traffic_multiplier_bp BETWEEN 10 AND 500),
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),

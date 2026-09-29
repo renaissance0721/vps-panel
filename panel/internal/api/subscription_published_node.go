@@ -20,6 +20,10 @@ type createSubscriptionPublishedNodeRequest struct {
 	Mode              string          `json:"mode"`
 	TargetProxyID     int64           `json:"target_proxy_id"`
 	SourceServerID    *int64          `json:"source_server_id"`
+	EntryHostMode     string          `json:"entry_host_mode"`
+	EntryHost         string          `json:"entry_host"`
+	EntryPortMode     string          `json:"entry_port_mode"`
+	EntryPort         *int            `json:"entry_port"`
 	PlanIDs           []int64         `json:"plan_ids"`
 	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
 	Enabled           *bool           `json:"enabled"`
@@ -27,6 +31,10 @@ type createSubscriptionPublishedNodeRequest struct {
 
 type updateSubscriptionPublishedNodeRequest struct {
 	Name              *string         `json:"name"`
+	EntryHostMode     *string         `json:"entry_host_mode"`
+	EntryHost         *string         `json:"entry_host"`
+	EntryPortMode     *string         `json:"entry_port_mode"`
+	EntryPort         *int            `json:"entry_port"`
 	TrafficMultiplier json.RawMessage `json:"traffic_multiplier"`
 	Enabled           *bool           `json:"enabled"`
 	PlanIDs           *[]int64        `json:"plan_ids"`
@@ -43,6 +51,9 @@ type subscriptionPublishedNodeResponse struct {
 	SourceServerID    *int64    `json:"source_server_id,omitempty"`
 	SourceServerName  string    `json:"source_server_name,omitempty"`
 	RelayID           *int64    `json:"relay_id,omitempty"`
+	EntryHostMode     string    `json:"entry_host_mode"`
+	EntryHost         string    `json:"entry_host"`
+	EntryPortMode     string    `json:"entry_port_mode"`
 	EntryAddress      string    `json:"entry_address,omitempty"`
 	EntryPort         int       `json:"entry_port,omitempty"`
 	TrafficMultiplier float64   `json:"traffic_multiplier"`
@@ -133,6 +144,8 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	value, relayMutation, proxyMutations, err := s.subscriptions.CreatePublishedNodeWithPlans(r.Context(), subscriptionstore.CreatePublishedNodeInput{
 		Name: request.Name, Mode: mode, TargetProxyID: request.TargetProxyID,
 		SourceServerID: request.SourceServerID, PlanIDs: request.PlanIDs,
+		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
+		EntryPortMode: request.EntryPortMode, EntryPort: request.EntryPort,
 		TrafficMultiplierBP: multiplierBP, Enabled: enabled,
 	})
 	if err != nil {
@@ -167,7 +180,9 @@ func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 		planIDs = *request.PlanIDs
 	}
 	value, mutations, err := s.subscriptions.UpdatePublishedNode(r.Context(), id, subscriptionstore.UpdatePublishedNodeInput{
-		Name: request.Name, TrafficMultiplierBP: multiplier, Enabled: request.Enabled,
+		Name: request.Name, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
+		EntryPortMode: request.EntryPortMode, EntryPort: request.EntryPort,
+		TrafficMultiplierBP: multiplier, Enabled: request.Enabled,
 		PlanIDsSet: request.PlanIDs != nil, PlanIDs: planIDs,
 	})
 	if err != nil {
@@ -204,7 +219,8 @@ func toSubscriptionPublishedNodeResponse(value subscriptionstore.PublishedNode) 
 		TargetProxyID: value.TargetProxyID, TargetProxyName: value.TargetProxyName,
 		TargetServerID: value.TargetServerID, TargetServerName: value.TargetServerName,
 		SourceServerID: value.SourceServerID, SourceServerName: value.SourceServerName,
-		RelayID: value.RelayID, EntryAddress: value.EntryAddress, EntryPort: value.EntryPort,
+		RelayID: value.RelayID, EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost,
+		EntryPortMode: value.EntryPortMode, EntryAddress: value.EntryAddress, EntryPort: value.EntryPort,
 		TrafficMultiplier: float64(value.TrafficMultiplierBP) / 100,
 		Enabled:           value.Enabled, Distributable: value.Distributable,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
@@ -223,6 +239,14 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "流量倍率必须为 0.10–5.00，且最多两位小数")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeMode):
 		writeError(w, http.StatusBadRequest, "发布模式仅支持单一节点或中转 + 落地")
+	case errors.Is(err, subscriptionstore.ErrInvalidEntryHostMode), errors.Is(err, relaystore.ErrInvalidEntryHostMode):
+		writeError(w, http.StatusBadRequest, "入口地址模式与发布模式不匹配")
+	case errors.Is(err, relaystore.ErrInvalidEntryHost):
+		writeError(w, http.StatusBadRequest, "入口地址必须是有效 IPv4、IPv6 或域名，不能包含协议、路径或端口")
+	case errors.Is(err, subscriptionstore.ErrInvalidEntryPortMode):
+		writeError(w, http.StatusBadRequest, "入口端口模式与发布模式不匹配")
+	case errors.Is(err, relaystore.ErrInvalidPort):
+		writeError(w, http.StatusBadRequest, "入口端口必须在 1–65535 之间。")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
 		writeError(w, http.StatusBadRequest, "所属套餐无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
@@ -238,7 +262,7 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		errors.Is(err, subscriptionstore.ErrInvalidNodeUpdate):
 		writeError(w, http.StatusBadRequest, "发布节点配置无效")
 	case errors.Is(err, relaystore.ErrPortConflict):
-		writeError(w, http.StatusConflict, "中转节点没有可用的共享 Realm 端口")
+		writeError(w, http.StatusConflict, "该服务器上的入口端口已被代理节点、中转规则或保留端口占用，请更换端口。")
 	case errors.Is(err, relaystore.ErrServerDecommissioning):
 		writeError(w, http.StatusConflict, "中转节点所在服务器正在退役")
 	case errors.Is(err, relaystore.ErrServerNotFound), errors.Is(err, relaystore.ErrProxyNotFound):

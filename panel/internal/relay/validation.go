@@ -393,6 +393,10 @@ func normalizeRelayEntryHost(mode, host string) (string, string, error) {
 	return EntryHostManual, host, nil
 }
 
+func NormalizeEntryHost(mode, host string) (string, string, error) {
+	return normalizeRelayEntryHost(mode, host)
+}
+
 func validPort(value int) bool { return value >= 1 && value <= 65535 }
 
 func JoinHostPort(host string, port int) string {

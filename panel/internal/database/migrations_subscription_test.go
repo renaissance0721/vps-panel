@@ -60,7 +60,8 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 		`CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_by_role TEXT NOT NULL)`,
 		`CREATE TABLE proxies (
 			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-			name TEXT NOT NULL)`,
+			name TEXT NOT NULL, listen_port INTEGER NOT NULL,
+			entry_host_mode TEXT NOT NULL, entry_host TEXT NOT NULL)`,
 		`CREATE TABLE relays (
 			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
@@ -91,7 +92,9 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 			client_id INTEGER NOT NULL UNIQUE REFERENCES clients(id) ON DELETE CASCADE,
 			created_at INTEGER NOT NULL, PRIMARY KEY (user_id, proxy_id))`,
 		`INSERT INTO servers VALUES (1, 'Source', 'admin'), (2, 'Target', 'admin')`,
-		`INSERT INTO proxies VALUES (10, 1, 'Legacy Source Proxy'), (20, 2, 'Target Proxy')`,
+		`INSERT INTO proxies VALUES
+			(10, 1, 'Legacy Source Proxy', 8443, 'manual', 'source.example.com'),
+			(20, 2, 'Target Proxy', 443, 'auto', '')`,
 		`INSERT INTO relays VALUES (30, 1, 20, 20000, 'auto', '')`,
 		`INSERT INTO server_system_info VALUES (1, '198.51.100.10')`,
 		`INSERT INTO subscription_published_nodes VALUES
@@ -107,6 +110,9 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 	}
 
 	if err := migrateSubscriptionSourceServer(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSubscriptionEndpoint(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DROP INDEX idx_subscription_published_nodes_source_server`); err != nil {
@@ -207,8 +213,9 @@ func TestOpenMigratesLegacySubscriptionSourceProxy(t *testing.T) {
 		 VALUES (10, 1, 'Legacy Source Proxy', 'vless', 443, '{}', 1, 1),
 		        (20, 2, 'Target Proxy', 'shadowsocks', 8443, '{}', 1, 1)`,
 		`INSERT INTO relays
-		 (id, server_id, name, listen_port, target_type, target_proxy_id, network, created_at, updated_at)
-		 VALUES (30, 1, 'Legacy Realm', 20000, 'proxy', 20, 'tcp', 1, 1)`,
+		 (id, server_id, name, listen_port, entry_host_mode, entry_host,
+		  target_type, target_proxy_id, network, created_at, updated_at)
+		 VALUES (30, 1, 'Legacy Realm', 20000, 'manual', 'legacy.example.com', 'proxy', 20, 'tcp', 1, 1)`,
 		`INSERT INTO subscription_published_nodes
 		 (id, name, mode, target_proxy_id, source_proxy_id, relay_id, traffic_multiplier_bp, enabled, created_at, updated_at)
 		 VALUES (40, 'Legacy Relay', 'relay', 20, 10, 30, 100, 1, 1, 1),
@@ -228,15 +235,23 @@ func TestOpenMigratesLegacySubscriptionSourceProxy(t *testing.T) {
 		t.Fatalf("Open() legacy subscription database: %v", err)
 	}
 	var relaySourceServerID, directSourceServerID sql.NullInt64
-	if err := db.QueryRow(`SELECT source_server_id FROM subscription_published_nodes WHERE id = 40`).Scan(&relaySourceServerID); err != nil {
+	var relayHostMode, relayHost, relayPortMode, directHostMode, directHost, directPortMode string
+	if err := db.QueryRow(`SELECT source_server_id, entry_host_mode, entry_host, entry_port_mode
+		FROM subscription_published_nodes WHERE id = 40`).
+		Scan(&relaySourceServerID, &relayHostMode, &relayHost, &relayPortMode); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT source_server_id FROM subscription_published_nodes WHERE id = 41`).Scan(&directSourceServerID); err != nil {
+	if err := db.QueryRow(`SELECT source_server_id, entry_host_mode, entry_host, entry_port_mode
+		FROM subscription_published_nodes WHERE id = 41`).
+		Scan(&directSourceServerID, &directHostMode, &directHost, &directPortMode); err != nil {
 		t.Fatal(err)
 	}
 	for query, want := range map[string]int{
 		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_proxy_id'`:               0,
 		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'source_server_id'`:              1,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'entry_host_mode'`:               1,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'entry_host'`:                    1,
+		`SELECT COUNT(*) FROM pragma_table_info('subscription_published_nodes') WHERE name = 'entry_port_mode'`:               1,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_subscription_published_nodes_source_server'`: 1,
 	} {
 		var got int
@@ -252,6 +267,17 @@ func TestOpenMigratesLegacySubscriptionSourceProxy(t *testing.T) {
 	if !relaySourceServerID.Valid || relaySourceServerID.Int64 != 1 || directSourceServerID.Valid {
 		db.Close()
 		t.Fatalf("migrated source servers = relay %v, direct %v", relaySourceServerID, directSourceServerID)
+	}
+	if relayHostMode != "manual" || relayHost != "legacy.example.com" || relayPortMode != "auto" ||
+		directHostMode != "inherit" || directHost != "" || directPortMode != "inherit" {
+		db.Close()
+		t.Fatalf("migrated endpoints = relay %q/%q/%q, direct %q/%q/%q",
+			relayHostMode, relayHost, relayPortMode, directHostMode, directHost, directPortMode)
+	}
+	migratedNode, err := subscriptionstore.NewService(db, relaystore.NewService(db)).GetPublishedNode(t.Context(), 40)
+	if err != nil || migratedNode.EntryAddress != "legacy.example.com" || migratedNode.EntryPort != 20000 {
+		db.Close()
+		t.Fatalf("migrated legacy endpoint = %+v, error = %v", migratedNode, err)
 	}
 	rows, err := db.Query(`PRAGMA foreign_key_check`)
 	if err != nil {

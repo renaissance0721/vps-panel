@@ -145,6 +145,23 @@ test('发布节点创建和编辑一次提交所属套餐并在列表展示关�
   assert.match(managementSource, /nodeModalOpen\.value = false\s*await loadAll\(\)/)
 })
 
+test('发布节点入口地址和 Relay 端口支持继承、候选复制与自定义', () => {
+  for (const label of ['入口地址', '继承落地节点', '已有地址', '自定义', '入口端口', '自动分配', '最终入口']) {
+    assert.match(managementSource, new RegExp(label))
+  }
+  assert.match(managementSource, /proxy\.server_id !== nodeEntryAddressServerID\.value/)
+  assert.match(managementSource, /proxy\.entry_host_mode !== 'manual'/)
+  assert.match(managementSource, /const key = host\.toLowerCase\(\)/)
+  assert.match(managementSource, /existing\.sources\.includes\(proxy\.name\)/)
+  assert.match(managementSource, /保存时只复制地址文本，不建立对来源 Proxy 的依赖。/)
+  assert.match(managementSource, /entry_host_mode: entryHostMode/)
+  assert.match(managementSource, /entry_host: entryHost/)
+  assert.match(managementSource, /entry_port_mode: entryPortMode/)
+  assert.match(managementSource, /entry_port: nodeMode\.value === 'relay'/)
+  assert.match(managementSource, /value\.entry_address \}\}:\{\{ value\.entry_port/)
+  assert.doesNotMatch(managementSource, /entry_source_proxy_id|entry_port\s*:\s*nodeMode\.value === 'direct'/)
+})
+
 test('生命周期字段只在订阅用户表单管理', () => {
   for (const field of ['userResetMode', 'userResetDay', 'userResetTime', 'userBillingMonths']) {
     assert.match(managementSource, new RegExp(field))

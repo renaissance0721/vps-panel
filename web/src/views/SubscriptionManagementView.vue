@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NSpin, NSwitch, NTag } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
@@ -15,14 +15,20 @@ type PublishedNode = {
   target_server_name: string
   source_server_id?: number
   source_server_name?: string
-  entry_address?: string
-  entry_port?: number
+  entry_host_mode: 'inherit' | 'auto' | 'manual'
+  entry_host: string
+  entry_port_mode: 'inherit' | 'auto' | 'manual'
+  entry_address: string
+  entry_port: number
   traffic_multiplier: number
   enabled: boolean
   distributable: boolean
   position?: number
 }
 type RelayServer = { id: number; name: string }
+type EntryAddressChoice = 'inherit' | 'auto' | 'existing' | 'manual'
+type EntryPortChoice = 'inherit' | 'auto' | 'manual'
+type EntryAddressCandidate = { host: string; sources: string[] }
 type Plan = {
   id: number
   name: string
@@ -72,6 +78,11 @@ const nodeName = ref('')
 const nodeMode = ref<'direct' | 'relay'>('direct')
 const nodeTargetProxyID = ref<number | null>(null)
 const nodeSourceServerID = ref<number | null>(null)
+const nodeEntryAddressMode = ref<EntryAddressChoice>('inherit')
+const nodeExistingEntryHost = ref('')
+const nodeEntryHost = ref('')
+const nodeEntryPortMode = ref<EntryPortChoice>('inherit')
+const nodeEntryPort = ref<number | null>(null)
 const nodeTrafficMultiplier = ref<number | null>(1)
 const nodeEnabled = ref(true)
 const nodePlanIDs = ref<number[]>([])
@@ -113,6 +124,43 @@ const orderedPlanNodes = computed(() => {
   const selectedIDs = new Set(planNodeIDs.value)
   return [...selected, ...nodes.value.filter((node) => node.distributable && !selectedIDs.has(node.id))]
 })
+const selectedTargetProxy = computed(() => proxies.value.find((proxy) => proxy.id === nodeTargetProxyID.value))
+const nodeEntryAddressServerID = computed(() => nodeMode.value === 'relay'
+  ? nodeSourceServerID.value
+  : selectedTargetProxy.value?.server_id ?? null)
+const nodeExistingAddresses = computed<EntryAddressCandidate[]>(() => {
+  const grouped = new Map<string, EntryAddressCandidate>()
+  for (const proxy of proxies.value) {
+    const host = proxy.entry_host.trim()
+    if (proxy.server_id !== nodeEntryAddressServerID.value || proxy.entry_host_mode !== 'manual' || !host) continue
+    const key = host.toLowerCase()
+    const existing = grouped.get(key)
+    if (existing) {
+      if (!existing.sources.includes(proxy.name)) existing.sources.push(proxy.name)
+    } else {
+      grouped.set(key, { host, sources: [proxy.name] })
+    }
+  }
+  return [...grouped.values()]
+})
+const nodeResolvedEntryHost = computed(() => {
+  if (nodeEntryAddressMode.value === 'manual') return nodeEntryHost.value.trim()
+  if (nodeEntryAddressMode.value === 'existing') return nodeExistingEntryHost.value
+  if (nodeMode.value === 'direct') return selectedTargetProxy.value?.entry_address ?? ''
+  return proxies.value.find((proxy) => proxy.server_id === nodeSourceServerID.value)?.server_public_ipv4 ?? ''
+})
+const nodeResolvedEntryPort = computed(() => {
+  if (nodeMode.value === 'direct') return selectedTargetProxy.value?.listen_port ?? null
+  if (nodeEntryPortMode.value === 'manual') return nodeEntryPort.value
+  if (editingNode.value?.mode === 'relay' && editingNode.value.entry_port_mode === 'auto') return editingNode.value.entry_port
+  return null
+})
+const nodeEntryPreview = computed(() => {
+  const rawHost = nodeResolvedEntryHost.value || (nodeMode.value === 'relay' ? '服务器公网地址' : '入口地址未检测')
+  const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost
+  const port = nodeResolvedEntryPort.value ?? '<自动分配端口>'
+  return `${host}:${port}`
+})
 
 const statusLabels: Record<string, string> = {
   normal: '正常', unconfigured: '未开通套餐', disabled: '已停用', plan_disabled: '套餐已停用',
@@ -153,6 +201,7 @@ function openCreateNode() {
   nodeMode.value = 'direct'
   nodeTargetProxyID.value = proxies.value[0]?.id ?? null
   nodeSourceServerID.value = null
+  resetNodeEndpointForMode()
   nodeTrafficMultiplier.value = 1
   nodeEnabled.value = true
   nodePlanIDs.value = []
@@ -166,10 +215,32 @@ function openEditNode(value: PublishedNode) {
   nodeMode.value = value.mode
   nodeTargetProxyID.value = value.target_proxy_id
   nodeSourceServerID.value = value.source_server_id ?? null
+  nodeEntryAddressMode.value = value.entry_host_mode
+  nodeExistingEntryHost.value = ''
+  nodeEntryHost.value = value.entry_host
+  nodeEntryPortMode.value = value.entry_port_mode
+  nodeEntryPort.value = value.mode === 'relay' ? value.entry_port : null
   nodeTrafficMultiplier.value = value.traffic_multiplier
   nodeEnabled.value = value.enabled
   nodePlanIDs.value = plans.value.filter((plan) => plan.nodes.some((node) => node.id === value.id)).map((plan) => plan.id)
   nodeModalOpen.value = true
+}
+
+function resetNodeEndpointForMode() {
+  nodeEntryAddressMode.value = nodeMode.value === 'relay' ? 'auto' : 'inherit'
+  nodeExistingEntryHost.value = ''
+  nodeEntryHost.value = ''
+  nodeEntryPortMode.value = nodeMode.value === 'relay' ? 'auto' : 'inherit'
+  nodeEntryPort.value = null
+}
+
+function resetExistingEntryAddress() {
+  nodeExistingEntryHost.value = nodeExistingAddresses.value[0]?.host ?? ''
+}
+
+function onNodeEntryAddressModeChange(value: EntryAddressChoice) {
+  nodeEntryAddressMode.value = value
+  if (value === 'existing') resetExistingEntryAddress()
 }
 
 function toggleNodePlan(id: number, checked: boolean) {
@@ -185,12 +256,34 @@ async function saveNode() {
     nodeFormError.value = '流量倍率必须为 0.10–5.00，且最多两位小数'
     return
   }
+  const entryHost = nodeEntryAddressMode.value === 'existing'
+    ? nodeExistingEntryHost.value
+    : nodeEntryAddressMode.value === 'manual' ? nodeEntryHost.value.trim() : ''
+  if ((nodeEntryAddressMode.value === 'existing' || nodeEntryAddressMode.value === 'manual') && !entryHost) {
+    nodeFormError.value = '请选择或填写入口域名 / IP'
+    return
+  }
+  if (nodeMode.value === 'relay' && nodeEntryPortMode.value === 'manual' &&
+    (!Number.isInteger(nodeEntryPort.value) || (nodeEntryPort.value ?? 0) < 1 || (nodeEntryPort.value ?? 0) > 65535)) {
+    nodeFormError.value = '入口端口必须在 1–65535 之间。'
+    return
+  }
+  const entryHostMode = nodeMode.value === 'direct'
+    ? (nodeEntryAddressMode.value === 'inherit' ? 'inherit' : 'manual')
+    : (nodeEntryAddressMode.value === 'auto' ? 'auto' : 'manual')
+  const entryPortMode = nodeMode.value === 'relay' ? nodeEntryPortMode.value : 'inherit'
+  const endpoint = {
+    entry_host_mode: entryHostMode,
+    entry_host: entryHost,
+    entry_port_mode: entryPortMode,
+    entry_port: nodeMode.value === 'relay' && nodeEntryPortMode.value === 'manual' ? nodeEntryPort.value : null,
+  }
   await run(async () => {
     if (editingNode.value) {
       await api(`/api/admin/subscription/nodes/${editingNode.value.id}`, {
         method: 'PATCH', body: JSON.stringify({
           name: nodeName.value, traffic_multiplier: multiplier, enabled: nodeEnabled.value,
-          plan_ids: nodePlanIDs.value,
+          plan_ids: nodePlanIDs.value, ...endpoint,
         }),
       })
     } else {
@@ -199,7 +292,7 @@ async function saveNode() {
         body: JSON.stringify({
           name: nodeName.value, mode: nodeMode.value, target_proxy_id: nodeTargetProxyID.value,
           source_server_id: nodeMode.value === 'relay' ? nodeSourceServerID.value : null,
-          traffic_multiplier: multiplier, enabled: nodeEnabled.value, plan_ids: nodePlanIDs.value,
+          traffic_multiplier: multiplier, enabled: nodeEnabled.value, plan_ids: nodePlanIDs.value, ...endpoint,
         }),
       })
     }
@@ -472,7 +565,7 @@ onMounted(async () => {
         <p v-if="value.mode === 'direct'">单一节点</p><p v-else>中转 + 落地</p>
         <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · Realm → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
-        <p v-if="value.mode === 'relay'">入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
+        <p>入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
         <p>所属套餐：{{ nodePlanNames(value.id) || '未加入套餐' }}</p>
         <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
       </n-card>
@@ -483,11 +576,23 @@ onMounted(async () => {
     <n-alert v-if="nodeFormError" type="error" closable @close="nodeFormError = ''">{{ nodeFormError }}</n-alert>
     <label><span>发布名称</span><n-input v-model:value="nodeName" maxlength="100" /></label>
     <template v-if="!editingNode">
-      <label><span>模式</span><select v-model="nodeMode" class="settings-input"><option value="direct">单一节点</option><option value="relay">中转 + 落地</option></select></label>
-      <label v-if="nodeMode === 'relay'"><span>中转服务器</span><select v-model.number="nodeSourceServerID" class="settings-input"><option :value="null">请选择</option><option v-for="server in relayServers" :key="server.id" :value="server.id">{{ server.name }}</option></select></label>
-      <label><span>落地 Proxy</span><select v-model.number="nodeTargetProxyID" class="settings-input"><option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">{{ proxy.server_name }} · {{ proxy.name }}</option></select></label>
+      <label><span>模式</span><select v-model="nodeMode" class="settings-input" @change="resetNodeEndpointForMode"><option value="direct">单一节点</option><option value="relay">中转 + 落地</option></select></label>
+      <label v-if="nodeMode === 'relay'"><span>中转服务器</span><select v-model.number="nodeSourceServerID" class="settings-input" @change="resetExistingEntryAddress"><option :value="null">请选择</option><option v-for="server in relayServers" :key="server.id" :value="server.id">{{ server.name }}</option></select></label>
+      <label><span>落地 Proxy</span><select v-model.number="nodeTargetProxyID" class="settings-input" @change="resetExistingEntryAddress"><option v-for="proxy in proxies" :key="proxy.id" :value="proxy.id">{{ proxy.server_name }} · {{ proxy.name }}</option></select></label>
     </template>
     <n-alert v-else type="info">创建后不能修改模式、中转服务器或落地 Proxy；如需改变拓扑，请删除后重新创建。</n-alert>
+    <fieldset class="relay-mode-field"><legend>入口地址</legend><n-radio-group :value="nodeEntryAddressMode" @update:value="onNodeEntryAddressModeChange"><div class="relay-mode-options">
+      <n-radio v-if="nodeMode === 'direct'" value="inherit">继承落地节点</n-radio>
+      <n-radio v-else value="auto">自动</n-radio>
+      <n-radio value="existing" :disabled="nodeExistingAddresses.length === 0">已有地址</n-radio>
+      <n-radio value="manual">自定义</n-radio>
+    </div></n-radio-group></fieldset>
+    <label v-if="nodeEntryAddressMode === 'existing'"><span>已有入口地址</span><select v-model="nodeExistingEntryHost" class="settings-input"><option v-for="candidate in nodeExistingAddresses" :key="candidate.host" :value="candidate.host">{{ candidate.host }} · 来自：{{ candidate.sources.join('、') }}</option></select><small class="form-help">保存时只复制地址文本，不建立对来源 Proxy 的依赖。</small></label>
+    <label v-if="nodeEntryAddressMode === 'manual'"><span>入口域名 / IP</span><n-input v-model:value="nodeEntryHost" placeholder="example.com 或 1.2.3.4" /><small class="form-help">不能包含协议、路径或端口。</small></label>
+    <small v-if="nodeMode === 'direct' && nodeEntryAddressMode === 'inherit'" class="form-help">当前入口：{{ selectedTargetProxy?.entry_address || '尚未检测' }}:{{ selectedTargetProxy?.listen_port }}</small>
+    <fieldset v-if="nodeMode === 'relay'" class="relay-mode-field"><legend>入口端口</legend><n-radio-group v-model:value="nodeEntryPortMode"><div class="relay-mode-options"><n-radio value="auto">自动分配</n-radio><n-radio value="manual">自定义</n-radio></div></n-radio-group></fieldset>
+    <label v-if="nodeMode === 'relay' && nodeEntryPortMode === 'manual'"><span>端口</span><n-input-number v-model:value="nodeEntryPort" :min="1" :max="65535" :precision="0" /></label>
+    <label><span>最终入口</span><n-input :value="nodeEntryPreview" readonly /><small v-if="nodeMode === 'relay' && nodeEntryPortMode === 'auto' && !nodeResolvedEntryPort" class="form-help">保存后自动分配 Realm 端口，不会为了预览提前占用。</small></label>
     <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入套餐流量。允许 0.10×–5.00×。</small></label>
     <fieldset class="subscription-node-picker"><legend>{{ editingNode ? '所属套餐' : '加入套餐' }}</legend>
       <span v-if="plans.length === 0" class="form-help">暂无套餐，可先创建备用发布节点。</span>

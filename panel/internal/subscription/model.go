@@ -10,6 +10,12 @@ import (
 const (
 	NodeModeDirect               = "direct"
 	NodeModeRelay                = "relay"
+	EntryHostModeInherit         = "inherit"
+	EntryHostModeAuto            = "auto"
+	EntryHostModeManual          = "manual"
+	EntryPortModeInherit         = "inherit"
+	EntryPortModeAuto            = "auto"
+	EntryPortModeManual          = "manual"
 	ResetModeNever               = "never"
 	ResetModeMonthly             = "monthly"
 	maxNameRunes                 = 100
@@ -30,6 +36,8 @@ var (
 	ErrSourceServerRequired     = errors.New("source server is required for relay mode")
 	ErrInvalidNodeUpdate        = errors.New("published node update is empty")
 	ErrInvalidNodeTopology      = errors.New("published node topology is invalid")
+	ErrInvalidEntryHostMode     = errors.New("published node entry host mode is invalid")
+	ErrInvalidEntryPortMode     = errors.New("published node entry port mode is invalid")
 	ErrInvalidTrafficMultiplier = errors.New("published node traffic multiplier is invalid")
 	ErrPublishedNodeReferenced  = errors.New("published node is referenced by a plan")
 	ErrPlanNotFound             = errors.New("subscription plan not found")
@@ -59,6 +67,9 @@ type PublishedNode struct {
 	SourceServerID      *int64
 	SourceServerName    string
 	RelayID             *int64
+	EntryHostMode       string
+	EntryHost           string
+	EntryPortMode       string
 	TrafficMultiplierBP int
 	EntryAddress        string
 	EntryPort           int
@@ -73,6 +84,10 @@ type CreatePublishedNodeInput struct {
 	Mode                string
 	TargetProxyID       int64
 	SourceServerID      *int64
+	EntryHostMode       string
+	EntryHost           string
+	EntryPortMode       string
+	EntryPort           *int
 	PlanIDs             []int64
 	TrafficMultiplierBP int
 	Enabled             bool
@@ -80,6 +95,10 @@ type CreatePublishedNodeInput struct {
 
 type UpdatePublishedNodeInput struct {
 	Name                *string
+	EntryHostMode       *string
+	EntryHost           *string
+	EntryPortMode       *string
+	EntryPort           *int
 	TrafficMultiplierBP *int
 	Enabled             *bool
 	PlanIDsSet          bool

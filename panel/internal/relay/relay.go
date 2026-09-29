@@ -230,7 +230,7 @@ func validateDelete(ctx context.Context, query interface {
 	return value, nil
 }
 
-func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, name string, enabled bool, now time.Time) (int64, bool, error) {
+func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, input SubscriptionRelayUpdateInput, now time.Time) (int64, bool, error) {
 	value, err := getForMutation(ctx, tx, id)
 	if err != nil {
 		return 0, false, err
@@ -242,14 +242,30 @@ func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id 
 	if !managed {
 		return 0, false, ErrSubscriptionManaged
 	}
+	updated := value
+	updated.Name = input.Name
+	updated.ListenPort = input.ListenPort
+	updated.EntryHostMode = input.EntryHostMode
+	updated.EntryHost = input.EntryHost
+	updated.Enabled = input.Enabled
+	updated, err = normalizeRelay(updated)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := ensurePortAvailable(ctx, tx, updated.ServerID, updated.ListenPort, updated.Network, id, updated.SourceClientID); err != nil {
+		return 0, false, err
+	}
+	changed := value.Name != updated.Name || value.ListenPort != updated.ListenPort ||
+		value.EntryHostMode != updated.EntryHostMode || value.EntryHost != updated.EntryHost ||
+		value.Enabled != updated.Enabled
 	now = now.UTC().Truncate(time.Second)
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE relays SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		name, enabled, now.Unix(), id,
+		`UPDATE relays SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		updated.Name, updated.ListenPort, updated.EntryHostMode, updated.EntryHost, updated.Enabled, now.Unix(), id,
 	); err != nil {
 		return 0, false, fmt.Errorf("update subscription relay: %w", err)
 	}
-	return value.ServerID, value.Name != name || value.Enabled != enabled, nil
+	return value.ServerID, changed, nil
 }
 
 func (s *Service) DeleteSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (Mutation, error) {

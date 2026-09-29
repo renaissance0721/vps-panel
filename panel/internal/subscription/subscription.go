@@ -47,22 +47,27 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 
 	type subscriptionNode struct {
-		name         string
-		mode         string
-		multiplierBP int
-		clientID     int64
-		entryAddress string
-		entryPort    int
+		name          string
+		mode          string
+		entryHostMode string
+		multiplierBP  int
+		clientID      int64
+		entryAddress  string
+		entryPort     int
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT nodes.name, nodes.mode, nodes.traffic_multiplier_bp, clients.client_id,
-		CASE WHEN relay.entry_host_mode = 'manual' THEN relay.entry_host
-		     ELSE COALESCE(source_info.public_ipv4, '') END,
-		COALESCE(relay.listen_port, 0)
+	rows, err := s.db.QueryContext(ctx, `SELECT nodes.name, nodes.mode, nodes.entry_host_mode,
+		nodes.traffic_multiplier_bp, clients.client_id,
+		CASE WHEN nodes.entry_host_mode = 'manual' THEN nodes.entry_host
+		     WHEN nodes.mode = 'relay' THEN COALESCE(source_info.public_ipv4, '')
+		     ELSE '' END,
+		CASE WHEN nodes.mode = 'relay' THEN COALESCE(relay.listen_port, 0)
+		     ELSE target.listen_port END
 		FROM subscriber_profiles AS profiles
 		JOIN subscription_plan_nodes AS mapping ON mapping.plan_id = profiles.plan_id
 		JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
 		JOIN subscriber_clients AS clients ON clients.user_id = profiles.user_id
 		 AND clients.proxy_id = nodes.target_proxy_id
+		JOIN proxies AS target ON target.id = nodes.target_proxy_id
 		LEFT JOIN relays AS relay ON relay.id = nodes.relay_id
 		LEFT JOIN server_system_info AS source_info ON source_info.server_id = relay.server_id
 		WHERE profiles.user_id = ? AND nodes.enabled = 1
@@ -73,7 +78,8 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	nodes := make([]subscriptionNode, 0)
 	for rows.Next() {
 		var value subscriptionNode
-		if err := rows.Scan(&value.name, &value.mode, &value.multiplierBP, &value.clientID, &value.entryAddress, &value.entryPort); err != nil {
+		if err := rows.Scan(&value.name, &value.mode, &value.entryHostMode, &value.multiplierBP,
+			&value.clientID, &value.entryAddress, &value.entryPort); err != nil {
 			rows.Close()
 			return SubscriptionData{}, mutations, fmt.Errorf("scan subscription node: %w", err)
 		}
@@ -94,9 +100,9 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	for _, node := range nodes {
 		options := proxystore.ShareOptions{DisplayName: FormatNodeDisplayName(node.name, node.multiplierBP)}
 		var share proxystore.ClientShare
-		if node.mode == NodeModeDirect {
+		if node.mode == NodeModeDirect && node.entryHostMode == EntryHostModeInherit {
 			share, err = s.proxies.GetClientShareWithOptions(ctx, node.clientID, options)
-		} else if node.mode == NodeModeRelay && node.entryAddress != "" && node.entryPort > 0 {
+		} else if (node.mode == NodeModeDirect || node.mode == NodeModeRelay) && node.entryAddress != "" && node.entryPort > 0 {
 			share, err = s.proxies.GetClientShareAtEndpointWithOptions(ctx, node.clientID, proxystore.ShareEndpoint{
 				Address: node.entryAddress, Port: node.entryPort,
 			}, options)

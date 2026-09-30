@@ -632,6 +632,27 @@ h1 {
   min-width: 1040px;
 }
 
+.relay-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+}
+
+.relay-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-subscription-tag {
+  flex-shrink: 0;
+  opacity: 0.82;
+}
+
 .fixed-fields {
   display: flex;
   flex-wrap: wrap;

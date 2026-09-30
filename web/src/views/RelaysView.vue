@@ -585,7 +585,13 @@ import {
             <td class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
             </td>
-            <td><span>{{ value.name }}</span><div v-if="value.subscription_published"><n-tag type="warning" size="small">订阅发布</n-tag></div><div v-else-if="value.owner_username"><n-tag type="info" size="small">用户中转</n-tag> <small class="secondary-text">{{ value.owner_username }}</small></div></td>
+            <td>
+              <div class="relay-name-cell">
+                <span class="relay-name-text">{{ value.name }}</span>
+                <n-tag v-if="value.subscription_published" class="relay-subscription-tag" type="warning" size="small" :bordered="false">订阅发布</n-tag>
+              </div>
+              <div v-if="!value.subscription_published && value.owner_username"><n-tag type="info" size="small">用户中转</n-tag> <small class="secondary-text">{{ value.owner_username }}</small></div>
+            </td>
             <td>{{ value.server_name }}</td>
             <td>
               <span>{{ value.entry_address || '入口地址不可用' }}</span>

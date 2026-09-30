@@ -94,6 +94,18 @@ test('订阅发布中转详情隐藏固定客户端区域且不加载分享', as
   assert.match(view, /v-if="!selectedRelay\.owner_username && !selectedRelay\.subscription_published"/)
 })
 
+test('订阅发布标签紧跟列表名称且不再单独占行', async () => {
+  const [view, style] = await Promise.all([
+    readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../src/style.css', import.meta.url), 'utf8'),
+  ])
+  assert.match(view, /<div class="relay-name-cell">\s*<span class="relay-name-text">\{\{ value\.name \}\}<\/span>\s*<n-tag v-if="value\.subscription_published" class="relay-subscription-tag" type="warning" size="small" :bordered="false">订阅发布<\/n-tag>\s*<\/div>/)
+  assert.doesNotMatch(view, /<div v-if="value\.subscription_published"><n-tag[^>]*>订阅发布<\/n-tag><\/div>/)
+  assert.match(style, /\.relay-name-cell\s*{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*gap:\s*7px;[^}]*flex-wrap:\s*nowrap;/s)
+  assert.match(style, /\.relay-name-text\s*{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s)
+  assert.match(style, /\.relay-subscription-tag\s*{[^}]*flex-shrink:\s*0;[^}]*opacity:\s*0\.82;/s)
+})
+
 test('中转 Modal 保持小屏可用且列表只在自身容器横向滚动', async () => {
   const source = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
   assert.match(source, /\.relay-form-card\s*{[^}]*width:\s*min\(640px, calc\(100vw - 32px\)\)/s)

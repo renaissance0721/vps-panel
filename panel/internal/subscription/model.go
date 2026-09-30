@@ -54,6 +54,12 @@ var (
 	ErrSubscriptionNotFound     = errors.New("subscription not found")
 	ErrSubscriptionUnavailable  = errors.New("subscription unavailable")
 	ErrServerNotDistributable   = errors.New("published nodes require administrator-created servers")
+	ErrRoutingPresetNotFound    = errors.New("subscription routing preset not found")
+	ErrTemplateNotFound         = errors.New("subscription template not found")
+	ErrInvalidRoutingPreset     = errors.New("subscription routing preset is invalid")
+	ErrInvalidTemplate          = errors.New("subscription template is invalid")
+	ErrRoutingPresetReferenced  = errors.New("subscription routing preset is referenced by a plan")
+	ErrTemplateReferenced       = errors.New("subscription template is referenced by a plan")
 )
 
 type PublishedNode struct {
@@ -111,6 +117,8 @@ type Plan struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
+	RoutingPresetID   *int64
+	TemplateID        *int64
 	Nodes             []PlanNode
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -126,6 +134,8 @@ type CreatePlanInput struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
+	RoutingPresetID   *int64
+	TemplateID        *int64
 }
 
 type UpdatePlanInput struct {
@@ -134,6 +144,10 @@ type UpdatePlanInput struct {
 	Enabled              *bool
 	TrafficLimitBytesSet bool
 	TrafficLimitBytes    *int64
+	RoutingPresetIDSet   bool
+	RoutingPresetID      *int64
+	TemplateIDSet        bool
+	TemplateID           *int64
 }
 
 type Subscriber struct {
@@ -185,12 +199,79 @@ type GeneratedSubscription struct {
 }
 
 type SubscriptionData struct {
-	Title    string
-	Nodes    []proxystore.ClientShare
-	Upload   int64
-	Download int64
-	Total    int64
-	Expire   int64
+	Title              string
+	Nodes              []proxystore.ClientShare
+	Upload             int64
+	Download           int64
+	Total              int64
+	Expire             int64
+	PublishedNodeNames map[int64]string
+	RoutingPreset      *RoutingPreset
+	Template           *SubscriptionTemplate
+}
+
+type RoutingPreset struct {
+	ID        int64
+	Name      string
+	Enabled   bool
+	Groups    []RoutingGroup
+	Rules     []RoutingRule
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type RoutingGroup struct {
+	ID      string               `json:"id"`
+	Name    string               `json:"name"`
+	Type    string               `json:"type"`
+	Members []RoutingGroupMember `json:"members"`
+}
+
+type RoutingGroupMember struct {
+	Type            string `json:"type"`
+	PublishedNodeID int64  `json:"published_node_id,omitempty"`
+	GroupID         string `json:"group_id,omitempty"`
+}
+
+type RoutingRule struct {
+	Type          string `json:"type"`
+	Value         string `json:"value,omitempty"`
+	TargetGroupID string `json:"target_group_id"`
+}
+
+type CreateRoutingPresetInput struct {
+	Name    string
+	Enabled bool
+	Groups  []RoutingGroup
+	Rules   []RoutingRule
+}
+
+type UpdateRoutingPresetInput struct {
+	Name    *string
+	Enabled *bool
+	Groups  *[]RoutingGroup
+	Rules   *[]RoutingRule
+}
+
+type SubscriptionTemplate struct {
+	ID         int64
+	Name       string
+	Enabled    bool
+	ConfigYAML string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type CreateSubscriptionTemplateInput struct {
+	Name       string
+	Enabled    bool
+	ConfigYAML string
+}
+
+type UpdateSubscriptionTemplateInput struct {
+	Name       *string
+	Enabled    *bool
+	ConfigYAML *string
 }
 
 type SubscriberNode struct {

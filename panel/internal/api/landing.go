@@ -41,7 +41,7 @@ type landingShareResponse struct {
 func (s *server) listLandings(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.landings.List(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]landingResponse, 0, len(values))
@@ -116,7 +116,7 @@ func (s *server) updateLanding(w http.ResponseWriter, r *http.Request, user auth
 	if endpointChanged {
 		mutations, err := s.relays.BumpForLandingTarget(r.Context(), id)
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		s.notifyRelayMutations(mutations)
@@ -165,6 +165,6 @@ func writeLandingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, landingstore.ErrInvalidURI):
 		writeError(w, http.StatusBadRequest, "外部节点链接无效")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

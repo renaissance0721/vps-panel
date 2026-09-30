@@ -19,10 +19,12 @@ test('admin 在服务器私有访问列表优先，组内顺序稳定', async ()
   assert.match(await source('components/server/ServerForm.vue'), /user\.id === state\?\.user\?\.id/)
 })
 
-test('概览顶部三张卡片统一展示汇总数据', async () => {
+test('概览顶部卡片统一展示资源与配置同步汇总数据', async () => {
   const view = await source('views/OverviewView.vue')
   assert.match(view, /title="已注册账号"[\s\S]*overview\?\.users\.length/)
-  assert.equal((view.match(/class="overview-summary-card"/g) ?? []).length, 3)
+  assert.equal((view.match(/class="overview-summary-card"/g) ?? []).length, 5)
+  assert.match(view, /title="配置待同步"[\s\S]*pending_operation_count/)
+  assert.match(view, /title="配置失败"[\s\S]*failed_operation_count/)
   assert.doesNotMatch(view, /overview-users|orderedUsers|v-for="account/)
   for (const [title, field] of [['服务器', 'server_count'], ['代理节点', 'proxy_count']]) {
     const card = view.slice(view.indexOf(`<n-card title="${title}"`))

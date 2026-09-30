@@ -281,8 +281,15 @@ func TestAdminDeleteUserLogsInternalErrorWithoutExposingIt(t *testing.T) {
 	if strings.Contains(response.Body.String(), "sensitive delete failure") {
 		t.Fatalf("delete response exposed database error: %s", response.Body.String())
 	}
+	requestID := response.Header().Get("X-Request-ID")
+	if requestID == "" || !strings.Contains(response.Body.String(), `"request_id":"`+requestID+`"`) {
+		t.Fatalf("delete response request ID = %q, %s", requestID, response.Body.String())
+	}
 	wantPrefix := "delete user " + strconv.FormatInt(userID, 10) + " failed: delete user:"
 	if !strings.Contains(logs.String(), wantPrefix) || !strings.Contains(logs.String(), "sensitive delete failure") {
 		t.Fatalf("delete log = %q, want wrapped internal error", logs.String())
+	}
+	if !strings.Contains(logs.String(), "request_id="+requestID) || !strings.Contains(logs.String(), "actor_user_id=") {
+		t.Fatalf("delete log lacks request metadata: %q", logs.String())
 	}
 }

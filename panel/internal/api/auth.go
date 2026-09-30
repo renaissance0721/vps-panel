@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,10 +12,17 @@ import (
 
 const sessionCookieName = "vps_panel_session"
 
+const actorContextKey requestContextKey = "actor"
+
+func actorFromContext(ctx context.Context) (auth.User, bool) {
+	value, ok := ctx.Value(actorContextKey).(auth.User)
+	return value, ok
+}
+
 func (s *server) authState(w http.ResponseWriter, r *http.Request) {
 	requiresInitialization, err := s.authService.NeedsInitialization(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -31,7 +39,7 @@ func (s *server) authState(w http.ResponseWriter, r *http.Request) {
 			response.Authenticated = true
 			response.User = &value
 		} else if !errors.Is(err, auth.ErrUnauthenticated) {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 	}
@@ -49,6 +57,7 @@ func (s *server) initialize(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "user.create", "user", user.ID, "初始化管理员账号 "+user.Username)
 	s.startSession(w, r, user, http.StatusCreated)
 }
 
@@ -92,6 +101,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "user.create", "user", user.ID, "创建用户账号 "+user.Username)
 	s.startSession(w, r, user, http.StatusCreated)
 }
 
@@ -110,7 +120,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.authService.Logout(r.Context(), readSessionToken(r)); err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	clearSessionCookie(w, secureRequest(r))
@@ -120,7 +130,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *server) listInvitations(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	invitations, err := s.authService.ListActiveInvitations(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]invitationResponse, 0, len(invitations))
@@ -164,7 +174,7 @@ func (s *server) revokeInvitation(w http.ResponseWriter, r *http.Request, _ auth
 func (s *server) listUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	users, err := s.authService.ListUsers(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]accessUserResponse, 0, len(users))
@@ -177,7 +187,7 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request, _ auth.User) 
 func (s *server) startSession(w http.ResponseWriter, r *http.Request, user auth.User, status int) {
 	token, expiresAt, err := s.authService.CreateSession(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -203,13 +213,14 @@ func (s *server) requireAuthentication(
 			return
 		}
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		if isUnsafeSessionMethod(r.Method) && !s.validateSessionRequestOrigin(r) {
 			writeError(w, http.StatusForbidden, "请求来源无效")
 			return
 		}
+		*r = *r.WithContext(context.WithValue(r.Context(), actorContextKey, user))
 		next(w, r, user)
 	}
 }
@@ -301,6 +312,6 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrUsernameTaken):
 		writeError(w, http.StatusConflict, "用户名已存在")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

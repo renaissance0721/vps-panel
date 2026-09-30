@@ -131,7 +131,7 @@ func (s *server) authenticateAgentRequest(w http.ResponseWriter, r *http.Request
 		return agentcontrol.Agent{}, "", false
 	}
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return agentcontrol.Agent{}, "", false
 	}
 	return agent, authorization[1], true
@@ -147,7 +147,7 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, user a
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	created, err := s.servers.CreateEnrollment(r.Context(), id)

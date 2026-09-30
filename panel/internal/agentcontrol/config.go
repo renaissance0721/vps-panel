@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
@@ -40,6 +41,9 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		state.RealmPurge = true
 		state.Proxies = []proxystore.DesiredProxy{}
 		state.Relays = []relaystore.DesiredRelay{}
+		if err := operation.MarkSentTx(ctx, tx, serverID, state.Version, s.now()); err != nil {
+			return DesiredState{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return DesiredState{}, fmt.Errorf("commit decommission desired state read: %w", err)
 		}
@@ -83,6 +87,9 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	state.RealmPurge = !hasRelays
 	state.Relays, err = relaystore.NewService(s.db).ListDesired(ctx, tx, serverID)
 	if err != nil {
+		return DesiredState{}, err
+	}
+	if err := operation.MarkSentTx(ctx, tx, serverID, state.Version, s.now()); err != nil {
 		return DesiredState{}, err
 	}
 	if err := tx.Commit(); err != nil {

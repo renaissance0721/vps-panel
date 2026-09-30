@@ -27,6 +27,42 @@ import (
 const testVersion = "v0.23.0"
 const testDomain = "panel.example.com"
 
+func TestCreateUpgradeSnapshotIncludesCommittedWALWithoutMigrating(t *testing.T) {
+	dataDir := t.TempDir()
+	sourcePath := filepath.Join(dataDir, "panel.db")
+	db, err := sql.Open("sqlite", sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE legacy_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO legacy_values (value) VALUES ('from-wal')`); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "panel.db.pre-upgrade")
+	if err := backup.CreateUpgradeSnapshot(t.Context(), dataDir, destination); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := sql.Open("sqlite", destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	var value string
+	if err := snapshot.QueryRow(`SELECT value FROM legacy_values WHERE id = 1`).Scan(&value); err != nil || value != "from-wal" {
+		t.Fatalf("snapshot value = %q, %v", value, err)
+	}
+	var migrations int
+	if err := snapshot.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&migrations); err != nil || migrations != 0 {
+		t.Fatalf("snapshot unexpectedly migrated schema: count %d, %v", migrations, err)
+	}
+}
+
 func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	sourceDir := filepath.Join(t.TempDir(), "var", "lib", "vps-panel", "panel")
 	source, err := database.Open(sourceDir)

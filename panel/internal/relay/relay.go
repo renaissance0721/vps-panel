@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/listener"
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
 func (s *Service) List(ctx context.Context) ([]Relay, error) {
@@ -111,6 +114,9 @@ func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now tim
 		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), now.Unix(),
 	)
+	if listener.IsConflict(err) {
+		return 0, Mutation{}, ErrPortConflict
+	}
 	if err != nil {
 		return 0, Mutation{}, fmt.Errorf("create relay: %w", err)
 	}
@@ -120,6 +126,9 @@ func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now tim
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
+		return 0, Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "create", version, now); err != nil {
 		return 0, Mutation{}, err
 	}
 	return id, Mutation{ServerID: value.ServerID, Version: version}, nil
@@ -159,11 +168,17 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
 		value.Enabled, now.Unix(), id,
 	)
+	if listener.IsConflict(err) {
+		return Relay{}, Mutation{}, ErrPortConflict
+	}
 	if err != nil {
 		return Relay{}, Mutation{}, fmt.Errorf("update relay: %w", err)
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
+		return Relay{}, Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "update", version, now); err != nil {
 		return Relay{}, Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -198,6 +213,9 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
+		return Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "delete", version, now); err != nil {
 		return Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -262,7 +280,9 @@ func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE relays SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, updated_at = ? WHERE id = ?`,
 		updated.Name, updated.ListenPort, updated.EntryHostMode, updated.EntryHost, updated.Enabled, now.Unix(), id,
-	); err != nil {
+	); listener.IsConflict(err) {
+		return 0, false, ErrPortConflict
+	} else if err != nil {
 		return 0, false, fmt.Errorf("update subscription relay: %w", err)
 	}
 	return value.ServerID, changed, nil
@@ -278,6 +298,9 @@ func (s *Service) DeleteSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id 
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now.UTC().Truncate(time.Second))
 	if err != nil {
+		return Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "delete", version, now); err != nil {
 		return Mutation{}, err
 	}
 	return Mutation{ServerID: value.ServerID, Version: version}, nil

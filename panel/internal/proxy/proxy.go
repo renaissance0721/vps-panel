@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/listener"
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
@@ -104,7 +106,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		input.ServerID, prepared.name, prepared.protocol, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
 		string(prepared.configJSON), now.Unix(), now.Unix(),
 	)
-	if isUniqueConstraint(err) {
+	if isUniqueConstraint(err) || listener.IsConflict(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
 	}
 	if err != nil {
@@ -124,6 +126,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	}
 	version, err := bumpVersion(ctx, tx, input.ServerID, now)
 	if err != nil {
+		return Proxy{}, Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, input.ServerID, "proxy", proxyID, "create", version, now); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -293,7 +298,7 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	default:
 		return Proxy{}, storedConfig{}, ErrInvalidProtocol
 	}
-	if err := relaystore.ProxyPortAvailable(ctx, query, value.ServerID, value.ListenPort, value.Protocol); err != nil {
+	if err := relaystore.ProxyPortAvailable(ctx, query, value.ServerID, value.ListenPort, value.Protocol, value.ID); err != nil {
 		if errors.Is(err, relaystore.ErrPortConflict) {
 			return Proxy{}, storedConfig{}, ErrPortConflict
 		}
@@ -328,7 +333,7 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 		 WHERE id = ?`,
 		value.Name, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), id,
 	)
-	if isUniqueConstraint(err) {
+	if isUniqueConstraint(err) || listener.IsConflict(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
 	}
 	if err != nil {
@@ -336,6 +341,9 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
+		return Proxy{}, Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "proxy", id, "update", version, now); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -370,6 +378,9 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
+		return Mutation{}, err
+	}
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "proxy", id, "delete", version, now); err != nil {
 		return Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -35,8 +35,12 @@ type Plan = {
   subscription_title: string
   enabled: boolean
   traffic_limit_bytes: number | null
+  routing_preset_id: number | null
+  template_id: number | null
   nodes: PublishedNode[]
 }
+type RoutingPreset = { id: number; name: string; enabled: boolean; groups: unknown[]; rules: unknown[] }
+type SubscriptionTemplate = { id: number; name: string; enabled: boolean; config_yaml: string }
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected' }
 type Subscriber = {
   user_id: number
@@ -61,13 +65,15 @@ type Subscriber = {
   password_request?: PasswordRequest
 }
 
-type Tab = 'users' | 'plans' | 'nodes'
+type Tab = 'users' | 'plans' | 'nodes' | 'configuration'
 const currentTab = ref<Tab>('users')
 const users = ref<Subscriber[]>([])
 const plans = ref<Plan[]>([])
 const nodes = ref<PublishedNode[]>([])
 const proxies = ref<ProxyRecord[]>([])
 const relayServers = ref<RelayServer[]>([])
+const routingPresets = ref<RoutingPreset[]>([])
+const templates = ref<SubscriptionTemplate[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -95,7 +101,15 @@ const planSubscriptionTitle = ref('')
 const planEnabled = ref(true)
 const planTrafficGiB = ref('')
 const planNodeIDs = ref<number[]>([])
+const planRoutingPresetID = ref(0)
+const planTemplateID = ref(0)
 const planFormError = ref('')
+
+const routingName = ref('')
+const routingGroupsJSON = ref('[{"id":"default","name":"节点选择","type":"select","members":[{"type":"direct"}]}]')
+const routingRulesJSON = ref('[{"type":"MATCH","target_group_id":"default"}]')
+const templateName = ref('')
+const templateYAML = ref('dns:\n  enable: true')
 
 const userModalOpen = ref(false)
 const selectedUser = ref<Subscriber | null>(null)
@@ -113,6 +127,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: 'users', label: '订阅用户' },
   { id: 'plans', label: '套餐' },
   { id: 'nodes', label: '发布节点' },
+  { id: 'configuration', label: '分流与模板' },
 ]
 const enabledPlans = computed(() => plans.value.filter((plan) => plan.enabled || plan.id === selectedUser.value?.plan_id))
 const orderedPlanNodes = computed(() => {
@@ -168,18 +183,22 @@ const statusLabels: Record<string, string> = {
 }
 
 async function loadAll() {
-  const [userResult, planResult, nodeResult, proxyResult, relayServerResult] = await Promise.all([
+  const [userResult, planResult, nodeResult, proxyResult, relayServerResult, routingResult, templateResult] = await Promise.all([
     api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
     api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
     api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
     api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
     api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
+    api<{ routing_presets: RoutingPreset[] }>('/api/admin/subscription/routing-presets'),
+    api<{ templates: SubscriptionTemplate[] }>('/api/admin/subscription/templates'),
   ])
   users.value = userResult.users
   plans.value = planResult.plans
   nodes.value = nodeResult.nodes
   proxies.value = proxyResult.proxies
   relayServers.value = relayServerResult.servers
+  routingPresets.value = routingResult.routing_presets
+  templates.value = templateResult.templates
 }
 
 async function run(action: () => Promise<void>) {
@@ -317,6 +336,8 @@ function openCreatePlan() {
   planEnabled.value = true
   planTrafficGiB.value = ''
   planNodeIDs.value = []
+  planRoutingPresetID.value = 0
+  planTemplateID.value = 0
   planModalOpen.value = true
 }
 
@@ -327,6 +348,8 @@ function populatePlanForm(value: Plan) {
   planEnabled.value = value.enabled
   planTrafficGiB.value = value.traffic_limit_bytes === null ? '' : String(value.traffic_limit_bytes / 1024 ** 3)
   planNodeIDs.value = value.nodes.map((node) => node.id)
+  planRoutingPresetID.value = value.routing_preset_id ?? 0
+  planTemplateID.value = value.template_id ?? 0
 }
 
 function openEditPlan(value: Plan) {
@@ -371,6 +394,8 @@ async function savePlan() {
   const body = {
     name, subscription_title: planSubscriptionTitle.value.trim(),
     enabled: planEnabled.value, traffic_limit_bytes: trafficLimit,
+    routing_preset_id: planRoutingPresetID.value || null,
+    template_id: planTemplateID.value || null,
   }
 
   busy.value = true
@@ -420,6 +445,50 @@ async function deletePlan(value: Plan) {
   if (!window.confirm(`确定删除套餐“${value.name}”吗？`)) return
   await run(async () => {
     await api(`/api/admin/subscription/plans/${value.id}`, { method: 'DELETE' })
+    await loadAll()
+  })
+}
+
+async function createRoutingPreset() {
+  await run(async () => {
+    let groups: unknown
+    let rules: unknown
+    try {
+      groups = JSON.parse(routingGroupsJSON.value)
+      rules = JSON.parse(routingRulesJSON.value)
+    } catch {
+      throw new Error('分组和规则必须是有效 JSON')
+    }
+    await api('/api/admin/subscription/routing-presets', {
+      method: 'POST', body: JSON.stringify({ name: routingName.value, enabled: true, groups, rules }),
+    })
+    routingName.value = ''
+    await loadAll()
+  })
+}
+
+async function deleteRoutingPreset(value: RoutingPreset) {
+  if (!window.confirm(`确定删除分流预设“${value.name}”吗？`)) return
+  await run(async () => {
+    await api(`/api/admin/subscription/routing-presets/${value.id}`, { method: 'DELETE' })
+    await loadAll()
+  })
+}
+
+async function createTemplate() {
+  await run(async () => {
+    await api('/api/admin/subscription/templates', {
+      method: 'POST', body: JSON.stringify({ name: templateName.value, enabled: true, config_yaml: templateYAML.value }),
+    })
+    templateName.value = ''
+    await loadAll()
+  })
+}
+
+async function deleteTemplate(value: SubscriptionTemplate) {
+  if (!window.confirm(`确定删除订阅模板“${value.name}”吗？`)) return
+  await run(async () => {
+    await api(`/api/admin/subscription/templates/${value.id}`, { method: 'DELETE' })
     await loadAll()
   })
 }
@@ -556,7 +625,7 @@ onMounted(async () => {
     </div>
   </section>
 
-  <section v-else class="subscription-section">
+  <section v-else-if="currentTab === 'nodes'" class="subscription-section">
     <div class="section-heading"><span></span><n-button type="primary" :disabled="proxies.length === 0" @click="openCreateNode">新增发布节点</n-button></div>
     <n-empty v-if="nodes.length === 0" description="暂无发布节点" />
     <div v-else class="user-management-grid">
@@ -570,6 +639,38 @@ onMounted(async () => {
         <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
       </n-card>
     </div>
+  </section>
+
+  <section v-else class="subscription-section configuration-grid">
+    <n-card title="分流预设" :bordered="true">
+      <p class="form-help">第一版仅支持 select 分组；节点成员使用 published_node_id，规则指向稳定 group id。</p>
+      <form class="auth-form" @submit.prevent="createRoutingPreset">
+        <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" /></label>
+        <label><span>Groups JSON</span><n-input v-model:value="routingGroupsJSON" type="textarea" :autosize="{ minRows: 5, maxRows: 12 }" /></label>
+        <label><span>Rules JSON</span><n-input v-model:value="routingRulesJSON" type="textarea" :autosize="{ minRows: 4, maxRows: 10 }" /></label>
+        <n-button type="primary" attr-type="submit" :loading="busy">新增分流预设</n-button>
+      </form>
+      <div class="configuration-list">
+        <div v-for="value in routingPresets" :key="value.id" class="invitation-row">
+          <div><strong>{{ value.name }}</strong><span>{{ value.groups.length }} 个分组 · {{ value.rules.length }} 条规则</span></div>
+          <n-button type="error" secondary size="small" @click="deleteRoutingPreset(value)">删除</n-button>
+        </div>
+      </div>
+    </n-card>
+    <n-card title="Mihomo 模板" :bordered="true">
+      <p class="form-help">模板只承载 DNS、TUN、sniffer 等骨架；proxies、proxy-groups 和 rules 由 Panel 安全生成。</p>
+      <form class="auth-form" @submit.prevent="createTemplate">
+        <label><span>名称</span><n-input v-model:value="templateName" maxlength="100" /></label>
+        <label><span>YAML</span><n-input v-model:value="templateYAML" type="textarea" :autosize="{ minRows: 7, maxRows: 16 }" /></label>
+        <n-button type="primary" attr-type="submit" :loading="busy">新增订阅模板</n-button>
+      </form>
+      <div class="configuration-list">
+        <div v-for="value in templates" :key="value.id" class="invitation-row">
+          <div><strong>{{ value.name }}</strong><span>{{ value.enabled ? '已启用' : '已停用' }}</span></div>
+          <n-button type="error" secondary size="small" @click="deleteTemplate(value)">删除</n-button>
+        </div>
+      </div>
+    </n-card>
   </section>
 
   <n-modal v-model:show="nodeModalOpen"><n-card class="client-form-card" :title="editingNode ? '编辑发布节点' : '新增发布节点'" closable @close="nodeModalOpen = false"><form class="auth-form" @submit.prevent="saveNode">
@@ -607,6 +708,8 @@ onMounted(async () => {
     <label><span>套餐名称</span><n-input v-model:value="planName" maxlength="100" /></label>
     <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用套餐名称。</small></label>
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
+    <label><span>分流预设</span><select v-model.number="planRoutingPresetID" class="settings-input"><option :value="0">默认节点选择</option><option v-for="value in routingPresets" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
+    <label><span>Mihomo 模板</span><select v-model.number="planTemplateID" class="settings-input"><option :value="0">不使用模板</option><option v-for="value in templates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
     <div class="switch-row"><span>启用套餐</span><n-switch v-model:value="planEnabled" /></div>
     <fieldset class="subscription-node-picker"><legend>包含节点（上下调整订阅顺序）</legend>
       <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ nodeDisplayName(node) }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>

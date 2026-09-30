@@ -42,6 +42,7 @@ import SubscriberPortalView from './views/SubscriberPortalView.vue'
 import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
+import AuditLogView from './views/AuditLogView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 import { userRoleLabel } from './format'
 
@@ -63,7 +64,7 @@ const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool'
+type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'audit'
 const pageTitles: Record<AdminPage, string> = {
   overview: '概览',
   servers: '服务器',
@@ -72,6 +73,7 @@ const pageTitles: Record<AdminPage, string> = {
   subscriptions: '订阅管理',
   accounts: '用户管理',
   carpool: '拼车面板',
+  audit: '操作日志',
 }
 const currentPage = ref<AdminPage>('overview')
 const loading = ref(true)
@@ -490,6 +492,14 @@ onUnmounted(stopServerPolling)
             >
               拼车面板
             </button>
+            <button
+              v-if="state.user?.role === 'admin'"
+              type="button"
+              :class="{ active: currentPage === 'audit' }"
+              @click="selectPage('audit')"
+            >
+              操作日志
+            </button>
           </nav>
         </aside>
         <button
@@ -521,6 +531,7 @@ onUnmounted(stopServerPolling)
                 <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
+                <AuditLogView v-if="currentPage === 'audit' && state.user?.role === 'admin'" />
                 <ServersView :active="currentPage === 'servers'" :model="serverView" />
               </div>
             </transition>

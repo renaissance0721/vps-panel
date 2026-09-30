@@ -69,17 +69,17 @@ func (s *server) diagnoseServer(w http.ResponseWriter, r *http.Request, user aut
 
 	proxies, err := s.proxies.List(ctx)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	relays, err := s.relays.List(ctx)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	proxyNames, relayNames, entries, err := s.diagnosticResources(ctx, user, serverID, proxies, relays)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -379,6 +379,6 @@ func writeDiagnosticError(w http.ResponseWriter, err error) {
 	case errors.Is(err, context.Canceled):
 		return
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

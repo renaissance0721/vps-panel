@@ -33,7 +33,7 @@ type updateMyNodeRequest struct {
 func (s *server) listMyNodes(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]myNodeResponse, 0, len(values))

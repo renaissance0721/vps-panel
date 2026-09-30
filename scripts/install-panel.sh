@@ -33,6 +33,7 @@ legacy_docker_install=0
 legacy_docker_stopped=0
 legacy_native_install=0
 rollback_needed=0
+upgrade_db_snapshot=""
 config_existed=0
 unit_existed=0
 caddy_changed=0
@@ -179,6 +180,23 @@ restore_caddy() {
   fi
 }
 
+restore_upgrade_database() {
+  local failed_suffix=""
+  local restore_path=""
+
+  [[ -n "$upgrade_db_snapshot" && -f "$upgrade_db_snapshot" ]] || return 0
+  failed_suffix="failed-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+  for name in panel.db panel.db-wal panel.db-shm; do
+    if [[ -e "${DATA_DIR}/${name}" ]]; then
+      mv "${DATA_DIR}/${name}" "${DATA_DIR}/${name}.${failed_suffix}" || return 1
+    fi
+  done
+  restore_path="${DATA_DIR}/panel.db.restore.$$"
+  install -o vps-panel -g vps-panel -m 0600 "$upgrade_db_snapshot" "$restore_path" || return 1
+  mv "$restore_path" "${DATA_DIR}/panel.db" || return 1
+  log "Restored the pre-upgrade database snapshot; the failed database was retained with suffix ${failed_suffix}."
+}
+
 rollback_install() {
   local name=""
   log "Restoring the previous installation..."
@@ -203,6 +221,11 @@ rollback_install() {
     mv "$backup_dir" "$INSTALL_DIR" || true
   fi
 
+  if ! restore_upgrade_database; then
+    log "Database rollback failed; the Panel service will remain stopped."
+    return 0
+  fi
+
   for name in "${migrated_data_files[@]}"; do
     if [[ -e "${DATA_DIR}/${name}" && ! -e "${DATA_ROOT}/${name}" ]]; then
       mv "${DATA_DIR}/${name}" "${DATA_ROOT}/${name}" || true
@@ -223,6 +246,13 @@ rollback_install() {
     systemctl start vps-panel.service >/dev/null 2>&1 || true
   else
     systemctl disable vps-panel.service >/dev/null 2>&1 || true
+  fi
+  if [[ "$had_existing_install" -eq 1 ]]; then
+    if wait_for_panel; then
+      log "Previous Panel binary and database are healthy after rollback."
+    else
+      log "Previous Panel did not become healthy after rollback; inspect the service logs."
+    fi
   fi
 }
 
@@ -516,10 +546,10 @@ payload_dir="${temporary_dir}/payload"
 install -d -m 0755 "$payload_dir"
 
 log "Downloading ${archive_name} from the latest GitHub Release..."
-curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
+curl --proto '=https' --tlsv1.2 -fL --retry 10 --retry-all-errors --retry-delay 6 --retry-max-time 60 \
   "${RELEASE_DOWNLOAD_BASE}/${archive_name}" \
   -o "$archive_path"
-curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
+curl --proto '=https' --tlsv1.2 -fL --retry 10 --retry-all-errors --retry-delay 6 --retry-max-time 60 \
   "$REMOTE_MANAGER" \
   -o "${temporary_dir}/vp"
 tar -xzf "$archive_path" -C "$payload_dir"
@@ -546,6 +576,11 @@ if systemctl is-active --quiet vps-panel.service; then
   fail "Panel service did not stop; database migration was not started"
 fi
 migrate_legacy_native_data
+if [[ "$had_existing_install" -eq 1 && -f "${DATA_DIR}/panel.db" ]]; then
+  upgrade_db_snapshot="${temporary_dir}/panel.db.pre-upgrade"
+  log "Creating a consistent pre-upgrade SQLite snapshot..."
+  PANEL_DATA_DIR="$DATA_DIR" "${staged_dir}/vps-panel" database-backup-for-upgrade "$upgrade_db_snapshot"
+fi
 if [[ "$legacy_native_install" -eq 1 ]]; then
   install -d -m 0755 "$backup_dir"
   mv "${ROOT_DIR}/vps-panel" "${ROOT_DIR}/web" "$LEGACY_INSTALL_MARKER" "$backup_dir/"

@@ -72,7 +72,7 @@ type adminUserRelayResponse struct {
 func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user auth.User) {
 	clients, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	type sourceResponse struct {
@@ -98,7 +98,7 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 func (s *server) listMyRelays(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.relays.ListByOwner(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]myRelayResponse, 0, len(values))
@@ -174,7 +174,7 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 	for attempt := 0; attempt < proxystore.MaxClientRelayPorts; attempt++ {
 		ports, err := s.proxies.ListAvailableClientRelayPorts(r.Context(), source.ID)
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		if len(ports) == 0 {
@@ -183,7 +183,7 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		}
 		choice, err := rand.Int(rand.Reader, big.NewInt(int64(len(ports))))
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		port := ports[int(choice.Int64())]
@@ -299,7 +299,7 @@ func (s *server) deleteMyRelay(w http.ResponseWriter, r *http.Request, user auth
 func (s *server) listAdminUserRelays(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.relays.ListUserOwned(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]adminUserRelayResponse, 0, len(values))
@@ -515,6 +515,6 @@ func writeUserRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errInvalidPublicIP):
 		writeError(w, http.StatusBadRequest, "落地地址必须是可公开访问的 IP，不能使用域名、内网或保留地址")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

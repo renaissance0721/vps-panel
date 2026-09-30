@@ -34,6 +34,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 3 && os.Args[1] == "database-backup-for-upgrade" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := backup.CreateUpgradeSnapshot(ctx, envOrDefault("PANEL_DATA_DIR", "data"), os.Args[2]); err != nil {
+			log.Printf("create upgrade database snapshot: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(); err != nil {
 		log.Fatal(err)

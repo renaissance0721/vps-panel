@@ -38,7 +38,7 @@ func (s *server) recordAgentClientTraffic(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, "客户端流量数据无效")
 			return
 		}
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	s.notifyProxyMutations(mutations)

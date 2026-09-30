@@ -31,7 +31,7 @@ type userManagementNodeResponse struct {
 func (s *server) listAdminUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	users, err := s.authService.ListUsers(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]accessUserResponse, 0)
@@ -95,7 +95,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	}
 	relays, err := s.relays.ListByOwner(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	relayResponse := make([]adminUserRelayResponse, 0, len(relays))
@@ -104,7 +104,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	}
 	passwordRequest, err := s.authService.LatestPasswordChangeRequest(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	var pendingPasswordRequest *passwordChangeRequestResponse
@@ -118,7 +118,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	})
 }
 
-func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, actor auth.User) {
 	user, ok := s.readManagedUser(w, r)
 	if !ok {
 		return
@@ -160,6 +160,7 @@ func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, _ a
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, actor, "client.create", "client", value.ID, "为用户创建代理客户端 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"client": toClientResponse(value)})
 }
 
@@ -174,7 +175,7 @@ func (s *server) readManagedUser(w http.ResponseWriter, r *http.Request) (auth.U
 		return auth.User{}, false
 	}
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return auth.User{}, false
 	}
 	if user.Role != auth.RoleUser {

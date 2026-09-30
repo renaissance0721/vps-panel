@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
 func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int64, result ConfigResult) error {
@@ -61,6 +63,9 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 	}
 	if err != nil {
 		return fmt.Errorf("save Agent config result: %w", err)
+	}
+	if err := operation.RecordReceiptTx(ctx, tx, serverID, result.Version, result.Status, result.Message, time.Unix(now, 0)); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit Agent config result: %w", err)

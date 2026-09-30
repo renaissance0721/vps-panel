@@ -38,7 +38,7 @@ func (s *server) changeMyPassword(w http.ResponseWriter, r *http.Request, user a
 	writeJSON(w, http.StatusOK, map[string]string{"status": "changed"})
 }
 
-func (s *server) deleteAdminUser(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteAdminUser(w http.ResponseWriter, r *http.Request, admin auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "用户 ID 无效")
 	if !ok {
 		return
@@ -52,6 +52,7 @@ func (s *server) deleteAdminUser(w http.ResponseWriter, r *http.Request, _ auth.
 		return
 	}
 	s.notifyProxyMutations(mutations)
+	s.recordAudit(r, admin, "user.delete", "user", id, "删除用户账号")
 	writeNoContent(w)
 }
 
@@ -72,6 +73,6 @@ func writeAccountError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrCannotDeleteAdmin):
 		writeError(w, http.StatusBadRequest, "不能删除管理员账号")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

@@ -20,7 +20,7 @@ func (s *server) getSubscriberMe(w http.ResponseWriter, r *http.Request, user au
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subscriber": toSubscriptionUserResponse(value, baseURL, true)})
@@ -29,7 +29,7 @@ func (s *server) getSubscriberMe(w http.ResponseWriter, r *http.Request, user au
 func (s *server) listSubscriberNodes(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.subscriptions.ListSubscriberNodes(r.Context(), user.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	nodes := make([]map[string]any, 0, len(values))
@@ -50,7 +50,7 @@ func (s *server) regenerateSubscriberToken(w http.ResponseWriter, r *http.Reques
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	urls := buildSubscriptionURLs(baseURL, tokenValue)

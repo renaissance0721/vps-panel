@@ -35,6 +35,42 @@ var (
 	ErrRecoveryFailed = errors.New("restore rollback failed")
 )
 
+// CreateUpgradeSnapshot creates a standalone SQLite snapshot without opening
+// the application's migration layer. The installer calls it after the service
+// has stopped and before the new release is activated.
+func CreateUpgradeSnapshot(ctx context.Context, dataDir, destination string) error {
+	source := filepath.Join(dataDir, "panel.db")
+	info, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("inspect upgrade database: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("upgrade database is not a regular file")
+	}
+	if _, err := os.Stat(destination); err == nil {
+		return errors.New("upgrade snapshot already exists")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect upgrade snapshot destination: %w", err)
+	}
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		return fmt.Errorf("open upgrade database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		return fmt.Errorf("configure upgrade snapshot: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, destination); err != nil {
+		return fmt.Errorf("create upgrade snapshot: %w", err)
+	}
+	if err := validateSQLiteIntegrity(ctx, destination); err != nil {
+		_ = os.Remove(destination)
+		return fmt.Errorf("validate upgrade snapshot: %w", err)
+	}
+	return nil
+}
+
 type DomainMismatchError struct{ BackupDomain string }
 
 func (e DomainMismatchError) Error() string {
@@ -382,6 +418,42 @@ func fileSHA256(path string) (string, error) {
 
 // ValidateDatabase reads a database without modifying its schema or rows.
 func ValidateDatabase(ctx context.Context, path string) error {
+	if err := validateSQLiteIntegrity(ctx, path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		return err
+	}
+	for table, columns := range map[string][]string{
+		"users":             {"id", "username", "password_hash", "role"},
+		"sessions":          {"id", "user_id", "token_hash"},
+		"admin_invitations": {"id", "token_hash", "created_by"},
+		"servers":           {"id", "name", "status", "desired_state_version"},
+		"agents":            {"id", "server_id", "token_hash"},
+		"proxies":           {"id", "server_id", "config_json"},
+		"clients":           {"id", "proxy_id", "credential_json"},
+		"relays":            {"id", "server_id", "target_type"},
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil || count != 1 {
+			return fmt.Errorf("backup core schema is incomplete: %w", ErrInvalidBackup)
+		}
+		for _, column := range columns {
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count); err != nil || count != 1 {
+				return fmt.Errorf("backup core schema is incomplete: %w", ErrInvalidBackup)
+			}
+		}
+	}
+	return nil
+}
+
+func validateSQLiteIntegrity(ctx context.Context, path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -418,25 +490,5 @@ func ValidateDatabase(ctx context.Context, path string) error {
 		return err
 	}
 	rows.Close()
-	for table, columns := range map[string][]string{
-		"users":             {"id", "username", "password_hash", "role"},
-		"sessions":          {"id", "user_id", "token_hash"},
-		"admin_invitations": {"id", "token_hash", "created_by"},
-		"servers":           {"id", "name", "status", "desired_state_version"},
-		"agents":            {"id", "server_id", "token_hash"},
-		"proxies":           {"id", "server_id", "config_json"},
-		"clients":           {"id", "proxy_id", "credential_json"},
-		"relays":            {"id", "server_id", "target_type"},
-	} {
-		var count int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil || count != 1 {
-			return fmt.Errorf("backup core schema is incomplete: %w", ErrInvalidBackup)
-		}
-		for _, column := range columns {
-			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count); err != nil || count != 1 {
-				return fmt.Errorf("backup core schema is incomplete: %w", ErrInvalidBackup)
-			}
-		}
-	}
 	return nil
 }

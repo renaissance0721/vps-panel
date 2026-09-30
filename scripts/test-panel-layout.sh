@@ -34,6 +34,10 @@ EOF
 cat >"${mock_bin}/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$PANEL_TEST_SYSTEMCTL_LOG"
+if [[ "$*" == "enable --now vps-panel.service" && "${PANEL_TEST_MUTATE_DB_ON_START:-0}" == 1 && ! -e "${PANEL_TEST_ROOT}/new-db-written" ]]; then
+  printf 'new-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+  touch "${PANEL_TEST_ROOT}/new-db-written"
+fi
 [[ "${1:-}" != "is-active" ]]
 EOF
 cat >"${mock_bin}/install" <<'EOF'
@@ -94,7 +98,7 @@ make_archive() {
   local version="$1"
   local payload="${sandbox}/payload"
   mkdir -p "${payload}/web"
-  printf '#!/bin/sh\n# %s\nexit 0\n' "$version" >"${payload}/vps-panel"
+  printf '#!/bin/sh\n# %s\nif [ "${1:-}" = database-backup-for-upgrade ]; then cp "${PANEL_DATA_DIR}/panel.db" "$2"; fi\nexit 0\n' "$version" >"${payload}/vps-panel"
   printf '%s\n' "$version" >"${payload}/web/index.html"
   printf '%s\n' "$version" >"${payload}/web/${version}.js"
   tar -C "$payload" -czf "$PANEL_TEST_ARCHIVE" vps-panel web
@@ -110,6 +114,7 @@ new_fixture() {
   export PANEL_TEST_ARCHIVE="${sandbox}/archive-${case_number}.tar.gz"
   export PANEL_TEST_SYSTEMCTL_LOG="${sandbox}/systemctl-${case_number}.log"
   export PANEL_TEST_HEALTH_FAIL=0
+  export PANEL_TEST_MUTATE_DB_ON_START=0
   mkdir -p "${PANEL_TEST_ROOT}/run/systemd/system" "${PANEL_TEST_ROOT}/etc/systemd/system"
   : >"$PANEL_TEST_SYSTEMCTL_LOG"
   transform_script "${repo_root}/scripts/install-panel.sh" "$PANEL_TEST_INSTALLER"
@@ -170,9 +175,13 @@ mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
 printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
 run_install
 assert_agent_files
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
 make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
 bash "$PANEL_TEST_VP" update >/dev/null
+export PANEL_TEST_MUTATE_DB_ON_START=0
 assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-two
+assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" new-db
 assert_absent "${PANEL_TEST_ROOT}/opt/vps-panel/panel/web/version-one.js"
 assert_agent_files
 printf 'panel-data\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
@@ -187,6 +196,22 @@ printf 'uninstall\ny\n' | bash "$PANEL_TEST_VP" uninstall >/dev/null
 assert_absent "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel"
 assert_agent_files
 printf 'ok: Agent coexistence, Panel update, both uninstall choices\n'
+
+new_fixture
+run_install
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
+export PANEL_TEST_HEALTH_FAIL=1
+if run_install; then fail 'unhealthy upgrade unexpectedly succeeded'; fi
+export PANEL_TEST_HEALTH_FAIL=0
+export PANEL_TEST_MUTATE_DB_ON_START=0
+assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-one
+assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" old-db
+failed_databases=("${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db.failed-upgrade-"*)
+[[ ${#failed_databases[@]} -eq 1 && -f "${failed_databases[0]}" ]] || fail 'failed upgrade database was not retained'
+assert_content "${failed_databases[0]}" new-db
+printf 'ok: failed upgrade restores old binary and SQLite snapshot\n'
 
 new_fixture
 create_agent_files

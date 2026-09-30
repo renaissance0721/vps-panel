@@ -32,6 +32,14 @@ const { overview, isHealthy, health, state, submitting, createInvitation, genera
               <span class="overview-summary-caption">当前账号可访问</span>
               <strong class="overview-summary-number">{{ overview?.proxy_count ?? '—' }}</strong>
             </n-card>
+            <n-card title="配置待同步" :bordered="true" class="overview-summary-card">
+              <span class="overview-summary-caption">已下发或等待 Agent 确认</span>
+              <strong class="overview-summary-number">{{ overview?.pending_operation_count ?? '—' }}</strong>
+            </n-card>
+            <n-card title="配置失败" :bordered="true" class="overview-summary-card">
+              <span class="overview-summary-caption">需要检查的变更</span>
+              <strong class="overview-summary-number">{{ overview?.failed_operation_count ?? '—' }}</strong>
+            </n-card>
           </div>
           <div class="dashboard-grid">
             <n-card title="运行状态" :bordered="true">

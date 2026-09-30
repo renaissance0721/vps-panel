@@ -72,7 +72,7 @@ type subscriptionRelayServerResponse struct {
 func (s *server) listSubscriptionRelayServers(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.servers.List(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]subscriptionRelayServerResponse, 0)
@@ -93,7 +93,7 @@ func (s *server) listSubscriptionRelayServers(w http.ResponseWriter, r *http.Req
 func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.subscriptions.ListPublishedNodes(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]subscriptionPublishedNodeResponse, 0, len(values))
@@ -103,7 +103,7 @@ func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": response})
 }
 
-func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createSubscriptionPublishedNodeRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -154,10 +154,11 @@ func (s *server) createSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 	}
 	s.notifySubscriptionRelayMutation(relayMutation)
 	s.notifyProxyMutations(proxyMutations)
+	s.recordAudit(r, user, "published_node.create", "published_node", value.ID, "创建发布节点 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"node": toSubscriptionPublishedNodeResponse(value)})
 }
 
-func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "发布节点 ID 无效")
 	if !ok {
 		return
@@ -190,10 +191,11 @@ func (s *server) updateSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 		return
 	}
 	s.notifyProxyMutations(mutations)
+	s.recordAudit(r, user, "published_node.update", "published_node", value.ID, "更新发布节点 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"node": toSubscriptionPublishedNodeResponse(value)})
 }
 
-func (s *server) deleteSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "发布节点 ID 无效")
 	if !ok {
 		return
@@ -204,6 +206,7 @@ func (s *server) deleteSubscriptionPublishedNode(w http.ResponseWriter, r *http.
 		return
 	}
 	s.notifySubscriptionRelayMutation(mutation)
+	s.recordAudit(r, user, "published_node.delete", "published_node", id, "删除发布节点")
 	writeNoContent(w)
 }
 
@@ -268,7 +271,7 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrServerNotFound), errors.Is(err, relaystore.ErrProxyNotFound):
 		writeError(w, http.StatusNotFound, "发布节点引用的服务器或 Proxy 不存在")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }
 

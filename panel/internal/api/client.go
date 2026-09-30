@@ -173,6 +173,7 @@ func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, user, "client.create", "client", value.ID, "创建代理客户端 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"client": toClientResponse(value)})
 }
 
@@ -230,6 +231,7 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, user, "client.update", "client", value.ID, "更新代理客户端 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"client": toClientResponse(value)})
 }
 
@@ -258,7 +260,8 @@ func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, user 
 	if !ok {
 		return
 	}
-	if _, err := s.clientForUser(r.Context(), user, id); err != nil {
+	client, err := s.clientForUser(r.Context(), user, id)
+	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
@@ -272,6 +275,7 @@ func (s *server) deleteProxyClient(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, user, "client.delete", "client", id, "删除代理客户端 "+client.Name)
 	writeNoContent(w)
 }
 

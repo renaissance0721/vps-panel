@@ -45,7 +45,7 @@ func (s *server) servePublicSubscription(w http.ResponseWriter, r *http.Request,
 		body = []byte(subscriptionstore.RenderBase64Subscription(value))
 	}
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	writeSubscriptionHeaders(w, value, format)
@@ -60,7 +60,7 @@ func writePublicSubscriptionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrSubscriptionUnavailable):
 		http.Error(w, "订阅不存在或不可用", http.StatusForbidden)
 	default:
-		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
+		writeInternalError(w, err)
 	}
 }
 

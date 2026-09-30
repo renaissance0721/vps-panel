@@ -13,6 +13,11 @@ func TestProxyCreationRollsBackAndRejectsPortConflict(t *testing.T) {
 	if _, _, err := service.Create(t.Context(), input); err != nil {
 		t.Fatal(err)
 	}
+	var operationStatus string
+	if err := db.QueryRow(`SELECT status FROM configuration_operations
+		WHERE resource_type = 'proxy' AND action = 'create' ORDER BY id DESC LIMIT 1`).Scan(&operationStatus); err != nil || operationStatus != "pending" {
+		t.Fatalf("proxy create operation = %q, %v", operationStatus, err)
+	}
 	input.Name = "two"
 	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrPortConflict) {
 		t.Fatalf("duplicate port error = %v", err)

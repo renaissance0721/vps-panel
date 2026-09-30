@@ -165,13 +165,15 @@ func TestOverviewCountsOnlyAccessibleActiveResourcesAndExposesSafeAccountSummary
 			if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 				t.Fatal(err)
 			}
-			if len(raw) != 3 {
+			if len(raw) != 5 {
 				t.Fatalf("unexpected overview fields: %s", response.Body.String())
 			}
 			var data struct {
-				ServerCount int                          `json:"server_count"`
-				ProxyCount  int                          `json:"proxy_count"`
-				Users       []map[string]json.RawMessage `json:"users"`
+				ServerCount           int                          `json:"server_count"`
+				ProxyCount            int                          `json:"proxy_count"`
+				PendingOperationCount int                          `json:"pending_operation_count"`
+				FailedOperationCount  int                          `json:"failed_operation_count"`
+				Users                 []map[string]json.RawMessage `json:"users"`
 			}
 			if err := json.Unmarshal(response.Body.Bytes(), &data); err != nil {
 				t.Fatal(err)

@@ -255,6 +255,11 @@ func TestOpenBackfillsSubscriberProfileAndUsage(t *testing.T) {
 		db.Close()
 		t.Fatalf("insert subscriber: %v", err)
 	}
+	// Legacy bootstrap invokes this backfill before recording schema version 1.
+	if err := migrateSubscriberProfiles(t.Context(), db); err != nil {
+		db.Close()
+		t.Fatalf("backfill subscriber profiles: %v", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close initial database: %v", err)
 	}

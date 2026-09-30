@@ -55,7 +55,7 @@ type subscriptionUserResponse struct {
 func (s *server) listSubscriptionUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.subscriptions.ListSubscribers(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]subscriptionUserResponse, 0, len(values))
@@ -77,13 +77,13 @@ func (s *server) getSubscriptionUser(w http.ResponseWriter, r *http.Request, _ a
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	response := toSubscriptionUserResponse(value, baseURL, true)
 	passwordRequest, err := s.authService.LatestPasswordChangeRequest(r.Context(), id)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	if passwordRequest != nil {
@@ -93,7 +93,7 @@ func (s *server) getSubscriptionUser(w http.ResponseWriter, r *http.Request, _ a
 	writeJSON(w, http.StatusOK, map[string]any{"user": response})
 }
 
-func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
 	if !ok {
 		return
@@ -129,9 +129,10 @@ func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.notifyProxyMutations(mutations)
+	s.recordAudit(r, user, "subscriber.plan.assign", "subscriber", id, "更新订阅用户套餐与状态")
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": toSubscriptionUserResponse(value, baseURL, true)})
@@ -149,7 +150,7 @@ func (s *server) regenerateSubscriptionUserToken(w http.ResponseWriter, r *http.
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	urls := buildSubscriptionURLs(baseURL, tokenValue)
@@ -175,7 +176,7 @@ func (s *server) resetSubscriptionUserTraffic(w http.ResponseWriter, r *http.Req
 	s.notifyProxyMutations(mutations)
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": toSubscriptionUserResponse(value, baseURL, true)})
@@ -231,6 +232,6 @@ func writeSubscriptionUserError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrServerNotDistributable):
 		writeError(w, http.StatusBadRequest, "订阅发布节点只能使用管理员创建的服务器")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

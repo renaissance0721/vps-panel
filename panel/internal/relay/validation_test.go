@@ -33,7 +33,7 @@ func TestRelayProtocolAwarePortConflicts(t *testing.T) {
 	}); !errors.Is(err, ErrPortConflict) {
 		t.Fatalf("TCP conflict error = %v", err)
 	}
-	if err := ProxyPortAvailable(t.Context(), db, 1, 443, "vless"); err != nil {
+	if err := ProxyPortAvailable(t.Context(), db, 1, 443, "vless", 1); err != nil {
 		t.Fatalf("TCP Proxy should coexist with UDP Relay: %v", err)
 	}
 	if err := ProxyPortAvailable(t.Context(), db, 1, 443, "shadowsocks"); !errors.Is(err, ErrPortConflict) {

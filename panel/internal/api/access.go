@@ -19,7 +19,7 @@ func (s *server) canAccessServer(ctx context.Context, user auth.User, serverID i
 func (s *server) requireServerAccess(w http.ResponseWriter, r *http.Request, user auth.User, serverID int64) bool {
 	allowed, err := s.canAccessServer(r.Context(), user, serverID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return false
 	}
 	if !allowed {

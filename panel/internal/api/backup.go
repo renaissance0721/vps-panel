@@ -22,19 +22,19 @@ func (s *server) exportBackup(w http.ResponseWriter, r *http.Request, _ auth.Use
 	archivePath, cleanup, err := backup.CreateArchive(r.Context(), s.db, s.backup.DataDir,
 		s.panelVersion, s.backup.Domain, s.backup.EnvironmentFile, s.backup.CaddyFile)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	defer cleanup()
 	file, err := os.Open(archivePath)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
@@ -64,7 +64,7 @@ func (s *server) importBackup(w http.ResponseWriter, r *http.Request, _ auth.Use
 	}
 	tempDir, err := os.MkdirTemp(s.backup.DataDir, "backup-upload-*")
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	defer os.RemoveAll(tempDir)
@@ -89,7 +89,7 @@ func (s *server) importBackup(w http.ResponseWriter, r *http.Request, _ auth.Use
 			haveBackup = true
 			file, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
-				writeInternalError(w)
+				writeInternalError(w, err)
 				return
 			}
 			count, copyErr := io.Copy(file, io.LimitReader(part, backup.MaxArchiveSize+1))
@@ -130,7 +130,7 @@ func (s *server) importBackup(w http.ResponseWriter, r *http.Request, _ auth.Use
 		case errors.Is(err, backup.ErrInvalidBackup):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
-			writeInternalError(w)
+			writeInternalError(w, err)
 		}
 		return
 	}

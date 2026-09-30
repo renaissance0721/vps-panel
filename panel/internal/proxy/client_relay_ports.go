@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/listener"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
@@ -29,31 +30,13 @@ func reserveClientRelayPorts(ctx context.Context, tx *sql.Tx, clientID, serverID
 		return nil
 	}
 
-	rows, err := tx.QueryContext(ctx, `
-		SELECT listen_port FROM proxies WHERE server_id = ? AND listen_port BETWEEN ? AND ?
-		UNION SELECT listen_port FROM relays WHERE server_id = ? AND listen_port BETWEEN ? AND ?
-		UNION SELECT port FROM client_relay_ports WHERE server_id = ? AND port BETWEEN ? AND ?`,
-		serverID, relaystore.UserRelayPortStart, relaystore.UserRelayPortEnd,
-		serverID, relaystore.UserRelayPortStart, relaystore.UserRelayPortEnd,
-		serverID, relaystore.UserRelayPortStart, relaystore.UserRelayPortEnd,
-	)
+	reservations, err := listener.ListOccupiedListeners(ctx, tx, serverID, relaystore.UserRelayPortStart, relaystore.UserRelayPortEnd)
 	if err != nil {
-		return fmt.Errorf("list occupied client relay ports: %w", err)
+		return err
 	}
 	occupied := make(map[int]bool)
-	for rows.Next() {
-		var port int
-		if err := rows.Scan(&port); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan occupied client relay port: %w", err)
-		}
-		occupied[port] = true
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close occupied client relay ports: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate occupied client relay ports: %w", err)
+	for _, reservation := range reservations {
+		occupied[reservation.Port] = true
 	}
 
 	starts := make([]int, 0)
@@ -86,7 +69,7 @@ func reserveClientRelayPorts(ctx context.Context, tx *sql.Tx, clientID, serverID
 				`INSERT INTO client_relay_ports (client_id, server_id, port, created_at) VALUES (?, ?, ?, ?)`,
 				clientID, serverID, port, now.Unix(),
 			); err != nil {
-				if !isUniqueConstraint(err) {
+				if !isUniqueConstraint(err) && !listener.IsConflict(err) {
 					return fmt.Errorf("reserve client relay port: %w", err)
 				}
 				inserted = false

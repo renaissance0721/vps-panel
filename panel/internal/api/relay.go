@@ -125,7 +125,7 @@ type relayLandingShareResponse struct {
 func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.relays.List(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]relayResponse, 0, len(values))
@@ -135,7 +135,7 @@ func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.Us
 			if errors.Is(err, relaystore.ErrNotFound) {
 				continue
 			}
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		response = append(response, toRelayResponse(value))
@@ -143,7 +143,7 @@ func (s *server) listRelays(w http.ResponseWriter, r *http.Request, user auth.Us
 	}
 	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Relays, ids)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
@@ -202,6 +202,7 @@ func (s *server) createRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	s.recordAudit(r, user, "relay.create", "relay", value.ID, "创建中转 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"relay": toRelayResponse(value)})
 }
 
@@ -390,6 +391,7 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	s.recordAudit(r, user, "relay.update", "relay", value.ID, "更新中转 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"relay": toRelayResponse(value)})
 }
 
@@ -424,6 +426,7 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyRelayMutations([]relaystore.Mutation{mutation})
+	s.recordAudit(r, user, "relay.delete", "relay", id, "删除中转 "+value.Name)
 	writeNoContent(w)
 }
 
@@ -495,6 +498,6 @@ func writeRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrTargetUnavailable):
 		writeError(w, http.StatusConflict, "目标代理节点入口地址不可用，请填写手动入口地址或等待目标服务器上报公网 IPv4")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

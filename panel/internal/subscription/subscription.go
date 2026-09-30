@@ -25,9 +25,13 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
 	var userID int64
-	err := s.db.QueryRowContext(ctx, `SELECT profiles.user_id
-		FROM subscriber_profiles AS profiles JOIN users ON users.id = profiles.user_id
-		WHERE profiles.subscription_token = ? AND users.role = 'subscriber'`, tokenValue).Scan(&userID)
+	var routingPresetID, templateID sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT profiles.user_id, plans.routing_preset_id, plans.template_id
+		FROM subscriber_profiles AS profiles
+		JOIN users ON users.id = profiles.user_id
+		LEFT JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
+		WHERE profiles.subscription_token = ? AND users.role = 'subscriber'`, tokenValue).
+		Scan(&userID, &routingPresetID, &templateID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
@@ -47,6 +51,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 
 	type subscriptionNode struct {
+		id            int64
 		name          string
 		mode          string
 		entryHostMode string
@@ -55,7 +60,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 		entryAddress  string
 		entryPort     int
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT nodes.name, nodes.mode, nodes.entry_host_mode,
+	rows, err := s.db.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.entry_host_mode,
 		nodes.traffic_multiplier_bp, clients.client_id,
 		CASE WHEN nodes.entry_host_mode = 'manual' THEN nodes.entry_host
 		     WHEN nodes.mode = 'relay' THEN COALESCE(source_info.public_ipv4, '')
@@ -78,7 +83,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	nodes := make([]subscriptionNode, 0)
 	for rows.Next() {
 		var value subscriptionNode
-		if err := rows.Scan(&value.name, &value.mode, &value.entryHostMode, &value.multiplierBP,
+		if err := rows.Scan(&value.id, &value.name, &value.mode, &value.entryHostMode, &value.multiplierBP,
 			&value.clientID, &value.entryAddress, &value.entryPort); err != nil {
 			rows.Close()
 			return SubscriptionData{}, mutations, fmt.Errorf("scan subscription node: %w", err)
@@ -97,6 +102,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 
 	shares := make([]proxystore.ClientShare, 0, len(nodes))
+	publishedNodeNames := make(map[int64]string, len(nodes))
 	for _, node := range nodes {
 		options := proxystore.ShareOptions{DisplayName: FormatNodeDisplayName(node.name, node.multiplierBP)}
 		var share proxystore.ClientShare
@@ -113,6 +119,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 			return SubscriptionData{}, mutations, fmt.Errorf("build subscription node share: %w", err)
 		}
 		shares = append(shares, share)
+		publishedNodeNames[node.id] = share.DisplayName
 	}
 	upload, download, err := s.subscriberUsageBreakdown(ctx, userID)
 	if err != nil {
@@ -120,6 +127,25 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 	result := SubscriptionData{
 		Title: subscriber.SubscriptionTitle, Nodes: shares, Upload: upload, Download: download,
+		PublishedNodeNames: publishedNodeNames,
+	}
+	if routingPresetID.Valid {
+		preset, err := s.GetRoutingPreset(ctx, routingPresetID.Int64)
+		if err != nil {
+			return SubscriptionData{}, mutations, err
+		}
+		if preset.Enabled {
+			result.RoutingPreset = &preset
+		}
+	}
+	if templateID.Valid {
+		template, err := s.GetTemplate(ctx, templateID.Int64)
+		if err != nil {
+			return SubscriptionData{}, mutations, err
+		}
+		if template.Enabled {
+			result.Template = &template
+		}
 	}
 	if subscriber.TrafficLimitBytes != nil {
 		result.Total = *subscriber.TrafficLimitBytes

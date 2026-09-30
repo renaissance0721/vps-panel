@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
 func (s *Service) CreateSubscriberClientTx(
@@ -80,6 +82,9 @@ func BumpServerVersionsTx(ctx context.Context, tx *sql.Tx, serverIDs []int64, no
 	for _, serverID := range ordered {
 		version, err := bumpVersion(ctx, tx, serverID, now.UTC().Truncate(time.Second))
 		if err != nil {
+			return nil, err
+		}
+		if err := operation.RecordTx(ctx, tx, serverID, "subscriber", 0, "reconcile", version, now); err != nil {
 			return nil, err
 		}
 		mutations = append(mutations, Mutation{ServerID: serverID, Version: version})

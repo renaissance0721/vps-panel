@@ -64,14 +64,84 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 		proxyNames = append(proxyNames, node.DisplayName)
 	}
 	proxyNames = append(proxyNames, "DIRECT")
-	return yaml.Marshal(mihomoConfig{
-		Mode:    "rule",
-		Proxies: proxies,
-		ProxyGroups: []mihomoProxyGroup{{
-			Name: "节点选择", Type: "select", Proxies: proxyNames,
-		}},
-		Rules: []string{"MATCH,节点选择"},
-	})
+	if data.RoutingPreset == nil && data.Template == nil {
+		return yaml.Marshal(mihomoConfig{
+			Mode:    "rule",
+			Proxies: proxies,
+			ProxyGroups: []mihomoProxyGroup{{
+				Name: "节点选择", Type: "select", Proxies: proxyNames,
+			}},
+			Rules: []string{"MATCH,节点选择"},
+		})
+	}
+	groups := []mihomoProxyGroup{{Name: "节点选择", Type: "select", Proxies: proxyNames}}
+	rules := []string{"MATCH,节点选择"}
+	if data.RoutingPreset != nil {
+		var err error
+		groups, rules, err = renderRoutingPreset(*data.RoutingPreset, data.PublishedNodeNames)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if data.Template == nil {
+		return yaml.Marshal(mihomoConfig{Mode: "rule", Proxies: proxies, ProxyGroups: groups, Rules: rules})
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(data.Template.ConfigYAML), &config); err != nil {
+		return nil, fmt.Errorf("decode subscription template: %w", err)
+	}
+	if _, exists := config["mode"]; !exists {
+		config["mode"] = "rule"
+	}
+	config["proxies"] = proxies
+	config["proxy-groups"] = groups
+	config["rules"] = rules
+	return yaml.Marshal(config)
+}
+
+func renderRoutingPreset(preset RoutingPreset, names map[int64]string) ([]mihomoProxyGroup, []string, error) {
+	groupNames := make(map[string]string, len(preset.Groups))
+	for _, group := range preset.Groups {
+		groupNames[group.ID] = group.Name
+	}
+	groups := make([]mihomoProxyGroup, 0, len(preset.Groups))
+	for _, group := range preset.Groups {
+		members := make([]string, 0, len(group.Members))
+		for _, member := range group.Members {
+			switch member.Type {
+			case "published_node":
+				name, exists := names[member.PublishedNodeID]
+				if !exists {
+					return nil, nil, fmt.Errorf("routing group %q references unavailable published node %d", group.Name, member.PublishedNodeID)
+				}
+				members = append(members, name)
+			case "direct":
+				members = append(members, "DIRECT")
+			case "group":
+				name, exists := groupNames[member.GroupID]
+				if !exists {
+					return nil, nil, fmt.Errorf("routing group %q references unavailable group %q", group.Name, member.GroupID)
+				}
+				members = append(members, name)
+			default:
+				return nil, nil, ErrInvalidRoutingPreset
+			}
+		}
+		groups = append(groups, mihomoProxyGroup{Name: group.Name, Type: "select", Proxies: members})
+	}
+	rules := make([]string, 0, len(preset.Rules))
+	for _, rule := range preset.Rules {
+		groupName, exists := groupNames[rule.TargetGroupID]
+		if !exists {
+			return nil, nil, ErrInvalidRoutingPreset
+		}
+		if rule.Type == "MATCH" {
+			rules = append(rules, "MATCH,"+groupName)
+		} else {
+			rules = append(rules, strings.Join([]string{rule.Type, rule.Value, groupName}, ","))
+		}
+	}
+	return groups, rules, nil
 }
 
 func renderMihomoProxy(share proxystore.ClientShare) (mihomoProxy, error) {

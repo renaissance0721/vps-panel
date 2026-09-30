@@ -77,6 +77,14 @@ async function dropProxy(id: number) {
   endDrag()
   if (source && !search.value.trim()) await reorderProxy.value(source, id)
 }
+
+function syncState(serverID: number) {
+  const server = servers.value.find((value) => value.id === serverID)
+  if (server?.agent_config_sync_status === 'failed') return { label: '应用失败', type: 'error' as const, error: server.agent_config_sync_error }
+  if (server?.agent_config_sync_status === 'pending') return { label: '同步中', type: 'warning' as const, error: '' }
+  if (server?.agent_config_sync_status === 'success') return { label: '已应用', type: 'success' as const, error: '' }
+  return null
+}
 </script>
 
 <template>
@@ -120,7 +128,10 @@ async function dropProxy(id: number) {
 			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).transport }}</td>
 			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).security }}</td>
 			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).flow }}</td>
-            <td><n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag></td>
+            <td>
+              <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
+              <n-tag v-if="syncState(value.server_id)" :type="syncState(value.server_id)?.type" size="small" :title="syncState(value.server_id)?.error">{{ syncState(value.server_id)?.label }}</n-tag>
+            </td>
             <td class="server-actions">
               <n-button size="small" secondary @click="showProxy(value.id)">查看</n-button>
               <n-button size="small" secondary @click="openEditProxy(value)">编辑</n-button>

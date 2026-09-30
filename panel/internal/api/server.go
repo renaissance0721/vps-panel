@@ -24,7 +24,7 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request, user auth.U
 		values, err = s.servers.ListForUser(r.Context(), user.ID)
 	}
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]serverResponse, 0, len(values))
@@ -35,7 +35,7 @@ func (s *server) listServers(w http.ResponseWriter, r *http.Request, user auth.U
 	}
 	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Servers, ids)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
@@ -49,7 +49,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	}
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
-		writeInternalError(w)
+		writeInternalError(w, errPanelBaseURL)
 		return
 	}
 	created, err := s.servers.CreateForUser(r.Context(), request.Name, request.Visibility, request.UserIDs, user.ID)
@@ -57,6 +57,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 		writeServerError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "server.create", "server", created.ID, "创建服务器 "+created.Name)
 	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, baseURL))
 }
 
@@ -96,6 +97,7 @@ func (s *server) updateServerAccess(w http.ResponseWriter, r *http.Request, user
 		writeServerError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "server.update", "server", id, "更新服务器访问权限")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access": map[string]any{"visibility": access.Visibility, "user_ids": access.UserIDs},
 	})
@@ -142,6 +144,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			writeServerError(w, err)
 			return
 		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器名称")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -156,6 +159,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			writeServerError(w, err)
 			return
 		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器所有者")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -184,6 +188,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		if err := s.agents.NotifyConfigChanged(id, version); err != nil {
 			log.Printf("notify Agent of outbound preference change: %v", err)
 		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器出站偏好")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -212,6 +217,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 				log.Printf("notify Agent of China inbound block change: %v", err)
 			}
 		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器中国入站限制")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -240,6 +246,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			writeServerError(w, err)
 			return
 		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器流量设置")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -278,6 +285,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		writeServerError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "server.update", "server", id, "更新服务器续费设置")
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
@@ -318,6 +326,7 @@ func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request,
 		writeServerError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "server.update", "server", id, "校准服务器流量")
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
@@ -337,6 +346,7 @@ func (s *server) clearTrafficAdjustment(w http.ResponseWriter, r *http.Request, 
 		writeServerError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "server.update", "server", id, "清除服务器流量校准")
 	writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 }
 
@@ -356,6 +366,7 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, user auth.
 	if err := s.agents.NotifyConfigChanged(id, version); err != nil {
 		log.Printf("notify Agent of server decommission: %v", err)
 	}
+	s.recordAudit(r, user, "server.delete", "server", id, "请求下线服务器")
 	writeNoContent(w)
 }
 
@@ -372,6 +383,7 @@ func (s *server) forceRemoveServer(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	s.agents.CloseConnections(id)
+	s.recordAudit(r, user, "server.archive", "server", id, "强制归档服务器")
 	writeNoContent(w)
 }
 
@@ -388,6 +400,7 @@ func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	s.agents.CloseConnections(id)
+	s.recordAudit(r, user, "server.delete", "server", id, "永久删除服务器")
 	writeNoContent(w)
 }
 
@@ -450,6 +463,6 @@ func writeServerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrTargetUnavailable):
 		writeError(w, http.StatusConflict, "中转目标地址不可用，请设置目标 Proxy 的手动入口地址或等待目标服务器上报公网 IPv4")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

@@ -16,7 +16,7 @@ import (
 func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.proxies.List(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]proxyResponse, 0, len(values))
@@ -24,7 +24,7 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 	for _, value := range values {
 		allowed, err := s.canAccessServer(r.Context(), user, value.ServerID)
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		if !allowed {
@@ -35,7 +35,7 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 	}
 	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Proxies, ids)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	sort.SliceStable(response, func(i, j int) bool { return ranks[response[i].ID] < ranks[response[j].ID] })
@@ -45,7 +45,7 @@ func (s *server) listProxies(w http.ResponseWriter, r *http.Request, user auth.U
 func (s *server) listDistributableProxies(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.proxies.ListDistributable(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]proxyResponse, 0, len(values))
@@ -101,6 +101,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, user, "proxy.create", "proxy", value.ID, "创建代理节点 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"proxy": toProxyResponse(value)})
 }
 
@@ -163,11 +164,12 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	if previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
 		mutations, err := s.relays.BumpForProxyTarget(r.Context(), value.ID, value.ServerID)
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		s.notifyRelayMutations(mutations)
 	}
+	s.recordAudit(r, user, "proxy.update", "proxy", value.ID, "更新代理节点 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
 }
 
@@ -268,6 +270,7 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyProxyMutation(mutation)
+	s.recordAudit(r, user, "proxy.delete", "proxy", id, "删除代理节点 "+value.Name)
 	writeNoContent(w)
 }
 
@@ -348,6 +351,6 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
 	default:
 		log.Printf("proxy API error: %v", err)
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

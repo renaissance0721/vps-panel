@@ -11,33 +11,20 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/listener"
 )
 
 func RandomUserRelayPort(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, serverID int64) (int, error) {
-	rows, err := query.QueryContext(ctx, `
-		SELECT listen_port FROM proxies WHERE server_id = ? AND listen_port BETWEEN ? AND ?
-		UNION SELECT listen_port FROM relays WHERE server_id = ? AND listen_port BETWEEN ? AND ?
-		UNION SELECT port FROM client_relay_ports WHERE server_id = ? AND port BETWEEN ? AND ?`,
-		serverID, UserRelayPortStart, UserRelayPortEnd,
-		serverID, UserRelayPortStart, UserRelayPortEnd,
-		serverID, UserRelayPortStart, UserRelayPortEnd,
-	)
+	reservations, err := listener.ListOccupiedListeners(ctx, query, serverID, UserRelayPortStart, UserRelayPortEnd)
 	if err != nil {
-		return 0, fmt.Errorf("list occupied relay ports: %w", err)
+		return 0, err
 	}
-	defer rows.Close()
 	occupied := make(map[int]struct{})
-	for rows.Next() {
-		var port int
-		if err := rows.Scan(&port); err != nil {
-			return 0, fmt.Errorf("scan occupied relay port: %w", err)
-		}
-		occupied[port] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate occupied relay ports: %w", err)
+	for _, reservation := range reservations {
+		occupied[reservation.Port] = struct{}{}
 	}
 	available := make([]int, 0, UserRelayPortEnd-UserRelayPortStart+1-len(occupied))
 	for port := UserRelayPortStart; port <= UserRelayPortEnd; port++ {
@@ -241,95 +228,35 @@ func validateTarget(ctx context.Context, query interface {
 
 func ensurePortAvailable(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, serverID int64, port int, network string, excludeRelayID int64, reservedClientID *int64) error {
-	var ownerClientID int64
-	err := query.QueryRowContext(ctx,
-		`SELECT client_id FROM client_relay_ports WHERE server_id = ? AND port = ?`, serverID, port,
-	).Scan(&ownerClientID)
-	if err == nil && (reservedClientID == nil || ownerClientID != *reservedClientID) {
+	err := listener.ListenerAvailable(ctx, query, serverID, port, network, listener.AvailabilityOptions{
+		ExcludeResourceType: listener.ResourceRelay,
+		ExcludeResourceID:   excludeRelayID,
+		AllowedClientID:     reservedClientID,
+	})
+	if errors.Is(err, listener.ErrConflict) {
 		return ErrPortConflict
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("check reserved client relay port: %w", err)
-	}
-	rows, err := query.QueryContext(ctx,
-		`SELECT protocol FROM proxies WHERE server_id = ? AND listen_port = ?`, serverID, port)
-	if err != nil {
-		return fmt.Errorf("check proxy listener conflicts: %w", err)
-	}
-	for rows.Next() {
-		var protocol string
-		if err := rows.Scan(&protocol); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan proxy listener conflict: %w", err)
-		}
-		proxyNetwork := NetworkTCP
-		if protocol == "shadowsocks" {
-			proxyNetwork = NetworkBoth
-		}
-		if networksOverlap(network, proxyNetwork) {
-			rows.Close()
-			return ErrPortConflict
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close proxy listener conflicts: %w", err)
-	}
-	rows, err = query.QueryContext(ctx,
-		`SELECT network FROM relays WHERE server_id = ? AND listen_port = ? AND id != ?`,
-		serverID, port, excludeRelayID,
-	)
-	if err != nil {
-		return fmt.Errorf("check relay listener conflicts: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var existing string
-		if err := rows.Scan(&existing); err != nil {
-			return fmt.Errorf("scan relay listener conflict: %w", err)
-		}
-		if networksOverlap(network, existing) {
-			return ErrPortConflict
-		}
-	}
-	return rows.Err()
+	return err
 }
 
 func ProxyPortAvailable(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, serverID int64, port int, protocol string) error {
-	var reserved int
-	err := query.QueryRowContext(ctx,
-		`SELECT 1 FROM client_relay_ports WHERE server_id = ? AND port = ?`, serverID, port,
-	).Scan(&reserved)
-	if err == nil {
-		return ErrPortConflict
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("check reserved client relay port: %w", err)
-	}
+}, serverID int64, port int, protocol string, excludeProxyID ...int64) error {
 	network := NetworkTCP
 	if protocol == "shadowsocks" {
 		network = NetworkBoth
 	}
-	rows, err := query.QueryContext(ctx,
-		`SELECT network FROM relays WHERE server_id = ? AND listen_port = ?`, serverID, port)
-	if err != nil {
-		return fmt.Errorf("check relay listener conflicts: %w", err)
+	options := listener.AvailabilityOptions{}
+	if len(excludeProxyID) != 0 {
+		options.ExcludeResourceType = listener.ResourceProxy
+		options.ExcludeResourceID = excludeProxyID[0]
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var existing string
-		if err := rows.Scan(&existing); err != nil {
-			return err
-		}
-		if networksOverlap(network, existing) {
-			return ErrPortConflict
-		}
+	err := listener.ListenerAvailable(ctx, query, serverID, port, network, options)
+	if errors.Is(err, listener.ErrConflict) {
+		return ErrPortConflict
 	}
-	return rows.Err()
+	return err
 }
 
 func IsProxyReferenced(ctx context.Context, query interface {
@@ -345,12 +272,7 @@ func IsProxyReferenced(ctx context.Context, query interface {
 }
 
 func networksOverlap(left, right string) bool {
-	return (hasProtocol(left, NetworkTCP) && hasProtocol(right, NetworkTCP)) ||
-		(hasProtocol(left, NetworkUDP) && hasProtocol(right, NetworkUDP))
-}
-
-func hasProtocol(network, protocol string) bool {
-	return network == protocol || network == NetworkBoth
+	return listener.NetworksOverlap(left, right)
 }
 
 func normalizeHost(value string) (string, error) {

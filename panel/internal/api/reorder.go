@@ -63,7 +63,7 @@ func (s *server) reorder(w http.ResponseWriter, r *http.Request, user auth.User,
 			return
 		}
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(w, err)
 			return
 		}
 		archived = archivedAt.Valid
@@ -73,7 +73,7 @@ func (s *server) reorder(w http.ResponseWriter, r *http.Request, user auth.User,
 			writeError(w, http.StatusNotFound, "资源不存在")
 			return
 		}
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	writeNoContent(w)

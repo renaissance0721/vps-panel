@@ -1,14 +1,21 @@
 package api
 
 import (
+	"bufio"
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func secureRequest(r *http.Request) bool {
@@ -152,8 +159,108 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-func writeInternalError(w http.ResponseWriter) {
-	writeError(w, http.StatusInternalServerError, "服务器内部错误")
+type requestContextKey string
+
+const requestIDContextKey requestContextKey = "request_id"
+
+var errPanelBaseURL = errors.New("panel base URL is invalid")
+
+type observedResponseWriter struct {
+	http.ResponseWriter
+	status        int
+	internalError error
+}
+
+func (w *observedResponseWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *observedResponseWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *observedResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *observedResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *observedResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *observedResponseWriter) Push(target string, options *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, options)
+}
+
+func requestMetadataMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRequestID()
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey, requestID))
+		w.Header().Set("X-Request-ID", requestID)
+		observed := &observedResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(observed, r)
+		if observed.status == http.StatusInternalServerError {
+			actorID := int64(0)
+			if actor, ok := actorFromContext(r.Context()); ok {
+				actorID = actor.ID
+			}
+			route := r.Pattern
+			if route == "" {
+				route = r.URL.Path
+			}
+			log.Printf("API internal error request_id=%s method=%s route=%s actor_user_id=%d error=%v",
+				requestID, r.Method, route, actorID, observed.internalError)
+		}
+	})
+}
+
+func newRequestID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return fmt.Sprintf("%x", value[:])
+	}
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(requestIDContextKey).(string)
+	return value
+}
+
+func writeInternalError(w http.ResponseWriter, values ...any) {
+	var internalErr error
+	for _, value := range values {
+		if err, ok := value.(error); ok {
+			internalErr = err
+		}
+	}
+	if internalErr == nil {
+		internalErr = errors.New("unspecified internal error")
+	}
+	if observed, ok := w.(*observedResponseWriter); ok {
+		observed.internalError = internalErr
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{
+		"error": "服务器内部错误", "request_id": w.Header().Get("X-Request-ID"),
+	})
 }
 
 func writeNoContent(w http.ResponseWriter) {

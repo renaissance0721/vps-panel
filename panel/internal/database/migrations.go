@@ -14,7 +14,7 @@ import (
 const subscriptionSourceServerIndexStatement = `CREATE INDEX IF NOT EXISTS idx_subscription_published_nodes_source_server
 	ON subscription_published_nodes(source_server_id)`
 
-func migrate(db *sql.DB) error {
+func migrateLegacySchema(db *sql.DB) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

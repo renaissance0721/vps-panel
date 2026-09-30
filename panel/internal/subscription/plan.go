@@ -13,7 +13,8 @@ import (
 )
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription plans: %w", err)
@@ -44,7 +45,8 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 }
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
-	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
+	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
@@ -63,16 +65,20 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	value, err := normalizePlan(Plan{
 		Name: input.Name, SubscriptionTitle: input.SubscriptionTitle,
 		Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
+		RoutingPresetID: input.RoutingPresetID, TemplateID: input.TemplateID,
 	})
 	if err != nil {
 		return Plan{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
+	if err := validatePlanConfigurationRefs(ctx, s.db, value.RoutingPresetID, value.TemplateID); err != nil {
+		return Plan{}, err
+	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_plans
-		(name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
+		(name, subscription_title, enabled, traffic_limit_bytes, routing_preset_id, template_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		value.Name, nullableString(value.SubscriptionTitle), value.Enabled,
-		nullableInt64(value.TrafficLimitBytes), now.Unix(), now.Unix())
+		nullableInt64(value.TrafficLimitBytes), nullableInt64(value.RoutingPresetID), nullableInt64(value.TemplateID), now.Unix(), now.Unix())
 	if err != nil {
 		return Plan{}, fmt.Errorf("create subscription plan: %w", err)
 	}
@@ -90,7 +96,8 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 		return Plan{}, nil, fmt.Errorf("begin subscription plan update: %w", err)
 	}
 	defer tx.Rollback()
-	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes, created_at, updated_at
+	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
@@ -110,14 +117,25 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	if input.TrafficLimitBytesSet {
 		current.TrafficLimitBytes = input.TrafficLimitBytes
 	}
+	if input.RoutingPresetIDSet {
+		current.RoutingPresetID = input.RoutingPresetID
+	}
+	if input.TemplateIDSet {
+		current.TemplateID = input.TemplateID
+	}
 	current, err = normalizePlan(current)
 	if err != nil {
 		return Plan{}, nil, err
 	}
+	if err := validatePlanConfigurationRefs(ctx, tx, current.RoutingPresetID, current.TemplateID); err != nil {
+		return Plan{}, nil, err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET
-		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?, updated_at = ? WHERE id = ?`,
+		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?,
+		routing_preset_id = ?, template_id = ?, updated_at = ? WHERE id = ?`,
 		current.Name, nullableString(current.SubscriptionTitle), current.Enabled,
-		nullableInt64(current.TrafficLimitBytes), now.Unix(), id)
+		nullableInt64(current.TrafficLimitBytes), nullableInt64(current.RoutingPresetID),
+		nullableInt64(current.TemplateID), now.Unix(), id)
 	if err != nil {
 		return Plan{}, nil, fmt.Errorf("update subscription plan: %w", err)
 	}
@@ -386,9 +404,11 @@ func scanPlan(row rowScanner) (Plan, error) {
 	var value Plan
 	var trafficLimit sql.NullInt64
 	var subscriptionTitle sql.NullString
+	var routingPresetID, templateID sql.NullInt64
 	var enabled int
 	var createdAt, updatedAt int64
-	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit, &createdAt, &updatedAt)
+	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit,
+		&routingPresetID, &templateID, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -397,6 +417,14 @@ func scanPlan(row rowScanner) (Plan, error) {
 	if trafficLimit.Valid {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
+	}
+	if routingPresetID.Valid {
+		id := routingPresetID.Int64
+		value.RoutingPresetID = &id
+	}
+	if templateID.Valid {
+		id := templateID.Int64
+		value.TemplateID = &id
 	}
 	value.Nodes = make([]PlanNode, 0)
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()

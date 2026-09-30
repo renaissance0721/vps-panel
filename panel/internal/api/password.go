@@ -75,7 +75,7 @@ func (s *server) requestMyPasswordReset(w http.ResponseWriter, r *http.Request, 
 func (s *server) listPasswordChangeRequests(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.authService.ListPendingPasswordChangeRequests(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]passwordChangeRequestResponse, 0, len(values))
@@ -102,6 +102,13 @@ func (s *server) reviewPasswordChangeRequest(w http.ResponseWriter, r *http.Requ
 		writePasswordRequestError(w, err)
 		return
 	}
+	action := "password_reset.reject"
+	summary := "拒绝密码重置申请"
+	if approve {
+		action = "password_reset.approve"
+		summary = "批准密码重置申请"
+	}
+	s.recordAudit(r, admin, action, "password_change_request", id, summary)
 	writeNoContent(w)
 }
 
@@ -120,6 +127,6 @@ func writePasswordRequestError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrPasswordRequestSelfReview):
 		writeError(w, http.StatusForbidden, "管理员不能审核自己的密码重置申请")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

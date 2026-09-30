@@ -15,6 +15,8 @@ type createSubscriptionPlanRequest struct {
 	SubscriptionTitle string `json:"subscription_title"`
 	Enabled           *bool  `json:"enabled"`
 	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
+	RoutingPresetID   *int64 `json:"routing_preset_id"`
+	TemplateID        *int64 `json:"template_id"`
 }
 
 type updateSubscriptionPlanRequest struct {
@@ -22,6 +24,8 @@ type updateSubscriptionPlanRequest struct {
 	SubscriptionTitle *string         `json:"subscription_title"`
 	Enabled           *bool           `json:"enabled"`
 	TrafficLimitBytes json.RawMessage `json:"traffic_limit_bytes"`
+	RoutingPresetID   json.RawMessage `json:"routing_preset_id"`
+	TemplateID        json.RawMessage `json:"template_id"`
 }
 
 type setSubscriptionPlanNodesRequest struct {
@@ -34,6 +38,8 @@ type subscriptionPlanResponse struct {
 	SubscriptionTitle string                              `json:"subscription_title"`
 	Enabled           bool                                `json:"enabled"`
 	TrafficLimitBytes *int64                              `json:"traffic_limit_bytes"`
+	RoutingPresetID   *int64                              `json:"routing_preset_id"`
+	TemplateID        *int64                              `json:"template_id"`
 	Nodes             []subscriptionPublishedNodeResponse `json:"nodes"`
 	CreatedAt         time.Time                           `json:"created_at"`
 	UpdatedAt         time.Time                           `json:"updated_at"`
@@ -42,7 +48,7 @@ type subscriptionPlanResponse struct {
 func (s *server) listSubscriptionPlans(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	values, err := s.subscriptions.ListPlans(r.Context())
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(w, err)
 		return
 	}
 	response := make([]subscriptionPlanResponse, 0, len(values))
@@ -52,7 +58,7 @@ func (s *server) listSubscriptionPlans(w http.ResponseWriter, r *http.Request, _
 	writeJSON(w, http.StatusOK, map[string]any{"plans": response})
 }
 
-func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, user auth.User) {
 	var request createSubscriptionPlanRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -64,11 +70,13 @@ func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 	value, err := s.subscriptions.CreatePlan(r.Context(), subscriptionstore.CreatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle,
 		Enabled: enabled, TrafficLimitBytes: request.TrafficLimitBytes,
+		RoutingPresetID: request.RoutingPresetID, TemplateID: request.TemplateID,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "subscription_plan.create", "subscription_plan", value.ID, "创建订阅套餐 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
@@ -85,7 +93,7 @@ func (s *server) getSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ a
 	writeJSON(w, http.StatusOK, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
-func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
 	if !ok {
 		return
@@ -99,19 +107,32 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "流量额度格式无效")
 		return
 	}
+	routingPresetID, routingPresetIDSet, err := decodeNullableInt64(request.RoutingPresetID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "分流预设格式无效")
+		return
+	}
+	templateID, templateIDSet, err := decodeNullableInt64(request.TemplateID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "订阅模板格式无效")
+		return
+	}
 	value, mutations, err := s.subscriptions.UpdatePlan(r.Context(), id, subscriptionstore.UpdatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: request.Enabled,
 		TrafficLimitBytesSet: trafficLimitSet, TrafficLimitBytes: trafficLimit,
+		RoutingPresetIDSet: routingPresetIDSet, RoutingPresetID: routingPresetID,
+		TemplateIDSet: templateIDSet, TemplateID: templateID,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
 		return
 	}
 	s.notifyProxyMutations(mutations)
+	s.recordAudit(r, user, "subscription_plan.update", "subscription_plan", value.ID, "更新订阅套餐 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
-func (s *server) deleteSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) deleteSubscriptionPlan(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
 	if !ok {
 		return
@@ -120,6 +141,7 @@ func (s *server) deleteSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeSubscriptionPlanError(w, err)
 		return
 	}
+	s.recordAudit(r, user, "subscription_plan.delete", "subscription_plan", id, "删除订阅套餐")
 	writeNoContent(w)
 }
 
@@ -151,7 +173,8 @@ func toSubscriptionPlanResponse(value subscriptionstore.Plan) subscriptionPlanRe
 	return subscriptionPlanResponse{
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
 		TrafficLimitBytes: value.TrafficLimitBytes,
-		Nodes:             nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		RoutingPresetID:   value.RoutingPresetID, TemplateID: value.TemplateID,
+		Nodes: nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -195,7 +218,11 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "套餐只能包含管理员创建服务器上的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):
 		writeError(w, http.StatusConflict, "请先切换或取消使用该套餐的订阅用户")
+	case errors.Is(err, subscriptionstore.ErrRoutingPresetNotFound):
+		writeError(w, http.StatusBadRequest, "分流预设不存在")
+	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
+		writeError(w, http.StatusBadRequest, "订阅模板不存在")
 	default:
-		writeInternalError(w)
+		writeInternalError(w, err)
 	}
 }

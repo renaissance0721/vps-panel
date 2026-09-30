@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
 func (s *Service) EnsureMutable(ctx context.Context, id int64) error {
@@ -130,6 +131,9 @@ func (s *Service) UpdateOutboundPreference(ctx context.Context, id int64, prefer
 	).Scan(&version); err != nil {
 		return Server{}, 0, fmt.Errorf("read desired state version: %w", err)
 	}
+	if err := operation.RecordTx(ctx, tx, id, "server", id, "update", version, time.Unix(now, 0)); err != nil {
+		return Server{}, 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Server{}, 0, fmt.Errorf("commit outbound preference update: %w", err)
 	}
@@ -174,6 +178,9 @@ func (s *Service) UpdateBlockChinaInbound(ctx context.Context, id int64, enabled
 		return Server{}, 0, false, fmt.Errorf("mark Agent config pending: %w", err)
 	}
 	version++
+	if err := operation.RecordTx(ctx, tx, id, "server", id, "update", version, time.Unix(now, 0)); err != nil {
+		return Server{}, 0, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Server{}, 0, false, fmt.Errorf("commit China inbound block update: %w", err)
 	}
@@ -269,6 +276,9 @@ func (s *Service) RequestDecommission(ctx context.Context, id int64) (int64, err
 		`SELECT desired_state_version FROM servers WHERE id = ?`, id,
 	).Scan(&desiredVersion); err != nil {
 		return 0, fmt.Errorf("read decommission desired state version: %w", err)
+	}
+	if err := operation.RecordTx(ctx, tx, id, "server", id, "update", desiredVersion, time.Unix(now, 0)); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit server decommission: %w", err)

@@ -175,6 +175,36 @@ test('Server owner 与删除 UI 保持列表简洁并在详情保留管理员强
   assert.doesNotMatch(detail, /正在退役|退役失败|退役清理失败|开始退役/)
 })
 
+test('Agent 配置同步状态只显示在正常服务器列表', async () => {
+  const [serverList, proxyList, relayList, proxyTypes] = await Promise.all([
+    'components/server/ServerList.vue', 'components/proxy/ProxyList.vue',
+    'views/RelaysView.vue', 'types/proxy.ts',
+  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
+  const activeList = serverList.slice(
+    serverList.indexOf('<n-card v-if="serverListMode === \'active\'"'),
+    serverList.indexOf('<n-card v-if="serverListMode === \'archived\'"'),
+  )
+  const archivedList = serverList.slice(serverList.indexOf('<n-card v-if="serverListMode === \'archived\'"'))
+  const statusTags = activeList.slice(
+    activeList.indexOf('<div class="server-status-tags">'),
+    activeList.indexOf('</div>', activeList.indexOf('<div class="server-status-tags">')),
+  )
+
+  assert.match(statusTags, /statusType\(value\.status\)[\s\S]*statusLabel\(value\.status\)/)
+  assert.match(statusTags, /agent_config_sync_status === 'success'[\s\S]*type="success"[\s\S]*已应用/)
+  assert.match(statusTags, /agent_config_sync_status === 'pending'[\s\S]*type="warning"[\s\S]*同步中/)
+  assert.match(statusTags, /agent_config_sync_status === 'failed'[\s\S]*type="error"[\s\S]*:title="value\.agent_config_sync_error"[\s\S]*应用失败/)
+  assert.equal((statusTags.match(/agent_config_sync_status ===/g) ?? []).length, 3)
+  assert.doesNotMatch(statusTags, /v-else(?!-if)/)
+  assert.doesNotMatch(archivedList, /agent_config_sync_status|agent_config_sync_error|已应用|同步中|应用失败/)
+
+  for (const source of [proxyList, relayList, proxyTypes]) {
+    assert.doesNotMatch(source, /syncState|agent_config_sync_status|agent_config_sync_error/)
+  }
+  assert.doesNotMatch(proxyList, />已应用<|>同步中<|>应用失败</)
+  assert.doesNotMatch(relayList, />已应用<|>同步中<|>应用失败</)
+})
+
 test('中国 IP 入站限制按 desired/apply 状态和 capability 准确展示', () => {
   const server = overrides => ({
     status: 'online', archived_at: null, block_china_inbound: true,

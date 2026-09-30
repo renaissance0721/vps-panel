@@ -44,8 +44,7 @@ import {
 import type { ServerRecord } from '../types/server'
 
 type ServerOption = Pick<ServerRecord,
-  'id' | 'name' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities' |
-  'agent_config_sync_status' | 'agent_config_sync_error'
+  'id' | 'name' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
 >
 
 type ProxyOption = {
@@ -174,13 +173,6 @@ function serverSupportsRealm(id: number | null) {
   return server !== undefined && agentSupportsCapability(server, agentCapabilities.relayRealm)
 }
 const hasRelayServer = computed(() => props.servers.some((server) => serverSupportsRealm(server.id)))
-function syncState(serverID: number) {
-  const server = props.servers.find((value) => value.id === serverID)
-  if (server?.agent_config_sync_status === 'failed') return { label: '应用失败', type: 'error' as const, error: server.agent_config_sync_error }
-  if (server?.agent_config_sync_status === 'pending') return { label: '同步中', type: 'warning' as const, error: '' }
-  if (server?.agent_config_sync_status === 'success') return { label: '已应用', type: 'success' as const, error: '' }
-  return null
-}
 const selectedServerSupportsRealm = computed(() => serverSupportsRealm(serverID.value))
 const relayCapabilityWarning = computed(() => selectedServerSupportsRealm.value ? '' : '当前 Agent 不支持 Realm 中转')
 
@@ -611,7 +603,6 @@ import {
             <td>{{ relayNetworkLabel(value.network) }}</td>
             <td>
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
-              <n-tag v-if="syncState(value.server_id)" :type="syncState(value.server_id)?.type" size="small" :title="syncState(value.server_id)?.error">{{ syncState(value.server_id)?.label }}</n-tag>
             </td>
             <td class="server-actions">
               <n-button size="small" secondary @click="showRelay(value.id)">查看</n-button>

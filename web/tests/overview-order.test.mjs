@@ -20,11 +20,17 @@ test('admin 在服务器私有访问列表优先，组内顺序稳定', async ()
 })
 
 test('概览顶部卡片统一展示资源与配置同步汇总数据', async () => {
-  const view = await source('views/OverviewView.vue')
+  const [view, style] = await Promise.all([
+    source('views/OverviewView.vue'),
+    source('style.css'),
+  ])
   assert.match(view, /title="已注册账号"[\s\S]*overview\?\.users\.length/)
   assert.equal((view.match(/class="overview-summary-card"/g) ?? []).length, 5)
   assert.match(view, /title="配置待同步"[\s\S]*pending_operation_count/)
   assert.match(view, /title="配置失败"[\s\S]*failed_operation_count/)
+  assert.match(style, /\.overview-summary-grid\s*{[^}]*grid-template-columns:\s*repeat\(5, minmax\(0, 1fr\)\)/s)
+  assert.match(style, /@media \(min-width: 721px\) and \(max-width: 1100px\)[\s\S]*?\.overview-summary-grid\s*{[^}]*grid-template-columns:\s*repeat\(auto-fit, minmax\(180px, 1fr\)\)/)
+  assert.match(style, /@media \(max-width: 720px\)[\s\S]*?\.overview-summary-grid\s*{[^}]*grid-template-columns:\s*1fr/)
   assert.doesNotMatch(view, /overview-users|orderedUsers|v-for="account/)
   for (const [title, field] of [['服务器', 'server_count'], ['代理节点', 'proxy_count']]) {
     const card = view.slice(view.indexOf(`<n-card title="${title}"`))

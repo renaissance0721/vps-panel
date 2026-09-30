@@ -115,6 +115,20 @@ async function dropServer(id: number, archived: boolean) {
                         <n-tag :type="statusType(value.status)" size="small">
                           {{ statusLabel(value.status) }}
                         </n-tag>
+                        <n-tag v-if="value.agent_config_sync_status === 'success'" type="success" size="small">
+                          已应用
+                        </n-tag>
+                        <n-tag v-else-if="value.agent_config_sync_status === 'pending'" type="warning" size="small">
+                          同步中
+                        </n-tag>
+                        <n-tag
+                          v-else-if="value.agent_config_sync_status === 'failed'"
+                          type="error"
+                          size="small"
+                          :title="value.agent_config_sync_error"
+                        >
+                          应用失败
+                        </n-tag>
                         <n-tag v-if="value.decommission_status === 'pending'" type="warning" size="small">
                           {{ value.status === 'offline' ? '等待 Agent 上线清理' : '正在删除' }}
                         </n-tag>

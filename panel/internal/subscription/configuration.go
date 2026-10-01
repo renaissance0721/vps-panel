@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -61,7 +62,7 @@ func (s *Service) GetRoutingPreset(ctx context.Context, id int64) (RoutingPreset
 func (s *Service) CreateRoutingPreset(ctx context.Context, input CreateRoutingPresetInput) (RoutingPreset, error) {
 	value := RoutingPreset{
 		Name: input.Name, Enabled: input.Enabled, Groups: input.Groups,
-		RuleProvidersYAML: input.RuleProvidersYAML, Rules: input.Rules,
+		RuleProviders: input.RuleProviders, Rules: input.Rules,
 	}
 	if err := normalizeRoutingPreset(&value); err != nil {
 		return RoutingPreset{}, err
@@ -71,11 +72,15 @@ func (s *Service) CreateRoutingPreset(ctx context.Context, input CreateRoutingPr
 	}
 	groups, _ := json.Marshal(value.Groups)
 	rules, _ := json.Marshal(value.Rules)
+	providersYAML, err := marshalRoutingRuleProviders(value.RuleProviders)
+	if err != nil {
+		return RoutingPreset{}, err
+	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_routing_presets
 		(name, enabled, is_default, groups_json, rule_providers_yaml, rules_json, created_at, updated_at)
 		VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
-		value.Name, value.Enabled, groups, value.RuleProvidersYAML, rules, now.Unix(), now.Unix())
+		value.Name, value.Enabled, groups, providersYAML, rules, now.Unix(), now.Unix())
 	if err != nil {
 		return RoutingPreset{}, fmt.Errorf("create subscription routing preset: %w", err)
 	}
@@ -103,8 +108,8 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 	if input.Groups != nil {
 		value.Groups = *input.Groups
 	}
-	if input.RuleProvidersYAML != nil {
-		value.RuleProvidersYAML = *input.RuleProvidersYAML
+	if input.RuleProviders != nil {
+		value.RuleProviders = *input.RuleProviders
 	}
 	if input.Rules != nil {
 		value.Rules = *input.Rules
@@ -117,9 +122,13 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 	}
 	groups, _ := json.Marshal(value.Groups)
 	rules, _ := json.Marshal(value.Rules)
+	providersYAML, err := marshalRoutingRuleProviders(value.RuleProviders)
+	if err != nil {
+		return RoutingPreset{}, err
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE subscription_routing_presets
 		SET name = ?, enabled = ?, groups_json = ?, rule_providers_yaml = ?, rules_json = ?, updated_at = ? WHERE id = ?`,
-		value.Name, value.Enabled, groups, value.RuleProvidersYAML, rules,
+		value.Name, value.Enabled, groups, providersYAML, rules,
 		s.now().UTC().Truncate(time.Second).Unix(), id); err != nil {
 		return RoutingPreset{}, fmt.Errorf("update subscription routing preset: %w", err)
 	}
@@ -135,8 +144,9 @@ func (s *Service) DeleteRoutingPreset(ctx context.Context, id int64) error {
 		return ErrDefaultRoutingPreset
 	}
 	var references int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM subscription_plans WHERE routing_preset_id = ?`, id).Scan(&references); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM subscription_plans WHERE routing_preset_id = ?) +
+		(SELECT COUNT(*) FROM personal_subscription_groups WHERE routing_preset_id = ?)`, id, id).Scan(&references); err != nil {
 		return fmt.Errorf("count subscription routing preset references: %w", err)
 	}
 	if references != 0 {
@@ -159,20 +169,18 @@ func normalizeRoutingPreset(value *RoutingPreset) error {
 	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes {
 		return ErrInvalidRoutingPreset
 	}
-	providersYAML, providerNames, err := normalizeRuleProvidersYAML(value.RuleProvidersYAML)
+	providers, providerNames, err := normalizeRoutingRuleProviders(value.RuleProviders)
 	if err != nil {
 		return ErrInvalidRoutingPreset
 	}
-	value.RuleProvidersYAML = providersYAML
+	value.RuleProviders = providers
 	value.Groups, value.Rules, err = normalizeRoutingConfiguration(
 		value.Groups, value.Rules, providerNames, ErrInvalidRoutingPreset,
 	)
 	if err != nil {
 		return err
 	}
-	return validateRoutingConfigurationSize(
-		value.Groups, value.RuleProvidersYAML, value.Rules, ErrInvalidRoutingPreset,
-	)
+	return validateRoutingConfigurationSize(value.Groups, value.RuleProviders, value.Rules, ErrInvalidRoutingPreset)
 }
 
 func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, providerNames map[string]struct{}, invalid error) ([]RoutingGroup, []string, error) {
@@ -255,33 +263,118 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 	return normalizedGroups, normalizedRules, nil
 }
 
-func normalizeRuleProvidersYAML(source string) (string, map[string]struct{}, error) {
+func parseRoutingRuleProvidersYAML(source string) ([]RoutingRuleProvider, error) {
 	source = strings.TrimSpace(source)
 	if source == "" || len(source) > maxRoutingConfigurationBytes {
-		return "", nil, ErrInvalidRoutingPreset
+		return nil, ErrInvalidRoutingPreset
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal([]byte(source), &document); err != nil || len(document.Content) != 1 ||
 		document.Content[0].Kind != yaml.MappingNode || !safeYAMLNode(document.Content[0]) {
-		return "", nil, ErrInvalidRoutingPreset
+		return nil, ErrInvalidRoutingPreset
 	}
 	root := document.Content[0]
+	providers := make([]RoutingRuleProvider, 0, len(root.Content)/2)
 	names := make(map[string]struct{}, len(root.Content)/2)
 	for index := 0; index < len(root.Content); index += 2 {
 		key := root.Content[index]
-		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || strings.TrimSpace(key.Value) == "" {
-			return "", nil, ErrInvalidRoutingPreset
+		value := root.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || strings.TrimSpace(key.Value) == "" || value.Kind != yaml.MappingNode {
+			return nil, ErrInvalidRoutingPreset
 		}
 		if _, exists := names[key.Value]; exists {
-			return "", nil, ErrInvalidRoutingPreset
+			return nil, ErrInvalidRoutingPreset
+		}
+		allowed := map[string]bool{"type": true, "behavior": true, "format": true, "interval": true, "url": true}
+		seenFields := make(map[string]struct{}, len(value.Content)/2)
+		for fieldIndex := 0; fieldIndex < len(value.Content); fieldIndex += 2 {
+			field := value.Content[fieldIndex]
+			if field.Kind != yaml.ScalarNode || !allowed[field.Value] {
+				return nil, fmt.Errorf("unsupported rule provider field %q: %w", field.Value, ErrInvalidRoutingPreset)
+			}
+			if _, exists := seenFields[field.Value]; exists {
+				return nil, ErrInvalidRoutingPreset
+			}
+			seenFields[field.Value] = struct{}{}
 		}
 		names[key.Value] = struct{}{}
+		var stored struct {
+			Type     string `yaml:"type"`
+			Behavior string `yaml:"behavior"`
+			Format   string `yaml:"format"`
+			Interval int    `yaml:"interval"`
+			URL      string `yaml:"url"`
+		}
+		if err := value.Decode(&stored); err != nil {
+			return nil, ErrInvalidRoutingPreset
+		}
+		providers = append(providers, RoutingRuleProvider{
+			Name: key.Value, URL: stored.URL, Type: stored.Type, Behavior: stored.Behavior,
+			Format: stored.Format, Interval: stored.Interval,
+		})
 	}
-	return source, names, nil
+	providers, _, err := normalizeRoutingRuleProviders(providers)
+	return providers, err
 }
 
-func validateRoutingConfigurationSize(groups []RoutingGroup, providersYAML string, rules []string, invalid error) error {
+func normalizeRoutingRuleProviders(values []RoutingRuleProvider) ([]RoutingRuleProvider, map[string]struct{}, error) {
+	providers := make([]RoutingRuleProvider, 0, len(values))
+	names := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		value.URL = strings.TrimSpace(value.URL)
+		value.Type = strings.ToLower(strings.TrimSpace(value.Type))
+		value.Behavior = strings.TrimSpace(value.Behavior)
+		value.Format = strings.TrimSpace(value.Format)
+		parsedURL, err := url.Parse(value.URL)
+		if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes || value.Type != "http" ||
+			value.Behavior == "" || value.Format == "" || value.Interval <= 0 || err != nil || parsedURL.Host == "" ||
+			(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || strings.ContainsAny(value.Behavior+value.Format, "\r\n") {
+			return nil, nil, ErrInvalidRoutingPreset
+		}
+		if _, exists := names[value.Name]; exists {
+			return nil, nil, ErrInvalidRoutingPreset
+		}
+		names[value.Name] = struct{}{}
+		providers = append(providers, value)
+	}
+	return providers, names, nil
+}
+
+func marshalRoutingRuleProviders(values []RoutingRuleProvider) (string, error) {
+	values, _, err := normalizeRoutingRuleProviders(values)
+	if err != nil {
+		return "", err
+	}
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for _, value := range values {
+		encoded, err := encodeYAMLValue(struct {
+			Type     string `yaml:"type"`
+			Behavior string `yaml:"behavior"`
+			Format   string `yaml:"format"`
+			Interval int    `yaml:"interval"`
+			URL      string `yaml:"url"`
+		}{value.Type, value.Behavior, value.Format, value.Interval, value.URL})
+		if err != nil {
+			return "", ErrInvalidRoutingPreset
+		}
+		root.Content = append(root.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value.Name}, encoded)
+	}
+	document := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
+	encoded, err := yaml.Marshal(document)
+	if err != nil {
+		return "", ErrInvalidRoutingPreset
+	}
+	return strings.TrimSpace(string(encoded)), nil
+}
+
+func validateRoutingConfigurationSize(groups []RoutingGroup, providers []RoutingRuleProvider, rules []string, invalid error) error {
 	groupsJSON, err := json.Marshal(groups)
+	if err != nil {
+		return invalid
+	}
+	providersYAML, err := marshalRoutingRuleProviders(providers)
 	if err != nil {
 		return invalid
 	}
@@ -385,10 +478,10 @@ func routingGroupsCyclic(groups map[string]RoutingGroup) bool {
 func scanRoutingPreset(row rowScanner) (RoutingPreset, error) {
 	var value RoutingPreset
 	var enabled, isDefault int
-	var groupsJSON, rulesJSON string
+	var groupsJSON, providersYAML, rulesJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.Name, &enabled, &isDefault, &groupsJSON,
-		&value.RuleProvidersYAML, &rulesJSON, &createdAt, &updatedAt); err != nil {
+		&providersYAML, &rulesJSON, &createdAt, &updatedAt); err != nil {
 		return RoutingPreset{}, err
 	}
 	if err := json.Unmarshal([]byte(groupsJSON), &value.Groups); err != nil {
@@ -397,6 +490,11 @@ func scanRoutingPreset(row rowScanner) (RoutingPreset, error) {
 	if err := json.Unmarshal([]byte(rulesJSON), &value.Rules); err != nil {
 		return RoutingPreset{}, fmt.Errorf("decode routing rules: %w", err)
 	}
+	providers, err := parseRoutingRuleProvidersYAML(providersYAML)
+	if err != nil {
+		return RoutingPreset{}, fmt.Errorf("decode routing rule providers: %w", err)
+	}
+	value.RuleProviders = providers
 	value.Enabled = enabled != 0
 	value.IsDefault = isDefault != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -480,8 +578,9 @@ func (s *Service) UpdateTemplate(ctx context.Context, id int64, input UpdateSubs
 
 func (s *Service) DeleteTemplate(ctx context.Context, id int64) error {
 	var references int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM subscription_plans WHERE template_id = ?`, id).Scan(&references); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM subscription_plans WHERE template_id = ?) +
+		(SELECT COUNT(*) FROM personal_subscription_groups WHERE mihomo_template_id = ?)`, id, id).Scan(&references); err != nil {
 		return fmt.Errorf("count subscription template references: %w", err)
 	}
 	if references != 0 {

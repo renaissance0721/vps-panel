@@ -127,7 +127,7 @@ function nodeLabel(nodeID: number) {
           <n-button size="tiny" type="error" secondary @click="removeGroup(groupIndex)">删除</n-button>
         </template>
       </div>
-      <div v-if="!readonly" class="switch-row"><span>包含套餐全部节点</span><n-switch :value="Boolean(group.include_all)" @update:value="setIncludeAll(groupIndex, $event)" /></div>
+      <div v-if="!readonly" class="switch-row"><span>包含订阅全部节点</span><n-switch :value="Boolean(group.include_all)" @update:value="setIncludeAll(groupIndex, $event)" /></div>
       <fieldset v-if="!readonly" class="subscription-node-picker"><legend>指定 Published Node</legend>
         <span v-if="nodes.length === 0" class="form-help">暂无发布节点</span>
         <label v-for="node in orderedNodes(group)" :key="node.id" class="subscription-node-option">
@@ -150,7 +150,7 @@ function nodeLabel(nodeID: number) {
           </template>
         </div>
         <div v-for="nodeID in readonly ? (group.node_ids ?? []) : []" :key="`node-${nodeID}`" class="routing-member-row"><span>{{ nodeLabel(nodeID) }}</span></div>
-        <div v-if="readonly && group.include_all" class="routing-member-row"><span>全部套餐节点（&#123;&#123;all&#125;&#125;）</span></div>
+        <div v-if="readonly && group.include_all" class="routing-member-row"><span>全部订阅节点（&#123;&#123;all&#125;&#125;）</span></div>
       </div>
       <div v-if="!readonly" class="modal-actions routing-add-actions">
         <n-button size="small" secondary @click="addProxy(groupIndex, 'DIRECT')">添加 DIRECT</n-button>

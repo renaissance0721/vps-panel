@@ -4,7 +4,7 @@
 >
 > 文档定位：VPS Panel 的**统一开发指南**。本文合并并替代原来的“总开发指导”和“前端 UI Guide”，作为后续人工开发、Codex 任务拆解、架构边界和验收的单一参考。
 >
-> 生成基线：`main @ 1138866a790003a66e4bffb780c331ea7dc34d87`（2026-09-23）。
+> 生成基线：`main @ d278da91`（2026-10-01）。
 >
 > 若本文与当前代码发生冲突：
 >
@@ -26,7 +26,7 @@ VPS Panel 的长期目标是一个**简单、统一、可迁移、可验证**的
 - Panel ↔ Agent 以 **desired state + 结果回报** 为主，不下发任意 Shell。
 - 第一代理后端固定为 Xray；中转后端固定为 Realm。
 - Server / Proxy / Client / Relay 是当前核心业务模型，不提前引入 `CoreInstance`、`Chain`、通用 Driver、插件系统等抽象。
-- 账号保持 `admin / vip` 两级，不做复杂 RBAC。
+- 管理角色保持 `admin / vip`，受限账号使用 `user / subscriber`，不做复杂 RBAC。
 - SQLite 是当前唯一数据库，不为未来数据库提前抽象 Repository Provider。
 - 前端继续使用 Vue 3 + TypeScript + Naive UI；不提前引入 Vue Router、Pinia、新 UI Framework 或通用 Schema Form。
 - 所有任务遵守 `AGENTS.md`：**简单、可运行、可验证、最小 diff**。
@@ -69,6 +69,9 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - Relay 可选择目标 Proxy 的某个 Client 用于派生分享 URI
 - VLESS / Shadowsocks Client 分享 URI
 - Proxy / Relay 二维码，本地浏览器生成
+- 订阅用户 → 共享订阅（内部 Plan）→ 发布节点的 Base64 / Mihomo 订阅
+- admin / vip 独立的多个人订阅，支持 Proxy / Published Node / Landing、Auto / Base64 / Mihomo 链接和二维码
+- 通用分流方案（策略组 + 结构化 Rule Providers + Rules）与 Mihomo 客户端模板
 - Server Xray 出站 IPv4 / IPv6 偏好
 - Server 级禁止中国 IP 访问受管 Proxy / Relay 入站
 - 整站 ZIP 备份 / 恢复
@@ -77,8 +80,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 
 当前**没有**：
 
-- Clash / Mihomo / sing-box 批量订阅
-- 通用 Subscription URL
+- Shadowrocket / sing-box 专用 renderer
 - 多跳 Chain
 - 通用插件系统
 - 通用 Agent Task Runner
@@ -117,6 +119,8 @@ panel/
     ├── server/                 Server 业务
     ├── agentcontrol/           Enrollment、注册、连接、配置同步、升级、诊断请求
     ├── proxy/                  Proxy / Client / 分享 / 流量
+    ├── landing/                外部节点与 VLESS / Shadowsocks URI 解析
+    ├── subscription/           共享订阅、个人订阅、分流与 Base64 / Mihomo 渲染
     ├── relay/                  Relay 业务与 desired state
     ├── backup/                 ZIP 备份与恢复
     ├── diagnostic/             诊断协议模型和校验
@@ -135,7 +139,9 @@ web/src/
 │   ├── OverviewView.vue
 │   ├── ServersView.vue
 │   ├── ProxiesView.vue
-│   └── RelaysView.vue
+│   ├── RelaysView.vue
+│   ├── SubscriberPortalView.vue
+│   └── SubscriptionManagementView.vue
 ├── components/
 │   ├── server/
 │   ├── proxy/
@@ -465,25 +471,60 @@ user_relay_order
 - 不改变其他账号排序
 - 搜索状态下 Proxy / Relay 不允许拖拽，避免“可见子集相邻关系”歧义
 
+## 3.7 Subscription
+
+订阅当前有两条相互独立的链路：
+
+```text
+订阅用户 → Plan（UI：共享订阅）→ PublishedNode → subscriber_clients
+个人订阅 → 显式选择 Proxy | PublishedNode | Landing → 实时解析节点
+```
+
+共享订阅保留流量额度、到期、重置周期和 `subscriber_clients` reconcile。后端模型、表名和 API 继续使用 `Plan` / `subscription_plans`；“共享订阅”只是用户界面名称。
+
+个人订阅：
+
+- 归属单一 admin / vip，同一账号可建立多个；普通 user / subscriber 不可使用。
+- 每个组有独立随机 token，重置后旧链接立即失效。
+- 不依赖 Plan，不创建 `subscriber_clients` / `subscriber_usage`，不拥有独立流量额度或到期时间。
+- 节点来源是当前用户可访问的 Proxy、Published Node 或 Landing，保存明确选择而不自动追加新节点。
+- Proxy / Published Node 每次按 `client_name` 实时精确匹配非订阅托管 Client，不持久化 `client_id`。Admin 只能匹配未分配或分配给自己的 Client；VIP 只能匹配分配给自己的 Client。
+- Landing 继续使用自身 URI 凭据，并遵守现有 owner / public 可见性。
+- 单个来源不可用时保留配置并在生成时跳过；最终没有可用节点时返回明确错误。
+
+三种来源会先转换为简单、客户端无关的 `ResolvedSubscriptionNode`。Base64 renderer 从它生成 URI，Mihomo renderer 从它生成 `proxies`；当前不建立通用 renderer interface 或新协议 DSL。
+
+分流与客户端配置职责分离：
+
+```text
+RoutingPreset = 策略组 + []RoutingRuleProvider + []string Rules
+SubscriptionTemplate = Mihomo 客户端基础配置
+```
+
+`RoutingRuleProvider` 的业务字段为 `name / url / type / behavior / format / interval`。SQLite 继续使用 `rule_providers_yaml` 内部序列化，Service 负责与结构化 API 互转；不支持的 YAML 字段必须明确报错，不得静默丢失。
+
 ---
 
 # 4. 账号、权限与资源可见性
 
 ## 4.1 角色
 
-只保留：
+当前角色：
 
 ```text
 admin
 vip
+user / subscriber
 ```
 
 规则：
 
 - 首次初始化创建唯一 admin。
 - admin 可创建 24 小时一次性邀请。
-- 邀请注册用户统一为 vip。
+- 邀请可创建 vip 或受限的普通 / 订阅用户。
 - vip 不能操作 admin invitation / 整站备份 / Agent 官方升级 / 永久删除 Server 等 admin-only 能力。
+- admin 和 vip 可以管理各自的个人订阅；这项能力严格按 owner 隔离，admin 不默认越权读写他人的个人订阅。
+- 普通 / 订阅用户只使用自己的受限门户和共享订阅，不进入个人订阅管理。
 - 不做 Owner / SuperAdmin / Operator / Viewer。
 - 不做自定义权限矩阵。
 
@@ -977,15 +1018,27 @@ Relay 分享 URI
 
 只替换客户端连接 endpoint，不改变协议密钥和目标 Proxy 业务配置。
 
-当前未实现：
+## 12.3 共享订阅与个人订阅
 
-- 通用订阅 URL
-- Clash / Mihomo 批量订阅
-- sing-box 批量配置
-- 订阅权限系统
-- 多节点订阅选择器
+共享订阅的公开链接归属订阅用户 token；Plan 本身不直接提供可复制链接。个人订阅每组有独立 token：
 
-后续做订阅时必须复用现有 canonical share generator，不重写 VLESS / SS 参数语义。
+```text
+/sub/personal/{token}         → Base64
+/sub/personal/{token}/mihomo  → Mihomo YAML
+/sub/personal/{token}/auto    → Mihomo User-Agent 检测，其他回退 Base64
+```
+
+Base64 和 Mihomo 均复用后端 canonical share 语义，自定义名称只改变最终 URI fragment / Mihomo proxy name，不修改底层 Proxy 或 Client。Mihomo 最终配置为：
+
+```text
+Mihomo Template
++ 动态 proxies
++ RoutingPreset proxy-groups
++ RoutingPreset rule-providers
++ RoutingPreset rules
+```
+
+当前未实现 Shadowrocket / sing-box 专用 renderer，也不支持 Trojan / Hysteria / TUIC 订阅节点。
 
 ---
 
@@ -1464,7 +1517,20 @@ currentPage
 服务器
 代理节点
 中转
+订阅管理
 ```
+
+订阅管理对 admin 和 vip 可见。Admin 内部 Tab 顺序固定为：
+
+```text
+个人订阅
+订阅用户
+共享订阅
+发布节点
+分流模板
+```
+
+VIP 只显示“个人订阅”。订阅管理默认打开个人订阅。
 
 没有 Router。
 
@@ -1888,6 +1954,8 @@ Panel 两种入口：
 
 原始值只在必要时显示一次。
 
+共享订阅和个人订阅 token 需要用于公开链接查找，当前数据库保存实际值。它们是 bearer secret，不写日志；重新生成后旧值立即失效。
+
 基于 Session Cookie 的 POST / PUT / PATCH / DELETE API 要求同源 `Origin`，缺失时回退校验 `Referer`；Agent Bearer API 不使用这项浏览器 Session 防护。
 
 ## 25.3 Agent secret
@@ -2151,7 +2219,10 @@ bash -n <script>
 | Relay target Client | 已实现 | 分享元数据，不是 L4 独占认证 |
 | 外部节点（内部 Landing） | 已实现 | 原始 URI 按需查看/复制/二维码、public/private、Relay 目标与中转 URI |
 | QR | 已实现 | 浏览器本地生成 |
-| Subscription | 未实现 | 无订阅 URL / Clash / sing-box 批量输出 |
+| 共享订阅 | 已实现 | 订阅用户 + Plan + Published Node + subscriber client，支持 Base64 / Mihomo |
+| 个人订阅 | 已实现 | admin / vip owner 隔离，Proxy / Published / Landing，独立 token 与 Auto / Base64 / Mihomo |
+| 分流方案 | 已实现 | 策略组 + 结构化 Rule Providers + Rules，SQLite 内部保留 YAML 序列化 |
+| Shadowrocket / sing-box 订阅 | 未实现 | 不提供假 renderer 或空路由 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |
 | 禁止中国 IP 入站 | 已实现 | APNIC CN prefix + nftables set，仅受管 Proxy / Relay listener |
 | ZIP backup / restore | 已实现 | admin-only，同域名校验 |
@@ -2191,26 +2262,11 @@ bash -n <script>
 - 删除 / 禁用始终允许
 - legacy Agent 保持兼容
 
-## 31.3 Subscription
+## 31.3 Subscription（已实现当前范围）
 
-复用已有：
+已完成共享订阅与个人订阅两条独立链路，复用 Proxy / Client canonical share、Published Node endpoint、Landing URI 和本地 QR。当前输出只有 Base64 与 Mihomo。
 
-```text
-Proxy
-Client
-share URI
-Relay-derived URI
-QR
-```
-
-增加真正需要的：
-
-- subscription URL
-- 选择哪些 Client / Relay endpoint 进入订阅
-- Clash / Mihomo 输出
-- sing-box 输出
-
-不要创建新的 Credential 模型。
+未来真正增加第三种 renderer 时，应直接使用 `ResolvedSubscriptionNode` 和结构化 `RoutingPreset`；在此之前不增加 renderer interface、协议 DSL 或新 Credential 模型。
 
 ## 31.4 Panel URL 迁移
 
@@ -2324,6 +2380,11 @@ Panel
 │   └── Client
 ├── Landing
 ├── Relay
+├── Subscription
+│   ├── 共享订阅 / subscriber reconcile
+│   ├── 个人订阅 / resolved nodes
+│   ├── RoutingPreset
+│   └── Base64 / Mihomo renderer
 ├── Share / QR
 └── Backup / Restore
        │
@@ -2365,7 +2426,7 @@ Server
 - [x] 配置以 desired state 同步。
 - [x] WebSocket 负责实时状态与轻量通知，REST 负责完整配置与结果。
 - [x] SQLite 单体。
-- [x] admin / vip 两级。
+- [x] 管理角色 admin / vip + 受限角色 user / subscriber，不做自定义 RBAC。
 - [x] admin 不绕过 private Server。
 - [x] Server / Proxy / Client / Landing / Relay 是当前核心模型。
 - [x] VLESS 固定 TCP + XTLS Vision，TLS / REALITY 二选一。
@@ -2374,6 +2435,9 @@ Server
 - [x] Realm 是 Relay 的本地实现，不额外创建 Realm 业务资源表。
 - [x] Relay 选择 Client 只影响分享，不提供独占认证。
 - [x] Proxy / Relay 分享 URI 由后端 canonical generator 生成。
+- [x] 共享订阅与个人订阅是独立链路，个人订阅不创建 subscriber client / usage。
+- [x] 个人订阅使用实时精确 Client 匹配和 owner 隔离，不保存匹配结果 client_id。
+- [x] 分流方案是结构化通用业务数据；Mihomo 模板只是客户端基础配置。
 - [x] 二维码在浏览器本地生成。
 - [x] 备份是完整 SQLite 快照，属于高敏感文件。
 - [x] Panel / Agent / Xray / Realm / ACME 使用分离的受管目录。

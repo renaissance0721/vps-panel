@@ -59,6 +59,21 @@ func RewriteLandingURI(raw string, endpoint ShareEndpoint, relayName string) (st
 	return value.String(), nil
 }
 
+func RewriteDisplayNameURI(raw, displayName string) (string, error) {
+	if _, err := ParseURI(raw); err != nil {
+		return "", err
+	}
+	raw = strings.TrimSpace(raw)
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		return "", ErrInvalidURI
+	}
+	if index := strings.Index(raw, "#"); index >= 0 {
+		raw = raw[:index]
+	}
+	return raw + (&url.URL{Fragment: displayName}).String(), nil
+}
+
 func normalizeRawURI(raw string) (string, error) {
 	if len(raw) == 0 || len(raw) > maxURIBytes || !utf8.ValidString(raw) {
 		return "", ErrInvalidURI
@@ -88,7 +103,13 @@ func parseVLESS(raw string) (ParsedURI, error) {
 	if transport != "" && transport != "tcp" {
 		return ParsedURI{}, ErrUnsupportedVLESSTransport
 	}
-	return ParsedURI{Protocol: ProtocolVLESS, Host: host, Port: port, Fragment: value.Fragment}, nil
+	query := value.Query()
+	return ParsedURI{
+		Protocol: ProtocolVLESS, Host: host, Port: port, Fragment: value.Fragment,
+		UUID: value.User.Username(), Security: strings.ToLower(strings.TrimSpace(query.Get("security"))),
+		ServerName: query.Get("sni"), Flow: query.Get("flow"), Fingerprint: query.Get("fp"),
+		RealityPublicKey: query.Get("pbk"), RealityShortID: query.Get("sid"), Network: "tcp",
+	}, nil
 }
 
 func parseShadowsocks(raw string) (ParsedURI, error) {
@@ -110,17 +131,21 @@ func parseShadowsocks(raw string) (ParsedURI, error) {
 	if err != nil {
 		return ParsedURI{}, ErrInvalidURI
 	}
-	if !validShadowsocksCredential(decodedUserinfo) {
+	credential := decodedUserinfo
+	if !validShadowsocksCredential(credential) {
 		decoded, _, decodeErr := decodeBase64(decodedUserinfo)
 		if decodeErr != nil || !validShadowsocksCredential(string(decoded)) {
 			return ParsedURI{}, ErrInvalidURI
 		}
+		credential = string(decoded)
 	}
 	host, port, err := parseEndpoint(endpoint)
 	if err != nil {
 		return ParsedURI{}, err
 	}
-	return ParsedURI{Protocol: ProtocolSS, Host: host, Port: port, Fragment: fragment}, nil
+	method, password, _ := strings.Cut(credential, ":")
+	return ParsedURI{Protocol: ProtocolSS, Host: host, Port: port, Fragment: fragment,
+		Method: method, Password: password, Network: "tcp,udp"}, nil
 }
 
 func parseLegacyShadowsocks(raw string) (ParsedURI, error) {
@@ -151,7 +176,9 @@ func parseLegacyShadowsocks(raw string) (ParsedURI, error) {
 	if err != nil {
 		return ParsedURI{}, err
 	}
-	return ParsedURI{Protocol: ProtocolSS, Host: host, Port: port, Fragment: fragment}, nil
+	method, password, _ := strings.Cut(credential, ":")
+	return ParsedURI{Protocol: ProtocolSS, Host: host, Port: port, Fragment: fragment,
+		Method: method, Password: password, Network: "tcp,udp"}, nil
 }
 
 func validShadowsocksCredential(value string) bool {

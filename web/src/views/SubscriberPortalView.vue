@@ -45,8 +45,8 @@ const usagePercent = computed(() => {
   return Math.min(100, Math.round(value.used_bytes / value.traffic_limit_bytes * 100))
 })
 const statusLabels: Record<string, string> = {
-  normal: '正常', unconfigured: '管理员尚未开通套餐', disabled: '账号已停用',
-  plan_disabled: '套餐暂停 / 不可用', expired: '已到期', exhausted: '流量已用完',
+  normal: '正常', unconfigured: '管理员尚未开通共享订阅', disabled: '账号已停用',
+  plan_disabled: '共享订阅暂停 / 不可用', expired: '已到期', exhausted: '流量已用完',
 }
 
 async function loadPortal() {
@@ -118,11 +118,11 @@ onMounted(async () => {
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅…</span></div>
     <template v-else-if="subscriber">
       <section v-if="!hasPlan" class="subscriber-empty-state">
-        <h1>尚未开通套餐</h1>
-        <p>当前账号尚未开通任何套餐</p>
+        <h1>尚未开通共享订阅</h1>
+        <p>当前账号尚未开通任何共享订阅</p>
       </section>
       <section v-else>
-        <h2 class="portal-section-title">套餐信息</h2>
+        <h2 class="portal-section-title">共享订阅信息</h2>
         <n-card :bordered="true">
           <template #header><strong>{{ subscriber.plan_name }}</strong></template>
           <template #header-extra><n-tag :type="subscriber.active ? 'success' : 'warning'">{{ statusLabels[subscriber.status] ?? subscriber.status }}</n-tag></template>

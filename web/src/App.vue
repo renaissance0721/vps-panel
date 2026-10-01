@@ -469,7 +469,7 @@ onUnmounted(stopServerPolling)
               中转
             </button>
             <button
-              v-if="state.user?.role === 'admin'"
+              v-if="state.user?.role === 'admin' || state.user?.role === 'vip'"
               type="button"
               :class="{ active: currentPage === 'subscriptions' }"
               @click="selectPage('subscriptions')"
@@ -528,7 +528,10 @@ onUnmounted(stopServerPolling)
                 <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
                 <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
                 <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
-                <SubscriptionManagementView v-if="currentPage === 'subscriptions' && state.user?.role === 'admin'" />
+                <SubscriptionManagementView
+                  v-if="currentPage === 'subscriptions' && (state.user?.role === 'admin' || state.user?.role === 'vip')"
+                  :role="state.user?.role"
+                />
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
                 <AuditLogView v-if="currentPage === 'audit' && state.user?.role === 'admin'" />

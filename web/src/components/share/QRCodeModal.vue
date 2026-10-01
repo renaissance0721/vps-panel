@@ -10,14 +10,21 @@ const props = defineProps<{
   subtitle?: string
   modalTitle?: string
   instruction?: string
+  links?: { label: string; value: string }[]
 }>()
 const emit = defineEmits<{ 'update:show': [show: boolean] }>()
 
 const image = ref('')
 const error = ref('')
+const selectedURI = ref('')
 let generation = 0
 
-watch([() => props.show, () => props.uri], async ([show, uri]) => {
+watch([() => props.show, () => props.uri, () => props.links], async ([show]) => {
+  if (show) selectedURI.value = props.links?.[0]?.value || props.uri
+}, { immediate: true, deep: true })
+
+watch([() => props.show, selectedURI, () => props.uri], async ([show]) => {
+  const uri = selectedURI.value || props.uri
   const current = ++generation
   image.value = ''
   error.value = ''
@@ -28,9 +35,9 @@ watch([() => props.show, () => props.uri], async ([show, uri]) => {
       margin: 2,
       width: 280,
     })
-    if (current === generation && props.show && props.uri === uri) image.value = result
+    if (current === generation && props.show && (selectedURI.value || props.uri) === uri) image.value = result
   } catch {
-    if (current === generation && props.show && props.uri === uri) error.value = '二维码生成失败'
+    if (current === generation && props.show && (selectedURI.value || props.uri) === uri) error.value = '二维码生成失败'
   }
 }, { immediate: true })
 
@@ -50,6 +57,12 @@ function setShow(show: boolean) {
       <div class="qr-modal-content">
         <strong>{{ title }}</strong>
         <small v-if="subtitle">{{ subtitle }}</small>
+        <label v-if="links?.length" class="qr-link-choice">
+          <span>订阅格式</span>
+          <select v-model="selectedURI" class="settings-input">
+            <option v-for="link in links" :key="link.value" :value="link.value">{{ link.label }}</option>
+          </select>
+        </label>
         <n-alert v-if="error" type="error">{{ error }}</n-alert>
         <img v-else-if="image" class="qr-modal-image" :src="image" :alt="`${title} 二维码`" />
         <n-spin v-else-if="show && uri" size="small" />
@@ -87,5 +100,12 @@ function setShow(show: boolean) {
   max-width: 100%;
   height: auto;
   background: #fff;
+}
+
+.qr-link-choice {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  text-align: left;
 }
 </style>

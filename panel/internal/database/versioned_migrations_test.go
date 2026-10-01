@@ -148,7 +148,31 @@ rules:
 		VALUES ('Another Default', 1, '[]', '[]', '{}', 1, 1, 1)`); err == nil {
 		t.Fatal("second default routing preset unexpectedly inserted")
 	}
+	if err := applyMigration(context.Background(), db, migrations[7]); err != nil {
+		t.Fatal(err)
+	}
 	assertLatestMigrationHistory(t, db)
+}
+
+func TestMigrationEightCreatesPersonalSubscriptionSchema(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, item := range migrations {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, table := range []string{"personal_subscription_groups", "personal_subscription_nodes"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("table %s count = %d, %v", table, count, err)
+		}
+	}
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
 }
 
 func TestMigrationSixRejectsCorruptRoutingJSONAtomically(t *testing.T) {

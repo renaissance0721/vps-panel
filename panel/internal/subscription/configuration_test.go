@@ -51,9 +51,8 @@ func TestRoutingPresetIsLiveReferencedByPlan(t *testing.T) {
 	_, service := newSubscriptionTestService(t)
 	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Streaming", Enabled: true,
-		Groups:            []RoutingGroup{{Name: "Streaming", Type: "select", Proxies: []string{"DIRECT"}}},
-		RuleProvidersYAML: "{}",
-		Rules:             []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"},
+		Groups: []RoutingGroup{{Name: "Streaming", Type: "select", Proxies: []string{"DIRECT"}}},
+		Rules:  []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,26 +105,24 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 	}
 
 	validGroups := []RoutingGroup{{Name: "AI", Type: "select", Proxies: []string{"DIRECT"}}}
-	for _, providers := range []string{
+	for _, providersYAML := range []string{
 		"defaults: &defaults\n  type: http\nOpenAI: *defaults",
 		"OpenAI: !custom value",
 		"- OpenAI",
+		"OpenAI:\n  type: http\n  behavior: classical\n  format: yaml\n  interval: 86400\n  url: https://example.com/rules.yaml\n  unsupported: true",
 	} {
-		if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
-			Name: "Unsafe", Enabled: true, Groups: validGroups,
-			RuleProvidersYAML: providers, Rules: []string{"MATCH,AI"},
-		}); !errors.Is(err, ErrInvalidRoutingPreset) {
-			t.Fatalf("rule providers %q error = %v", providers, err)
+		if _, err := parseRoutingRuleProvidersYAML(providersYAML); !errors.Is(err, ErrInvalidRoutingPreset) {
+			t.Fatalf("rule providers %q error = %v", providersYAML, err)
 		}
 	}
 	if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
-		Name: "Missing", Enabled: true, Groups: validGroups, RuleProvidersYAML: "{}",
+		Name: "Missing", Enabled: true, Groups: validGroups,
 		Rules: []string{"RULE-SET,OpenAI,AI", "MATCH,AI"},
 	}); !errors.Is(err, ErrInvalidRoutingPreset) {
 		t.Fatalf("missing rule provider error = %v", err)
 	}
 	if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
-		Name: "Cycle", Enabled: true, RuleProvidersYAML: "{}",
+		Name: "Cycle", Enabled: true,
 		Groups: []RoutingGroup{
 			{Name: "A", Type: "select", Proxies: []string{"B"}},
 			{Name: "B", Type: "select", Proxies: []string{"A"}},

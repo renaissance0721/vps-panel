@@ -147,8 +147,8 @@ func TestPlanDefaultsToDefaultRoutingPresetAndCanSwitch(t *testing.T) {
 	}
 	custom, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Custom", Enabled: true,
-		Groups:            []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
-		RuleProvidersYAML: "{}", Rules: []string{"MATCH,Custom"},
+		Groups: []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
+		Rules:  []string{"MATCH,Custom"},
 	})
 	if err != nil {
 		t.Fatal(err)

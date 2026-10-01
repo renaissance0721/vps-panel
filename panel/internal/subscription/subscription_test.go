@@ -355,8 +355,8 @@ func TestSubscriptionUsesLatestReferencedRoutingPresetEvenWhenDisabled(t *testin
 	}
 	routing, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Live", Enabled: true,
-		Groups:            []RoutingGroup{{Name: "Proxy", Type: "select", IncludeAll: true}},
-		RuleProvidersYAML: "{}", Rules: []string{"MATCH,Proxy"},
+		Groups: []RoutingGroup{{Name: "Proxy", Type: "select", IncludeAll: true}},
+		Rules:  []string{"MATCH,Proxy"},
 	})
 	if err != nil {
 		t.Fatal(err)

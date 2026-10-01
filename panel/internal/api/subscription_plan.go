@@ -76,12 +76,12 @@ func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeSubscriptionPlanError(w, err)
 		return
 	}
-	s.recordAudit(r, user, "subscription_plan.create", "subscription_plan", value.ID, "创建订阅套餐 "+value.Name)
+	s.recordAudit(r, user, "subscription_plan.create", "subscription_plan", value.ID, "创建共享订阅 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
 func (s *server) getSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "共享订阅 ID 无效")
 	if !ok {
 		return
 	}
@@ -94,7 +94,7 @@ func (s *server) getSubscriptionPlan(w http.ResponseWriter, r *http.Request, _ a
 }
 
 func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "共享订阅 ID 无效")
 	if !ok {
 		return
 	}
@@ -128,12 +128,12 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.notifyProxyMutations(mutations)
-	s.recordAudit(r, user, "subscription_plan.update", "subscription_plan", value.ID, "更新订阅套餐 "+value.Name)
+	s.recordAudit(r, user, "subscription_plan.update", "subscription_plan", value.ID, "更新共享订阅 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
 func (s *server) deleteSubscriptionPlan(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "共享订阅 ID 无效")
 	if !ok {
 		return
 	}
@@ -141,12 +141,12 @@ func (s *server) deleteSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeSubscriptionPlanError(w, err)
 		return
 	}
-	s.recordAudit(r, user, "subscription_plan.delete", "subscription_plan", id, "删除订阅套餐")
+	s.recordAudit(r, user, "subscription_plan.delete", "subscription_plan", id, "删除共享订阅")
 	writeNoContent(w)
 }
 
 func (s *server) setSubscriptionPlanNodes(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "套餐 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "共享订阅 ID 无效")
 	if !ok {
 		return
 	}
@@ -203,23 +203,23 @@ func decodeNullableInt(raw json.RawMessage) (*int, bool, error) {
 func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, subscriptionstore.ErrPlanNotFound):
-		writeError(w, http.StatusNotFound, "套餐不存在")
+		writeError(w, http.StatusNotFound, "共享订阅不存在")
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
-		writeError(w, http.StatusNotFound, "套餐包含的发布节点不存在")
+		writeError(w, http.StatusNotFound, "共享订阅包含的发布节点不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanName):
-		writeError(w, http.StatusBadRequest, "套餐名称不能为空且不能超过 100 个字符")
+		writeError(w, http.StatusBadRequest, "共享订阅名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, subscriptionstore.ErrInvalidSubscriptionTitle):
 		writeError(w, http.StatusBadRequest, "订阅显示名称不能超过 100 个字符")
 	case errors.Is(err, subscriptionstore.ErrInvalidTrafficLimit):
 		writeError(w, http.StatusBadRequest, "流量额度不能小于 0")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
-		writeError(w, http.StatusBadRequest, "套餐节点列表无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
+		writeError(w, http.StatusBadRequest, "共享订阅节点列表无效；同一共享订阅不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrServerNotDistributable):
-		writeError(w, http.StatusBadRequest, "套餐只能包含管理员创建服务器上的发布节点")
+		writeError(w, http.StatusBadRequest, "共享订阅只能包含管理员创建服务器上的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):
-		writeError(w, http.StatusConflict, "请先切换或取消使用该套餐的订阅用户")
+		writeError(w, http.StatusConflict, "请先切换或取消使用该共享订阅的订阅用户")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanRouting):
-		writeError(w, http.StatusBadRequest, "该分流方案已停用，不能用于新的套餐选择")
+		writeError(w, http.StatusBadRequest, "该分流方案已停用，不能用于新的共享订阅选择")
 	case errors.Is(err, subscriptionstore.ErrRoutingPresetNotFound):
 		writeError(w, http.StatusBadRequest, "分流方案不存在")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):

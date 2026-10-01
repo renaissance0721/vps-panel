@@ -40,10 +40,20 @@ type Landing struct {
 }
 
 type ParsedURI struct {
-	Protocol string
-	Host     string
-	Port     int
-	Fragment string
+	Protocol         string
+	Host             string
+	Port             int
+	Fragment         string
+	UUID             string
+	Security         string
+	ServerName       string
+	Flow             string
+	Fingerprint      string
+	RealityPublicKey string
+	RealityShortID   string
+	Method           string
+	Password         string
+	Network          string
 }
 
 type CreateInput struct {

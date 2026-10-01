@@ -241,7 +241,7 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 	}
 	custom := &SubscriptionTemplate{ConfigYAML: "mixed-port: 9999\ndns:\n  enable: false"}
 	routing := &RoutingPreset{
-		Name: "Plan", Enabled: true, RuleProvidersYAML: "{}",
+		Name: "Plan", Enabled: true,
 		Groups: []RoutingGroup{
 			{Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
 			{Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, NodeIDs: []int64{7, 999}, IncludeAll: true},
@@ -270,12 +270,15 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 
 func TestRenderMihomoRuleSetRequiresProvider(t *testing.T) {
 	routing := &RoutingPreset{Name: "Custom", Enabled: true,
-		Groups:            []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
-		RuleProvidersYAML: "{}", Rules: []string{"RULE-SET,Missing,Custom", "MATCH,Custom"}}
+		Groups: []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
+		Rules:  []string{"RULE-SET,Missing,Custom", "MATCH,Custom"}}
 	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); !errors.Is(err, ErrInvalidRoutingPreset) {
 		t.Fatalf("missing provider error = %v", err)
 	}
-	routing.RuleProvidersYAML = "Missing:\n  type: http\n  behavior: classical\n  format: yaml\n  interval: 86400\n  url: https://example.com/rules.yaml"
+	routing.RuleProviders = []RoutingRuleProvider{{
+		Name: "Missing", Type: "http", Behavior: "classical", Format: "yaml", Interval: 86400,
+		URL: "https://example.com/rules.yaml",
+	}}
 	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); err != nil {
 		t.Fatalf("valid RULE-SET render error = %v", err)
 	}

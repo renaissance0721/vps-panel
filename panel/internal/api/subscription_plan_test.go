@@ -20,9 +20,9 @@ func TestBuiltinMihomoConfigurationAPI(t *testing.T) {
 	if unauthenticated.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated built-in Mihomo = %d %s", unauthenticated.Code, unauthenticated.Body.String())
 	}
-	forbidden := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/builtin-mihomo", nil, vipCookie)
-	if forbidden.Code != http.StatusForbidden {
-		t.Fatalf("vip built-in Mihomo = %d %s", forbidden.Code, forbidden.Body.String())
+	vipResponse := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/builtin-mihomo", nil, vipCookie)
+	if vipResponse.Code != http.StatusOK {
+		t.Fatalf("vip built-in Mihomo = %d %s", vipResponse.Code, vipResponse.Body.String())
 	}
 
 	response := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/builtin-mihomo", nil, adminCookie)
@@ -158,8 +158,8 @@ func TestRoutingPresetProtectionAPI(t *testing.T) {
 
 	createdPreset := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/routing-presets", map[string]any{
 		"name": "Custom", "enabled": true,
-		"groups":              []map[string]any{{"name": "Custom", "type": "select", "proxies": []string{"DIRECT"}}},
-		"rule_providers_yaml": "{}", "rules": []string{"MATCH,Custom"},
+		"groups":         []map[string]any{{"name": "Custom", "type": "select", "proxies": []string{"DIRECT"}}},
+		"rule_providers": []any{}, "rules": []string{"MATCH,Custom"},
 	}, adminCookie)
 	var createdPresetPayload struct {
 		RoutingPreset routingPresetResponse `json:"routing_preset"`

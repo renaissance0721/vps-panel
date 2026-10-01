@@ -235,7 +235,7 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
 		writeError(w, http.StatusNotFound, "发布节点不存在")
 	case errors.Is(err, subscriptionstore.ErrPlanNotFound):
-		writeError(w, http.StatusNotFound, "选择的套餐不存在")
+		writeError(w, http.StatusNotFound, "选择的共享订阅不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidNodeName):
 		writeError(w, http.StatusBadRequest, "发布名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, subscriptionstore.ErrInvalidTrafficMultiplier):
@@ -251,13 +251,13 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrInvalidPort):
 		writeError(w, http.StatusBadRequest, "入口端口必须在 1–65535 之间。")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
-		writeError(w, http.StatusBadRequest, "所属套餐无效；同一套餐不能包含多个指向同一 Proxy 的发布节点")
+		writeError(w, http.StatusBadRequest, "所属共享订阅无效；同一共享订阅不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
 		writeError(w, http.StatusNotFound, "落地节点不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrSourceServerNotFound):
 		writeError(w, http.StatusNotFound, "中转服务器不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeReferenced):
-		writeError(w, http.StatusConflict, "请先从套餐中移除此发布节点")
+		writeError(w, http.StatusConflict, "请先从共享订阅中移除此发布节点")
 	case errors.Is(err, subscriptionstore.ErrServerNotDistributable), errors.Is(err, proxystore.ErrNotDistributable):
 		writeError(w, http.StatusBadRequest, "订阅发布节点只能使用管理员创建的服务器")
 	case errors.Is(err, subscriptionstore.ErrSourceServerRequired),

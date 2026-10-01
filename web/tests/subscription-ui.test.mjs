@@ -20,14 +20,14 @@ test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数�
   assert.doesNotMatch(portalSource, /\/api\/subscriber\/(?:nodes|password-change-request)/)
 })
 
-test('Subscriber Portal 将套餐和导入入口收拢到单一卡片', () => {
-  for (const label of ['套餐信息', '下次重置', '到期', '可用节点', '导入订阅', '重新生成订阅', 'Base64 通用订阅', 'Clash / Mihomo', '扫描二维码订阅', '复制地址']) {
+test('Subscriber Portal 将共享订阅和导入入口收拢到单一卡片', () => {
+  for (const label of ['共享订阅信息', '下次重置', '到期', '可用节点', '导入订阅', '重新生成订阅', 'Base64 通用订阅', 'Clash / Mihomo', '扫描二维码订阅', '复制地址']) {
     assert.match(portalSource, new RegExp(label))
   }
   assert.match(portalSource, /subscriber\.plan_name/)
   assert.match(portalSource, /subscriber\.used_bytes/)
   assert.match(portalSource, /subscriber\.traffic_limit_bytes/)
-  assert.match(portalSource, /class="portal-section-title">套餐信息/)
+  assert.match(portalSource, /class="portal-section-title">共享订阅信息/)
   assert.match(portalSource, /<n-card[\s\S]*subscriber-plan-actions[\s\S]*importModalOpen = true/)
   assert.match(portalSource, /subscription-import-card[\s\S]*regenerateSubscription[\s\S]*重新生成订阅/)
   assert.match(portalSource, /copySubscription\('base64', subscriber\?\.subscription_base64_url/)
@@ -42,9 +42,9 @@ test('Subscriber Portal 将套餐和导入入口收拢到单一卡片', () => {
   assert.doesNotMatch(portalSource, /server_name|proxy_name|client_name|UUID|SS Password|REALITY|Realm|添加中转|自定义落地/)
 })
 
-test('Subscriber Portal 无套餐时只渲染极简空态且不开放订阅操作', () => {
+test('Subscriber Portal 无共享订阅时只渲染极简空态且不开放订阅操作', () => {
   assert.match(portalSource, /const hasPlan = computed\(\(\) => \(subscriber\.value\?\.plan_name \?\? ''\)\.trim\(\) !== ''\)/)
-  assert.match(portalSource, /<section v-if="!hasPlan" class="subscriber-empty-state">[\s\S]*尚未开通套餐[\s\S]*当前账号尚未开通任何套餐[\s\S]*<section v-else>/)
+  assert.match(portalSource, /<section v-if="!hasPlan" class="subscriber-empty-state">[\s\S]*尚未开通共享订阅[\s\S]*当前账号尚未开通任何共享订阅[\s\S]*<section v-else>/)
   assert.match(portalSource, /<n-modal v-if="hasPlan" v-model:show="importModalOpen">/)
   assert.match(portalSource, /<QRCodeModal\s+v-if="hasPlan"/)
 })
@@ -55,13 +55,13 @@ test('Subscriber Portal 品牌区域使用统一轻量玻璃风格', () => {
   assert.match(styleSource, /\.subscriber-empty-state\s*\{[\s\S]*place-content: center/)
 })
 
-test('订阅管理只在 Admin Sidebar 显示且包含三个 Tab', () => {
-  assert.match(appSource, /v-if="state\.user\?\.role === 'admin'"[\s\S]*currentPage === 'subscriptions'[\s\S]*订阅管理/)
-  assert.match(appSource, /currentPage === 'subscriptions' && state\.user\?\.role === 'admin'/)
-  assert.doesNotMatch(appSource, /role === 'vip'[^\n]*subscriptions/)
-  for (const label of ['订阅用户', '套餐', '发布节点']) {
-    assert.match(managementSource, new RegExp(`label: '${label}'`))
-  }
+test('订阅管理对 Admin 和 VIP 开放，并严格限制可见 Tab', () => {
+  assert.match(appSource, /v-if="state\.user\?\.role === 'admin' \|\| state\.user\?\.role === 'vip'"[\s\S]*currentPage === 'subscriptions'[\s\S]*订阅管理/)
+  assert.match(appSource, /currentPage === 'subscriptions' && \(state\.user\?\.role === 'admin' \|\| state\.user\?\.role === 'vip'\)/)
+  assert.match(appSource, /<SubscriptionManagementView[\s\S]*:role="state\.user\?\.role"/)
+  assert.match(managementSource, /const currentTab = ref<Tab>\('personal'\)/)
+  assert.match(managementSource, /props\.role === 'vip'[\s\S]*\{ id: 'personal', label: '个人订阅' \}/)
+  assert.match(managementSource, /\{ id: 'personal', label: '个人订阅' \},\s*\{ id: 'users', label: '订阅用户' \},\s*\{ id: 'plans', label: '共享订阅' \},\s*\{ id: 'nodes', label: '发布节点' \},\s*\{ id: 'configuration', label: '分流模板' \}/)
 })
 
 test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建节点拓扑', () => {
@@ -73,7 +73,7 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
     '/traffic/reset',
     '/token/regenerate',
   ]) {
-    assert.match(managementSource, new RegExp(endpoint.replaceAll('/', '\\/')))
+    assert.ok(managementSource.includes(endpoint))
   }
   assert.match(managementSource, /v-if="!editingNode"[\s\S]*中转服务器[\s\S]*落地 Proxy/)
   assert.match(managementSource, /v-for="server in relayServers"[\s\S]*\{\{ server\.name \}\}/)
@@ -97,18 +97,18 @@ test('套餐布尔状态使用 NSwitch 双向绑定并原样写入保存请求',
   assert.match(managementSource, /enabled: planEnabled\.value, traffic_limit_bytes: trafficLimit/)
 })
 
-test('套餐表单区分后台名称与订阅显示名称', () => {
+test('共享订阅表单区分后台名称与订阅显示名称', () => {
   assert.match(managementSource, /subscription_title: string/)
   assert.match(managementSource, /const planSubscriptionTitle = ref\(''\)/)
   assert.match(managementSource, /planSubscriptionTitle\.value = value\.subscription_title/)
   assert.match(managementSource, /订阅显示名称/)
-  assert.match(managementSource, /客户端导入订阅后显示的名称。留空则使用套餐名称。/)
+  assert.match(managementSource, /客户端导入订阅后显示的名称。留空则使用共享订阅名称。/)
 })
 
 test('套餐保存使用 Modal 独立错误、前端校验和防重复提交', () => {
   assert.match(managementSource, /const planFormError = ref\(''\)/)
   assert.match(managementSource, /async function savePlan\(\) \{\s*if \(busy\.value\) return\s*planFormError\.value = ''/)
-  assert.match(managementSource, /套餐名称不能为空/)
+  assert.match(managementSource, /共享订阅名称不能为空/)
   assert.match(managementSource, /流量额度必须是有限且不小于 0 的数字/)
   assert.match(managementSource, /String\(planTrafficGiB\.value \?\? ''\)\.trim\(\)/)
   assert.match(managementSource, /<form class="auth-form" novalidate @submit\.prevent="savePlan">/)
@@ -123,7 +123,7 @@ test('发布节点可手动输入倍率且管理端统一显示最终名称', ()
   assert.match(managementSource, /:min="0\.1"/)
   assert.match(managementSource, /:max="5"/)
   assert.match(managementSource, /:precision="2"/)
-  assert.match(managementSource, /实际使用 1 GB 时，按该倍率计入套餐流量。允许 0\.10×–5\.00×。/)
+  assert.match(managementSource, /实际使用 1 GB 时，按该倍率计入共享订阅流量。允许 0\.10×–5\.00×。/)
   assert.match(managementSource, /traffic_multiplier: multiplier/)
   assert.match(managementSource, /function nodeDisplayName\(value: PublishedNode\)/)
   assert.match(managementSource, /`\$\{value\.name\} \[\$\{Number\(value\.traffic_multiplier\.toFixed\(2\)\)\}×\]`/)
@@ -140,9 +140,9 @@ test('发布节点创建和编辑一次提交所属套餐并在列表展示关�
   assert.match(managementSource, /function toggleNodePlan\(id: number, checked: boolean\)/)
   assert.match(managementSource, /method: 'PATCH'[\s\S]*plan_ids: nodePlanIDs\.value/)
   assert.match(managementSource, /method: 'POST'[\s\S]*plan_ids: nodePlanIDs\.value/)
-  assert.match(managementSource, /editingNode \? '所属套餐' : '加入套餐'/)
+  assert.match(managementSource, /editingNode \? '所属共享订阅' : '加入共享订阅'/)
   assert.match(managementSource, /v-for="plan in plans"[\s\S]*nodePlanIDs\.includes\(plan\.id\)/)
-  assert.match(managementSource, /所属套餐：\{\{ nodePlanNames\(value\.id\) \|\| '未加入套餐' \}\}/)
+  assert.match(managementSource, /所属共享订阅：\{\{ nodePlanNames\(value\.id\) \|\| '未加入共享订阅' \}\}/)
   assert.match(managementSource, /nodeModalOpen\.value = false\s*await loadAll\(\)/)
 })
 
@@ -176,8 +176,8 @@ test('生命周期字段只在订阅用户表单管理', () => {
 test('套餐节点保存失败保留 Modal、说明部分成功并刷新服务端状态', () => {
   assert.match(managementSource, /let planSaved = false/)
   assert.match(managementSource, /let nodesSaved = false/)
-  assert.match(managementSource, /套餐基本信息已保存，但节点列表保存失败：\$\{message\}/)
-  assert.match(managementSource, /套餐已创建，但节点列表保存失败：\$\{message\}/)
+  assert.match(managementSource, /共享订阅基本信息已保存，但节点列表保存失败：\$\{message\}/)
+  assert.match(managementSource, /共享订阅已创建，但节点列表保存失败：\$\{message\}/)
   assert.match(managementSource, /if \(planSaved && !nodesSaved\)[\s\S]*await loadAll\(\)[\s\S]*populatePlanForm\(current\)/)
   assert.match(managementSource, /await loadAll\(\)\s*planModalOpen\.value = false/)
   assert.match(managementSource, /function movePlanNode/)
@@ -193,17 +193,42 @@ test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => 
   assert.match(clientSource, /v-if="!client\.subscription_managed"/)
 })
 
-test('分流方案使用策略组、Rule Providers YAML 和逐行规则编辑器', () => {
+test('分流方案使用策略组、结构化规则源和逐行规则编辑器', () => {
   assert.doesNotMatch(managementSource, /Groups JSON|Rules JSON|routingGroupsJSON|routingRulesJSON|published_node_id/)
-  for (const label of ['包含套餐全部节点', '指定 Published Node', '添加 DIRECT', '添加 REJECT', '添加分组引用', '上移', '下移']) {
+  for (const label of ['包含订阅全部节点', '指定 Published Node', '添加 DIRECT', '添加 REJECT', '添加分组引用', '上移', '下移']) {
     assert.match(groupEditorSource, new RegExp(label))
   }
   assert.match(groupEditorSource, /node.name/)
   assert.match(groupEditorSource, /node_ids/)
-  assert.match(managementSource, /v-model:value="routingProvidersYAML"/)
-  assert.match(managementSource, /Rule Providers YAML/)
+  assert.match(managementSource, /const routingProviders = ref<RoutingRuleProvider\[]>\(\[]\)/)
+  assert.match(managementSource, /rule_providers: routingProviders\.value/)
+  for (const field of ['provider.name', 'provider.url', 'provider.type', 'provider.behavior', 'provider.format', 'provider.interval']) {
+    assert.match(managementSource, new RegExp(field.replace('.', '\\.')))
+  }
+  assert.doesNotMatch(managementSource, /routingProvidersYAML|Rule Providers YAML|rule_providers_yaml/)
   assert.match(managementSource, /Rules（一行一条 Mihomo rule）/)
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
+})
+
+test('个人订阅支持创建、三种节点来源、排序、状态与输出操作', () => {
+  for (const endpoint of [
+    '/api/personal-subscriptions',
+    '/api/personal-subscriptions/sources?client_name=',
+    '/nodes',
+    '/token/regenerate',
+    '/mihomo-preview',
+  ]) {
+    assert.ok(managementSource.includes(endpoint))
+  }
+  for (const label of ['新增个人订阅', '同名 Client', '本地 Proxy', '发布节点', '外部节点', '添加全部可用节点', '显示名称', '上移', '下移', '复制链接', '二维码', '预览', 'Mihomo 模板']) {
+    assert.match(managementSource, new RegExp(label))
+  }
+  assert.match(managementSource, /v-model:value="personalClientName"/)
+  assert.match(managementSource, /v-model:value="node\.display_name"/)
+  assert.match(managementSource, /personalStatusType\(node\.status\)/)
+  assert.match(managementSource, /\{ label: 'Auto', value: personalQR\.subscription_auto_url \}/)
+  assert.match(managementSource, /\{ label: 'Mihomo', value: personalQR\.subscription_mihomo_url \}/)
+  assert.match(managementSource, /\{ label: 'Base64', value: personalQR\.subscription_base64_url \}/)
 })
 
 test('分流方案支持编辑且默认方案不能停用或删除', () => {
@@ -218,12 +243,12 @@ test('分流方案支持编辑且默认方案不能停用或删除', () => {
   assert.match(managementSource, /v-if="value\.is_default"[^>]*>默认</)
 })
 
-test('套餐直接选择 Mihomo 模板和分流方案', () => {
+test('共享订阅直接选择 Mihomo 模板和分流方案', () => {
   assert.match(managementSource, /routing_preset_id: number/)
   assert.match(managementSource, /const planRoutingPresetID = ref\(0\)/)
   assert.match(managementSource, /routing_preset_id: planRoutingPresetID\.value/)
   assert.match(managementSource, /v-model\.number="planRoutingPresetID"/)
-  assert.match(managementSource, /套餐直接引用分流方案，方案修改后无需重新保存套餐。/)
+  assert.match(managementSource, /共享订阅直接引用分流方案，方案修改后无需重新保存共享订阅。/)
   assert.match(managementSource, /function viewSelectedPlanRouting\(\)/)
   assert.doesNotMatch(managementSource, /planRoutingGroups|planRoutingRulesText|编辑当前分流|套用预设|恢复模板分流|继承 Mihomo 模板分流/)
 })
@@ -239,16 +264,19 @@ test('Mihomo 模板只负责客户端基础配置', () => {
 
 test('分流与模板页面展示数据库默认方案并解释产品语义', () => {
   assert.match(managementSource, /api<MihomoConfiguration>\('\/api\/admin\/subscription\/builtin-mihomo'\)/)
-  assert.match(managementSource, /Mihomo 模板负责 DNS、sniffer 等客户端基础配置；分流方案负责策略组、Rule Providers 和 Rules。套餐分别选择一套模板和一套分流方案。/)
+  assert.match(managementSource, /通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案与 Mihomo 模板。/)
+  assert.match(managementSource, /<n-card title="通用分流方案"/)
+  assert.match(managementSource, /<n-card title="客户端模板"/)
   assert.match(managementSource, /v-for="value in routingPresets"[\s\S]*value\.is_default[\s\S]*默认/)
   assert.match(managementSource, /内置默认 Mihomo 模板[\s\S]*复制为自定义模板/)
   assert.doesNotMatch(managementSource, /内置默认分流|复制为预设/)
 })
 
-test('分流方案可以在套餐中只读查看并统一到配置页编辑', () => {
+test('分流方案可以在共享订阅中只读查看并统一到配置页编辑', () => {
   assert.match(managementSource, /function viewSelectedPlanRouting\(\)[\s\S]*openRoutingPreview/)
   assert.match(managementSource, /routingPreviewRules.join\('\\n'\)[\s\S]*readonly/)
-  assert.match(managementSource, /routingPreviewProvidersYAML/)
+  assert.match(managementSource, /routingPreviewProviders/)
+  assert.match(managementSource, /v-for="provider in routingPreviewProviders"/)
   assert.match(groupEditorSource, /readonly\?: boolean/)
   assert.match(groupEditorSource, /v-if="readonly"[\s\S]*\{\{ proxy \}\}/)
   assert.match(groupEditorSource, /v-if="!readonly"[\s\S]*新增策略组/)
@@ -256,7 +284,7 @@ test('分流方案可以在套餐中只读查看并统一到配置页编辑', ()
 
 test('内置 Mihomo 基础模板可查看并复制', () => {
   assert.match(managementSource, /function viewBuiltinTemplate\(\)[\s\S]*templatePreviewYAML.value = builtinMihomo.value.yaml/)
-  assert.match(managementSource, /真实 proxies 由 Panel 动态注入，策略组、Rule Providers 和 Rules 来自套餐选择的分流方案。/)
+  assert.match(managementSource, /真实 proxies 由 Panel 动态注入，策略组、规则源和 Rules 来自订阅选择的分流方案。/)
   assert.match(managementSource, /function copyBuiltinTemplate\(\)[\s\S]*内置默认 Mihomo 模板 - 副本[\s\S]*builtinMihomo.value.yaml.trim\(\)/)
 })
 
@@ -266,4 +294,10 @@ test('订阅用户可预览并复制正式 Mihomo YAML', () => {
   assert.match(managementSource, /mihomoPreviewYAML.value = response.yaml/)
   assert.match(managementSource, /navigator.clipboard.writeText\(mihomoPreviewYAML.value\)/)
   assert.match(managementSource, /复制 YAML/)
+})
+
+test('用户可见文案统一使用共享订阅而非套餐', () => {
+  assert.doesNotMatch(managementSource, /套餐/)
+  assert.doesNotMatch(portalSource, /套餐/)
+  assert.doesNotMatch(groupEditorSource, /套餐/)
 })

@@ -104,7 +104,7 @@ func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, 
 	}
 	planID, planIDSet, err := decodeNullableInt64(request.PlanID)
 	if err != nil || planID != nil && *planID <= 0 {
-		writeError(w, http.StatusBadRequest, "套餐格式无效")
+		writeError(w, http.StatusBadRequest, "共享订阅格式无效")
 		return
 	}
 	expiresAt, expiresAtSet, err := parseClientExpiration(request.ExpiresAt)
@@ -129,7 +129,7 @@ func (s *server) updateSubscriptionUser(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.notifyProxyMutations(mutations)
-	s.recordAudit(r, user, "subscriber.plan.assign", "subscriber", id, "更新订阅用户套餐与状态")
+	s.recordAudit(r, user, "subscriber.plan.assign", "subscriber", id, "更新订阅用户共享订阅与状态")
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
 		writeInternalError(w, errPanelBaseURL)
@@ -190,7 +190,7 @@ func (s *server) previewSubscriptionUserMihomo(w http.ResponseWriter, r *http.Re
 	data, mutations, err := s.subscriptions.GenerateSubscriptionDataForUser(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, subscriptionstore.ErrSubscriptionUnavailable) {
-			writeError(w, http.StatusBadRequest, "订阅用户当前没有可预览的有效套餐和节点")
+			writeError(w, http.StatusBadRequest, "订阅用户当前没有可预览的有效共享订阅和节点")
 			return
 		}
 		writeSubscriptionUserError(w, err)
@@ -245,7 +245,7 @@ func writeSubscriptionUserError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrSubscriberNotFound):
 		writeError(w, http.StatusNotFound, "订阅用户不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidSubscriberPlan):
-		writeError(w, http.StatusBadRequest, "套餐不存在")
+		writeError(w, http.StatusBadRequest, "共享订阅不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidSubscriberExpiry):
 		writeError(w, http.StatusBadRequest, "到期时间无效")
 	case errors.Is(err, subscriptionstore.ErrInvalidTrafficReset):

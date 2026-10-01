@@ -1493,6 +1493,27 @@ h1 {
   padding: 12px;
 }
 
+.personal-source-group,
+.personal-node-editor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.personal-source-group .invitation-row {
+  background: #ffffff;
+}
+
+.personal-node-editor > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
 .subscription-node-option {
   display: grid;
   grid-template-columns: auto 1fr auto auto;

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 7
+const LatestSchemaVersion = 8
 
 type migration struct {
 	version int
@@ -29,6 +29,53 @@ var migrations = []migration{
 	{version: 5, name: "audit_logs", up: createAuditLogs},
 	{version: 6, name: "materialize_subscription_plan_routing", up: materializeSubscriptionPlanRouting},
 	{version: 7, name: "routing_presets_as_runtime_profiles", up: migrateRoutingPresetsAsRuntimeProfiles},
+	{version: 8, name: "personal_subscriptions", up: createPersonalSubscriptions},
+}
+
+func createPersonalSubscriptions(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE personal_subscription_groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			subscription_title TEXT NOT NULL DEFAULT '',
+			token TEXT NOT NULL UNIQUE,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			client_name TEXT NOT NULL,
+			routing_preset_id INTEGER NOT NULL REFERENCES subscription_routing_presets(id) ON DELETE RESTRICT,
+			mihomo_template_id INTEGER REFERENCES subscription_templates(id) ON DELETE RESTRICT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX idx_personal_subscription_groups_owner
+			ON personal_subscription_groups(owner_user_id, created_at DESC, id DESC)`,
+		`CREATE INDEX idx_personal_subscription_groups_routing
+			ON personal_subscription_groups(routing_preset_id)`,
+		`CREATE INDEX idx_personal_subscription_groups_mihomo_template
+			ON personal_subscription_groups(mihomo_template_id)`,
+		`CREATE TABLE personal_subscription_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			group_id INTEGER NOT NULL REFERENCES personal_subscription_groups(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK (source_type IN ('proxy', 'published', 'landing')),
+			source_id INTEGER NOT NULL CHECK (source_id > 0),
+			display_name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			position INTEGER NOT NULL CHECK (position > 0),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE (group_id, source_type, source_id),
+			UNIQUE (group_id, display_name),
+			UNIQUE (group_id, position)
+		)`,
+		`CREATE INDEX idx_personal_subscription_nodes_source
+			ON personal_subscription_nodes(source_type, source_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create personal subscription schema: %w", err)
+		}
+	}
+	return nil
 }
 
 func migrate(db *sql.DB) error {

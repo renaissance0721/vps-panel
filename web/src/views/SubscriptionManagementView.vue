@@ -3,9 +3,12 @@ import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import RoutingGroupEditor, { type RoutingGroup } from '../components/subscription/RoutingGroupEditor.vue'
+import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
 import type { ProxyRecord } from '../types/proxy'
+
+const props = defineProps<{ role?: 'admin' | 'vip' }>()
 
 type PublishedNode = {
   id: number
@@ -46,8 +49,16 @@ type RoutingPreset = {
   enabled: boolean
   is_default: boolean
   groups: RoutingGroup[]
-  rule_providers_yaml: string
+  rule_providers: RoutingRuleProvider[]
   rules: string[]
+}
+type RoutingRuleProvider = {
+  name: string
+  url: string
+  type: 'http'
+  behavior: string
+  format: string
+  interval: number
 }
 type SubscriptionTemplate = { id: number; name: string; enabled: boolean; config_yaml: string }
 type MihomoConfiguration = {
@@ -78,8 +89,46 @@ type Subscriber = {
   password_request?: PasswordRequest
 }
 
-type Tab = 'users' | 'plans' | 'nodes' | 'configuration'
-const currentTab = ref<Tab>('users')
+type PersonalNode = {
+  id: number
+  source_type: 'proxy' | 'published' | 'landing'
+  source_id: number
+  source_name: string
+  source_detail: string
+  display_name: string
+  enabled: boolean
+  position: number
+  status: string
+  status_detail: string
+}
+type PersonalSubscription = {
+  id: number
+  name: string
+  subscription_title: string
+  enabled: boolean
+  client_name: string
+  routing_preset_id: number
+  routing_preset_name: string
+  mihomo_template_id: number | null
+  mihomo_template_name: string
+  nodes: PersonalNode[]
+  subscription_base64_url: string
+  subscription_mihomo_url: string
+  subscription_auto_url: string
+}
+type PersonalSource = {
+  source_type: 'proxy' | 'published' | 'landing'
+  source_id: number
+  name: string
+  detail: string
+  default_name: string
+  status: string
+  status_detail: string
+}
+
+type Tab = 'personal' | 'users' | 'plans' | 'nodes' | 'configuration'
+const currentTab = ref<Tab>('personal')
+const personalSubscriptions = ref<PersonalSubscription[]>([])
 const users = ref<Subscriber[]>([])
 const plans = ref<Plan[]>([])
 const nodes = ref<PublishedNode[]>([])
@@ -124,7 +173,7 @@ const editingRoutingPreset = ref<RoutingPreset | null>(null)
 const routingName = ref('')
 const routingEnabled = ref(true)
 const routingGroups = ref<RoutingGroup[]>([])
-const routingProvidersYAML = ref('{}')
+const routingProviders = ref<RoutingRuleProvider[]>([])
 const routingRulesText = ref('')
 const routingFormError = ref('')
 const templateModalOpen = ref(false)
@@ -137,7 +186,7 @@ const routingPreviewOpen = ref(false)
 const routingPreviewTitle = ref('')
 const routingPreviewGroups = ref<RoutingGroup[]>([])
 const routingPreviewRules = ref<string[]>([])
-const routingPreviewProvidersYAML = ref('')
+const routingPreviewProviders = ref<RoutingRuleProvider[]>([])
 const routingPreviewHelp = ref('')
 const templatePreviewOpen = ref(false)
 const templatePreviewYAML = ref('')
@@ -157,16 +206,44 @@ const mihomoPreviewOpen = ref(false)
 const mihomoPreviewYAML = ref('')
 const copiedMihomoPreview = ref(false)
 
-const tabs: { id: Tab; label: string }[] = [
-  { id: 'users', label: '订阅用户' },
-  { id: 'plans', label: '套餐' },
-  { id: 'nodes', label: '发布节点' },
-  { id: 'configuration', label: '分流与模板' },
-]
+const personalModalOpen = ref(false)
+const editingPersonal = ref<PersonalSubscription | null>(null)
+const personalName = ref('')
+const personalTitle = ref('')
+const personalEnabled = ref(true)
+const personalClientName = ref('')
+const personalRoutingPresetID = ref(0)
+const personalMihomoTemplateID = ref(0)
+const personalNodes = ref<PersonalNode[]>([])
+const personalSources = ref<PersonalSource[]>([])
+const personalSourcesLoading = ref(false)
+const personalFormError = ref('')
+const personalCopiedID = ref<number | null>(null)
+const personalPreviewOpen = ref(false)
+const personalPreviewYAML = ref('')
+const personalQR = ref<PersonalSubscription | null>(null)
+const personalQROpen = ref(false)
+const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'published', 'landing']
+
+const tabs = computed<{ id: Tab; label: string }[]>(() => props.role === 'vip'
+  ? [{ id: 'personal', label: '个人订阅' }]
+  : [
+      { id: 'personal', label: '个人订阅' },
+      { id: 'users', label: '订阅用户' },
+      { id: 'plans', label: '共享订阅' },
+      { id: 'nodes', label: '发布节点' },
+      { id: 'configuration', label: '分流模板' },
+    ])
 const enabledPlans = computed(() => plans.value.filter((plan) => plan.enabled || plan.id === selectedUser.value?.plan_id))
 const defaultRoutingPreset = computed(() => routingPresets.value.find((value) => value.is_default))
 const selectableRoutingPresets = computed(() => routingPresets.value.filter((value) =>
   value.enabled || value.id === editingPlan.value?.routing_preset_id,
+))
+const selectablePersonalRoutingPresets = computed(() => routingPresets.value.filter((value) =>
+  value.enabled || value.id === editingPersonal.value?.routing_preset_id,
+))
+const selectablePersonalTemplates = computed(() => templates.value.filter((value) =>
+  value.enabled || value.id === editingPersonal.value?.mihomo_template_id,
 ))
 const orderedPlanNodes = computed(() => {
   const byID = new Map(nodes.value.map((node) => [node.id, node]))
@@ -216,29 +293,35 @@ const nodeEntryPreview = computed(() => {
 })
 
 const statusLabels: Record<string, string> = {
-  normal: '正常', unconfigured: '未开通套餐', disabled: '已停用', plan_disabled: '套餐已停用',
+  normal: '正常', unconfigured: '未开通共享订阅', disabled: '已停用', plan_disabled: '共享订阅已停用',
   expired: '已到期', exhausted: '流量已用完',
 }
 
 async function loadAll() {
-  const [userResult, planResult, nodeResult, proxyResult, relayServerResult, routingResult, templateResult, builtinResult] = await Promise.all([
-    api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
-    api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
-    api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
-    api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
-    api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
+  const [personalResult, routingResult, templateResult] = await Promise.all([
+    api<{ personal_subscriptions: PersonalSubscription[] }>('/api/personal-subscriptions'),
     api<{ routing_presets: RoutingPreset[] }>('/api/admin/subscription/routing-presets'),
     api<{ templates: SubscriptionTemplate[] }>('/api/admin/subscription/templates'),
-    api<MihomoConfiguration>('/api/admin/subscription/builtin-mihomo'),
   ])
-  users.value = userResult.users
-  plans.value = planResult.plans
-  nodes.value = nodeResult.nodes
-  proxies.value = proxyResult.proxies
-  relayServers.value = relayServerResult.servers
+  personalSubscriptions.value = personalResult.personal_subscriptions
   routingPresets.value = routingResult.routing_presets
   templates.value = templateResult.templates
-  builtinMihomo.value = builtinResult
+  if (props.role === 'admin') {
+    const [userResult, planResult, nodeResult, proxyResult, relayServerResult, builtinResult] = await Promise.all([
+      api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
+      api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
+      api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
+      api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
+      api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
+      api<MihomoConfiguration>('/api/admin/subscription/builtin-mihomo'),
+    ])
+    users.value = userResult.users
+    plans.value = planResult.plans
+    nodes.value = nodeResult.nodes
+    proxies.value = proxyResult.proxies
+    relayServers.value = relayServerResult.servers
+    builtinMihomo.value = builtinResult
+  }
 }
 
 async function run(action: () => Promise<void>) {
@@ -251,6 +334,211 @@ async function run(action: () => Promise<void>) {
   } finally {
     busy.value = false
   }
+}
+
+function clonePersonalNodes(values: PersonalNode[]) {
+  return values.map((value) => ({ ...value }))
+}
+
+function openCreatePersonal() {
+  editingPersonal.value = null
+  personalName.value = ''
+  personalTitle.value = ''
+  personalEnabled.value = true
+  personalClientName.value = ''
+  personalRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
+  personalMihomoTemplateID.value = 0
+  personalNodes.value = []
+  personalSources.value = []
+  personalFormError.value = ''
+  personalModalOpen.value = true
+}
+
+async function openEditPersonal(value: PersonalSubscription) {
+  await run(async () => {
+    const response = await api<{ personal_subscription: PersonalSubscription }>(`/api/personal-subscriptions/${value.id}`)
+    const current = response.personal_subscription
+    editingPersonal.value = current
+    personalName.value = current.name
+    personalTitle.value = current.subscription_title
+    personalEnabled.value = current.enabled
+    personalClientName.value = current.client_name
+    personalRoutingPresetID.value = current.routing_preset_id
+    personalMihomoTemplateID.value = current.mihomo_template_id ?? 0
+    personalNodes.value = clonePersonalNodes(current.nodes)
+    personalFormError.value = ''
+    personalModalOpen.value = true
+    await loadPersonalSources()
+  })
+}
+
+async function loadPersonalSources() {
+  const clientName = personalClientName.value.trim()
+  if (!clientName) {
+    personalSources.value = []
+    personalFormError.value = '请先填写同名 Client'
+    return
+  }
+  personalSourcesLoading.value = true
+  personalFormError.value = ''
+  try {
+    const response = await api<{ sources: PersonalSource[] }>(`/api/personal-subscriptions/sources?client_name=${encodeURIComponent(clientName)}`)
+    personalSources.value = response.sources
+    const bySource = new Map(response.sources.map((source) => [`${source.source_type}:${source.source_id}`, source]))
+    personalNodes.value = personalNodes.value.map((node) => {
+      const source = bySource.get(`${node.source_type}:${node.source_id}`)
+      return source ? {
+        ...node, source_name: source.name, source_detail: source.detail,
+        status: source.status, status_detail: source.status_detail,
+      } : node
+    })
+  } catch (reason) {
+    personalFormError.value = reason instanceof Error ? reason.message : '加载节点来源失败'
+  } finally {
+    personalSourcesLoading.value = false
+  }
+}
+
+function addPersonalSource(source: PersonalSource) {
+  if (personalNodes.value.some((node) => node.source_type === source.source_type && node.source_id === source.source_id)) return
+  personalNodes.value.push({
+    id: 0, source_type: source.source_type, source_id: source.source_id,
+    source_name: source.name, source_detail: source.detail, display_name: source.default_name,
+    enabled: true, position: personalNodes.value.length + 1,
+    status: source.status, status_detail: source.status_detail,
+  })
+}
+
+function addAllPersonalSources() {
+  for (const source of personalSources.value) addPersonalSource(source)
+}
+
+function removePersonalNode(index: number) {
+  personalNodes.value.splice(index, 1)
+  personalNodes.value.forEach((node, position) => { node.position = position + 1 })
+}
+
+function movePersonalNode(index: number, direction: -1 | 1) {
+  const target = index + direction
+  if (target < 0 || target >= personalNodes.value.length) return
+  const values = [...personalNodes.value]
+  ;[values[index], values[target]] = [values[target], values[index]]
+  values.forEach((node, position) => { node.position = position + 1 })
+  personalNodes.value = values
+}
+
+async function savePersonal() {
+  if (busy.value) return
+  personalFormError.value = ''
+  if (!personalName.value.trim() || !personalClientName.value.trim()) {
+    personalFormError.value = '名称和同名 Client 不能为空'
+    return
+  }
+  if (!personalRoutingPresetID.value) {
+    personalFormError.value = '请选择分流方案'
+    return
+  }
+  const names = personalNodes.value.map((node) => node.display_name.trim())
+  if (names.some((name) => !name) || new Set(names).size !== names.length) {
+    personalFormError.value = '节点显示名称不能为空且不能重复'
+    return
+  }
+  busy.value = true
+  let id = editingPersonal.value?.id
+  const creating = id === undefined
+  let groupSaved = false
+  let nodesSaved = false
+  try {
+    const body = {
+      name: personalName.value.trim(), subscription_title: personalTitle.value.trim(),
+      enabled: personalEnabled.value, client_name: personalClientName.value.trim(),
+      routing_preset_id: personalRoutingPresetID.value,
+      mihomo_template_id: personalMihomoTemplateID.value || null,
+    }
+    if (id !== undefined) {
+      await api(`/api/personal-subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+    } else {
+      const response = await api<{ personal_subscription: PersonalSubscription }>('/api/personal-subscriptions', {
+        method: 'POST', body: JSON.stringify(body),
+      })
+      id = response.personal_subscription.id
+    }
+    groupSaved = true
+    await api(`/api/personal-subscriptions/${id}/nodes`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        nodes: personalNodes.value.map((node) => ({
+          source_type: node.source_type, source_id: node.source_id,
+          display_name: node.display_name.trim(), enabled: node.enabled,
+        })),
+      }),
+    })
+    nodesSaved = true
+    await loadAll()
+    personalModalOpen.value = false
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : '保存个人订阅失败'
+    if (groupSaved && !nodesSaved) {
+      personalFormError.value = creating
+        ? `个人订阅已创建，但节点列表保存失败：${message}`
+        : `个人订阅基本信息已保存，但节点列表保存失败：${message}`
+      try {
+        await loadAll()
+        editingPersonal.value = personalSubscriptions.value.find((value) => value.id === id) ?? editingPersonal.value
+      } catch (refreshReason) {
+        const refreshMessage = refreshReason instanceof Error ? refreshReason.message : '未知错误'
+        personalFormError.value += `；刷新服务端状态失败：${refreshMessage}`
+      }
+    } else if (groupSaved) {
+      personalFormError.value = `个人订阅已保存，但刷新列表失败：${message}`
+    } else {
+      personalFormError.value = message
+    }
+  } finally {
+    busy.value = false
+  }
+}
+
+async function deletePersonal(value: PersonalSubscription) {
+  if (!window.confirm(`确定删除个人订阅“${value.name}”吗？`)) return
+  await run(async () => {
+    await api(`/api/personal-subscriptions/${value.id}`, { method: 'DELETE' })
+    await loadAll()
+  })
+}
+
+async function regeneratePersonalToken(value: PersonalSubscription) {
+  if (!window.confirm('重新生成后，旧订阅链接会立即失效。确定继续吗？')) return
+  await run(async () => {
+    await api(`/api/personal-subscriptions/${value.id}/token/regenerate`, { method: 'POST' })
+    await loadAll()
+  })
+}
+
+async function copyPersonalURL(value: PersonalSubscription) {
+  await navigator.clipboard.writeText(value.subscription_auto_url)
+  personalCopiedID.value = value.id
+}
+
+function showPersonalQR(value: PersonalSubscription) {
+  personalQR.value = value
+  personalQROpen.value = true
+}
+
+async function previewPersonal(value: PersonalSubscription) {
+  await run(async () => {
+    const response = await api<{ yaml: string }>(`/api/personal-subscriptions/${value.id}/mihomo-preview`)
+    personalPreviewYAML.value = response.yaml
+    personalPreviewOpen.value = true
+  })
+}
+
+function personalSourceLabel(value: string) {
+  return value === 'proxy' ? '本地 Proxy' : value === 'published' ? '发布节点' : '外部节点'
+}
+
+function personalStatusType(value: string) {
+  return value === 'ready' ? 'success' : 'warning'
 }
 
 function openCreateNode() {
@@ -419,11 +707,15 @@ function cloneRoutingGroups(values: RoutingGroup[]) {
   return values.map((group) => ({ ...group, proxies: [...group.proxies], node_ids: [...(group.node_ids ?? [])] }))
 }
 
-function openRoutingPreview(title: string, groups: RoutingGroup[], rules: string[], providersYAML: string, help: string) {
+function cloneRoutingProviders(values: RoutingRuleProvider[]) {
+  return values.map((provider) => ({ ...provider }))
+}
+
+function openRoutingPreview(title: string, groups: RoutingGroup[], rules: string[], providers: RoutingRuleProvider[], help: string) {
   routingPreviewTitle.value = title
   routingPreviewGroups.value = cloneRoutingGroups(groups)
   routingPreviewRules.value = [...rules]
-  routingPreviewProvidersYAML.value = providersYAML
+  routingPreviewProviders.value = cloneRoutingProviders(providers)
   routingPreviewHelp.value = help
   routingPreviewOpen.value = true
 }
@@ -435,8 +727,8 @@ function viewSelectedPlanRouting() {
     return
   }
   openRoutingPreview(
-    value.name, value.groups, value.rules, value.rule_providers_yaml,
-    '套餐会实时使用该分流方案的最新内容；请到“分流与模板”页面统一编辑。',
+    value.name, value.groups, value.rules, value.rule_providers,
+    '共享订阅会实时使用该分流方案的最新内容；请到“分流模板”页面统一编辑。',
   )
 }
 
@@ -462,7 +754,7 @@ async function savePlan() {
 
   const name = planName.value.trim()
   if (!name) {
-    planFormError.value = '套餐名称不能为空'
+    planFormError.value = '共享订阅名称不能为空'
     return
   }
   const trafficRaw = String(planTrafficGiB.value ?? '').trim()
@@ -507,11 +799,11 @@ async function savePlan() {
     await loadAll()
     planModalOpen.value = false
   } catch (reason) {
-    const message = reason instanceof Error ? reason.message : '保存套餐失败'
+    const message = reason instanceof Error ? reason.message : '保存共享订阅失败'
     if (planSaved && !nodesSaved) {
       planFormError.value = creating
-        ? `套餐已创建，但节点列表保存失败：${message}`
-        : `套餐基本信息已保存，但节点列表保存失败：${message}`
+        ? `共享订阅已创建，但节点列表保存失败：${message}`
+        : `共享订阅基本信息已保存，但节点列表保存失败：${message}`
       try {
         await loadAll()
         const current = plans.value.find((value) => value.id === id)
@@ -521,7 +813,7 @@ async function savePlan() {
         planFormError.value += `；刷新服务端状态失败：${refreshMessage}`
       }
     } else if (planSaved) {
-      planFormError.value = `套餐已保存，但刷新列表失败：${message}`
+      planFormError.value = `共享订阅已保存，但刷新列表失败：${message}`
     } else {
       planFormError.value = message
     }
@@ -531,7 +823,7 @@ async function savePlan() {
 }
 
 async function deletePlan(value: Plan) {
-  if (!window.confirm(`确定删除套餐“${value.name}”吗？`)) return
+  if (!window.confirm(`确定删除共享订阅“${value.name}”吗？`)) return
   await run(async () => {
     await api(`/api/admin/subscription/plans/${value.id}`, { method: 'DELETE' })
     await loadAll()
@@ -543,7 +835,7 @@ function openCreateRoutingPreset() {
   routingName.value = ''
   routingEnabled.value = true
   routingGroups.value = []
-  routingProvidersYAML.value = '{}'
+  routingProviders.value = []
   routingRulesText.value = ''
   routingFormError.value = ''
   routingModalOpen.value = true
@@ -554,7 +846,7 @@ function openEditRoutingPreset(value: RoutingPreset) {
   routingName.value = value.name
   routingEnabled.value = value.enabled
   routingGroups.value = cloneRoutingGroups(value.groups)
-  routingProvidersYAML.value = value.rule_providers_yaml
+  routingProviders.value = cloneRoutingProviders(value.rule_providers)
   routingRulesText.value = value.rules.join('\n')
   routingFormError.value = ''
   routingModalOpen.value = true
@@ -573,12 +865,22 @@ async function saveRoutingPreset() {
       method: id ? 'PATCH' : 'POST',
       body: JSON.stringify({
         name: routingName.value.trim(), enabled: routingEnabled.value, groups: routingGroups.value,
-        rule_providers_yaml: routingProvidersYAML.value, rules,
+        rule_providers: routingProviders.value, rules,
       }),
     })
     routingModalOpen.value = false
     await loadAll()
   })
+}
+
+function addRoutingProvider() {
+  routingProviders.value.push({
+    name: '', url: '', type: 'http', behavior: 'classical', format: 'yaml', interval: 86400,
+  })
+}
+
+function removeRoutingProvider(index: number) {
+  routingProviders.value.splice(index, 1)
 }
 
 async function deleteRoutingPreset(value: RoutingPreset) {
@@ -760,16 +1062,37 @@ onMounted(async () => {
   </div>
   <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅管理…</span></div>
 
+  <section v-else-if="currentTab === 'personal'" class="subscription-section">
+    <div class="section-heading"><span></span><n-button type="primary" @click="openCreatePersonal">新增个人订阅</n-button></div>
+    <n-empty v-if="personalSubscriptions.length === 0" description="暂无个人订阅" />
+    <div v-else class="user-management-grid">
+      <n-card v-for="value in personalSubscriptions" :key="value.id" :title="value.name">
+        <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
+        <p>Client：{{ value.client_name }}</p>
+        <p>{{ value.nodes.length }} 个节点 · {{ value.routing_preset_name }}</p>
+        <p>Mihomo 模板：{{ value.mihomo_template_name || '内置默认 Mihomo 模板' }}</p>
+        <div class="modal-actions">
+          <n-button secondary @click="copyPersonalURL(value)">{{ personalCopiedID === value.id ? '已复制' : '复制链接' }}</n-button>
+          <n-button secondary @click="showPersonalQR(value)">二维码</n-button>
+          <n-button secondary @click="previewPersonal(value)">预览</n-button>
+          <n-button secondary @click="openEditPersonal(value)">编辑</n-button>
+          <n-button secondary @click="regeneratePersonalToken(value)">重置链接</n-button>
+          <n-button type="error" secondary @click="deletePersonal(value)">删除</n-button>
+        </div>
+      </n-card>
+    </div>
+  </section>
+
   <section v-else-if="currentTab === 'users'" class="subscription-section">
     <n-empty v-if="users.length === 0" description="暂无订阅用户" />
-    <div v-else class="server-table-wrap"><table class="server-table"><thead><tr><th>用户</th><th>套餐</th><th>已用 / 总量</th><th>到期</th><th>节点</th><th>状态</th><th>操作</th></tr></thead><tbody>
+    <div v-else class="server-table-wrap"><table class="server-table"><thead><tr><th>用户</th><th>共享订阅</th><th>已用 / 总量</th><th>到期</th><th>节点</th><th>状态</th><th>操作</th></tr></thead><tbody>
       <tr v-for="value in users" :key="value.user_id"><td>{{ value.username }}</td><td>{{ value.plan_name || '未开通' }}</td><td>{{ formatClientTrafficBytes(value.used_bytes) }} / {{ value.traffic_limit_bytes !== null ? formatClientTrafficBytes(value.traffic_limit_bytes) : '不限' }}</td><td>{{ value.expires_at ? formatTime(value.expires_at) : '不限' }}</td><td>{{ value.enabled_node_count }}</td><td><n-tag :type="value.active ? 'success' : 'warning'" size="small">{{ statusLabels[value.status] ?? value.status }}</n-tag></td><td><n-button size="small" secondary @click="openUser(value)">查看 / 编辑</n-button></td></tr>
     </tbody></table></div>
   </section>
 
   <section v-else-if="currentTab === 'plans'" class="subscription-section">
-    <div class="section-heading"><span></span><n-button type="primary" @click="openCreatePlan">新增套餐</n-button></div>
-    <n-empty v-if="plans.length === 0" description="暂无套餐" />
+    <div class="section-heading"><span></span><n-button type="primary" @click="openCreatePlan">新增共享订阅</n-button></div>
+    <n-empty v-if="plans.length === 0" description="暂无共享订阅" />
     <div v-else class="user-management-grid">
       <n-card v-for="value in plans" :key="value.id" :title="value.name">
         <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
@@ -790,16 +1113,16 @@ onMounted(async () => {
         <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · Realm → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
         <p>入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
-        <p>所属套餐：{{ nodePlanNames(value.id) || '未加入套餐' }}</p>
+        <p>所属共享订阅：{{ nodePlanNames(value.id) || '未加入共享订阅' }}</p>
         <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
       </n-card>
     </div>
   </section>
 
   <section v-else class="subscription-section configuration-grid">
-    <p class="form-help">Mihomo 模板负责 DNS、sniffer 等客户端基础配置；分流方案负责策略组、Rule Providers 和 Rules。套餐分别选择一套模板和一套分流方案。</p>
-    <n-card title="分流方案" :bordered="true">
-      <p class="form-help">修改分流方案后，所有引用它的套餐会在客户端下一次刷新订阅时自动使用最新内容。</p>
+    <p class="form-help">通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案与 Mihomo 模板。</p>
+    <n-card title="通用分流方案" :bordered="true">
+      <p class="form-help">修改分流方案后，所有引用它的个人订阅和共享订阅会在客户端下一次刷新时使用最新内容。</p>
       <n-button type="primary" @click="openCreateRoutingPreset">新增分流方案</n-button>
       <div class="configuration-list">
         <div v-for="value in routingPresets" :key="value.id" class="invitation-row">
@@ -808,7 +1131,8 @@ onMounted(async () => {
         </div>
       </div>
     </n-card>
-    <n-card title="Mihomo 模板" :bordered="true">
+    <n-card title="客户端模板" :bordered="true">
+      <h3>Mihomo 模板</h3>
       <p class="form-help">模板只负责 Mihomo 客户端基础配置，例如 DNS、sniffer、TUN、profile 等。proxies 由 Panel 动态生成，分流由所选分流方案提供。</p>
       <n-button type="primary" @click="openCreateTemplate">新增订阅模板</n-button>
       <div class="configuration-list">
@@ -824,17 +1148,74 @@ onMounted(async () => {
     </n-card>
   </section>
 
+  <n-modal v-model:show="personalModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPersonal ? '编辑个人订阅' : '新增个人订阅'" closable @close="personalModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePersonal">
+    <n-alert v-if="personalFormError" type="error" closable @close="personalFormError = ''">{{ personalFormError }}</n-alert>
+    <h3>基本信息</h3>
+    <label><span>名称</span><n-input v-model:value="personalName" maxlength="100" /></label>
+    <label><span>订阅标题</span><n-input v-model:value="personalTitle" maxlength="100" /><small class="form-help">留空时使用个人订阅名称。</small></label>
+    <label><span>同名 Client</span><n-input v-model:value="personalClientName" maxlength="100" placeholder="admin" /><small class="form-help">在每个本地 Proxy 上实时精确匹配同名、当前用户可用且非订阅托管的 Client。</small></label>
+    <div class="switch-row"><span>启用个人订阅</span><n-switch v-model:value="personalEnabled" /></div>
+    <label><span>分流方案</span><select v-model.number="personalRoutingPresetID" class="settings-input"><option v-for="value in selectablePersonalRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select></label>
+    <h3>Mihomo 输出</h3>
+    <label><span>Mihomo 模板</span><select v-model.number="personalMihomoTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in selectablePersonalTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
+    <h3>节点</h3>
+    <div class="modal-actions"><n-button secondary attr-type="button" :loading="personalSourcesLoading" @click="loadPersonalSources">刷新可用来源</n-button><n-button secondary attr-type="button" :disabled="personalSources.length === 0" @click="addAllPersonalSources">添加全部可用节点</n-button></div>
+    <fieldset class="subscription-node-picker"><legend>节点来源选择器</legend>
+      <div v-for="sourceType in personalSourceTypes" :key="sourceType" class="personal-source-group">
+        <strong>{{ personalSourceLabel(sourceType) }}</strong>
+        <span v-if="personalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无可访问来源</span>
+        <div v-for="source in personalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
+          <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
+          <n-button secondary size="small" attr-type="button" :disabled="personalNodes.some((node) => node.source_type === source.source_type && node.source_id === source.source_id)" @click="addPersonalSource(source)">添加节点</n-button>
+        </div>
+      </div>
+    </fieldset>
+    <fieldset class="subscription-node-picker"><legend>已选节点（上下调整订阅顺序）</legend>
+      <n-empty v-if="personalNodes.length === 0" description="尚未选择节点" />
+      <div v-for="(node, index) in personalNodes" :key="`${node.source_type}:${node.source_id}`" class="personal-node-editor">
+        <label><span>自定义显示名称</span><n-input v-model:value="node.display_name" maxlength="100" /></label>
+        <div><strong>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</strong><span>{{ node.source_detail }}</span></div>
+        <div><span v-if="node.source_type !== 'landing'">Client：{{ personalClientName }}</span><span v-else>凭据：节点自带</span> <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
+        <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
+        <div class="modal-actions"><n-button size="small" secondary attr-type="button" :disabled="index === 0" @click="movePersonalNode(index, -1)">上移</n-button><n-button size="small" secondary attr-type="button" :disabled="index === personalNodes.length - 1" @click="movePersonalNode(index, 1)">下移</n-button><n-button size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除节点</n-button></div>
+      </div>
+    </fieldset>
+    <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
+  </form></n-card></n-modal>
+
+  <n-modal v-model:show="personalPreviewOpen"><n-card class="client-form-card subscription-form-card" title="个人订阅 Mihomo Preview" closable @close="personalPreviewOpen = false">
+    <n-input :value="personalPreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
+    <div class="modal-actions"><n-button @click="personalPreviewOpen = false">关闭</n-button></div>
+  </n-card></n-modal>
+
+  <QRCodeModal
+    v-if="personalQR"
+    v-model:show="personalQROpen"
+    :uri="personalQR.subscription_auto_url"
+    :title="personalQR.name"
+    modal-title="个人订阅二维码"
+    instruction="使用支持订阅二维码的客户端扫描导入。"
+    :links="[
+      { label: 'Auto', value: personalQR.subscription_auto_url },
+      { label: 'Mihomo', value: personalQR.subscription_mihomo_url },
+      { label: 'Base64', value: personalQR.subscription_base64_url },
+    ]"
+  />
+
   <n-modal v-model:show="routingPreviewOpen"><n-card class="client-form-card subscription-form-card" :title="routingPreviewTitle" closable @close="routingPreviewOpen = false">
     <p class="form-help">{{ routingPreviewHelp }}</p>
     <h3>策略组</h3>
     <RoutingGroupEditor :model-value="routingPreviewGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" readonly />
-    <label><span>Rule Providers YAML</span><n-input :value="routingPreviewProvidersYAML" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
+    <h3>规则源（Rule Providers）</h3>
+    <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
+    <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
     <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
+    <p class="form-help">Rules 决定命中规则后进入哪个策略组，并按从上到下的顺序匹配，先命中先生效。</p>
     <div class="modal-actions"><n-button @click="routingPreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
   <n-modal v-model:show="templatePreviewOpen"><n-card class="client-form-card subscription-form-card" title="内置默认 Mihomo 模板" closable @close="templatePreviewOpen = false">
-    <n-alert type="info">这里只包含客户端基础配置。真实 proxies 由 Panel 动态注入，策略组、Rule Providers 和 Rules 来自套餐选择的分流方案。</n-alert>
+    <n-alert type="info">这里只包含客户端基础配置。真实 proxies 由 Panel 动态注入，策略组、规则源和 Rules 来自订阅选择的分流方案。</n-alert>
     <n-input :value="templatePreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
     <div class="modal-actions"><n-button @click="templatePreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
@@ -843,9 +1224,23 @@ onMounted(async () => {
     <n-alert v-if="routingFormError" type="error" closable @close="routingFormError = ''">{{ routingFormError }}</n-alert>
     <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" /></label>
     <div class="switch-row"><span>启用方案</span><n-switch v-model:value="routingEnabled" :disabled="Boolean(editingRoutingPreset?.is_default)" /></div>
+    <p class="form-help">策略组顺序决定生成到客户端后的策略组排列顺序。</p>
     <RoutingGroupEditor v-model="routingGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" />
-    <label><span>Rule Providers YAML</span><n-input v-model:value="routingProvidersYAML" type="textarea" placeholder="OpenAI:&#10;  type: http&#10;  behavior: classical&#10;  format: yaml&#10;  interval: 86400&#10;  url: https://example.com/OpenAI.yaml" :autosize="{ minRows: 8, maxRows: 18 }" /></label>
+    <fieldset class="subscription-node-picker"><legend>规则源（Rule Providers）</legend>
+      <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
+      <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
+        <label><span>名称</span><n-input v-model:value="provider.name" placeholder="Google" /></label>
+        <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
+        <label><span>类型</span><select v-model="provider.type" class="settings-input"><option value="http">http</option></select></label>
+        <label><span>Behavior</span><n-input v-model:value="provider.behavior" placeholder="classical" /></label>
+        <label><span>Format</span><n-input v-model:value="provider.format" placeholder="yaml" /></label>
+        <label><span>更新间隔（秒）</span><n-input-number v-model:value="provider.interval" :min="1" :precision="0" /></label>
+        <n-button type="error" secondary attr-type="button" @click="removeRoutingProvider(index)">删除规则源</n-button>
+      </div>
+      <n-button secondary attr-type="button" @click="addRoutingProvider">添加规则源</n-button>
+    </fieldset>
     <label><span>Rules（一行一条 Mihomo rule）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
+    <p class="form-help">Rules 决定命中规则后进入哪个策略组，并按从上到下的顺序匹配，先命中先生效。</p>
     <div class="modal-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
@@ -878,24 +1273,24 @@ onMounted(async () => {
     <fieldset v-if="nodeMode === 'relay'" class="relay-mode-field"><legend>入口端口</legend><n-radio-group v-model:value="nodeEntryPortMode"><div class="relay-mode-options"><n-radio value="auto">自动分配</n-radio><n-radio value="manual">自定义</n-radio></div></n-radio-group></fieldset>
     <label v-if="nodeMode === 'relay' && nodeEntryPortMode === 'manual'"><span>端口</span><n-input-number v-model:value="nodeEntryPort" :min="1" :max="65535" :precision="0" /></label>
     <label><span>最终入口</span><n-input :value="nodeEntryPreview" readonly /><small v-if="nodeMode === 'relay' && nodeEntryPortMode === 'auto' && !nodeResolvedEntryPort" class="form-help">保存后自动分配 Realm 端口，不会为了预览提前占用。</small></label>
-    <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入套餐流量。允许 0.10×–5.00×。</small></label>
-    <fieldset class="subscription-node-picker"><legend>{{ editingNode ? '所属套餐' : '加入套餐' }}</legend>
-      <span v-if="plans.length === 0" class="form-help">暂无套餐，可先创建备用发布节点。</span>
+    <label><span>流量倍率</span><n-input-number v-model:value="nodeTrafficMultiplier" :min="0.1" :max="5" :step="0.1" :precision="2"><template #suffix>×</template></n-input-number><small class="form-help">实际使用 1 GB 时，按该倍率计入共享订阅流量。允许 0.10×–5.00×。</small></label>
+    <fieldset class="subscription-node-picker"><legend>{{ editingNode ? '所属共享订阅' : '加入共享订阅' }}</legend>
+      <span v-if="plans.length === 0" class="form-help">暂无共享订阅，可先创建备用发布节点。</span>
       <label v-for="plan in plans" :key="plan.id" class="subscription-node-option"><input type="checkbox" :checked="nodePlanIDs.includes(plan.id)" @change="toggleNodePlan(plan.id, ($event.target as HTMLInputElement).checked)" /><span>{{ plan.name }}</span></label>
     </fieldset>
     <div class="switch-row"><span>启用发布节点</span><n-switch v-model:value="nodeEnabled" /></div>
     <div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="!nodeTargetProxyID || (nodeMode === 'relay' && !nodeSourceServerID)">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="planModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPlan ? '编辑套餐' : '新增套餐'" closable @close="planModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePlan">
+  <n-modal v-model:show="planModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPlan ? '编辑共享订阅' : '新增共享订阅'" closable @close="planModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePlan">
     <n-alert v-if="planFormError" type="error" closable @close="planFormError = ''">{{ planFormError }}</n-alert>
-    <label><span>套餐名称</span><n-input v-model:value="planName" maxlength="100" /></label>
-    <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用套餐名称。</small></label>
+    <label><span>共享订阅名称</span><n-input v-model:value="planName" maxlength="100" /></label>
+    <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用共享订阅名称。</small></label>
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
     <label><span>Mihomo 模板</span><select v-model.number="planTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in templates" :key="value.id" :value="value.id">{{ value.name }}</option></select><small class="form-help">模板只负责 DNS、sniffer 等客户端基础配置。</small></label>
-    <label><span>分流方案</span><select v-model.number="planRoutingPresetID" class="settings-input"><option v-for="value in selectableRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select><small class="form-help">套餐直接引用分流方案，方案修改后无需重新保存套餐。</small></label>
+    <label><span>分流方案</span><select v-model.number="planRoutingPresetID" class="settings-input"><option v-for="value in selectableRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select><small class="form-help">共享订阅直接引用分流方案，方案修改后无需重新保存共享订阅。</small></label>
     <div class="modal-actions"><n-button secondary attr-type="button" :disabled="!planRoutingPresetID" @click="viewSelectedPlanRouting">查看分流方案</n-button></div>
-    <div class="switch-row"><span>启用套餐</span><n-switch v-model:value="planEnabled" /></div>
+    <div class="switch-row"><span>启用共享订阅</span><n-switch v-model:value="planEnabled" /></div>
     <fieldset class="subscription-node-picker"><legend>包含节点（上下调整订阅顺序）</legend>
       <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ nodeDisplayName(node) }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>
     </fieldset>
@@ -906,7 +1301,7 @@ onMounted(async () => {
     <n-alert v-if="userFormError" type="error" closable @close="userFormError = ''">{{ userFormError }}</n-alert>
     <strong>{{ selectedUser.username }}</strong>
     <dl class="user-details"><div><dt>状态</dt><dd>{{ statusLabels[selectedUser.status] ?? selectedUser.status }}</dd></div><div><dt>已用 / 总量</dt><dd>{{ formatClientTrafficBytes(selectedUser.used_bytes) }} / {{ selectedUser.traffic_limit_bytes !== null ? formatClientTrafficBytes(selectedUser.traffic_limit_bytes) : '不限' }}</dd></div><div><dt>周期开始</dt><dd>{{ formatTime(selectedUser.cycle_started_at) }}</dd></div><div><dt>下次重置</dt><dd>{{ selectedUser.next_reset_at ? formatTime(selectedUser.next_reset_at) : '不重置' }}</dd></div><div><dt>可用节点</dt><dd>{{ selectedUser.enabled_node_count }}</dd></div><div><dt>密码重置申请</dt><dd>{{ selectedUser.password_request?.status === 'pending' ? '等待审核' : '无待审核申请' }}</dd></div></dl>
-    <label><span>套餐</span><select v-model.number="userPlanID" class="settings-input"><option :value="0">未开通</option><option v-for="plan in enabledPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
+    <label><span>共享订阅</span><select v-model.number="userPlanID" class="settings-input"><option :value="0">未开通</option><option v-for="plan in enabledPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
     <label><span>到期时间（留空不限）</span><input v-model="userExpiresAt" class="settings-input" type="datetime-local" /></label>
     <label><span>流量重置</span><select v-model="userResetMode" class="settings-input"><option value="monthly">每月</option><option value="never">不重置</option></select></label>
     <label v-if="userResetMode === 'monthly'"><span>重置日期</span><input v-model.number="userResetDay" class="settings-input" type="number" min="1" max="31" /></label>

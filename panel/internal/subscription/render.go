@@ -45,25 +45,47 @@ type mihomoProxyGroup struct {
 }
 
 func RenderBase64Subscription(data SubscriptionData) string {
-	values := make([]string, 0, len(data.Nodes))
+	nodes := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
+		nodes = append(nodes, resolvedNodeFromClientShare(node))
+	}
+	return RenderResolvedBase64Subscription(nodes)
+}
+
+func RenderResolvedBase64Subscription(nodes []ResolvedSubscriptionNode) string {
+	values := make([]string, 0, len(nodes))
+	for _, node := range nodes {
 		values = append(values, node.URI)
 	}
 	return base64.StdEncoding.EncodeToString([]byte(strings.Join(values, "\n")))
 }
 
 func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
-	proxies := make([]mihomoProxy, 0, len(data.Nodes))
-	proxyNames := make([]string, 0, len(data.Nodes))
+	nodes := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
+		nodes = append(nodes, resolvedNodeFromClientShare(node))
+	}
+	return renderMihomoResolvedSubscription(nodes, data.PublishedNodeNames, data.RoutingPreset, data.Template)
+}
+
+func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, error) {
+	return renderMihomoResolvedSubscription(data.Nodes, data.PublishedNodeNames, data.RoutingPreset, data.Template)
+}
+
+func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, publishedNodeNames map[int64]string,
+	routingPreset *RoutingPreset, template *SubscriptionTemplate,
+) ([]byte, error) {
+	proxies := make([]mihomoProxy, 0, len(nodes))
+	proxyNames := make([]string, 0, len(nodes))
+	for _, node := range nodes {
 		value, err := renderMihomoProxy(node)
 		if err != nil {
 			return nil, err
 		}
 		proxies = append(proxies, value)
-		proxyNames = append(proxyNames, node.DisplayName)
+		proxyNames = append(proxyNames, node.Name)
 	}
-	document, root, err := decodeMihomoTemplateDocument(data.Template)
+	document, root, err := decodeMihomoTemplateDocument(template)
 	if err != nil {
 		return nil, err
 	}
@@ -73,20 +95,24 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	}
 	setMappingValue(root, "proxies", proxyNode)
 
-	if data.RoutingPreset == nil {
+	if routingPreset == nil {
 		return nil, ErrInvalidRoutingPreset
 	}
-	routing := *data.RoutingPreset
+	routing := *routingPreset
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
-	resolvedGroups := resolveRoutingGroups(routing.Groups, data.PublishedNodeNames, proxyNames, routing.IsDefault)
+	resolvedGroups := resolveRoutingGroups(routing.Groups, publishedNodeNames, proxyNames, routing.IsDefault)
 	groupsNode, err := encodeYAMLValue(resolvedGroups)
 	if err != nil {
 		return nil, fmt.Errorf("encode Mihomo routing groups: %w", err)
 	}
+	providersYAML, err := marshalRoutingRuleProviders(routing.RuleProviders)
+	if err != nil {
+		return nil, err
+	}
 	var providersDocument yaml.Node
-	if err := yaml.Unmarshal([]byte(routing.RuleProvidersYAML), &providersDocument); err != nil {
+	if err := yaml.Unmarshal([]byte(providersYAML), &providersDocument); err != nil {
 		return nil, fmt.Errorf("decode Mihomo rule providers: %w", err)
 	}
 	rulesNode, err := encodeYAMLValue(routing.Rules)
@@ -297,18 +323,35 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func renderMihomoProxy(share proxystore.ClientShare) (mihomoProxy, error) {
+func resolvedNodeFromClientShare(share proxystore.ClientShare) ResolvedSubscriptionNode {
+	flow := share.Flow
+	if share.Protocol == proxystore.ProtocolVLESS {
+		// Managed VLESS subscriptions have always rendered the server-side Vision
+		// flow, including when the share URI carries the udp443 client variant.
+		flow = proxystore.ServerFlow
+	}
+	return ResolvedSubscriptionNode{
+		Name: share.DisplayName, Protocol: share.Protocol, Address: share.Address, Port: share.Port,
+		UUID: share.UUID, Security: share.Security, TLS: share.Protocol == proxystore.ProtocolVLESS,
+		ServerName: share.ServerName, Flow: flow, Fingerprint: share.Fingerprint,
+		RealityPublicKey: share.RealityPublicKey, RealityShortID: share.RealityShortID,
+		Method: share.Method, Network: share.Network, ShadowsocksPassword: share.ShadowsocksPassword,
+		URI: share.URI,
+	}
+}
+
+func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 	value := mihomoProxy{
-		Name: share.DisplayName, Server: share.Address, Port: share.Port, UDP: true,
+		Name: share.Name, Server: share.Address, Port: share.Port, UDP: true,
 	}
 	switch share.Protocol {
 	case proxystore.ProtocolVLESS:
 		value.Type = "vless"
 		value.UUID = share.UUID
 		value.Network = proxystore.TransportTCP
-		value.TLS = true
+		value.TLS = share.TLS
 		value.ServerName = share.ServerName
-		value.Flow = proxystore.ServerFlow
+		value.Flow = mihomoVLESSFlow(share.Flow)
 		value.ClientFingerprint = share.Fingerprint
 		if share.Security == proxystore.SecurityReality {
 			value.RealityOptions = &mihomoRealityOpts{
@@ -320,10 +363,18 @@ func renderMihomoProxy(share proxystore.ClientShare) (mihomoProxy, error) {
 		value.Cipher = share.Method
 		value.Password = share.ShadowsocksPassword
 		if value.Password == "" {
-			return mihomoProxy{}, fmt.Errorf("render Shadowsocks node %q: password is empty", share.DisplayName)
+			return mihomoProxy{}, fmt.Errorf("render Shadowsocks node %q: password is empty", share.Name)
 		}
 	default:
-		return mihomoProxy{}, fmt.Errorf("render subscription node %q: unsupported protocol %q", share.DisplayName, share.Protocol)
+		return mihomoProxy{}, fmt.Errorf("render subscription node %q: unsupported protocol %q", share.Name, share.Protocol)
 	}
 	return value, nil
+}
+
+func mihomoVLESSFlow(value string) string {
+	value = strings.TrimSpace(value)
+	if value == proxystore.ServerFlow || value == proxystore.ServerFlow+"-udp443" {
+		return proxystore.ServerFlow
+	}
+	return value
 }

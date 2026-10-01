@@ -1,6 +1,8 @@
 package subscription
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -35,8 +37,7 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 	if err := yaml.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("parse Mihomo YAML: %v\n%s", err, body)
 	}
-	if parsed.Mode != "rule" || len(parsed.Proxies) != 2 || len(parsed.ProxyGroups) != 1 ||
-		len(parsed.Rules) != 1 || parsed.Rules[0] != "MATCH,节点选择" {
+	if parsed.Mode != "rule" || len(parsed.Proxies) != 2 || len(parsed.ProxyGroups) != 8 {
 		t.Fatalf("Mihomo config = %+v", parsed)
 	}
 	reality := parsed.Proxies[0]
@@ -55,14 +56,100 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 		shadowsocks.Password != "master-password:client-password" || !shadowsocks.UDP {
 		t.Fatalf("Mihomo Shadowsocks proxy = %+v", shadowsocks)
 	}
-	wantGroup := []string{data.Nodes[0].DisplayName, data.Nodes[1].DisplayName, "DIRECT"}
-	if len(parsed.ProxyGroups[0].Proxies) != len(wantGroup) {
-		t.Fatalf("Mihomo proxy group = %+v", parsed.ProxyGroups[0])
+	wantGroups := []struct {
+		name    string
+		proxies []string
+	}{
+		{name: "🚀 默认代理", proxies: []string{data.Nodes[0].DisplayName, data.Nodes[1].DisplayName, "DIRECT"}},
+		{name: "🤖 AI", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "▶️ YouTube", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "🎬 Netflix", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "✈️ Telegram", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "🎵 TikTok", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "🍎 Apple", proxies: []string{"DIRECT", "🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
+		{name: "Ⓜ️ Microsoft", proxies: []string{"DIRECT", "🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
 	}
-	for index, value := range wantGroup {
-		if parsed.ProxyGroups[0].Proxies[index] != value {
-			t.Fatalf("Mihomo proxy group = %+v", parsed.ProxyGroups[0])
+	for index, want := range wantGroups {
+		group := parsed.ProxyGroups[index]
+		if group.Name != want.name || group.Type != "select" || !slices.Equal(group.Proxies, want.proxies) {
+			t.Fatalf("Mihomo proxy group %d = %+v, want %+v", index, group, want)
 		}
+	}
+	wantRules := []string{
+		"GEOSITE,category-ai-!cn,🤖 AI",
+		"GEOSITE,youtube,▶️ YouTube",
+		"GEOSITE,netflix,🎬 Netflix",
+		"GEOSITE,telegram,✈️ Telegram",
+		"GEOSITE,tiktok,🎵 TikTok",
+		"GEOSITE,apple,🍎 Apple",
+		"GEOSITE,microsoft,Ⓜ️ Microsoft",
+		"GEOSITE,private,DIRECT",
+		"GEOSITE,cn,DIRECT",
+		"GEOIP,CN,DIRECT,no-resolve",
+		"MATCH,🚀 默认代理",
+	}
+	if !slices.Equal(parsed.Rules, wantRules) || strings.Contains(string(body), "{{all}}") {
+		t.Fatalf("Mihomo rules or placeholders = %+v\n%s", parsed.Rules, body)
+	}
+	assertBuiltinMihomoSettings(t, body)
+}
+
+func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
+	t.Helper()
+	var raw map[string]any
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"mixed-port", "allow-lan", "mode", "log-level", "ipv6", "unified-delay", "tcp-concurrent", "profile", "sniffer", "dns"} {
+		if _, exists := raw[key]; !exists {
+			t.Fatalf("built-in Mihomo setting %q missing:\n%s", key, body)
+		}
+	}
+	var settings struct {
+		MixedPort     int    `yaml:"mixed-port"`
+		AllowLAN      bool   `yaml:"allow-lan"`
+		Mode          string `yaml:"mode"`
+		LogLevel      string `yaml:"log-level"`
+		IPv6          bool   `yaml:"ipv6"`
+		UnifiedDelay  bool   `yaml:"unified-delay"`
+		TCPConcurrent bool   `yaml:"tcp-concurrent"`
+		Profile       struct {
+			StoreSelected bool `yaml:"store-selected"`
+			StoreFakeIP   bool `yaml:"store-fake-ip"`
+		} `yaml:"profile"`
+		Sniffer struct {
+			Enable bool `yaml:"enable"`
+			Sniff  map[string]struct {
+				Ports               []any `yaml:"ports"`
+				OverrideDestination bool  `yaml:"override-destination"`
+			} `yaml:"sniff"`
+		} `yaml:"sniffer"`
+		DNS struct {
+			Enable                bool     `yaml:"enable"`
+			IPv6                  bool     `yaml:"ipv6"`
+			EnhancedMode          string   `yaml:"enhanced-mode"`
+			FakeIPRange           string   `yaml:"fake-ip-range"`
+			FakeIPFilter          []string `yaml:"fake-ip-filter"`
+			DefaultNameserver     []string `yaml:"default-nameserver"`
+			Nameserver            []string `yaml:"nameserver"`
+			ProxyServerNameserver []string `yaml:"proxy-server-nameserver"`
+		} `yaml:"dns"`
+	}
+	if err := yaml.Unmarshal(body, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.MixedPort != 7890 || settings.AllowLAN || settings.Mode != "rule" || settings.LogLevel != "info" ||
+		!settings.IPv6 || !settings.UnifiedDelay || !settings.TCPConcurrent ||
+		!settings.Profile.StoreSelected || !settings.Profile.StoreFakeIP || !settings.Sniffer.Enable ||
+		len(settings.Sniffer.Sniff["HTTP"].Ports) != 2 || !settings.Sniffer.Sniff["HTTP"].OverrideDestination ||
+		len(settings.Sniffer.Sniff["TLS"].Ports) != 2 || len(settings.Sniffer.Sniff["QUIC"].Ports) != 2 ||
+		!settings.DNS.Enable || !settings.DNS.IPv6 || settings.DNS.EnhancedMode != "fake-ip" ||
+		settings.DNS.FakeIPRange != "198.18.0.1/16" ||
+		!slices.Equal(settings.DNS.FakeIPFilter, []string{"*.lan", "*.local", "geosite:cn", "geosite:private"}) ||
+		!slices.Equal(settings.DNS.DefaultNameserver, []string{"223.5.5.5", "119.29.29.29"}) ||
+		!slices.Equal(settings.DNS.Nameserver, []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}) ||
+		!slices.Equal(settings.DNS.ProxyServerNameserver, []string{"https://223.5.5.5/dns-query"}) {
+		t.Fatalf("built-in Mihomo settings = %+v", settings)
 	}
 }
 
@@ -89,5 +176,33 @@ func TestRenderMihomoTLSOmitsRealityOptions(t *testing.T) {
 		proxy.Flow != proxystore.ServerFlow || proxy.ClientFingerprint != proxystore.Fingerprint ||
 		proxy.RealityOptions != nil {
 		t.Fatalf("Mihomo TLS proxy = %+v", proxy)
+	}
+}
+
+func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) {
+	body, err := RenderMihomoSubscription(SubscriptionData{
+		Nodes: []proxystore.ClientShare{{
+			Client: proxystore.Client{UUID: "uuid"}, DisplayName: "Custom", Protocol: proxystore.ProtocolVLESS,
+			Address: "custom.example.com", Port: 443, Security: proxystore.SecurityTLS,
+			ServerName: "custom.example.com", Fingerprint: proxystore.Fingerprint,
+		}},
+		Template: &SubscriptionTemplate{ConfigYAML: "dns:\n  enable: false\ntun:\n  enable: false"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	var parsed mihomoConfig
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := raw["mixed-port"]; exists || len(parsed.ProxyGroups) != 1 ||
+		parsed.ProxyGroups[0].Name != "节点选择" ||
+		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"Custom", "DIRECT"}) ||
+		!slices.Equal(parsed.Rules, []string{"MATCH,节点选择"}) {
+		t.Fatalf("custom Mihomo template behavior changed:\n%s", body)
 	}
 }

@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -54,7 +55,7 @@ func RenderBase64Subscription(data SubscriptionData) string {
 
 func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	proxies := make([]mihomoProxy, 0, len(data.Nodes))
-	proxyNames := make([]string, 0, len(data.Nodes)+1)
+	proxyNames := make([]string, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
 		value, err := renderMihomoProxy(node)
 		if err != nil {
@@ -63,18 +64,8 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 		proxies = append(proxies, value)
 		proxyNames = append(proxyNames, node.DisplayName)
 	}
-	proxyNames = append(proxyNames, "DIRECT")
-	if data.RoutingPreset == nil && data.Template == nil {
-		return yaml.Marshal(mihomoConfig{
-			Mode:    "rule",
-			Proxies: proxies,
-			ProxyGroups: []mihomoProxyGroup{{
-				Name: "节点选择", Type: "select", Proxies: proxyNames,
-			}},
-			Rules: []string{"MATCH,节点选择"},
-		})
-	}
-	groups := []mihomoProxyGroup{{Name: "节点选择", Type: "select", Proxies: proxyNames}}
+	defaultProxyNames := append(append([]string(nil), proxyNames...), "DIRECT")
+	groups := []mihomoProxyGroup{{Name: "节点选择", Type: "select", Proxies: defaultProxyNames}}
 	rules := []string{"MATCH,节点选择"}
 	if data.RoutingPreset != nil {
 		var err error
@@ -83,20 +74,55 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if data.Template == nil {
-		return yaml.Marshal(mihomoConfig{Mode: "rule", Proxies: proxies, ProxyGroups: groups, Rules: rules})
+	templateYAML := builtinMihomoTemplate
+	if data.Template != nil {
+		templateYAML = data.Template.ConfigYAML
 	}
 	var config map[string]any
-	if err := yaml.Unmarshal([]byte(data.Template.ConfigYAML), &config); err != nil {
+	if err := yaml.Unmarshal([]byte(templateYAML), &config); err != nil {
 		return nil, fmt.Errorf("decode subscription template: %w", err)
 	}
 	if _, exists := config["mode"]; !exists {
 		config["mode"] = "rule"
 	}
 	config["proxies"] = proxies
-	config["proxy-groups"] = groups
-	config["rules"] = rules
+	if data.Template == nil && data.RoutingPreset == nil {
+		if err := expandBuiltinMihomoProxyGroups(config, proxyNames); err != nil {
+			return nil, err
+		}
+	} else {
+		config["proxy-groups"] = groups
+		config["rules"] = rules
+	}
 	return yaml.Marshal(config)
+}
+
+func expandBuiltinMihomoProxyGroups(config map[string]any, proxyNames []string) error {
+	rawGroups, exists := config["proxy-groups"]
+	if !exists {
+		return errors.New("built-in Mihomo template has no proxy groups")
+	}
+	encodedGroups, err := yaml.Marshal(rawGroups)
+	if err != nil {
+		return fmt.Errorf("encode built-in Mihomo proxy groups: %w", err)
+	}
+	var groups []mihomoProxyGroup
+	if err := yaml.Unmarshal(encodedGroups, &groups); err != nil {
+		return fmt.Errorf("decode built-in Mihomo proxy groups: %w", err)
+	}
+	for index := range groups {
+		members := make([]string, 0, len(groups[index].Proxies)+len(proxyNames))
+		for _, member := range groups[index].Proxies {
+			if member == "{{all}}" {
+				members = append(members, proxyNames...)
+				continue
+			}
+			members = append(members, member)
+		}
+		groups[index].Proxies = members
+	}
+	config["proxy-groups"] = groups
+	return nil
 }
 
 func renderRoutingPreset(preset RoutingPreset, names map[int64]string) ([]mihomoProxyGroup, []string, error) {

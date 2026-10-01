@@ -120,9 +120,9 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		config.Proxies[0].ServerName != "www.example.com" || config.Proxies[0].Flow != proxystore.ServerFlow ||
 		config.Proxies[0].ClientFingerprint != proxystore.Fingerprint ||
 		config.Proxies[0].RealityOptions.PublicKey == "" || config.Proxies[0].RealityOptions.ShortID == "" ||
-		len(config.ProxyGroups) != 1 || config.ProxyGroups[0].Name != "节点选择" ||
+		len(config.ProxyGroups) != 8 || config.ProxyGroups[0].Name != "🚀 默认代理" ||
 		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != config.Proxies[0].Name ||
-		len(config.Rules) != 1 || config.Rules[0] != "MATCH,节点选择" {
+		len(config.Rules) != 11 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
 	}
 	var storedName string

@@ -69,6 +69,21 @@ func TestRoutingPresetTemplateRenderingUsesStableNodeIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRenderedRoutingName(t, updated, FormatNodeDisplayName(name, multiplier))
+	routingOnly := updated
+	routingOnly.Template = nil
+	routingOnlyBody, err := RenderMihomoSubscription(routingOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routingOnlyConfig map[string]any
+	if err := yaml.Unmarshal(routingOnlyBody, &routingOnlyConfig); err != nil {
+		t.Fatal(err)
+	}
+	if routingOnlyConfig["mixed-port"] != 7890 ||
+		!strings.Contains(string(routingOnlyBody), "DOMAIN-SUFFIX,example.com,Streaming") ||
+		strings.Contains(string(routingOnlyBody), "MATCH,🚀 默认代理") {
+		t.Fatalf("routing preset did not overlay built-in Mihomo template:\n%s", routingOnlyBody)
+	}
 	if base64Before == RenderBase64Subscription(updated) {
 		t.Fatal("renaming a node should change its URI display name")
 	}

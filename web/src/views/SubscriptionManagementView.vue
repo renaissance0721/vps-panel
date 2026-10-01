@@ -43,6 +43,13 @@ type Plan = {
 }
 type RoutingPreset = { id: number; name: string; enabled: boolean; groups: RoutingGroup[]; rules: string[] }
 type SubscriptionTemplate = { id: number; name: string; enabled: boolean; config_yaml: string }
+type MihomoConfiguration = {
+  name: string
+  groups: RoutingGroup[]
+  rules: string[]
+  rule_providers: string[]
+  yaml: string
+}
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected' }
 type Subscriber = {
   user_id: number
@@ -76,6 +83,7 @@ const proxies = ref<ProxyRecord[]>([])
 const relayServers = ref<RelayServer[]>([])
 const routingPresets = ref<RoutingPreset[]>([])
 const templates = ref<SubscriptionTemplate[]>([])
+const builtinMihomo = ref<MihomoConfiguration | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -123,6 +131,14 @@ const templateName = ref('')
 const templateEnabled = ref(true)
 const templateYAML = ref('dns:\n  enable: true')
 const templateFormError = ref('')
+const routingPreviewOpen = ref(false)
+const routingPreviewTitle = ref('')
+const routingPreviewGroups = ref<RoutingGroup[]>([])
+const routingPreviewRules = ref<string[]>([])
+const routingPreviewProviders = ref<string[]>([])
+const routingPreviewHelp = ref('')
+const templatePreviewOpen = ref(false)
+const templatePreviewYAML = ref('')
 
 const userModalOpen = ref(false)
 const selectedUser = ref<Subscriber | null>(null)
@@ -146,9 +162,10 @@ const tabs: { id: Tab; label: string }[] = [
   { id: 'configuration', label: '分流与模板' },
 ]
 const enabledPlans = computed(() => plans.value.filter((plan) => plan.enabled || plan.id === selectedUser.value?.plan_id))
-const planRoutingStatus = computed(() => planRoutingGroups.value.length === 0 && routingLines(planRoutingRulesText.value).length === 0
-  ? '使用 Mihomo 模板内置分流'
-  : `自定义 · ${planRoutingGroups.value.length} 个分组 · ${routingLines(planRoutingRulesText.value).length} 条规则`)
+const planUsesTemplateRouting = computed(() => planRoutingGroups.value.length === 0 && routingLines(planRoutingRulesText.value).length === 0)
+const planRoutingStatus = computed(() => planUsesTemplateRouting.value
+  ? '当前：继承 Mihomo 模板分流'
+  : `当前：自定义 · ${planRoutingGroups.value.length} 个分组 · ${routingLines(planRoutingRulesText.value).length} 条规则`)
 const orderedPlanNodes = computed(() => {
   const byID = new Map(nodes.value.map((node) => [node.id, node]))
   const selected = planNodeIDs.value.flatMap((id) => {
@@ -202,7 +219,7 @@ const statusLabels: Record<string, string> = {
 }
 
 async function loadAll() {
-  const [userResult, planResult, nodeResult, proxyResult, relayServerResult, routingResult, templateResult] = await Promise.all([
+  const [userResult, planResult, nodeResult, proxyResult, relayServerResult, routingResult, templateResult, builtinResult] = await Promise.all([
     api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
     api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
     api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
@@ -210,6 +227,7 @@ async function loadAll() {
     api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
     api<{ routing_presets: RoutingPreset[] }>('/api/admin/subscription/routing-presets'),
     api<{ templates: SubscriptionTemplate[] }>('/api/admin/subscription/templates'),
+    api<MihomoConfiguration>('/api/admin/subscription/builtin-mihomo'),
   ])
   users.value = userResult.users
   plans.value = planResult.plans
@@ -218,6 +236,7 @@ async function loadAll() {
   relayServers.value = relayServerResult.servers
   routingPresets.value = routingResult.routing_presets
   templates.value = templateResult.templates
+  builtinMihomo.value = builtinResult
 }
 
 async function run(action: () => Promise<void>) {
@@ -402,6 +421,115 @@ function routingLines(value: string) {
 
 function cloneRoutingGroups(values: RoutingGroup[]) {
   return values.map((group) => ({ ...group, proxies: [...group.proxies], node_ids: [...(group.node_ids ?? [])] }))
+}
+
+function templateGroupsToRoutingGroups(values: RoutingGroup[]) {
+  return values.map((group) => ({
+    name: group.name,
+    type: group.type,
+    proxies: group.proxies.filter((proxy) => proxy !== '{{all}}'),
+    node_ids: [],
+    include_all: group.proxies.includes('{{all}}'),
+  }))
+}
+
+function stripInjectedProxies(value: string) {
+  return value.replace(/^proxies:\s*\[\]\s*\r?\n?/m, '').trim()
+}
+
+function openRoutingPreview(title: string, groups: RoutingGroup[], rules: string[], providers: string[], help: string) {
+  routingPreviewTitle.value = title
+  routingPreviewGroups.value = cloneRoutingGroups(groups)
+  routingPreviewRules.value = [...rules]
+  routingPreviewProviders.value = [...providers]
+  routingPreviewHelp.value = help
+  routingPreviewOpen.value = true
+}
+
+function viewBuiltinRouting() {
+  const value = builtinMihomo.value
+  if (!value) return
+  openRoutingPreview(
+    '内置默认分流', value.groups, value.rules, value.rule_providers,
+    '{{all}} 表示生成订阅时展开为当前套餐的全部实际节点。',
+  )
+}
+
+function copyBuiltinRoutingToPreset() {
+  const value = builtinMihomo.value
+  if (!value) return
+  editingRoutingPreset.value = null
+  routingName.value = '内置默认分流 - 副本'
+  routingEnabled.value = true
+  routingGroups.value = templateGroupsToRoutingGroups(value.groups)
+  routingRulesText.value = value.rules.join('\n')
+  routingFormError.value = ''
+  routingModalOpen.value = true
+}
+
+function viewBuiltinTemplate() {
+  if (!builtinMihomo.value) return
+  templatePreviewYAML.value = builtinMihomo.value.yaml
+  templatePreviewOpen.value = true
+}
+
+function copyBuiltinTemplate() {
+  if (!builtinMihomo.value) return
+  editingTemplate.value = null
+  templateName.value = '内置默认 Mihomo 模板 - 副本'
+  templateEnabled.value = true
+  templateYAML.value = stripInjectedProxies(builtinMihomo.value.yaml)
+  templateFormError.value = ''
+  templateModalOpen.value = true
+}
+
+async function loadPlanTemplateConfiguration() {
+  const query = planTemplateID.value ? `?template_id=${planTemplateID.value}` : ''
+  return api<MihomoConfiguration>(`/api/admin/subscription/mihomo-configuration${query}`)
+}
+
+async function viewCurrentPlanRouting() {
+  planFormError.value = ''
+  if (!planUsesTemplateRouting.value) {
+    openRoutingPreview(
+      '当前套餐自定义分流', planRoutingGroups.value, routingLines(planRoutingRulesText.value), [],
+      '这里展示套餐表单当前保存的策略组与规则。',
+    )
+    return
+  }
+  busy.value = true
+  try {
+    const value = await loadPlanTemplateConfiguration()
+    openRoutingPreview(
+      `${value.name} · 当前有效分流`, value.groups, value.rules, value.rule_providers,
+      '{{all}} 表示生成订阅时展开为当前套餐的全部实际节点。',
+    )
+  } catch (reason) {
+    planFormError.value = reason instanceof Error ? reason.message : '无法读取当前有效分流'
+  } finally {
+    busy.value = false
+  }
+}
+
+async function copyCurrentPlanRouting() {
+  if (!planUsesTemplateRouting.value) return
+  planFormError.value = ''
+  busy.value = true
+  try {
+    const value = await loadPlanTemplateConfiguration()
+    if (value.groups.some((group) => group.type !== 'select')) {
+      planFormError.value = '当前模板包含非 select 策略组，无法复制为套餐自定义分流'
+      return
+    }
+    planRoutingGroups.value = templateGroupsToRoutingGroups(value.groups)
+    planRoutingRulesText.value = value.rules.join('\n')
+    planRoutingEditorOpen.value = true
+    planPresetID.value = 0
+  } catch (reason) {
+    planFormError.value = reason instanceof Error ? reason.message : '无法复制当前有效分流'
+  } finally {
+    busy.value = false
+  }
 }
 
 function applyRoutingPreset() {
@@ -757,27 +885,51 @@ onMounted(async () => {
   </section>
 
   <section v-else class="subscription-section configuration-grid">
+    <p class="form-help">Mihomo 模板决定完整客户端配置；分流预设只保存策略组与规则，用于快速套用到套餐。</p>
     <n-card title="分流预设" :bordered="true">
-      <p class="form-help">预设是可复用的策略组与规则模板；套用到套餐后会复制，不会保持长期绑定。</p>
+      <p class="form-help">预设是可复用的策略组和规则方案；套用后复制到套餐，不与套餐长期绑定。</p>
       <n-button type="primary" @click="openCreateRoutingPreset">新增分流预设</n-button>
       <div class="configuration-list">
+        <div class="invitation-row builtin-configuration-row">
+          <div><strong>内置默认分流 <n-tag type="info" size="small">内置</n-tag></strong><span>{{ builtinMihomo?.groups.length ?? 0 }} 个分组 · {{ builtinMihomo?.rules.length ?? 0 }} 条规则</span></div>
+          <div class="modal-actions"><n-button secondary size="small" @click="viewBuiltinRouting">查看</n-button><n-button secondary size="small" @click="copyBuiltinRoutingToPreset">复制为预设</n-button></div>
+        </div>
         <div v-for="value in routingPresets" :key="value.id" class="invitation-row">
-          <div><strong>{{ value.name }}</strong><span>{{ value.enabled ? '已启用' : '已停用' }} · {{ value.groups.length }} 个分组 · {{ value.rules.length }} 条规则</span></div>
+          <div><strong>{{ value.name }} <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong><span>{{ value.groups.length }} 个分组 · {{ value.rules.length }} 条规则</span></div>
           <div class="modal-actions"><n-button secondary size="small" @click="openEditRoutingPreset(value)">编辑</n-button><n-button type="error" secondary size="small" @click="deleteRoutingPreset(value)">删除</n-button></div>
         </div>
       </div>
     </n-card>
     <n-card title="Mihomo 模板" :bordered="true">
-      <p class="form-help">Mihomo 模板是完整配置底稿，可包含 DNS、TUN、sniffer、rule-providers、proxy-groups 和 rules；真实 proxies 始终由 Panel 动态注入。</p>
+      <p class="form-help">模板是完整 Mihomo 配置底稿，负责 DNS、TUN、sniffer、profile、rule-providers 和默认分流；真实 proxies 由 Panel 动态注入。</p>
       <n-button type="primary" @click="openCreateTemplate">新增订阅模板</n-button>
       <div class="configuration-list">
+        <div class="invitation-row builtin-configuration-row">
+          <div><strong>内置默认 Mihomo 模板 <n-tag type="info" size="small">内置</n-tag></strong><span>完整客户端配置底稿</span></div>
+          <div class="modal-actions"><n-button secondary size="small" @click="viewBuiltinTemplate">查看</n-button><n-button secondary size="small" @click="copyBuiltinTemplate">复制为自定义模板</n-button></div>
+        </div>
         <div v-for="value in templates" :key="value.id" class="invitation-row">
-          <div><strong>{{ value.name }}</strong><span>{{ value.enabled ? '已启用' : '已停用' }}</span></div>
+          <div><strong>{{ value.name }} <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong></div>
           <div class="modal-actions"><n-button secondary size="small" @click="openEditTemplate(value)">编辑</n-button><n-button type="error" secondary size="small" @click="deleteTemplate(value)">删除</n-button></div>
         </div>
       </div>
     </n-card>
   </section>
+
+  <n-modal v-model:show="routingPreviewOpen"><n-card class="client-form-card subscription-form-card" :title="routingPreviewTitle" closable @close="routingPreviewOpen = false">
+    <p class="form-help">{{ routingPreviewHelp }}</p>
+    <h3>策略组</h3>
+    <RoutingGroupEditor :model-value="routingPreviewGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" readonly />
+    <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
+    <div v-if="routingPreviewProviders.length"><strong>Rule Providers</strong><p class="form-help">{{ routingPreviewProviders.join(' / ') }}</p></div>
+    <div class="modal-actions"><n-button @click="routingPreviewOpen = false">关闭</n-button></div>
+  </n-card></n-modal>
+
+  <n-modal v-model:show="templatePreviewOpen"><n-card class="client-form-card subscription-form-card" title="内置默认 Mihomo 模板" closable @close="templatePreviewOpen = false">
+    <n-alert type="info">真实 proxies 会在生成订阅时由 Panel 动态注入；&#123;&#123;all&#125;&#125; 会展开为当前套餐实际节点。</n-alert>
+    <n-input :value="templatePreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
+    <div class="modal-actions"><n-button @click="templatePreviewOpen = false">关闭</n-button></div>
+  </n-card></n-modal>
 
   <n-modal v-model:show="routingModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingRoutingPreset ? '编辑分流预设' : '新增分流预设'" closable @close="routingModalOpen = false"><form class="auth-form" @submit.prevent="saveRoutingPreset">
     <n-alert v-if="routingFormError" type="error" closable @close="routingFormError = ''">{{ routingFormError }}</n-alert>
@@ -834,8 +986,13 @@ onMounted(async () => {
     <label><span>Mihomo 模板</span><select v-model.number="planTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in templates" :key="value.id" :value="value.id">{{ value.name }}</option></select><small class="form-help">完整配置底稿中的 proxies 会由 Panel 动态注入。</small></label>
     <fieldset class="subscription-node-picker"><legend>分流配置</legend>
       <strong>{{ planRoutingStatus }}</strong>
-      <div class="routing-preset-apply"><select v-model.number="planPresetID" class="settings-input"><option :value="0">选择分组与规则预设</option><option v-for="value in routingPresets.filter((preset) => preset.enabled)" :key="value.id" :value="value.id">{{ value.name }}</option></select><n-button secondary attr-type="button" :disabled="!planPresetID" @click="applyRoutingPreset">套用分组与规则预设</n-button></div>
-      <div class="modal-actions"><n-button secondary attr-type="button" @click="planRoutingEditorOpen = !planRoutingEditorOpen">编辑当前分流</n-button><n-button secondary attr-type="button" @click="restoreTemplateRouting">恢复模板分流</n-button></div>
+      <div class="routing-preset-apply"><select v-model.number="planPresetID" class="settings-input"><option :value="0">选择分组与规则预设</option><option v-for="value in routingPresets.filter((preset) => preset.enabled)" :key="value.id" :value="value.id">{{ value.name }}</option></select><n-button secondary attr-type="button" :disabled="!planPresetID" @click="applyRoutingPreset">套用预设</n-button></div>
+      <div class="modal-actions">
+        <n-button secondary attr-type="button" :loading="busy" @click="viewCurrentPlanRouting">查看当前有效分流</n-button>
+        <n-button v-if="planUsesTemplateRouting" secondary attr-type="button" :loading="busy" @click="copyCurrentPlanRouting">复制为自定义分流</n-button>
+        <n-button v-else secondary attr-type="button" @click="planRoutingEditorOpen = !planRoutingEditorOpen">编辑当前分流</n-button>
+        <n-button v-if="!planUsesTemplateRouting" secondary attr-type="button" @click="restoreTemplateRouting">恢复模板分流</n-button>
+      </div>
       <div v-if="planRoutingEditorOpen" class="routing-editor-panel"><RoutingGroupEditor v-model="planRoutingGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" /><label><span>Rules（一行一条 Mihomo rule）</span><n-input v-model:value="planRoutingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label></div>
     </fieldset>
     <div class="switch-row"><span>启用套餐</span><n-switch v-model:value="planEnabled" /></div>

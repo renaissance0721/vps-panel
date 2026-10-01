@@ -4,7 +4,7 @@ import { NButton, NInput, NSwitch } from 'naive-ui'
 
 export type RoutingGroup = {
   name: string
-  type: 'select'
+  type: string
   proxies: string[]
   node_ids?: number[]
   include_all?: boolean
@@ -12,7 +12,9 @@ export type RoutingGroup = {
 
 type PublishedNodeOption = { id: number; name: string }
 
-const props = defineProps<{ modelValue: RoutingGroup[]; nodes: PublishedNodeOption[] }>()
+const props = withDefaults(defineProps<{ modelValue: RoutingGroup[]; nodes: PublishedNodeOption[]; readonly?: boolean }>(), {
+  readonly: false,
+})
 const emit = defineEmits<{ 'update:modelValue': [value: RoutingGroup[]] }>()
 
 const groups = computed(() => props.modelValue)
@@ -107,20 +109,26 @@ function orderedNodes(group: RoutingGroup) {
   const selectedIDs = new Set(selected.map((node) => node.id))
   return [...selected, ...props.nodes.filter((node) => !selectedIDs.has(node.id))]
 }
+
+function nodeLabel(nodeID: number) {
+  return props.nodes.find((node) => node.id === nodeID)?.name ?? `节点 #${nodeID}`
+}
 </script>
 
 <template>
   <div class="routing-group-editor">
     <div v-for="(group, groupIndex) in groups" :key="groupIndex" class="routing-group-card">
       <div class="routing-group-heading">
-        <n-input :value="group.name" placeholder="分组名称" @update:value="setName(groupIndex, $event)" />
-        <span class="form-help">select</span>
-        <n-button size="tiny" secondary @click="moveGroup(groupIndex, -1)">上移</n-button>
-        <n-button size="tiny" secondary @click="moveGroup(groupIndex, 1)">下移</n-button>
-        <n-button size="tiny" type="error" secondary @click="removeGroup(groupIndex)">删除</n-button>
+        <n-input :value="group.name" :readonly="readonly" placeholder="分组名称" @update:value="setName(groupIndex, $event)" />
+        <span class="form-help">{{ group.type }}</span>
+        <template v-if="!readonly">
+          <n-button size="tiny" secondary @click="moveGroup(groupIndex, -1)">上移</n-button>
+          <n-button size="tiny" secondary @click="moveGroup(groupIndex, 1)">下移</n-button>
+          <n-button size="tiny" type="error" secondary @click="removeGroup(groupIndex)">删除</n-button>
+        </template>
       </div>
-      <div class="switch-row"><span>包含套餐全部节点</span><n-switch :value="Boolean(group.include_all)" @update:value="setIncludeAll(groupIndex, $event)" /></div>
-      <fieldset class="subscription-node-picker"><legend>指定 Published Node</legend>
+      <div v-if="!readonly" class="switch-row"><span>包含套餐全部节点</span><n-switch :value="Boolean(group.include_all)" @update:value="setIncludeAll(groupIndex, $event)" /></div>
+      <fieldset v-if="!readonly" class="subscription-node-picker"><legend>指定 Published Node</legend>
         <span v-if="nodes.length === 0" class="form-help">暂无发布节点</span>
         <label v-for="node in orderedNodes(group)" :key="node.id" class="subscription-node-option">
           <input type="checkbox" :checked="(group.node_ids ?? []).includes(node.id)" @change="toggleNode(groupIndex, node.id, ($event.target as HTMLInputElement).checked)" />
@@ -130,21 +138,26 @@ function orderedNodes(group: RoutingGroup) {
       </fieldset>
       <div class="routing-member-list">
         <div v-for="(proxy, proxyIndex) in group.proxies" :key="proxyIndex" class="routing-member-row">
-          <select :value="proxy" class="settings-input" @change="setProxy(groupIndex, proxyIndex, ($event.target as HTMLSelectElement).value)">
-            <option value="DIRECT">DIRECT</option><option value="REJECT">REJECT</option>
-            <option v-for="(target, targetIndex) in groups" v-show="targetIndex !== groupIndex" :key="targetIndex" :value="target.name">{{ target.name }}</option>
-          </select>
-          <n-button size="tiny" secondary @click="moveProxy(groupIndex, proxyIndex, -1)">上移</n-button>
-          <n-button size="tiny" secondary @click="moveProxy(groupIndex, proxyIndex, 1)">下移</n-button>
-          <n-button size="tiny" type="error" secondary @click="removeProxy(groupIndex, proxyIndex)">移除</n-button>
+          <span v-if="readonly">{{ proxy }}</span>
+          <template v-else>
+            <select :value="proxy" class="settings-input" @change="setProxy(groupIndex, proxyIndex, ($event.target as HTMLSelectElement).value)">
+              <option value="DIRECT">DIRECT</option><option value="REJECT">REJECT</option>
+              <option v-for="(target, targetIndex) in groups" v-show="targetIndex !== groupIndex" :key="targetIndex" :value="target.name">{{ target.name }}</option>
+            </select>
+            <n-button size="tiny" secondary @click="moveProxy(groupIndex, proxyIndex, -1)">上移</n-button>
+            <n-button size="tiny" secondary @click="moveProxy(groupIndex, proxyIndex, 1)">下移</n-button>
+            <n-button size="tiny" type="error" secondary @click="removeProxy(groupIndex, proxyIndex)">移除</n-button>
+          </template>
         </div>
+        <div v-for="nodeID in readonly ? (group.node_ids ?? []) : []" :key="`node-${nodeID}`" class="routing-member-row"><span>{{ nodeLabel(nodeID) }}</span></div>
+        <div v-if="readonly && group.include_all" class="routing-member-row"><span>全部套餐节点（&#123;&#123;all&#125;&#125;）</span></div>
       </div>
-      <div class="modal-actions routing-add-actions">
+      <div v-if="!readonly" class="modal-actions routing-add-actions">
         <n-button size="small" secondary @click="addProxy(groupIndex, 'DIRECT')">添加 DIRECT</n-button>
         <n-button size="small" secondary @click="addProxy(groupIndex, 'REJECT')">添加 REJECT</n-button>
         <n-button size="small" secondary :disabled="!firstGroupReference(groupIndex)" @click="addProxy(groupIndex, firstGroupReference(groupIndex))">添加分组引用</n-button>
       </div>
     </div>
-    <n-button secondary @click="addGroup">新增策略组</n-button>
+    <n-button v-if="!readonly" secondary @click="addGroup">新增策略组</n-button>
   </div>
 </template>

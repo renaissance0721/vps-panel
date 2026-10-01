@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
@@ -52,6 +54,55 @@ type subscriptionTemplateResponse struct {
 	ConfigYAML string    `json:"config_yaml"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type mihomoConfigurationResponse struct {
+	Name          string                                  `json:"name"`
+	Groups        []subscriptionstore.MihomoTemplateGroup `json:"groups"`
+	Rules         []string                                `json:"rules"`
+	RuleProviders []string                                `json:"rule_providers"`
+	YAML          string                                  `json:"yaml"`
+}
+
+func (s *server) getBuiltinMihomoConfiguration(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	s.writeMihomoConfiguration(w, nil)
+}
+
+func (s *server) getEffectiveMihomoConfiguration(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	var template *subscriptionstore.SubscriptionTemplate
+	rawTemplateID := strings.TrimSpace(r.URL.Query().Get("template_id"))
+	if rawTemplateID != "" {
+		templateID, err := strconv.ParseInt(rawTemplateID, 10, 64)
+		if err != nil || templateID <= 0 {
+			writeError(w, http.StatusBadRequest, "订阅模板 ID 无效")
+			return
+		}
+		value, err := s.subscriptions.GetTemplate(r.Context(), templateID)
+		if err != nil {
+			writeSubscriptionConfigurationError(w, err)
+			return
+		}
+		if value.Enabled {
+			template = &value
+		}
+	}
+	s.writeMihomoConfiguration(w, template)
+}
+
+func (s *server) writeMihomoConfiguration(w http.ResponseWriter, template *subscriptionstore.SubscriptionTemplate) {
+	value, err := subscriptionstore.BuildMihomoConfiguration(template)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	name := subscriptionstore.BuiltinMihomoName
+	if template != nil {
+		name = template.Name
+	}
+	writeJSON(w, http.StatusOK, mihomoConfigurationResponse{
+		Name: name, Groups: value.Groups, Rules: value.Rules,
+		RuleProviders: value.RuleProviders, YAML: value.YAML,
+	})
 }
 
 func (s *server) listSubscriptionRoutingPresets(w http.ResponseWriter, r *http.Request, _ auth.User) {

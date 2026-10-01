@@ -118,6 +118,8 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("POST /api/admin/subscription/routing-presets", s.requireAdmin(s.createSubscriptionRoutingPreset))
 	mux.HandleFunc("PATCH /api/admin/subscription/routing-presets/{id}", s.requireAdmin(s.updateSubscriptionRoutingPreset))
 	mux.HandleFunc("DELETE /api/admin/subscription/routing-presets/{id}", s.requireAdmin(s.deleteSubscriptionRoutingPreset))
+	mux.HandleFunc("GET /api/admin/subscription/builtin-mihomo", s.requireAdmin(s.getBuiltinMihomoConfiguration))
+	mux.HandleFunc("GET /api/admin/subscription/mihomo-configuration", s.requireAdmin(s.getEffectiveMihomoConfiguration))
 	mux.HandleFunc("GET /api/admin/subscription/templates", s.requireAdmin(s.listSubscriptionTemplates))
 	mux.HandleFunc("POST /api/admin/subscription/templates", s.requireAdmin(s.createSubscriptionTemplate))
 	mux.HandleFunc("PATCH /api/admin/subscription/templates/{id}", s.requireAdmin(s.updateSubscriptionTemplate))

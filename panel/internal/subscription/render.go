@@ -63,22 +63,9 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 		proxies = append(proxies, value)
 		proxyNames = append(proxyNames, node.DisplayName)
 	}
-	document, root, err := decodeMihomoDocument(builtinMihomoTemplate, "built-in Mihomo template")
+	document, root, err := decodeMihomoTemplateDocument(data.Template)
 	if err != nil {
 		return nil, err
-	}
-	if data.Template != nil {
-		_, overlay, err := decodeMihomoDocument(data.Template.ConfigYAML, "custom Mihomo template")
-		if err != nil {
-			return nil, err
-		}
-		hasGroups, hasRules := mappingValue(overlay, "proxy-groups") != nil, mappingValue(overlay, "rules") != nil
-		if mappingValue(overlay, "proxies") != nil || hasGroups != hasRules {
-			return nil, ErrInvalidTemplate
-		}
-		for index := 0; index < len(overlay.Content); index += 2 {
-			setMappingValue(root, overlay.Content[index].Value, overlay.Content[index+1])
-		}
 	}
 	proxyNode, err := encodeYAMLValue(proxies)
 	if err != nil {
@@ -112,6 +99,28 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 		return nil, err
 	}
 	return yaml.Marshal(document)
+}
+
+func decodeMihomoTemplateDocument(template *SubscriptionTemplate) (*yaml.Node, *yaml.Node, error) {
+	document, root, err := decodeMihomoDocument(builtinMihomoTemplate, "built-in Mihomo template")
+	if err != nil {
+		return nil, nil, err
+	}
+	if template == nil {
+		return document, root, nil
+	}
+	_, overlay, err := decodeMihomoDocument(template.ConfigYAML, "custom Mihomo template")
+	if err != nil {
+		return nil, nil, err
+	}
+	hasGroups, hasRules := mappingValue(overlay, "proxy-groups") != nil, mappingValue(overlay, "rules") != nil
+	if mappingValue(overlay, "proxies") != nil || hasGroups != hasRules {
+		return nil, nil, ErrInvalidTemplate
+	}
+	for index := 0; index < len(overlay.Content); index += 2 {
+		setMappingValue(root, overlay.Content[index].Value, overlay.Content[index+1])
+	}
+	return document, root, nil
 }
 
 func decodeMihomoDocument(source, label string) (*yaml.Node, *yaml.Node, error) {

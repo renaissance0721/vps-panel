@@ -3,8 +3,63 @@ package subscription
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+func TestBuildBuiltinMihomoConfigurationParsesTemplateSource(t *testing.T) {
+	value, err := BuildMihomoConfiguration(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source struct {
+		Groups    []MihomoTemplateGroup `yaml:"proxy-groups"`
+		Rules     []string              `yaml:"rules"`
+		Providers map[string]any        `yaml:"rule-providers"`
+	}
+	if err := yaml.Unmarshal([]byte(builtinMihomoTemplate), &source); err != nil {
+		t.Fatal(err)
+	}
+	if value.YAML != builtinMihomoTemplate || !slices.Equal(value.Rules, source.Rules) ||
+		len(value.Groups) != len(source.Groups) || len(value.RuleProviders) != len(source.Providers) {
+		t.Fatalf("built-in Mihomo configuration = %+v", value)
+	}
+	for index, group := range source.Groups {
+		if value.Groups[index].Name != group.Name || value.Groups[index].Type != group.Type ||
+			!slices.Equal(value.Groups[index].Proxies, group.Proxies) {
+			t.Fatalf("built-in Mihomo group %d = %+v, want %+v", index, value.Groups[index], group)
+		}
+	}
+	wantProviders := []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"}
+	if !slices.Equal(value.RuleProviders, wantProviders) || len(value.Groups) != 8 || len(value.Rules) != 12 ||
+		!slices.Contains(value.Groups[0].Proxies, "{{all}}") {
+		t.Fatalf("built-in Mihomo metadata = %+v", value)
+	}
+	if strings.Contains(value.YAML, "uuid:") || strings.Contains(value.YAML, "password:") {
+		t.Fatalf("built-in Mihomo YAML contains subscriber credentials:\n%s", value.YAML)
+	}
+}
+
+func TestBuildMihomoConfigurationAppliesCustomTemplateOverlay(t *testing.T) {
+	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{ConfigYAML: `dns:
+  enable: false
+proxy-groups:
+  - name: Custom
+    type: select
+    proxies: ["{{all}}", DIRECT]
+rules:
+  - MATCH,Custom`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Groups) != 1 || value.Groups[0].Name != "Custom" ||
+		!slices.Equal(value.Groups[0].Proxies, []string{"{{all}}", "DIRECT"}) ||
+		!slices.Equal(value.Rules, []string{"MATCH,Custom"}) || !strings.Contains(value.YAML, "mixed-port: 7890") {
+		t.Fatalf("effective Mihomo configuration = %+v", value)
+	}
+}
 
 func TestRoutingPresetIsCopiedIntoPlan(t *testing.T) {
 	db, service := newSubscriptionTestService(t)

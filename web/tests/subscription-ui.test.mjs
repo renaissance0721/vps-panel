@@ -219,17 +219,55 @@ test('套餐复制预设并可恢复模板分流', () => {
   assert.match(managementSource, /routing_rules: routingRules/)
   assert.match(managementSource, /function applyRoutingPreset\(\)[\s\S]*cloneRoutingGroups\(preset.groups\)[\s\S]*preset.rules.join/)
   assert.match(managementSource, /function restoreTemplateRouting\(\)[\s\S]*planRoutingGroups.value = \[\][\s\S]*planRoutingRulesText.value = ''/)
-  for (const label of ['套用分组与规则预设', '编辑当前分流', '恢复模板分流', '使用 Mihomo 模板内置分流']) {
+  for (const label of ['套用预设', '编辑当前分流', '恢复模板分流', '当前：继承 Mihomo 模板分流']) {
     assert.match(managementSource, new RegExp(label))
   }
 })
 
 test('完整 Mihomo 模板支持默认文案和编辑', () => {
   assert.match(managementSource, /内置默认 Mihomo 模板/)
-  assert.match(managementSource, /Mihomo 模板是完整配置底稿，可包含 DNS、TUN、sniffer、rule-providers、proxy-groups 和 rules；真实 proxies 始终由 Panel 动态注入。/)
+  assert.match(managementSource, /模板是完整 Mihomo 配置底稿，负责 DNS、TUN、sniffer、profile、rule-providers 和默认分流；真实 proxies 由 Panel 动态注入。/)
   assert.match(managementSource, /function openEditTemplate/)
   assert.match(managementSource, /method: id \? 'PATCH' : 'POST'/)
   assert.match(managementSource, /v-model:value="templateEnabled"/)
+})
+
+test('分流与模板页面展示来自后端的内置配置并解释产品语义', () => {
+  assert.match(managementSource, /api<MihomoConfiguration>\('\/api\/admin\/subscription\/builtin-mihomo'\)/)
+  assert.match(managementSource, /Mihomo 模板决定完整客户端配置；分流预设只保存策略组与规则，用于快速套用到套餐。/)
+  assert.match(managementSource, /内置默认分流[\s\S]*<n-tag type="info" size="small">内置<\/n-tag>[\s\S]*查看[\s\S]*复制为预设/)
+  assert.match(managementSource, /builtinMihomo\?\.groups.length[\s\S]*builtinMihomo\?\.rules.length/)
+  assert.match(managementSource, /内置默认 Mihomo 模板[\s\S]*复制为自定义模板/)
+  assert.match(managementSource, /预设是可复用的策略组和规则方案；套用后复制到套餐，不与套餐长期绑定。/)
+})
+
+test('内置默认分流支持只读查看并把 all 占位转换为 IncludeAll', () => {
+  assert.match(managementSource, /function viewBuiltinRouting\(\)[\s\S]*openRoutingPreview/)
+  assert.match(managementSource, /routingPreviewRules.join\('\\n'\)[\s\S]*readonly/)
+  assert.match(managementSource, /routingPreviewProviders.join\(' \/ '\)/)
+  assert.match(managementSource, /function templateGroupsToRoutingGroups[\s\S]*proxy !== '\{\{all\}\}'[\s\S]*include_all: group.proxies.includes\('\{\{all\}\}'\)/)
+  assert.match(managementSource, /function copyBuiltinRoutingToPreset\(\)[\s\S]*内置默认分流 - 副本[\s\S]*templateGroupsToRoutingGroups\(value.groups\)/)
+  assert.match(groupEditorSource, /readonly\?: boolean/)
+  assert.match(groupEditorSource, /v-if="readonly"[\s\S]*\{\{ proxy \}\}/)
+  assert.match(groupEditorSource, /v-if="!readonly"[\s\S]*新增策略组/)
+})
+
+test('内置 Mihomo 模板可查看完整 YAML 且复制时移除 proxies', () => {
+  assert.match(managementSource, /function viewBuiltinTemplate\(\)[\s\S]*templatePreviewYAML.value = builtinMihomo.value.yaml/)
+  assert.match(managementSource, /真实 proxies 会在生成订阅时由 Panel 动态注入/)
+  assert.match(managementSource, /function stripInjectedProxies[\s\S]*\^proxies:/)
+  assert.match(managementSource, /function copyBuiltinTemplate\(\)[\s\S]*内置默认 Mihomo 模板 - 副本[\s\S]*stripInjectedProxies\(builtinMihomo.value.yaml\)/)
+})
+
+test('套餐继承模板时可以查看或复制当前有效分流而不会打开空编辑器', () => {
+  assert.match(managementSource, /const planUsesTemplateRouting = computed/)
+  assert.match(managementSource, /function viewCurrentPlanRouting\(\)[\s\S]*loadPlanTemplateConfiguration/)
+  assert.match(managementSource, /api<MihomoConfiguration>\(`\/api\/admin\/subscription\/mihomo-configuration\$\{query\}`\)/)
+  assert.match(managementSource, /function copyCurrentPlanRouting\(\)[\s\S]*templateGroupsToRoutingGroups\(value.groups\)[\s\S]*planRoutingEditorOpen.value = true/)
+  assert.match(managementSource, /v-if="planUsesTemplateRouting"[\s\S]*复制为自定义分流/)
+  assert.match(managementSource, /v-else secondary attr-type="button" @click="planRoutingEditorOpen = !planRoutingEditorOpen">编辑当前分流/)
+  assert.match(managementSource, /v-if="!planUsesTemplateRouting"[\s\S]*恢复模板分流/)
+  assert.doesNotMatch(managementSource, /copyCurrentPlanRouting[\s\S]{0,500}method:\s*'(?:POST|PATCH)'/)
 })
 
 test('订阅用户可预览并复制正式 Mihomo YAML', () => {

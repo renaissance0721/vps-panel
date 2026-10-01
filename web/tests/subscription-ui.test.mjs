@@ -210,7 +210,7 @@ test('分流方案使用策略组、结构化规则源和逐行规则编辑器',
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
 })
 
-test('个人订阅支持创建、三种节点来源、排序、状态与输出操作', () => {
+test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编辑', () => {
   for (const endpoint of [
     '/api/personal-subscriptions',
     '/api/personal-subscriptions/sources?client_name=',
@@ -220,15 +220,35 @@ test('个人订阅支持创建、三种节点来源、排序、状态与输出�
   ]) {
     assert.ok(managementSource.includes(endpoint))
   }
-  for (const label of ['新增个人订阅', '同名 Client', '本地 Proxy', '发布节点', '外部节点', '添加全部可用节点', '显示名称', '上移', '下移', '复制链接', '二维码', '预览', 'Mihomo 模板']) {
+  for (const label of ['新增个人订阅', '同名 Client', '本地 Proxy', '中转 Relay', '外部节点 Landing', '添加全部可用节点', '自定义显示名称', '入口地址', '入口端口', '复制链接', '二维码', '预览', 'Mihomo 模板']) {
     assert.match(managementSource, new RegExp(label))
   }
+  assert.match(managementSource, /source_type: 'proxy' \| 'relay' \| 'landing'/)
+  assert.match(managementSource, /const personalSourceTypes:[^\n]*\['proxy', 'relay', 'landing'\]/)
   assert.match(managementSource, /v-model:value="personalClientName"/)
   assert.match(managementSource, /v-model:value="node\.display_name"/)
+  assert.match(managementSource, /entry_host: node\.entry_host\?\.trim\(\) \|\| null, entry_port: node\.entry_port/)
   assert.match(managementSource, /personalStatusType\(node\.status\)/)
+  assert.match(managementSource, /const id = nextPersonalNodeID--[\s\S]*personalNodes\.value\.push/)
+  assert.doesNotMatch(managementSource, /if \(personalNodes\.value\.some\(\(node\) => node\.source_type === source\.source_type && node\.source_id === source\.source_id\)\) return/)
+  assert.match(managementSource, /function openEditPersonal[\s\S]*expandedPersonalNodeIDs\.value = new Set\(\)/)
+  assert.match(managementSource, /function addPersonalSource[\s\S]*expandedPersonalNodeIDs\.value = new Set\(\[\.\.\.expandedPersonalNodeIDs\.value, id\]\)/)
+  assert.match(managementSource, /@click="togglePersonalNodeDetails\(node\.id\)"/)
+  assert.match(managementSource, /v-if="expandedPersonalNodeIDs\.has\(node\.id\)" class="personal-node-details"/)
+  assert.match(managementSource, /<TransitionGroup tag="div" class="personal-node-list" name="personal-node-order">/)
+  assert.match(managementSource, /:key="node\.id"[\s\S]*@dragover="dragOverPersonalNode[\s\S]*@drop\.prevent="dropPersonalNode/)
+  assert.match(managementSource, /function dropPersonalNode[\s\S]*values\.splice\(newIndex, 0, node\)[\s\S]*value\.position = position \+ 1/)
+  const personalFormStart = managementSource.indexOf('<form class="auth-form" novalidate @submit.prevent="savePersonal">')
+  const personalForm = managementSource.slice(personalFormStart, managementSource.indexOf('</form>', personalFormStart))
+  assert.ok(personalFormStart >= 0)
+  assert.doesNotMatch(personalForm, />上移<|>下移<|@click="movePersonalNode/)
+  assert.doesNotMatch(personalForm, /发布节点/)
   assert.match(managementSource, /\{ label: 'Auto', value: personalQR\.subscription_auto_url \}/)
   assert.match(managementSource, /\{ label: 'Mihomo', value: personalQR\.subscription_mihomo_url \}/)
   assert.match(managementSource, /\{ label: 'Base64', value: personalQR\.subscription_base64_url \}/)
+  assert.match(styleSource, /\.personal-node-item\.personal-node-dragging\s*{[^}]*opacity:\s*0\.38/s)
+  assert.match(styleSource, /\.personal-node-item\.personal-node-drop-target\s*{[^}]*border-color:\s*var\(--color-primary\)[^}]*transform:/s)
+  assert.match(styleSource, /\.personal-node-order-move\s*{[^}]*transition:\s*transform/s)
 })
 
 test('分流方案支持编辑且默认方案不能停用或删除', () => {

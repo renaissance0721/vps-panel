@@ -4,6 +4,7 @@ import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, N
 import { api } from '../api/client'
 import RoutingGroupEditor, { type RoutingGroup } from '../components/subscription/RoutingGroupEditor.vue'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
+import { beginDragPreview, endDragPreview } from '../drag'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
 import type { ProxyRecord } from '../types/proxy'
@@ -91,13 +92,16 @@ type Subscriber = {
 
 type PersonalNode = {
   id: number
-  source_type: 'proxy' | 'published' | 'landing'
+  source_type: 'proxy' | 'relay' | 'landing'
   source_id: number
   source_name: string
   source_detail: string
   display_name: string
   enabled: boolean
   position: number
+  entry_host: string | null
+  entry_port: number | null
+  requires_client: boolean
   status: string
   status_detail: string
 }
@@ -117,13 +121,14 @@ type PersonalSubscription = {
   subscription_auto_url: string
 }
 type PersonalSource = {
-  source_type: 'proxy' | 'published' | 'landing'
+  source_type: 'proxy' | 'relay' | 'landing'
   source_id: number
   name: string
   detail: string
   default_name: string
   status: string
   status_detail: string
+  requires_client: boolean
 }
 
 type Tab = 'personal' | 'users' | 'plans' | 'nodes' | 'configuration'
@@ -223,7 +228,11 @@ const personalPreviewOpen = ref(false)
 const personalPreviewYAML = ref('')
 const personalQR = ref<PersonalSubscription | null>(null)
 const personalQROpen = ref(false)
-const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'published', 'landing']
+const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
+const expandedPersonalNodeIDs = ref<Set<number>>(new Set())
+const draggedPersonalNodeID = ref<number | null>(null)
+const personalDropTargetID = ref<number | null>(null)
+let nextPersonalNodeID = -1
 
 const tabs = computed<{ id: Tab; label: string }[]>(() => props.role === 'vip'
   ? [{ id: 'personal', label: '个人订阅' }]
@@ -350,6 +359,7 @@ function openCreatePersonal() {
   personalMihomoTemplateID.value = 0
   personalNodes.value = []
   personalSources.value = []
+  expandedPersonalNodeIDs.value = new Set()
   personalFormError.value = ''
   personalModalOpen.value = true
 }
@@ -366,6 +376,7 @@ async function openEditPersonal(value: PersonalSubscription) {
     personalRoutingPresetID.value = current.routing_preset_id
     personalMihomoTemplateID.value = current.mihomo_template_id ?? 0
     personalNodes.value = clonePersonalNodes(current.nodes)
+    expandedPersonalNodeIDs.value = new Set()
     personalFormError.value = ''
     personalModalOpen.value = true
     await loadPersonalSources()
@@ -389,7 +400,7 @@ async function loadPersonalSources() {
       const source = bySource.get(`${node.source_type}:${node.source_id}`)
       return source ? {
         ...node, source_name: source.name, source_detail: source.detail,
-        status: source.status, status_detail: source.status_detail,
+        status: source.status, status_detail: source.status_detail, requires_client: source.requires_client,
       } : node
     })
   } catch (reason) {
@@ -400,13 +411,18 @@ async function loadPersonalSources() {
 }
 
 function addPersonalSource(source: PersonalSource) {
-  if (personalNodes.value.some((node) => node.source_type === source.source_type && node.source_id === source.source_id)) return
+  const id = nextPersonalNodeID--
+  const usedNames = new Set(personalNodes.value.map((node) => node.display_name.trim()))
+  let displayName = source.default_name
+  for (let copy = 2; usedNames.has(displayName); copy++) displayName = `${source.default_name} ${copy}`
   personalNodes.value.push({
-    id: 0, source_type: source.source_type, source_id: source.source_id,
-    source_name: source.name, source_detail: source.detail, display_name: source.default_name,
+    id, source_type: source.source_type, source_id: source.source_id,
+    source_name: source.name, source_detail: source.detail, display_name: displayName,
     enabled: true, position: personalNodes.value.length + 1,
+    entry_host: null, entry_port: null, requires_client: source.requires_client,
     status: source.status, status_detail: source.status_detail,
   })
+  expandedPersonalNodeIDs.value = new Set([...expandedPersonalNodeIDs.value, id])
 }
 
 function addAllPersonalSources() {
@@ -414,16 +430,56 @@ function addAllPersonalSources() {
 }
 
 function removePersonalNode(index: number) {
+  const id = personalNodes.value[index]?.id
   personalNodes.value.splice(index, 1)
   personalNodes.value.forEach((node, position) => { node.position = position + 1 })
+  if (id !== undefined) {
+    const expanded = new Set(expandedPersonalNodeIDs.value)
+    expanded.delete(id)
+    expandedPersonalNodeIDs.value = expanded
+  }
 }
 
-function movePersonalNode(index: number, direction: -1 | 1) {
-  const target = index + direction
-  if (target < 0 || target >= personalNodes.value.length) return
+function togglePersonalNodeDetails(id: number) {
+  const expanded = new Set(expandedPersonalNodeIDs.value)
+  if (expanded.has(id)) expanded.delete(id)
+  else expanded.add(id)
+  expandedPersonalNodeIDs.value = expanded
+}
+
+function setPersonalEntryHost(node: PersonalNode, value: string) {
+  node.entry_host = value.trim() || null
+}
+
+function startPersonalNodeDrag(event: DragEvent, id: number) {
+  const source = (event.currentTarget as HTMLElement | null)?.closest('.personal-node-item') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
+  draggedPersonalNodeID.value = id
+}
+
+function endPersonalNodeDrag() {
+  endDragPreview()
+  draggedPersonalNodeID.value = null
+  personalDropTargetID.value = null
+}
+
+function dragOverPersonalNode(event: DragEvent, id: number) {
+  if (draggedPersonalNodeID.value === null || draggedPersonalNodeID.value === id) return
+  event.preventDefault()
+  personalDropTargetID.value = id
+}
+
+function dropPersonalNode(id: number) {
+  const sourceID = draggedPersonalNodeID.value
+  endPersonalNodeDrag()
+  if (sourceID === null || sourceID === id) return
+  const oldIndex = personalNodes.value.findIndex((node) => node.id === sourceID)
+  const newIndex = personalNodes.value.findIndex((node) => node.id === id)
+  if (oldIndex < 0 || newIndex < 0) return
   const values = [...personalNodes.value]
-  ;[values[index], values[target]] = [values[target], values[index]]
-  values.forEach((node, position) => { node.position = position + 1 })
+  const [node] = values.splice(oldIndex, 1)
+  values.splice(newIndex, 0, node)
+  values.forEach((value, position) => { value.position = position + 1 })
   personalNodes.value = values
 }
 
@@ -470,6 +526,7 @@ async function savePersonal() {
         nodes: personalNodes.value.map((node) => ({
           source_type: node.source_type, source_id: node.source_id,
           display_name: node.display_name.trim(), enabled: node.enabled,
+          entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
         })),
       }),
     })
@@ -534,7 +591,7 @@ async function previewPersonal(value: PersonalSubscription) {
 }
 
 function personalSourceLabel(value: string) {
-  return value === 'proxy' ? '本地 Proxy' : value === 'published' ? '发布节点' : '外部节点'
+  return value === 'proxy' ? '本地 Proxy' : value === 'relay' ? '中转 Relay' : '外部节点 Landing'
 }
 
 function personalStatusType(value: string) {
@@ -1166,19 +1223,41 @@ onMounted(async () => {
         <span v-if="personalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无可访问来源</span>
         <div v-for="source in personalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
           <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
-          <n-button secondary size="small" attr-type="button" :disabled="personalNodes.some((node) => node.source_type === source.source_type && node.source_id === source.source_id)" @click="addPersonalSource(source)">添加节点</n-button>
+          <n-button secondary size="small" attr-type="button" @click="addPersonalSource(source)">添加节点</n-button>
         </div>
       </div>
     </fieldset>
-    <fieldset class="subscription-node-picker"><legend>已选节点（上下调整订阅顺序）</legend>
+    <fieldset class="subscription-node-picker"><legend>已选节点（拖动调整订阅顺序）</legend>
       <n-empty v-if="personalNodes.length === 0" description="尚未选择节点" />
-      <div v-for="(node, index) in personalNodes" :key="`${node.source_type}:${node.source_id}`" class="personal-node-editor">
-        <label><span>自定义显示名称</span><n-input v-model:value="node.display_name" maxlength="100" /></label>
-        <div><strong>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</strong><span>{{ node.source_detail }}</span></div>
-        <div><span v-if="node.source_type !== 'landing'">Client：{{ personalClientName }}</span><span v-else>凭据：节点自带</span> <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
-        <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
-        <div class="modal-actions"><n-button size="small" secondary attr-type="button" :disabled="index === 0" @click="movePersonalNode(index, -1)">上移</n-button><n-button size="small" secondary attr-type="button" :disabled="index === personalNodes.length - 1" @click="movePersonalNode(index, 1)">下移</n-button><n-button size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除节点</n-button></div>
-      </div>
+      <TransitionGroup tag="div" class="personal-node-list" name="personal-node-order">
+        <div
+          v-for="(node, index) in personalNodes"
+          :key="node.id"
+          class="personal-node-item"
+          :class="{ 'personal-node-dragging': draggedPersonalNodeID === node.id, 'personal-node-drop-target': personalDropTargetID === node.id }"
+          @dragover="dragOverPersonalNode($event, node.id)"
+          @dragleave="personalDropTargetID === node.id && (personalDropTargetID = null)"
+          @drop.prevent="dropPersonalNode(node.id)"
+        >
+          <div class="personal-node-summary">
+            <span class="drag-handle" draggable="true" aria-label="拖动个人订阅节点排序" title="拖动排序" @dragstart="startPersonalNodeDrag($event, node.id)" @dragend="endPersonalNodeDrag"><span></span><span></span><span></span></span>
+            <div class="personal-node-heading"><strong>{{ node.display_name || '未命名节点' }}</strong><small>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</small></div>
+            <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag>
+            <n-button size="small" secondary attr-type="button" @click="togglePersonalNodeDetails(node.id)">{{ expandedPersonalNodeIDs.has(node.id) ? '收起详情' : '详情' }}</n-button>
+          </div>
+          <div v-if="expandedPersonalNodeIDs.has(node.id)" class="personal-node-details">
+            <dl><div><dt>来源类型</dt><dd>{{ personalSourceLabel(node.source_type) }}</dd></div><div><dt>实际来源</dt><dd>{{ node.source_name }}</dd></div></dl>
+            <p class="form-help">{{ node.source_detail }}</p>
+            <label><span>自定义显示名称</span><n-input v-model:value="node.display_name" maxlength="100" /></label>
+            <label><span>入口地址</span><n-input :value="node.entry_host ?? ''" placeholder="留空使用来源默认入口" @update:value="setPersonalEntryHost(node, $event)" /></label>
+            <label><span>入口端口</span><n-input-number v-model:value="node.entry_port" :min="1" :max="65535" :precision="0" placeholder="留空使用来源默认端口" /></label>
+            <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
+            <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
+            <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
+            <div class="modal-actions"><n-button size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除节点</n-button></div>
+          </div>
+        </div>
+      </TransitionGroup>
     </fieldset>
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>

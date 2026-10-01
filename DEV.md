@@ -70,7 +70,7 @@ B：高度抽象、扩展性强、代码多、主要服务未来需求
 - VLESS / Shadowsocks Client 分享 URI
 - Proxy / Relay 二维码，本地浏览器生成
 - 订阅用户 → 共享订阅（内部 Plan）→ 发布节点的 Base64 / Mihomo 订阅
-- admin / vip 独立的多个人订阅，支持 Proxy / Published Node / Landing、Auto / Base64 / Mihomo 链接和二维码
+- admin / vip 独立的多个人订阅，支持 Proxy / Relay / Landing 节点实例、Auto / Base64 / Mihomo 链接和二维码
 - 通用分流方案（策略组 + 结构化 Rule Providers + Rules）与 Mihomo 客户端模板
 - Server Xray 出站 IPv4 / IPv6 偏好
 - Server 级禁止中国 IP 访问受管 Proxy / Relay 入站
@@ -477,7 +477,7 @@ user_relay_order
 
 ```text
 订阅用户 → Plan（UI：共享订阅）→ PublishedNode → subscriber_clients
-个人订阅 → 显式选择 Proxy | PublishedNode | Landing → 实时解析节点
+个人订阅 → 显式选择 Proxy | Relay | Landing 实例 → 实时解析节点
 ```
 
 共享订阅保留流量额度、到期、重置周期和 `subscriber_clients` reconcile。后端模型、表名和 API 继续使用 `Plan` / `subscription_plans`；“共享订阅”只是用户界面名称。
@@ -487,9 +487,12 @@ user_relay_order
 - 归属单一 admin / vip，同一账号可建立多个；普通 user / subscriber 不可使用。
 - 每个组有独立随机 token，重置后旧链接立即失效。
 - 不依赖 Plan，不创建 `subscriber_clients` / `subscriber_usage`，不拥有独立流量额度或到期时间。
-- 节点来源是当前用户可访问的 Proxy、Published Node 或 Landing，保存明确选择而不自动追加新节点。
-- Proxy / Published Node 每次按 `client_name` 实时精确匹配非订阅托管 Client，不持久化 `client_id`。Admin 只能匹配未分配或分配给自己的 Client；VIP 只能匹配分配给自己的 Client。
+- 节点来源是当前用户可访问的 Proxy、Relay 或 Landing，保存明确选择而不自动追加新节点；Published Node 只属于共享订阅链路。
+- `personal_subscription_nodes` 的每一行是独立订阅节点实例。同一 `source_type + source_id` 可以重复，每个实例独立保存 `display_name`、`entry_host`、`entry_port`、`enabled` 和 `position`；显示名称在同一组内仍须唯一。
+- Proxy 每次按 `client_name` 实时精确匹配非订阅托管 Client，不持久化 `client_id`。Admin 只能匹配未分配或分配给自己的 Client；VIP 只能匹配分配给自己的 Client。
+- Relay 默认使用自身入口。目标为 Proxy 时，按个人订阅的 `client_name` 匹配目标 Proxy Client；目标为 Landing 时使用 Landing 自带凭据；手动目标 Relay 不作为个人订阅候选来源。
 - Landing 继续使用自身 URI 凭据，并遵守现有 owner / public 可见性。
+- 实例的 `entry_host` / `entry_port` 为 `NULL` 时使用来源默认入口，非空时只覆盖该实例的地址 / 端口。
 - 单个来源不可用时保留配置并在生成时跳过；最终没有可用节点时返回明确错误。
 
 三种来源会先转换为简单、客户端无关的 `ResolvedSubscriptionNode`。Base64 renderer 从它生成 URI，Mihomo renderer 从它生成 `proxies`；当前不建立通用 renderer interface 或新协议 DSL。
@@ -1028,7 +1031,7 @@ Relay 分享 URI
 /sub/personal/{token}/auto    → Mihomo User-Agent 检测，其他回退 Base64
 ```
 
-Base64 和 Mihomo 均复用后端 canonical share 语义，自定义名称只改变最终 URI fragment / Mihomo proxy name，不修改底层 Proxy 或 Client。Mihomo 最终配置为：
+Base64 和 Mihomo 均复用后端 canonical share 语义。实例的自定义名称只改变最终 URI fragment / Mihomo proxy name，入口覆盖只改变该实例最终 endpoint，不修改底层 Proxy、Relay、Landing 或 Client。Mihomo 最终配置为：
 
 ```text
 Mihomo Template
@@ -1439,6 +1442,8 @@ user_relay_order
 
 ## 18.1 Migration 原则
 
+当前版本化 schema 的 `LatestSchemaVersion` 为 9。v9 重建 `personal_subscription_nodes` 以移除来源唯一约束、将个人来源从 `published` 迁移为 `proxy` / `relay`，并加入可空的逐实例 `entry_host` / `entry_port`；共享订阅的 Published Node 表与链路保持不变。
+
 每次 schema 变更：
 
 - 更新 `schema.go` 作为当前完整 schema
@@ -1760,6 +1765,8 @@ Relay 详情  → Modal
 ## 21.3 拖拽排序
 
 当前使用 HTML5 Drag & Drop，并复用已有 reorder API。
+
+服务器、代理节点和个人订阅已选节点都从左侧把手开始拖动。共享的拖拽预览会克隆完整行 / 节点项并交给浏览器 `setDragImage`，源项立即降低透明度，目标项显示插入提示；结束时统一清理预览和拖拽状态。个人订阅节点在本地重排后重新计算 `position`，保存时整体提交。
 
 原则：
 
@@ -2220,7 +2227,7 @@ bash -n <script>
 | 外部节点（内部 Landing） | 已实现 | 原始 URI 按需查看/复制/二维码、public/private、Relay 目标与中转 URI |
 | QR | 已实现 | 浏览器本地生成 |
 | 共享订阅 | 已实现 | 订阅用户 + Plan + Published Node + subscriber client，支持 Base64 / Mihomo |
-| 个人订阅 | 已实现 | admin / vip owner 隔离，Proxy / Published / Landing，独立 token 与 Auto / Base64 / Mihomo |
+| 个人订阅 | 已实现 | admin / vip owner 隔离，Proxy / Relay / Landing 可重复实例、逐实例入口覆盖、独立 token 与 Auto / Base64 / Mihomo |
 | 分流方案 | 已实现 | 策略组 + 结构化 Rule Providers + Rules，SQLite 内部保留 YAML 序列化 |
 | Shadowrocket / sing-box 订阅 | 未实现 | 不提供假 renderer 或空路由 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |
@@ -2264,7 +2271,7 @@ bash -n <script>
 
 ## 31.3 Subscription（已实现当前范围）
 
-已完成共享订阅与个人订阅两条独立链路，复用 Proxy / Client canonical share、Published Node endpoint、Landing URI 和本地 QR。当前输出只有 Base64 与 Mihomo。
+已完成共享订阅与个人订阅两条独立链路。共享订阅继续使用 Published Node；个人订阅直接使用 Proxy / Relay / Landing 节点实例，复用 Proxy / Client canonical share、Relay endpoint、Landing URI 和本地 QR。当前输出只有 Base64 与 Mihomo。
 
 未来真正增加第三种 renderer 时，应直接使用 `ResolvedSubscriptionNode` 和结构化 `RoutingPreset`；在此之前不增加 renderer interface、协议 DSL 或新 Credential 模型。
 
@@ -2436,7 +2443,8 @@ Server
 - [x] Relay 选择 Client 只影响分享，不提供独占认证。
 - [x] Proxy / Relay 分享 URI 由后端 canonical generator 生成。
 - [x] 共享订阅与个人订阅是独立链路，个人订阅不创建 subscriber client / usage。
-- [x] 个人订阅使用实时精确 Client 匹配和 owner 隔离，不保存匹配结果 client_id。
+- [x] 个人订阅来源固定为 Proxy / Relay / Landing；Published Node 只服务共享订阅。
+- [x] 个人订阅使用实时精确 Client 匹配和 owner 隔离，不保存匹配结果 client_id；同一来源可保存多个独立入口实例。
 - [x] 分流方案是结构化通用业务数据；Mihomo 模板只是客户端基础配置。
 - [x] 二维码在浏览器本地生成。
 - [x] 备份是完整 SQLite 快照，属于高敏感文件。

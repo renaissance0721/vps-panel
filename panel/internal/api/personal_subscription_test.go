@@ -57,17 +57,28 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	}
 	nodes := performRequest(t, handler, http.MethodPut,
 		"/api/personal-subscriptions/"+strconv.FormatInt(id, 10)+"/nodes", map[string]any{
-			"nodes": []map[string]any{{
-				"source_type": "landing", "source_id": landing.ID, "display_name": "🇬🇧 英国 | 家宽", "enabled": true,
-			}},
+			"nodes": []map[string]any{
+				{
+					"source_type": "landing", "source_id": landing.ID, "display_name": "🇬🇧 英国 | 家宽", "enabled": true,
+				},
+				{
+					"source_type": "landing", "source_id": landing.ID, "display_name": "🇬🇧 英国 | 备用入口", "enabled": true,
+					"entry_host": "backup.example.com", "entry_port": 8443,
+				},
+			},
 		}, adminCookie)
-	if nodes.Code != http.StatusOK || !strings.Contains(nodes.Body.String(), `"status":"ready"`) {
+	if nodes.Code != http.StatusOK || json.Unmarshal(nodes.Body.Bytes(), &payload) != nil ||
+		len(payload.Personal.Nodes) != 2 || payload.Personal.Nodes[1].EntryHost == nil ||
+		*payload.Personal.Nodes[1].EntryHost != "backup.example.com" || payload.Personal.Nodes[1].EntryPort == nil ||
+		*payload.Personal.Nodes[1].EntryPort != 8443 {
 		t.Fatalf("set personal nodes = %d %s", nodes.Code, nodes.Body.String())
 	}
 
 	base64Response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionBase64URL), nil, nil)
 	decoded, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(base64Response.Body.String()))
-	if base64Response.Code != http.StatusOK || decodeErr != nil || !strings.Contains(string(decoded), "%F0%9F%87%AC%F0%9F%87%A7") {
+	if base64Response.Code != http.StatusOK || decodeErr != nil ||
+		strings.Count(string(decoded), "vless://") != 2 || !strings.Contains(string(decoded), "%F0%9F%87%AC%F0%9F%87%A7") ||
+		!strings.Contains(string(decoded), "backup.example.com:8443") {
 		t.Fatalf("public personal Base64 = %d %q, decoded %q, %v", base64Response.Code, base64Response.Body.String(), decoded, decodeErr)
 	}
 	if value := base64Response.Header().Get("Subscription-Userinfo"); value != "" {
@@ -79,11 +90,15 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	handler.ServeHTTP(autoRequest, autoHTTP)
 	var autoYAML struct {
 		Proxies []struct {
-			Name string `yaml:"name"`
+			Name   string `yaml:"name"`
+			Server string `yaml:"server"`
+			Port   int    `yaml:"port"`
 		} `yaml:"proxies"`
 	}
 	if autoRequest.Code != http.StatusOK || yaml.Unmarshal(autoRequest.Body.Bytes(), &autoYAML) != nil ||
-		len(autoYAML.Proxies) != 1 || autoYAML.Proxies[0].Name != "🇬🇧 英国 | 家宽" {
+		len(autoYAML.Proxies) != 2 || autoYAML.Proxies[0].Name != "🇬🇧 英国 | 家宽" ||
+		autoYAML.Proxies[1].Name != "🇬🇧 英国 | 备用入口" || autoYAML.Proxies[1].Server != "backup.example.com" ||
+		autoYAML.Proxies[1].Port != 8443 {
 		t.Fatalf("public personal Auto = %d %s", autoRequest.Code, autoRequest.Body.String())
 	}
 	preview := performRequest(t, handler, http.MethodGet,

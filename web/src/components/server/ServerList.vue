@@ -12,6 +12,7 @@ import {
 import type {
   ServersViewState,
 } from '../../composables/useServers'
+import { beginDragPreview, endDragPreview } from '../../drag'
 const props = defineProps<{
   model: Pick<ServersViewState,
     | 'serverListMode'
@@ -56,13 +57,14 @@ const draggedArchived = ref(false)
 
 function startDrag(event: DragEvent, id: number, archived: boolean) {
   if (serverReorderingID.value !== null || !event.dataTransfer) return
+  const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
   draggedID.value = id
   draggedArchived.value = archived
-  event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData('text/plain', String(id))
 }
 
 function endDrag() {
+  endDragPreview()
   draggedID.value = null
   dropTargetID.value = null
 }
@@ -98,7 +100,7 @@ async function dropServer(id: number, archived: boolean) {
                     <th>操作</th>
                   </tr>
                 </thead>
-                <tbody>
+                <TransitionGroup tag="tbody" name="table-row-order">
                   <tr v-for="value in servers" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id, false)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropServer(value.id, false)">
                     <td class="reorder-cell">
                       <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, false)" @dragend="endDrag"><span></span><span></span><span></span></span>
@@ -178,7 +180,7 @@ async function dropServer(id: number, archived: boolean) {
                       </n-button>
                     </td>
                   </tr>
-                </tbody>
+                </TransitionGroup>
               </table>
             </div>
           </n-card>
@@ -197,7 +199,7 @@ async function dropServer(id: number, archived: boolean) {
                     <th>操作</th>
                   </tr>
                 </thead>
-                <tbody>
+                <TransitionGroup tag="tbody" name="table-row-order">
                   <tr v-for="value in archivedServers" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id, true)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropServer(value.id, true)">
                     <td class="reorder-cell">
                       <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, true)" @dragend="endDrag"><span></span><span></span><span></span></span>
@@ -222,7 +224,7 @@ async function dropServer(id: number, archived: boolean) {
                       </n-button>
                     </td>
                   </tr>
-                </tbody>
+                </TransitionGroup>
               </table>
             </div>
           </n-card>

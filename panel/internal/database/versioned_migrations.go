@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 8
+const LatestSchemaVersion = 9
 
 type migration struct {
 	version int
@@ -30,6 +30,62 @@ var migrations = []migration{
 	{version: 6, name: "materialize_subscription_plan_routing", up: materializeSubscriptionPlanRouting},
 	{version: 7, name: "routing_presets_as_runtime_profiles", up: migrateRoutingPresetsAsRuntimeProfiles},
 	{version: 8, name: "personal_subscriptions", up: createPersonalSubscriptions},
+	{version: 9, name: "personal_subscription_node_instances", up: migratePersonalSubscriptionNodeInstances},
+}
+
+func migratePersonalSubscriptionNodeInstances(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		`CREATE TABLE personal_subscription_nodes_v9 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			group_id INTEGER NOT NULL REFERENCES personal_subscription_groups(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK (source_type IN ('proxy', 'relay', 'landing')),
+			source_id INTEGER NOT NULL CHECK (source_id > 0),
+			display_name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+			position INTEGER NOT NULL CHECK (position > 0),
+			entry_host TEXT CHECK (entry_host IS NULL OR entry_host != ''),
+			entry_port INTEGER CHECK (entry_port IS NULL OR entry_port BETWEEN 1 AND 65535),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE (group_id, display_name),
+			UNIQUE (group_id, position)
+		)`,
+		`INSERT INTO personal_subscription_nodes_v9
+			(id, group_id, source_type, source_id, display_name, enabled, position,
+			 entry_host, entry_port, created_at, updated_at)
+		 SELECT personal.id, personal.group_id,
+			CASE
+				WHEN personal.source_type = 'published' AND published.mode = 'relay' AND published.relay_id IS NOT NULL THEN 'relay'
+				WHEN personal.source_type = 'published' THEN 'proxy'
+				ELSE personal.source_type
+			END,
+			CASE
+				WHEN personal.source_type = 'published' AND published.mode = 'relay' AND published.relay_id IS NOT NULL THEN published.relay_id
+				WHEN personal.source_type = 'published' THEN published.target_proxy_id
+				ELSE personal.source_id
+			END,
+			personal.display_name, personal.enabled, personal.position,
+			CASE
+				WHEN personal.source_type = 'published' AND published.mode = 'direct' AND published.entry_host_mode = 'manual'
+					THEN published.entry_host
+				ELSE NULL
+			END,
+			NULL, personal.created_at, personal.updated_at
+		 FROM personal_subscription_nodes AS personal
+		 LEFT JOIN subscription_published_nodes AS published
+			ON personal.source_type = 'published' AND published.id = personal.source_id
+		 WHERE personal.source_type != 'published' OR published.id IS NOT NULL`,
+		`DROP TABLE personal_subscription_nodes`,
+		`ALTER TABLE personal_subscription_nodes_v9 RENAME TO personal_subscription_nodes`,
+		`CREATE INDEX idx_personal_subscription_nodes_source
+			ON personal_subscription_nodes(source_type, source_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate personal subscription node instances: %w", err)
+		}
+	}
+	return nil
 }
 
 func createPersonalSubscriptions(ctx context.Context, tx *sql.Tx) error {

@@ -11,16 +11,18 @@ import (
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
 
 type personalSourceState struct {
-	name         string
-	detail       string
-	status       string
-	statusDetail string
-	accessible   bool
-	resolved     *ResolvedSubscriptionNode
+	name           string
+	detail         string
+	status         string
+	statusDetail   string
+	accessible     bool
+	requiresClient bool
+	resolved       *ResolvedSubscriptionNode
 }
 
 func (s *Service) ListPersonalSubscriptions(ctx context.Context, actor PersonalSubscriptionActor) ([]PersonalSubscription, error) {
@@ -190,7 +192,6 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		existing[personalSourceKey(node.SourceType, node.SourceID)] = struct{}{}
 	}
 	normalized := make([]SetPersonalSubscriptionNodeInput, 0, len(inputs))
-	seenSources := make(map[string]struct{}, len(inputs))
 	seenNames := make(map[string]struct{}, len(inputs))
 	for _, input := range inputs {
 		input.SourceType = strings.ToLower(strings.TrimSpace(input.SourceType))
@@ -199,14 +200,16 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 			utf8.RuneCountInString(input.DisplayName) > maxNameRunes {
 			return PersonalSubscription{}, ErrInvalidPersonalNodes
 		}
-		key := personalSourceKey(input.SourceType, input.SourceID)
-		if _, duplicate := seenSources[key]; duplicate {
-			return PersonalSubscription{}, ErrInvalidPersonalNodes
-		}
 		if _, duplicate := seenNames[input.DisplayName]; duplicate {
 			return PersonalSubscription{}, ErrInvalidPersonalNodes
 		}
-		state, err := s.inspectPersonalSource(ctx, actor, input.SourceType, input.SourceID, group.ClientName, input.DisplayName, false)
+		input.EntryHost, input.EntryPort, err = normalizePersonalNodeEndpoint(input.EntryHost, input.EntryPort)
+		if err != nil {
+			return PersonalSubscription{}, err
+		}
+		key := personalSourceKey(input.SourceType, input.SourceID)
+		state, err := s.inspectPersonalSource(ctx, actor, input.SourceType, input.SourceID, group.ClientName,
+			input.DisplayName, input.EntryHost, input.EntryPort, false)
 		if err != nil {
 			return PersonalSubscription{}, err
 		}
@@ -215,7 +218,6 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 				return PersonalSubscription{}, ErrPersonalSourceNotFound
 			}
 		}
-		seenSources[key] = struct{}{}
 		seenNames[input.DisplayName] = struct{}{}
 		normalized = append(normalized, input)
 	}
@@ -245,9 +247,9 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	for index, input := range normalized {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO personal_subscription_nodes
-			(group_id, source_type, source_id, display_name, enabled, position, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
-			input.DisplayName, input.Enabled, index+1, now, now); err != nil {
+			(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
+			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, now); err != nil {
 			return PersonalSubscription{}, fmt.Errorf("create personal subscription node: %w", err)
 		}
 	}
@@ -297,7 +299,7 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range proxies {
-		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceProxy, value.ID, clientName, value.Name, false)
+		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceProxy, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -305,17 +307,17 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 			values = append(values, personalSourceResponse(PersonalSourceProxy, value.ID, value.Name, state))
 		}
 	}
-	published, err := s.ListPublishedNodes(ctx)
+	relays, err := s.relays.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, value := range published {
-		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourcePublished, value.ID, clientName, value.Name, false)
+	for _, value := range relays {
+		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceRelay, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
 		if state.accessible {
-			values = append(values, personalSourceResponse(PersonalSourcePublished, value.ID, value.Name, state))
+			values = append(values, personalSourceResponse(PersonalSourceRelay, value.ID, value.Name, state))
 		}
 	}
 	landings, err := s.landings.List(ctx, actor.UserID)
@@ -323,7 +325,7 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range landings {
-		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceLanding, value.ID, clientName, value.Name, false)
+		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceLanding, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -385,7 +387,7 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 			continue
 		}
 		state, err := s.inspectPersonalSource(ctx, actor, node.SourceType, node.SourceID,
-			group.ClientName, node.DisplayName, true)
+			group.ClientName, node.DisplayName, node.EntryHost, node.EntryPort, true)
 		if err != nil {
 			return PersonalSubscriptionData{}, err
 		}
@@ -393,9 +395,6 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 			continue
 		}
 		result.Nodes = append(result.Nodes, *state.resolved)
-		if node.SourceType == PersonalSourcePublished {
-			result.PublishedNodeNames[node.SourceID] = node.DisplayName
-		}
 	}
 	if len(result.Nodes) == 0 {
 		return PersonalSubscriptionData{}, ErrPersonalSubscriptionEmpty
@@ -407,7 +406,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 	group PersonalSubscription,
 ) ([]PersonalSubscriptionNode, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, group_id, source_type, source_id, display_name,
-		enabled, position, created_at, updated_at FROM personal_subscription_nodes
+		enabled, position, entry_host, entry_port, created_at, updated_at FROM personal_subscription_nodes
 		WHERE group_id = ? ORDER BY position, id`, group.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list personal subscription nodes: %w", err)
@@ -416,13 +415,23 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 	for rows.Next() {
 		var value PersonalSubscriptionNode
 		var enabled int
+		var entryHost sql.NullString
+		var entryPort sql.NullInt64
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.GroupID, &value.SourceType, &value.SourceID,
-			&value.DisplayName, &enabled, &value.Position, &createdAt, &updatedAt); err != nil {
+			&value.DisplayName, &enabled, &value.Position, &entryHost, &entryPort, &createdAt, &updatedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan personal subscription node: %w", err)
 		}
 		value.Enabled = enabled != 0
+		if entryHost.Valid {
+			host := entryHost.String
+			value.EntryHost = &host
+		}
+		if entryPort.Valid {
+			port := int(entryPort.Int64)
+			value.EntryPort = &port
+		}
 		value.CreatedAt = time.Unix(createdAt, 0).UTC()
 		value.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		values = append(values, value)
@@ -436,7 +445,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 	}
 	for index := range values {
 		state, err := s.inspectPersonalSource(ctx, actor, values[index].SourceType, values[index].SourceID,
-			group.ClientName, values[index].DisplayName, false)
+			group.ClientName, values[index].DisplayName, values[index].EntryHost, values[index].EntryPort, false)
 		if err != nil {
 			return nil, err
 		}
@@ -444,12 +453,13 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 		values[index].SourceDetail = state.detail
 		values[index].Status = state.status
 		values[index].StatusDetail = state.statusDetail
+		values[index].RequiresClient = state.requiresClient
 	}
 	return values, nil
 }
 
 func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubscriptionActor, sourceType string,
-	sourceID int64, clientName, displayName string, resolve bool,
+	sourceID int64, clientName, displayName string, entryHost *string, entryPort *int, resolve bool,
 ) (personalSourceState, error) {
 	switch sourceType {
 	case PersonalSourceProxy:
@@ -467,7 +477,8 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if !allowed {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Proxy 不存在或不可访问"), nil
 		}
-		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name, accessible: true}
+		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name,
+			accessible: true, requiresClient: true}
 		if !value.Enabled {
 			state.status, state.statusDetail = PersonalNodeProxyDisabled, "Proxy 已停用"
 			return state, nil
@@ -480,7 +491,7 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if status != PersonalNodeReady || !resolve {
 			return state, nil
 		}
-		share, err := s.proxies.GetClientShareWithOptions(ctx, client.ID, proxystore.ShareOptions{DisplayName: displayName})
+		share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName, nil, entryHost, entryPort)
 		if err != nil {
 			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Proxy 入口地址不可用"
 			return state, nil
@@ -489,70 +500,115 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		state.resolved = &resolved
 		return state, nil
 
-	case PersonalSourcePublished:
-		value, err := s.GetPublishedNode(ctx, sourceID)
-		if errors.Is(err, ErrPublishedNodeNotFound) {
-			return unavailablePersonalSource("发布节点", PersonalNodeUnavailable, "发布节点不存在或不可访问"), nil
+	case PersonalSourceRelay:
+		value, err := s.relays.Get(ctx, sourceID)
+		if errors.Is(err, relaystore.ErrNotFound) {
+			return unavailablePersonalSource("中转 Relay", PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
 		}
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		allowed, err := s.personalCanAccessServer(ctx, actor.UserID, value.TargetServerID)
+		if value.OwnerUserID != nil && actor.Role != "admin" {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
+		}
+		allowed, err := s.personalCanAccessServer(ctx, actor.UserID, value.ServerID)
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		if allowed && value.SourceServerID != nil {
-			allowed, err = s.personalCanAccessServer(ctx, actor.UserID, *value.SourceServerID)
+		if !allowed {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
+		}
+		if value.TargetType == relaystore.TargetManual {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "手动目标 Relay 不提供订阅凭据"), nil
+		}
+		state := personalSourceState{
+			name: value.Name, detail: value.ServerName + " · " + value.Name,
+			accessible: true, requiresClient: value.TargetType == relaystore.TargetProxy,
+		}
+		if strings.TrimSpace(value.EntryAddress) == "" || value.ListenPort <= 0 {
+			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
+			return state, nil
+		}
+		endpoint := &proxystore.ShareEndpoint{Address: value.EntryAddress, Port: value.ListenPort}
+		if !value.Enabled {
+			state.status, state.statusDetail = PersonalNodeSourceDisabled, "Relay 已停用"
+			return state, nil
+		}
+		switch value.TargetType {
+		case relaystore.TargetProxy:
+			if value.TargetProxyID == nil {
+				state.status, state.statusDetail = PersonalNodeUnavailable, "目标 Proxy 不存在"
+				return state, nil
+			}
+			proxyValue, err := s.proxies.Get(ctx, *value.TargetProxyID)
+			if errors.Is(err, proxystore.ErrNotFound) {
+				state.status, state.statusDetail = PersonalNodeUnavailable, "目标 Proxy 不存在"
+				return state, nil
+			}
 			if err != nil {
 				return personalSourceState{}, err
 			}
-		}
-		if !allowed {
-			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "发布节点不存在或不可访问"), nil
-		}
-		detail := value.TargetServerName + " · " + value.TargetProxyName
-		if value.Mode == NodeModeRelay {
-			detail = value.SourceServerName + " · Realm → " + detail
-		}
-		state := personalSourceState{name: value.Name, detail: detail, accessible: true}
-		if !value.Enabled {
-			state.status, state.statusDetail = PersonalNodeSourceDisabled, "发布节点已停用"
+			allowed, err = s.personalCanAccessServer(ctx, actor.UserID, proxyValue.ServerID)
+			if err != nil {
+				return personalSourceState{}, err
+			}
+			if !allowed {
+				return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
+			}
+			state.detail = value.ServerName + " · " + value.Name + " → " + proxyValue.ServerName + " · " + proxyValue.Name
+			if !proxyValue.Enabled {
+				state.status, state.statusDetail = PersonalNodeProxyDisabled, "目标 Proxy 已停用"
+				return state, nil
+			}
+			client, status, statusDetail, err := s.matchPersonalClient(ctx, actor, *value.TargetProxyID, clientName)
+			if err != nil {
+				return personalSourceState{}, err
+			}
+			state.status, state.statusDetail = status, statusDetail
+			if status != PersonalNodeReady || !resolve {
+				return state, nil
+			}
+			share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName, endpoint, entryHost, entryPort)
+			if err != nil {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
+				return state, nil
+			}
+			resolved := resolvedNodeFromClientShare(share)
+			state.resolved = &resolved
 			return state, nil
-		}
-		proxyValue, err := s.proxies.Get(ctx, value.TargetProxyID)
-		if errors.Is(err, proxystore.ErrNotFound) {
-			state.status, state.statusDetail = PersonalNodeUnavailable, "目标 Proxy 不存在"
+
+		case relaystore.TargetLanding:
+			if value.TargetLandingID == nil {
+				state.status, state.statusDetail = PersonalNodeUnavailable, "目标外部节点不存在"
+				return state, nil
+			}
+			landingValue, err := s.landings.Get(ctx, *value.TargetLandingID, actor.UserID)
+			if errors.Is(err, landingstore.ErrNotFound) {
+				return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
+			}
+			if err != nil {
+				return personalSourceState{}, err
+			}
+			state.detail = value.ServerName + " · " + value.Name + " → " + landingValue.Name
+			state.status, state.statusDetail = PersonalNodeReady, "目标外部节点自带凭据"
+			if !resolve {
+				return state, nil
+			}
+			raw, err := s.landings.GetURI(ctx, landingValue.ID, actor.UserID)
+			if err != nil {
+				state.status, state.statusDetail = PersonalNodeUnavailable, "目标外部节点不可用"
+				return state, nil
+			}
+			resolved, err := resolvePersonalLandingNode(raw, displayName, endpoint, entryHost, entryPort)
+			if err != nil {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
+				return state, nil
+			}
+			state.resolved = &resolved
 			return state, nil
+		default:
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不提供可用订阅凭据"), nil
 		}
-		if err != nil {
-			return personalSourceState{}, err
-		}
-		if !proxyValue.Enabled {
-			state.status, state.statusDetail = PersonalNodeProxyDisabled, "目标 Proxy 已停用"
-			return state, nil
-		}
-		client, status, statusDetail, err := s.matchPersonalClient(ctx, actor, value.TargetProxyID, clientName)
-		if err != nil {
-			return personalSourceState{}, err
-		}
-		state.status, state.statusDetail = status, statusDetail
-		if status != PersonalNodeReady || !resolve {
-			return state, nil
-		}
-		if strings.TrimSpace(value.EntryAddress) == "" || value.EntryPort <= 0 {
-			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "发布节点入口地址不可用"
-			return state, nil
-		}
-		share, err := s.proxies.GetClientShareAtEndpointWithOptions(ctx, client.ID, proxystore.ShareEndpoint{
-			Address: value.EntryAddress, Port: value.EntryPort,
-		}, proxystore.ShareOptions{DisplayName: displayName})
-		if err != nil {
-			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "发布节点入口地址不可用"
-			return state, nil
-		}
-		resolved := resolvedNodeFromClientShare(share)
-		state.resolved = &resolved
-		return state, nil
 
 	case PersonalSourceLanding:
 		value, err := s.landings.Get(ctx, sourceID, actor.UserID)
@@ -574,23 +630,10 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			state.status, state.statusDetail = PersonalNodeUnavailable, "外部节点不可用"
 			return state, nil
 		}
-		parsed, err := landingstore.ParseURI(raw)
+		resolved, err := resolvePersonalLandingNode(raw, displayName, nil, entryHost, entryPort)
 		if err != nil {
-			state.status, state.statusDetail = PersonalNodeUnavailable, "外部节点 URI 无效"
+			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "外部节点入口地址不可用"
 			return state, nil
-		}
-		rewritten, err := landingstore.RewriteDisplayNameURI(raw, displayName)
-		if err != nil {
-			state.status, state.statusDetail = PersonalNodeUnavailable, "外部节点 URI 无效"
-			return state, nil
-		}
-		resolved := ResolvedSubscriptionNode{
-			Name: displayName, Protocol: parsed.Protocol, Address: parsed.Host, Port: parsed.Port,
-			UUID: parsed.UUID, Security: parsed.Security,
-			TLS:        parsed.Security == proxystore.SecurityTLS || parsed.Security == proxystore.SecurityReality,
-			ServerName: parsed.ServerName, Flow: parsed.Flow, Fingerprint: parsed.Fingerprint,
-			RealityPublicKey: parsed.RealityPublicKey, RealityShortID: parsed.RealityShortID,
-			Method: parsed.Method, Network: parsed.Network, ShadowsocksPassword: parsed.Password, URI: rewritten,
 		}
 		state.resolved = &resolved
 		return state, nil
@@ -660,6 +703,74 @@ func (s *Service) matchPersonalClient(ctx context.Context, actor PersonalSubscri
 	}
 }
 
+func (s *Service) resolvePersonalClientShare(ctx context.Context, clientID int64, displayName string,
+	defaultEndpoint *proxystore.ShareEndpoint, entryHost *string, entryPort *int,
+) (proxystore.ClientShare, error) {
+	options := proxystore.ShareOptions{DisplayName: displayName}
+	share, err := s.proxies.GetClientShareWithOptions(ctx, clientID, options)
+	if err != nil {
+		return proxystore.ClientShare{}, err
+	}
+	address, port := share.Address, share.Port
+	if defaultEndpoint != nil {
+		address, port = defaultEndpoint.Address, defaultEndpoint.Port
+	}
+	if entryHost != nil {
+		address = *entryHost
+	}
+	if entryPort != nil {
+		port = *entryPort
+	}
+	if address == share.Address && port == share.Port {
+		return share, nil
+	}
+	return s.proxies.GetClientShareAtEndpointWithOptions(ctx, clientID, proxystore.ShareEndpoint{
+		Address: address,
+		Port:    port,
+	}, options)
+}
+
+func resolvePersonalLandingNode(raw, displayName string, defaultEndpoint *proxystore.ShareEndpoint,
+	entryHost *string, entryPort *int,
+) (ResolvedSubscriptionNode, error) {
+	parsed, err := landingstore.ParseURI(raw)
+	if err != nil {
+		return ResolvedSubscriptionNode{}, err
+	}
+	address, port := parsed.Host, parsed.Port
+	if defaultEndpoint != nil {
+		address, port = defaultEndpoint.Address, defaultEndpoint.Port
+	}
+	if entryHost != nil {
+		address = *entryHost
+	}
+	if entryPort != nil {
+		port = *entryPort
+	}
+	if address != parsed.Host || port != parsed.Port {
+		raw, err = landingstore.RewriteLandingURI(raw, landingstore.ShareEndpoint{Address: address, Port: port}, "")
+		if err != nil {
+			return ResolvedSubscriptionNode{}, err
+		}
+		parsed, err = landingstore.ParseURI(raw)
+		if err != nil {
+			return ResolvedSubscriptionNode{}, err
+		}
+	}
+	rewritten, err := landingstore.RewriteDisplayNameURI(raw, displayName)
+	if err != nil {
+		return ResolvedSubscriptionNode{}, err
+	}
+	return ResolvedSubscriptionNode{
+		Name: displayName, Protocol: parsed.Protocol, Address: parsed.Host, Port: parsed.Port,
+		UUID: parsed.UUID, Security: parsed.Security,
+		TLS:        parsed.Security == proxystore.SecurityTLS || parsed.Security == proxystore.SecurityReality,
+		ServerName: parsed.ServerName, Flow: parsed.Flow, Fingerprint: parsed.Fingerprint,
+		RealityPublicKey: parsed.RealityPublicKey, RealityShortID: parsed.RealityShortID,
+		Method: parsed.Method, Network: parsed.Network, ShadowsocksPassword: parsed.Password, URI: rewritten,
+	}, nil
+}
+
 func (s *Service) personalCanAccessServer(ctx context.Context, userID, serverID int64) (bool, error) {
 	var allowed bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers
@@ -677,6 +788,7 @@ func personalSourceResponse(sourceType string, sourceID int64, defaultName strin
 	return PersonalSubscriptionSource{
 		SourceType: sourceType, SourceID: sourceID, Name: state.name, Detail: state.detail,
 		DefaultName: defaultName, Status: state.status, StatusDetail: state.statusDetail,
+		RequiresClient: state.requiresClient,
 	}
 }
 
@@ -703,7 +815,32 @@ func validatePersonalActor(actor PersonalSubscriptionActor) error {
 }
 
 func validPersonalSourceType(value string) bool {
-	return value == PersonalSourceProxy || value == PersonalSourcePublished || value == PersonalSourceLanding
+	return value == PersonalSourceProxy || value == PersonalSourceRelay || value == PersonalSourceLanding
+}
+
+func normalizePersonalNodeEndpoint(entryHost *string, entryPort *int) (*string, *int, error) {
+	if entryHost != nil {
+		_, host, err := relaystore.NormalizeEntryHost(relaystore.EntryHostManual, *entryHost)
+		if err != nil {
+			return nil, nil, ErrInvalidPersonalNodes
+		}
+		entryHost = &host
+	}
+	if entryPort != nil {
+		if *entryPort < 1 || *entryPort > 65535 {
+			return nil, nil, ErrInvalidPersonalNodes
+		}
+		port := *entryPort
+		entryPort = &port
+	}
+	return entryHost, entryPort, nil
+}
+
+func nullablePersonalString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func personalSourceKey(sourceType string, sourceID int64) string {

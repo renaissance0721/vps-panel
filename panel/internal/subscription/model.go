@@ -292,9 +292,9 @@ type SubscriberNode struct {
 }
 
 const (
-	PersonalSourceProxy     = "proxy"
-	PersonalSourcePublished = "published"
-	PersonalSourceLanding   = "landing"
+	PersonalSourceProxy   = "proxy"
+	PersonalSourceRelay   = "relay"
+	PersonalSourceLanding = "landing"
 
 	PersonalNodeReady               = "ready"
 	PersonalNodeMissing             = "missing"
@@ -331,29 +331,33 @@ type PersonalSubscription struct {
 }
 
 type PersonalSubscriptionNode struct {
-	ID           int64
-	GroupID      int64
-	SourceType   string
-	SourceID     int64
-	SourceName   string
-	SourceDetail string
-	DisplayName  string
-	Enabled      bool
-	Position     int
-	Status       string
-	StatusDetail string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID             int64
+	GroupID        int64
+	SourceType     string
+	SourceID       int64
+	SourceName     string
+	SourceDetail   string
+	DisplayName    string
+	Enabled        bool
+	Position       int
+	EntryHost      *string
+	EntryPort      *int
+	RequiresClient bool
+	Status         string
+	StatusDetail   string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type PersonalSubscriptionSource struct {
-	SourceType   string
-	SourceID     int64
-	Name         string
-	Detail       string
-	DefaultName  string
-	Status       string
-	StatusDetail string
+	SourceType     string
+	SourceID       int64
+	Name           string
+	Detail         string
+	DefaultName    string
+	Status         string
+	StatusDetail   string
+	RequiresClient bool
 }
 
 type CreatePersonalSubscriptionInput struct {
@@ -380,6 +384,8 @@ type SetPersonalSubscriptionNodeInput struct {
 	SourceID    int64
 	DisplayName string
 	Enabled     bool
+	EntryHost   *string
+	EntryPort   *int
 }
 
 type ResolvedSubscriptionNode struct {

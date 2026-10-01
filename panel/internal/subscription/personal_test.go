@@ -11,6 +11,7 @@ import (
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"gopkg.in/yaml.v3"
 )
 
@@ -167,24 +168,36 @@ func TestPersonalSubscriptionResolvesAllSourcesNamesAndOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "US Direct", Mode: NodeModeDirect, TargetProxyID: proxyValue.ID, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourceServerID := int64(2)
-	relayNode, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "US via JP", Mode: NodeModeRelay, TargetProxyID: proxyValue.ID,
-		SourceServerID: &sourceServerID, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	landings := landingstore.NewService(db)
 	vlessLanding, err := landings.Create(t.Context(), 100, landingstore.CreateInput{
 		Name: "UK VLESS", Visibility: landingstore.VisibilityPrivate,
 		URI: "vless://landing-uuid@uk.example.com:8443?type=tcp&security=reality&sni=www.example.com&pbk=public&sid=abcd&fp=chrome#Old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetClientID := client.ID
+	relays := relaystore.NewService(db)
+	proxyRelay, _, err := relays.Create(t.Context(), relaystore.CreateInput{
+		ServerID: 2, Name: "US via JP", ListenPort: 20000, EntryHostMode: relaystore.EntryHostAuto,
+		TargetType: relaystore.TargetProxy, TargetProxyID: &proxyValue.ID, TargetClientID: &targetClientID,
+		Network: relaystore.NetworkTCP, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	landingRelay, _, err := relays.Create(t.Context(), relaystore.CreateInput{
+		ServerID: 2, Name: "UK via JP", ListenPort: 20001, EntryHostMode: relaystore.EntryHostAuto,
+		TargetType: relaystore.TargetLanding, TargetLandingID: &vlessLanding.ID,
+		Network: relaystore.NetworkTCP, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualRelay, _, err := relays.Create(t.Context(), relaystore.CreateInput{
+		ServerID: 2, Name: "Manual only", ListenPort: 20002, EntryHostMode: relaystore.EntryHostAuto,
+		TargetType: relaystore.TargetManual, TargetHost: "manual.example.com", TargetPort: 443,
+		Network: relaystore.NetworkTCP, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,22 +216,52 @@ func TestPersonalSubscriptionResolvesAllSourcesNamesAndOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sources, err := service.ListPersonalSubscriptionSources(t.Context(), actor, group.ClientName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceByKey := make(map[string]PersonalSubscriptionSource, len(sources))
+	for _, source := range sources {
+		if source.SourceType == "published" {
+			t.Fatalf("published source leaked into personal subscription candidates: %+v", source)
+		}
+		sourceByKey[personalSourceKey(source.SourceType, source.SourceID)] = source
+	}
+	if sourceByKey[personalSourceKey(PersonalSourceRelay, proxyRelay.ID)].RequiresClient != true ||
+		sourceByKey[personalSourceKey(PersonalSourceRelay, landingRelay.ID)].RequiresClient ||
+		sourceByKey[personalSourceKey(PersonalSourceProxy, proxyValue.ID)].RequiresClient != true {
+		t.Fatalf("personal source client requirements = %+v", sourceByKey)
+	}
+	if _, exists := sourceByKey[personalSourceKey(PersonalSourceRelay, manualRelay.ID)]; exists {
+		t.Fatalf("manual relay must not be a personal subscription candidate: %+v", sourceByKey)
+	}
+	proxyHost, proxyPort := "proxy-alt.example.com", 1443
+	relayHost, relayPort := "2001:db8::2", 2443
+	landingHost, landingPort := "2001:db8::3", 3443
 	requested := []SetPersonalSubscriptionNodeInput{
-		{SourceType: PersonalSourceLanding, SourceID: ssLanding.ID, DisplayName: "5 SG SS", Enabled: true},
-		{SourceType: PersonalSourceProxy, SourceID: proxyValue.ID, DisplayName: "1 US Direct Proxy", Enabled: true},
-		{SourceType: PersonalSourcePublished, SourceID: direct.ID, DisplayName: "2 US Published", Enabled: true},
-		{SourceType: PersonalSourcePublished, SourceID: relayNode.ID, DisplayName: "3 US via JP", Enabled: true},
-		{SourceType: PersonalSourceLanding, SourceID: vlessLanding.ID, DisplayName: "4 UK Home", Enabled: true},
+		{SourceType: PersonalSourceProxy, SourceID: proxyValue.ID, DisplayName: "1 US Proxy", Enabled: true},
+		{SourceType: PersonalSourceProxy, SourceID: proxyValue.ID, DisplayName: "2 US Proxy Alt", Enabled: true,
+			EntryHost: &proxyHost, EntryPort: &proxyPort},
+		{SourceType: PersonalSourceRelay, SourceID: proxyRelay.ID, DisplayName: "3 US via JP", Enabled: true},
+		{SourceType: PersonalSourceRelay, SourceID: proxyRelay.ID, DisplayName: "4 US via JP v6", Enabled: true,
+			EntryHost: &relayHost, EntryPort: &relayPort},
+		{SourceType: PersonalSourceLanding, SourceID: vlessLanding.ID, DisplayName: "5 UK Home", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: vlessLanding.ID, DisplayName: "6 UK Home v6", Enabled: true,
+			EntryHost: &landingHost, EntryPort: &landingPort},
+		{SourceType: PersonalSourceRelay, SourceID: landingRelay.ID, DisplayName: "7 UK via JP", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: ssLanding.ID, DisplayName: "8 SG SS", Enabled: true},
 	}
 	stored, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, requested)
-	if err != nil || len(stored.Nodes) != len(requested) || stored.Nodes[0].Position != 1 || stored.Nodes[4].Position != 5 {
+	if err != nil || len(stored.Nodes) != len(requested) || stored.Nodes[0].Position != 1 ||
+		stored.Nodes[len(stored.Nodes)-1].Position != len(requested) || stored.Nodes[1].EntryHost == nil ||
+		*stored.Nodes[1].EntryHost != proxyHost || stored.Nodes[1].EntryPort == nil || *stored.Nodes[1].EntryPort != proxyPort {
 		t.Fatalf("stored personal nodes = %+v, %v", stored.Nodes, err)
 	}
 	data, err := service.GeneratePersonalSubscriptionDataForOwner(t.Context(), actor, group.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data.Nodes) != 5 {
+	if len(data.Nodes) != len(requested) {
 		t.Fatalf("resolved nodes = %+v", data.Nodes)
 	}
 	for index, input := range requested {
@@ -226,17 +269,21 @@ func TestPersonalSubscriptionResolvesAllSourcesNamesAndOrder(t *testing.T) {
 			t.Fatalf("resolved order[%d] = %q, want %q", index, data.Nodes[index].Name, input.DisplayName)
 		}
 	}
-	if data.Nodes[2].Address != direct.EntryAddress || data.Nodes[2].Port != direct.EntryPort ||
-		data.Nodes[3].Address != relayNode.EntryAddress || data.Nodes[3].Port != relayNode.EntryPort {
-		t.Fatalf("published endpoints = direct %s:%d relay %s:%d", data.Nodes[2].Address, data.Nodes[2].Port,
-			data.Nodes[3].Address, data.Nodes[3].Port)
+	if data.Nodes[0].Address != "1.1.1.1" || data.Nodes[0].Port != 443 ||
+		data.Nodes[1].Address != proxyHost || data.Nodes[1].Port != proxyPort ||
+		data.Nodes[2].Address != "2.2.2.2" || data.Nodes[2].Port != 20000 ||
+		data.Nodes[3].Address != relayHost || data.Nodes[3].Port != relayPort ||
+		data.Nodes[4].Address != "uk.example.com" || data.Nodes[4].Port != 8443 ||
+		data.Nodes[5].Address != landingHost || data.Nodes[5].Port != landingPort ||
+		data.Nodes[6].Address != "2.2.2.2" || data.Nodes[6].Port != 20001 {
+		t.Fatalf("resolved endpoints = %+v", data.Nodes)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(RenderResolvedBase64Subscription(data.Nodes))
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(string(decoded), "\n")
-	if len(lines) != 5 {
+	if len(lines) != len(requested) {
 		t.Fatalf("Base64 lines = %q", decoded)
 	}
 	for index, line := range lines {
@@ -262,16 +309,19 @@ func TestPersonalSubscriptionResolvesAllSourcesNamesAndOrder(t *testing.T) {
 	if err := yaml.Unmarshal(mihomo, &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Proxies) != 5 || config.Proxies[0].Name != requested[0].DisplayName || len(config.Providers) == 0 || len(config.Rules) == 0 {
+	if len(config.Proxies) != len(requested) || config.Proxies[0].Name != requested[0].DisplayName || len(config.Providers) == 0 || len(config.Rules) == 0 {
 		t.Fatalf("Mihomo config = proxies %+v providers %d rules %d", config.Proxies, len(config.Providers), len(config.Rules))
 	}
-	if config.Proxies[4].Flow != "" {
-		t.Fatalf("landing VLESS flow = %q, want URI value to remain empty", config.Proxies[4].Flow)
+	if config.Proxies[4].Flow != "" || config.Proxies[5].Flow != "" || config.Proxies[6].Flow != "" {
+		t.Fatalf("landing VLESS flows = %q/%q/%q, want URI values to remain empty",
+			config.Proxies[4].Flow, config.Proxies[5].Flow, config.Proxies[6].Flow)
 	}
 	if !containsString(config.Groups[0].Proxies, requested[0].DisplayName) {
 		t.Fatalf("Mihomo first group = %+v", config.Groups[0].Proxies)
 	}
-	wantShare, err := proxies.GetClientShareWithOptions(t.Context(), client.ID, proxystore.ShareOptions{DisplayName: requested[1].DisplayName})
+	wantShare, err := proxies.GetClientShareAtEndpointWithOptions(t.Context(), client.ID, proxystore.ShareEndpoint{
+		Address: proxyHost, Port: proxyPort,
+	}, proxystore.ShareOptions{DisplayName: requested[1].DisplayName})
 	if err != nil || data.Nodes[1].URI != wantShare.URI {
 		t.Fatalf("proxy share = %q, want %q, %v", data.Nodes[1].URI, wantShare.URI, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,13 +149,15 @@ rules:
 		VALUES ('Another Default', 1, '[]', '[]', '{}', 1, 1, 1)`); err == nil {
 		t.Fatal("second default routing preset unexpectedly inserted")
 	}
-	if err := applyMigration(context.Background(), db, migrations[7]); err != nil {
-		t.Fatal(err)
+	for _, item := range migrations[7:] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
 	}
 	assertLatestMigrationHistory(t, db)
 }
 
-func TestMigrationEightCreatesPersonalSubscriptionSchema(t *testing.T) {
+func TestLatestMigrationCreatesPersonalSubscriptionSchema(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +173,82 @@ func TestMigrationEightCreatesPersonalSubscriptionSchema(t *testing.T) {
 		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("table %s count = %d, %v", table, count, err)
 		}
+	}
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
+}
+
+func TestMigrationNineCreatesNodeInstancesAndMigratesPublishedSources(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, item := range migrations[:8] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var routingID int64
+	if err := db.QueryRow(`SELECT id FROM subscription_routing_presets WHERE is_default = 1`).Scan(&routingID); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		 VALUES (100, 'owner', 'hash', 'admin', 1, 1)`,
+		`INSERT INTO servers (id, name, status, created_at, updated_at)
+		 VALUES (1, 'Target', 'online', 1, 1), (2, 'Source', 'online', 1, 1)`,
+		`INSERT INTO server_system_info
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, agent_version, reported_at)
+		 VALUES (1, 'target', 'Linux', '1', 'kernel', 'amd64', '[]', '[]', '1.1.1.1', 'v1', 1),
+		        (2, 'source', 'Linux', '1', 'kernel', 'amd64', '[]', '[]', '2.2.2.2', 'v1', 1)`,
+		`INSERT INTO proxies (id, server_id, name, protocol, listen_port, config_json, created_at, updated_at)
+		 VALUES (10, 1, 'Target Proxy', 'vless', 443, '{}', 1, 1)`,
+		`INSERT INTO relays
+		 (id, server_id, name, listen_port, target_type, target_proxy_id, network, created_at, updated_at)
+		 VALUES (20, 2, 'Relay', 20000, 'proxy', 10, 'tcp', 1, 1)`,
+		`INSERT INTO subscription_published_nodes
+		 (id, name, mode, target_proxy_id, source_server_id, relay_id, entry_host_mode, entry_host,
+		  entry_port_mode, traffic_multiplier_bp, enabled, created_at, updated_at)
+		 VALUES (30, 'Direct', 'direct', 10, NULL, NULL, 'manual', 'direct.example.com', 'inherit', 100, 1, 1, 1),
+		        (31, 'Relayed', 'relay', 10, 2, 20, 'auto', '', 'manual', 100, 1, 1, 1)`,
+		`INSERT INTO personal_subscription_groups
+		 (id, owner_user_id, name, subscription_title, token, enabled, client_name, routing_preset_id, created_at, updated_at)
+		 VALUES (40, 100, 'Personal', '', 'personal-token', 1, 'owner', ` + fmt.Sprint(routingID) + `, 1, 1)`,
+		`INSERT INTO personal_subscription_nodes
+		 (id, group_id, source_type, source_id, display_name, enabled, position, created_at, updated_at)
+		 VALUES (50, 40, 'published', 30, 'Direct Instance', 1, 1, 1, 1),
+		        (51, 40, 'published', 31, 'Relay Instance', 1, 2, 1, 1),
+		        (52, 40, 'proxy', 10, 'Proxy Instance', 1, 3, 1, 1)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := applyMigration(context.Background(), db, migrations[8]); err != nil {
+		t.Fatal(err)
+	}
+	var sourceType, entryHost string
+	var sourceID int64
+	if err := db.QueryRow(`SELECT source_type, source_id, entry_host
+		FROM personal_subscription_nodes WHERE id = 50`).Scan(&sourceType, &sourceID, &entryHost); err != nil {
+		t.Fatal(err)
+	}
+	if sourceType != "proxy" || sourceID != 10 || entryHost != "direct.example.com" {
+		t.Fatalf("migrated direct source = %s/%d/%q", sourceType, sourceID, entryHost)
+	}
+	if err := db.QueryRow(`SELECT source_type, source_id
+		FROM personal_subscription_nodes WHERE id = 51`).Scan(&sourceType, &sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if sourceType != "relay" || sourceID != 20 {
+		t.Fatalf("migrated relay source = %s/%d", sourceType, sourceID)
+	}
+	if _, err := db.Exec(`INSERT INTO personal_subscription_nodes
+		(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, created_at, updated_at)
+		VALUES (40, 'proxy', 10, 'Second Proxy Instance', 1, 4, '2001:db8::1', 8443, 1, 1)`); err != nil {
+		t.Fatalf("duplicate source instance insert: %v", err)
 	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)

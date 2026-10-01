@@ -97,6 +97,32 @@ test('服务器、代理和中转只从 handle 拖动，串行提交并在失败
   }
 })
 
+test('服务器和代理拖拽使用完整行预览、源行淡化与目标占位', async () => {
+  const [drag, style, proxy, server] = await Promise.all([
+    source('drag.ts'),
+    source('style.css'),
+    source('components/proxy/ProxyList.vue'),
+    source('components/server/ServerList.vue'),
+  ])
+  assert.match(drag, /source\.cloneNode\(true\)/)
+  assert.match(drag, /source instanceof HTMLTableRowElement[\s\S]*document\.createElement\('table'\)/)
+  assert.match(drag, /event\.dataTransfer\.setDragImage\(/)
+  assert.match(drag, /source\.classList\.add\('drag-source'\)/)
+  assert.match(drag, /requestAnimationFrame\(\(\) =>/)
+  assert.match(drag, /activeSource\?\.classList\.remove\('drag-source'\)/)
+  for (const view of [proxy, server]) {
+    assert.match(view, /closest\('tr'\)/)
+    assert.match(view, /beginDragPreview\(event, source, String\(id\)\)/)
+    assert.match(view, /endDragPreview\(\)/)
+    assert.match(view, /row-drop-target/)
+    assert.match(view, /<TransitionGroup tag="tbody" name="table-row-order">/)
+  }
+  assert.match(style, /\.drag-source,[\s\S]*opacity:\s*0\.38 !important/)
+  assert.match(style, /\.server-table tr\.row-drop-target\s*{[^}]*background:\s*var\(--color-primary-soft\)/)
+  assert.match(style, /\.drag-preview\s*{[^}]*box-shadow:/s)
+  assert.match(style, /\.table-row-order-move,[\s\S]*transition:\s*transform/)
+})
+
 test('代理 IP 和入口地址展示去重且处理缺失值', async () => {
   assert.deepEqual(proxyAddressLines({ server_public_ipv4: '1.2.3.4', entry_address: 'host.example' }), ['1.2.3.4', 'host.example'])
   assert.deepEqual(proxyAddressLines({ server_public_ipv4: '1.2.3.4', entry_address: '' }), ['1.2.3.4'])

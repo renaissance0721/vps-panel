@@ -35,25 +35,30 @@ type setPersonalSubscriptionNodesRequest struct {
 }
 
 type personalSubscriptionNodeRequest struct {
-	SourceType  string `json:"source_type"`
-	SourceID    int64  `json:"source_id"`
-	DisplayName string `json:"display_name"`
-	Enabled     bool   `json:"enabled"`
+	SourceType  string  `json:"source_type"`
+	SourceID    int64   `json:"source_id"`
+	DisplayName string  `json:"display_name"`
+	Enabled     bool    `json:"enabled"`
+	EntryHost   *string `json:"entry_host"`
+	EntryPort   *int    `json:"entry_port"`
 }
 
 type personalSubscriptionNodeResponse struct {
-	ID           int64     `json:"id"`
-	SourceType   string    `json:"source_type"`
-	SourceID     int64     `json:"source_id"`
-	SourceName   string    `json:"source_name"`
-	SourceDetail string    `json:"source_detail"`
-	DisplayName  string    `json:"display_name"`
-	Enabled      bool      `json:"enabled"`
-	Position     int       `json:"position"`
-	Status       string    `json:"status"`
-	StatusDetail string    `json:"status_detail"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID             int64     `json:"id"`
+	SourceType     string    `json:"source_type"`
+	SourceID       int64     `json:"source_id"`
+	SourceName     string    `json:"source_name"`
+	SourceDetail   string    `json:"source_detail"`
+	DisplayName    string    `json:"display_name"`
+	Enabled        bool      `json:"enabled"`
+	Position       int       `json:"position"`
+	EntryHost      *string   `json:"entry_host"`
+	EntryPort      *int      `json:"entry_port"`
+	RequiresClient bool      `json:"requires_client"`
+	Status         string    `json:"status"`
+	StatusDetail   string    `json:"status_detail"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type personalSubscriptionResponse struct {
@@ -75,13 +80,14 @@ type personalSubscriptionResponse struct {
 }
 
 type personalSubscriptionSourceResponse struct {
-	SourceType   string `json:"source_type"`
-	SourceID     int64  `json:"source_id"`
-	Name         string `json:"name"`
-	Detail       string `json:"detail"`
-	DefaultName  string `json:"default_name"`
-	Status       string `json:"status"`
-	StatusDetail string `json:"status_detail"`
+	SourceType     string `json:"source_type"`
+	SourceID       int64  `json:"source_id"`
+	Name           string `json:"name"`
+	Detail         string `json:"detail"`
+	DefaultName    string `json:"default_name"`
+	Status         string `json:"status"`
+	StatusDetail   string `json:"status_detail"`
+	RequiresClient bool   `json:"requires_client"`
 }
 
 func (s *server) listPersonalSubscriptions(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -207,6 +213,7 @@ func (s *server) setPersonalSubscriptionNodes(w http.ResponseWriter, r *http.Req
 	for _, node := range request.Nodes {
 		inputs = append(inputs, subscriptionstore.SetPersonalSubscriptionNodeInput{
 			SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: node.DisplayName, Enabled: node.Enabled,
+			EntryHost: node.EntryHost, EntryPort: node.EntryPort,
 		})
 	}
 	value, err := s.subscriptions.SetPersonalSubscriptionNodes(r.Context(), personalActor(user), id, inputs)
@@ -270,6 +277,7 @@ func (s *server) listPersonalSubscriptionSources(w http.ResponseWriter, r *http.
 		response = append(response, personalSubscriptionSourceResponse{
 			SourceType: value.SourceType, SourceID: value.SourceID, Name: value.Name, Detail: value.Detail,
 			DefaultName: value.DefaultName, Status: value.Status, StatusDetail: value.StatusDetail,
+			RequiresClient: value.RequiresClient,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": response})
@@ -285,7 +293,8 @@ func toPersonalSubscriptionResponse(value subscriptionstore.PersonalSubscription
 		nodes = append(nodes, personalSubscriptionNodeResponse{
 			ID: node.ID, SourceType: node.SourceType, SourceID: node.SourceID,
 			SourceName: node.SourceName, SourceDetail: node.SourceDetail, DisplayName: node.DisplayName,
-			Enabled: node.Enabled, Position: node.Position, Status: node.Status, StatusDetail: node.StatusDetail,
+			Enabled: node.Enabled, Position: node.Position, EntryHost: node.EntryHost, EntryPort: node.EntryPort,
+			RequiresClient: node.RequiresClient, Status: node.Status, StatusDetail: node.StatusDetail,
 			CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
 		})
 	}
@@ -312,7 +321,7 @@ func writePersonalSubscriptionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrInvalidPersonalSubscription):
 		writeError(w, http.StatusBadRequest, "个人订阅名称、订阅标题或 Client 名称无效")
 	case errors.Is(err, subscriptionstore.ErrInvalidPersonalNodes):
-		writeError(w, http.StatusBadRequest, "个人订阅节点列表无效，来源和显示名称不能重复")
+		writeError(w, http.StatusBadRequest, "个人订阅节点列表无效，显示名称不能重复，入口地址和端口必须有效")
 	case errors.Is(err, subscriptionstore.ErrPersonalSourceNotFound):
 		writeError(w, http.StatusBadRequest, "节点来源不存在或当前用户无权访问")
 	case errors.Is(err, subscriptionstore.ErrPersonalSubscriptionEmpty):

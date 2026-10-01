@@ -3,13 +3,16 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-func TestMigrationFiveToSixMaterializesPlanRouting(t *testing.T) {
+func TestMigrationSixToSevenCreatesRuntimeRoutingProfiles(t *testing.T) {
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "panel.db")
 	db, err := sql.Open("sqlite", path)
@@ -34,31 +37,116 @@ func TestMigrationFiveToSixMaterializesPlanRouting(t *testing.T) {
 		db.Close()
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
+	if err := applyMigration(context.Background(), db, migrations[5]); err != nil {
+		db.Close()
 		t.Fatal(err)
 	}
-
-	db, err = Open(dataDir)
-	if err != nil {
+	customTemplate := `dns:
+  enable: false
+proxies: []
+rule-providers:
+  Custom:
+    type: http
+    behavior: classical
+    format: yaml
+    interval: 86400
+    url: https://example.com/custom.yaml
+proxy-groups:
+  - name: Default
+    type: select
+    proxies: [DIRECT]
+rules:
+  - RULE-SET,Custom,Default
+  - MATCH,Default`
+	if _, err := db.Exec(`INSERT INTO subscription_templates
+		(id, name, enabled, config_yaml, created_at, updated_at) VALUES (3, 'Custom', 1, ?, 1, 1)`, customTemplate); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE subscription_plans SET template_id = 3,
+		routing_rules_json = '["RULE-SET,Custom,Default","MATCH,Default"]' WHERE id = 2`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_plans
+		(id, name, enabled, routing_groups_json, routing_rules_json, created_at, updated_at)
+		VALUES (4, 'Default Plan', 1, '[]', '[]', 1, 1)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := applyMigration(context.Background(), db, migrations[6]); err != nil {
+		db.Close()
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var presetGroups, presetRules, planGroups, planRules string
-	var legacyRef sql.NullInt64
-	if err := db.QueryRow(`SELECT groups_json, rules_json FROM subscription_routing_presets WHERE id = 1`).
-		Scan(&presetGroups, &presetRules); err != nil {
+
+	var defaultID int64
+	var defaultName string
+	var defaultEnabled int
+	var defaultGroups, defaultProviders, defaultRules string
+	if err := db.QueryRow(`SELECT id, name, enabled, groups_json, rule_providers_yaml, rules_json
+		FROM subscription_routing_presets WHERE is_default = 1`).
+		Scan(&defaultID, &defaultName, &defaultEnabled, &defaultGroups, &defaultProviders, &defaultRules); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT routing_groups_json, routing_rules_json, routing_preset_id
-		FROM subscription_plans WHERE id = 2`).Scan(&planGroups, &planRules, &legacyRef); err != nil {
+	var groups []migratedRoutingGroup
+	var rules []string
+	var providers map[string]any
+	if err := json.Unmarshal([]byte(defaultGroups), &groups); err != nil {
 		t.Fatal(err)
 	}
-	if presetGroups != planGroups || presetRules != planRules || legacyRef.Valid ||
-		!strings.Contains(planGroups, `"name":"Default"`) || !strings.Contains(planGroups, `"node_ids":[7]`) ||
-		strings.Contains(planGroups, `"members"`) ||
-		planRules != `["DOMAIN-SUFFIX,example.com,Streaming","MATCH,Default"]` {
-		t.Fatalf("migrated preset/plan = preset %s %s, plan %s %s, ref %+v",
-			presetGroups, presetRules, planGroups, planRules, legacyRef)
+	if err := json.Unmarshal([]byte(defaultRules), &rules); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(defaultProviders), &providers); err != nil {
+		t.Fatal(err)
+	}
+	if defaultName != "默认分流" || defaultEnabled != 1 ||
+		defaultGroups != defaultRoutingGroupsJSON || defaultProviders != defaultRoutingProvidersYAML ||
+		defaultRules != defaultRoutingRulesJSON || len(groups) != 8 || len(providers) != 10 || len(rules) != 12 ||
+		groups[0].Name != "🚀 默认代理" || rules[len(rules)-1] != "MATCH,🚀 默认代理" {
+		t.Fatalf("default routing = name %q, enabled %d, groups %v, providers %v, rules %v",
+			defaultName, defaultEnabled, groups, providers, rules)
+	}
+
+	var planRoutingID, defaultPlanRoutingID int64
+	var planGroups, planRules, migratedProviders string
+	if err := db.QueryRow(`SELECT routing_preset_id, routing_groups_json, routing_rules_json
+		FROM subscription_plans WHERE id = 2`).Scan(&planRoutingID, &planGroups, &planRules); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT routing_preset_id FROM subscription_plans WHERE id = 4`).Scan(&defaultPlanRoutingID); err != nil {
+		t.Fatal(err)
+	}
+	if planRoutingID == defaultID || defaultPlanRoutingID != defaultID || planGroups != "[]" || planRules != "[]" {
+		t.Fatalf("migrated plan refs = custom %d, default %d, default id %d, legacy %s/%s",
+			planRoutingID, defaultPlanRoutingID, defaultID, planGroups, planRules)
+	}
+	if err := db.QueryRow(`SELECT rule_providers_yaml FROM subscription_routing_presets WHERE id = ?`, planRoutingID).
+		Scan(&migratedProviders); err != nil || !strings.Contains(migratedProviders, "Custom:") {
+		t.Fatalf("migrated plan providers = %q, %v", migratedProviders, err)
+	}
+	var cleanedTemplate string
+	if err := db.QueryRow(`SELECT config_yaml FROM subscription_templates WHERE id = 3`).Scan(&cleanedTemplate); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"proxies:", "proxy-groups:", "rule-providers:", "rules:"} {
+		if strings.Contains(cleanedTemplate, forbidden) {
+			t.Fatalf("migrated template still contains %q:\n%s", forbidden, cleanedTemplate)
+		}
+	}
+	if !strings.Contains(cleanedTemplate, "dns:") {
+		t.Fatalf("migrated template lost base config:\n%s", cleanedTemplate)
+	}
+	var existingProviders string
+	if err := db.QueryRow(`SELECT rule_providers_yaml FROM subscription_routing_presets WHERE id = 1`).Scan(&existingProviders); err != nil ||
+		!strings.Contains(existingProviders, "OpenAI:") {
+		t.Fatalf("existing preset providers = %q, %v", existingProviders, err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_routing_presets
+		(name, enabled, groups_json, rules_json, rule_providers_yaml, is_default, created_at, updated_at)
+		VALUES ('Another Default', 1, '[]', '[]', '{}', 1, 1, 1)`); err == nil {
+		t.Fatal("second default routing preset unexpectedly inserted")
 	}
 	assertLatestMigrationHistory(t, db)
 }
@@ -108,6 +196,40 @@ func TestMigrationSixRejectsCorruptRoutingJSONAtomically(t *testing.T) {
 	}
 	if version != 5 || newColumns != 0 {
 		t.Fatalf("failed migration state = version %d, new columns %d", version, newColumns)
+	}
+}
+
+func TestMigrationSevenRejectsUnsafeTemplateAtomically(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, item := range migrations[:6] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_templates
+		(name, enabled, config_yaml, created_at, updated_at)
+		VALUES ('Unsafe', 1, ?, 1, 1)`, "dns: &shared\n  enable: true\ntun: *shared"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = applyMigration(context.Background(), db, migrations[6])
+	if err == nil || !strings.Contains(err.Error(), "safe mapping") {
+		t.Fatalf("unsafe template migration error = %v", err)
+	}
+	var version, addedColumns int
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('subscription_routing_presets')
+		WHERE name IN ('rule_providers_yaml', 'is_default')`).Scan(&addedColumns); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 || addedColumns != 0 {
+		t.Fatalf("failed migration state = version %d, added columns %d", version, addedColumns)
 	}
 }
 

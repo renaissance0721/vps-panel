@@ -341,3 +341,61 @@ func TestGenerateSubscriptionTokenAndAvailability(t *testing.T) {
 		t.Fatalf("exhausted subscription error = %v", err)
 	}
 }
+
+func TestSubscriptionUsesLatestReferencedRoutingPresetEvenWhenDisabled(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
+	proxyValue := createSubscriptionTestRealityProxy(t, db, 1, "internal", 443)
+	insertSubscriptionTestSubscriber(t, db, 100, "alice")
+	node, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+		Name: "SG", Mode: NodeModeDirect, TargetProxyID: proxyValue.ID, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Live", Enabled: true,
+		Groups:            []RoutingGroup{{Name: "Proxy", Type: "select", IncludeAll: true}},
+		RuleProvidersYAML: "{}", Rules: []string{"MATCH,Proxy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{
+		Name: "Live Plan", Enabled: true, RoutingPresetID: &routing.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{node.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || data.RoutingPreset == nil || data.RoutingPreset.Rules[0] != "MATCH,Proxy" {
+		t.Fatalf("initial routing data = %+v, %v", data.RoutingPreset, err)
+	}
+	changedRules := []string{"DOMAIN-SUFFIX,example.com,Proxy", "MATCH,Proxy"}
+	disabled := false
+	if _, err := service.UpdateRoutingPreset(t.Context(), routing.ID, UpdateRoutingPresetInput{
+		Enabled: &disabled, Rules: &changedRules,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err = service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err != nil || data.RoutingPreset == nil || data.RoutingPreset.Enabled ||
+		len(data.RoutingPreset.Rules) != 2 || data.RoutingPreset.Rules[0] != changedRules[0] {
+		t.Fatalf("updated live routing data = %+v, %v", data.RoutingPreset, err)
+	}
+	body, err := RenderMihomoSubscription(data)
+	if err != nil || !strings.Contains(string(body), changedRules[0]) {
+		t.Fatalf("render disabled referenced routing = %v\n%s", err, body)
+	}
+	storedPlan, err := service.GetPlan(t.Context(), plan.ID)
+	if err != nil || storedPlan.RoutingPresetID == nil || *storedPlan.RoutingPresetID != routing.ID {
+		t.Fatalf("plan changed after routing update = %+v, %v", storedPlan, err)
+	}
+}

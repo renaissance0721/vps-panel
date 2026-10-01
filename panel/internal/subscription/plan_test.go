@@ -131,3 +131,49 @@ func TestDifferentPlansMayUseDifferentNodesForSameTargetProxy(t *testing.T) {
 		t.Fatalf("same-plan duplicate target error = %v", err)
 	}
 }
+
+func TestPlanDefaultsToDefaultRoutingPresetAndCanSwitch(t *testing.T) {
+	_, service := newSubscriptionTestService(t)
+	created, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Default", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.RoutingPresetID == nil {
+		t.Fatal("new plan has no default routing preset")
+	}
+	defaultPreset, err := service.GetRoutingPreset(t.Context(), *created.RoutingPresetID)
+	if err != nil || !defaultPreset.IsDefault {
+		t.Fatalf("new plan routing preset = %+v, %v", defaultPreset, err)
+	}
+	custom, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Custom", Enabled: true,
+		Groups:            []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
+		RuleProvidersYAML: "{}", Rules: []string{"MATCH,Custom"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := service.UpdatePlan(t.Context(), created.ID, UpdatePlanInput{
+		RoutingPresetIDSet: true, RoutingPresetID: &custom.ID,
+	})
+	if err != nil || updated.RoutingPresetID == nil || *updated.RoutingPresetID != custom.ID {
+		t.Fatalf("switched plan routing preset = %+v, %v", updated.RoutingPresetID, err)
+	}
+	disabled := false
+	if _, err := service.UpdateRoutingPreset(t.Context(), custom.ID, UpdateRoutingPresetInput{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	name := "Still works"
+	if _, _, err := service.UpdatePlan(t.Context(), created.ID, UpdatePlanInput{Name: &name}); err != nil {
+		t.Fatalf("update plan retaining disabled routing preset: %v", err)
+	}
+	other, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Other", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdatePlan(t.Context(), other.ID, UpdatePlanInput{
+		RoutingPresetIDSet: true, RoutingPresetID: &custom.ID,
+	}); !errors.Is(err, ErrInvalidPlanRouting) {
+		t.Fatalf("new disabled routing preset selection error = %v", err)
+	}
+}

@@ -3,7 +3,6 @@ package subscription
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -52,23 +51,21 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	if !subscriber.Active {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
-	var routingGroupsJSON, routingRulesJSON string
-	var templateID sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_groups_json, plans.routing_rules_json, plans.template_id
+	var routingPresetID, templateID sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_preset_id, plans.template_id
 		FROM subscriber_profiles AS profiles
 		JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
-		WHERE profiles.user_id = ?`, userID).Scan(&routingGroupsJSON, &routingRulesJSON, &templateID); errors.Is(err, sql.ErrNoRows) {
+		WHERE profiles.user_id = ?`, userID).Scan(&routingPresetID, &templateID); errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	} else if err != nil {
 		return SubscriptionData{}, mutations, fmt.Errorf("read subscription plan routing: %w", err)
 	}
-	var routingGroups []RoutingGroup
-	if err := json.Unmarshal([]byte(routingGroupsJSON), &routingGroups); err != nil {
-		return SubscriptionData{}, mutations, fmt.Errorf("decode subscription plan routing groups: %w", err)
+	if !routingPresetID.Valid {
+		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
-	var routingRules []string
-	if err := json.Unmarshal([]byte(routingRulesJSON), &routingRules); err != nil {
-		return SubscriptionData{}, mutations, fmt.Errorf("decode subscription plan routing rules: %w", err)
+	routingPreset, err := s.GetRoutingPreset(ctx, routingPresetID.Int64)
+	if err != nil {
+		return SubscriptionData{}, mutations, err
 	}
 
 	type subscriptionNode struct {
@@ -148,7 +145,7 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	}
 	result := SubscriptionData{
 		Title: subscriber.SubscriptionTitle, Nodes: shares, Upload: upload, Download: download,
-		PublishedNodeNames: publishedNodeNames, RoutingGroups: routingGroups, RoutingRules: routingRules,
+		PublishedNodeNames: publishedNodeNames, RoutingPreset: &routingPreset,
 	}
 	if templateID.Valid {
 		template, err := s.GetTemplate(ctx, templateID.Int64)

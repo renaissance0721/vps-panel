@@ -9,9 +9,11 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 6
+const LatestSchemaVersion = 7
 
 type migration struct {
 	version int
@@ -26,6 +28,7 @@ var migrations = []migration{
 	{version: 4, name: "subscription_templates_and_routing_presets", up: createSubscriptionConfiguration},
 	{version: 5, name: "audit_logs", up: createAuditLogs},
 	{version: 6, name: "materialize_subscription_plan_routing", up: materializeSubscriptionPlanRouting},
+	{version: 7, name: "routing_presets_as_runtime_profiles", up: migrateRoutingPresetsAsRuntimeProfiles},
 }
 
 func migrate(db *sql.DB) error {
@@ -721,6 +724,376 @@ func decodeMigrationJSON(raw string, value any) error {
 		return fmt.Errorf("decode trailing JSON data: %w", err)
 	}
 	return nil
+}
+
+const defaultRoutingGroupsJSON = `[{"name":"🚀 默认代理","type":"select","proxies":["DIRECT"],"include_all":true},{"name":"🤖 AI","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"▶️ YouTube","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🎬 Netflix","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"✈️ Telegram","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🎵 TikTok","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🍎 Apple","type":"select","proxies":["DIRECT","🚀 默认代理"],"include_all":true},{"name":"Ⓜ️ Microsoft","type":"select","proxies":["DIRECT","🚀 默认代理"],"include_all":true}]`
+
+const defaultRoutingRulesJSON = `["RULE-SET,OpenAI,🤖 AI","RULE-SET,Claude,🤖 AI","RULE-SET,Gemini,🤖 AI","RULE-SET,YouTube,▶️ YouTube","RULE-SET,Netflix,🎬 Netflix","RULE-SET,Telegram,✈️ Telegram","RULE-SET,TikTok,🎵 TikTok","RULE-SET,Apple,🍎 Apple","RULE-SET,Copilot,Ⓜ️ Microsoft","RULE-SET,Microsoft,Ⓜ️ Microsoft","GEOIP,CN,DIRECT,no-resolve","MATCH,🚀 默认代理"]`
+
+const defaultRoutingProvidersYAML = `OpenAI:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml
+Claude:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.yaml
+Gemini:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Gemini/Gemini.yaml
+YouTube:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/YouTube/YouTube.yaml
+Netflix:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Netflix/Netflix_Classical.yaml
+Telegram:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Telegram/Telegram.yaml
+TikTok:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.yaml
+Apple:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple_Classical.yaml
+Copilot:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Copilot/Copilot.yaml
+Microsoft:
+  type: http
+  behavior: classical
+  format: yaml
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.yaml`
+
+func migrateRoutingPresetsAsRuntimeProfiles(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE subscription_routing_presets ADD COLUMN rule_providers_yaml TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE subscription_routing_presets ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1))`,
+		`CREATE UNIQUE INDEX idx_subscription_routing_presets_default
+			ON subscription_routing_presets(is_default) WHERE is_default = 1`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("extend subscription routing presets: %w", err)
+		}
+	}
+
+	now := time.Now().UTC().Unix()
+	result, err := tx.ExecContext(ctx, `INSERT INTO subscription_routing_presets
+		(name, enabled, groups_json, rules_json, rule_providers_yaml, is_default, created_at, updated_at)
+		VALUES ('默认分流', 1, ?, ?, ?, 1, ?, ?)`,
+		defaultRoutingGroupsJSON, defaultRoutingRulesJSON, defaultRoutingProvidersYAML, now, now)
+	if err != nil {
+		return fmt.Errorf("create default subscription routing preset: %w", err)
+	}
+	defaultID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("read default subscription routing preset id: %w", err)
+	}
+
+	type templateRouting struct {
+		providers string
+		has       bool
+		enabled   bool
+	}
+	templateRoutings := make(map[int64]templateRouting)
+	templateRows, err := tx.QueryContext(ctx, `SELECT id, enabled, config_yaml FROM subscription_templates ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list subscription templates for routing migration: %w", err)
+	}
+	type migratedTemplate struct {
+		id         int64
+		configYAML string
+	}
+	migratedTemplates := make([]migratedTemplate, 0)
+	for templateRows.Next() {
+		var id int64
+		var enabled int
+		var configYAML string
+		if err := templateRows.Scan(&id, &enabled, &configYAML); err != nil {
+			templateRows.Close()
+			return fmt.Errorf("scan subscription template for routing migration: %w", err)
+		}
+		cleaned, providers, hasProviders, err := stripTemplateRoutingSections(configYAML)
+		if err != nil {
+			templateRows.Close()
+			return fmt.Errorf("migrate subscription template %d: %w", id, err)
+		}
+		templateRoutings[id] = templateRouting{providers: providers, has: hasProviders, enabled: enabled != 0}
+		migratedTemplates = append(migratedTemplates, migratedTemplate{id: id, configYAML: cleaned})
+	}
+	if err := templateRows.Err(); err != nil {
+		templateRows.Close()
+		return fmt.Errorf("iterate subscription templates for routing migration: %w", err)
+	}
+	if err := templateRows.Close(); err != nil {
+		return fmt.Errorf("close subscription templates for routing migration: %w", err)
+	}
+	for _, value := range migratedTemplates {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_templates SET config_yaml = ? WHERE id = ?`,
+			value.configYAML, value.id); err != nil {
+			return fmt.Errorf("store migrated subscription template %d: %w", value.id, err)
+		}
+	}
+
+	presetRows, err := tx.QueryContext(ctx,
+		`SELECT id, groups_json, rules_json FROM subscription_routing_presets WHERE is_default = 0 ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list existing routing presets for provider migration: %w", err)
+	}
+	type existingPreset struct {
+		id     int64
+		groups string
+		rules  string
+	}
+	existingPresets := make([]existingPreset, 0)
+	for presetRows.Next() {
+		var value existingPreset
+		if err := presetRows.Scan(&value.id, &value.groups, &value.rules); err != nil {
+			presetRows.Close()
+			return fmt.Errorf("scan existing routing preset for provider migration: %w", err)
+		}
+		if err := validateMigratedRouting(value.groups, value.rules, defaultRoutingProvidersYAML); err != nil {
+			presetRows.Close()
+			return fmt.Errorf("validate existing routing preset %d: %w", value.id, err)
+		}
+		existingPresets = append(existingPresets, value)
+	}
+	if err := presetRows.Err(); err != nil {
+		presetRows.Close()
+		return fmt.Errorf("iterate existing routing presets for provider migration: %w", err)
+	}
+	if err := presetRows.Close(); err != nil {
+		return fmt.Errorf("close existing routing presets for provider migration: %w", err)
+	}
+	for _, value := range existingPresets {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE subscription_routing_presets SET rule_providers_yaml = ? WHERE id = ?`,
+			defaultRoutingProvidersYAML, value.id); err != nil {
+			return fmt.Errorf("store providers for existing routing preset %d: %w", value.id, err)
+		}
+	}
+
+	planRows, err := tx.QueryContext(ctx, `SELECT id, name, routing_groups_json, routing_rules_json, template_id
+		FROM subscription_plans ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list subscription plans for routing migration: %w", err)
+	}
+	type migratedPlan struct {
+		id, routingPresetID int64
+	}
+	plans := make([]migratedPlan, 0)
+	for planRows.Next() {
+		var id int64
+		var name, groupsJSON, rulesJSON string
+		var templateID sql.NullInt64
+		if err := planRows.Scan(&id, &name, &groupsJSON, &rulesJSON, &templateID); err != nil {
+			planRows.Close()
+			return fmt.Errorf("scan subscription plan for routing migration: %w", err)
+		}
+		var groups []migratedRoutingGroup
+		if err := decodeMigrationJSON(groupsJSON, &groups); err != nil {
+			planRows.Close()
+			return fmt.Errorf("decode subscription plan %d routing groups: %w", id, err)
+		}
+		var rules []string
+		if err := decodeMigrationJSON(rulesJSON, &rules); err != nil {
+			planRows.Close()
+			return fmt.Errorf("decode subscription plan %d routing rules: %w", id, err)
+		}
+		routingPresetID := defaultID
+		if len(groups) != 0 || len(rules) != 0 {
+			if len(groups) == 0 {
+				planRows.Close()
+				return fmt.Errorf("subscription plan %d has rules without routing groups", id)
+			}
+			providers := defaultRoutingProvidersYAML
+			if templateID.Valid {
+				if template, exists := templateRoutings[templateID.Int64]; exists && template.enabled && template.has {
+					providers = template.providers
+				}
+			}
+			if err := validateMigratedRouting(groupsJSON, rulesJSON, providers); err != nil {
+				planRows.Close()
+				return fmt.Errorf("validate subscription plan %d routing: %w", id, err)
+			}
+			created, err := tx.ExecContext(ctx, `INSERT INTO subscription_routing_presets
+				(name, enabled, groups_json, rules_json, rule_providers_yaml, is_default, created_at, updated_at)
+				VALUES (?, 1, ?, ?, ?, 0, ?, ?)`, name+" 分流（迁移）", groupsJSON, rulesJSON, providers, now, now)
+			if err != nil {
+				planRows.Close()
+				return fmt.Errorf("create migrated routing preset for subscription plan %d: %w", id, err)
+			}
+			routingPresetID, err = created.LastInsertId()
+			if err != nil {
+				planRows.Close()
+				return fmt.Errorf("read migrated routing preset id for subscription plan %d: %w", id, err)
+			}
+		}
+		plans = append(plans, migratedPlan{id: id, routingPresetID: routingPresetID})
+	}
+	if err := planRows.Err(); err != nil {
+		planRows.Close()
+		return fmt.Errorf("iterate subscription plans for routing migration: %w", err)
+	}
+	if err := planRows.Close(); err != nil {
+		return fmt.Errorf("close subscription plans for routing migration: %w", err)
+	}
+	for _, plan := range plans {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_plans
+			SET routing_preset_id = ?, routing_groups_json = '[]', routing_rules_json = '[]' WHERE id = ?`,
+			plan.routingPresetID, plan.id); err != nil {
+			return fmt.Errorf("store routing preset reference for subscription plan %d: %w", plan.id, err)
+		}
+	}
+	return nil
+}
+
+func stripTemplateRoutingSections(source string) (string, string, bool, error) {
+	if len(source) > 64<<10 {
+		return "", "", false, errors.New("template YAML exceeds the supported size")
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(source), &document); err != nil || len(document.Content) != 1 ||
+		document.Content[0].Kind != yaml.MappingNode || !safeMigrationYAMLNode(document.Content[0]) {
+		if err != nil {
+			return "", "", false, fmt.Errorf("decode template YAML: %w", err)
+		}
+		return "", "", false, errors.New("template YAML root must be a safe mapping")
+	}
+	root := document.Content[0]
+	seen := make(map[string]struct{}, len(root.Content)/2)
+	content := make([]*yaml.Node, 0, len(root.Content))
+	providers, hasProviders := "", false
+	for index := 0; index < len(root.Content); index += 2 {
+		key, value := root.Content[index], root.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return "", "", false, errors.New("template YAML contains a non-string top-level key")
+		}
+		if _, exists := seen[key.Value]; exists {
+			return "", "", false, fmt.Errorf("template YAML contains duplicate key %q", key.Value)
+		}
+		seen[key.Value] = struct{}{}
+		switch key.Value {
+		case "rule-providers":
+			if value.Kind != yaml.MappingNode {
+				return "", "", false, errors.New("template rule-providers must be a mapping")
+			}
+			encoded, err := yaml.Marshal(value)
+			if err != nil {
+				return "", "", false, fmt.Errorf("encode template rule-providers: %w", err)
+			}
+			providers, hasProviders = strings.TrimSpace(string(encoded)), true
+		case "proxies", "proxy-groups", "rules":
+		default:
+			content = append(content, key, value)
+		}
+	}
+	root.Content = content
+	encoded, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", "", false, fmt.Errorf("encode migrated template YAML: %w", err)
+	}
+	return strings.TrimSpace(string(encoded)), providers, hasProviders, nil
+}
+
+func validateMigratedRouting(groupsJSON, rulesJSON, providersYAML string) error {
+	var groups []migratedRoutingGroup
+	if err := decodeMigrationJSON(groupsJSON, &groups); err != nil {
+		return fmt.Errorf("decode groups: %w", err)
+	}
+	if len(groups) == 0 {
+		return errors.New("routing groups must not be empty")
+	}
+	var rules []string
+	if err := decodeMigrationJSON(rulesJSON, &rules); err != nil {
+		return fmt.Errorf("decode rules: %w", err)
+	}
+	providers, err := migrationProviderNames(providersYAML)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		parts := strings.Split(rule, ",")
+		if len(parts) >= 3 && strings.TrimSpace(parts[0]) == "RULE-SET" {
+			provider := strings.TrimSpace(parts[1])
+			if _, exists := providers[provider]; !exists {
+				return fmt.Errorf("rule %q references missing rule provider %q", rule, provider)
+			}
+		}
+	}
+	return nil
+}
+
+func migrationProviderNames(source string) (map[string]struct{}, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(source), &document); err != nil || len(document.Content) != 1 ||
+		document.Content[0].Kind != yaml.MappingNode || !safeMigrationYAMLNode(document.Content[0]) {
+		if err != nil {
+			return nil, fmt.Errorf("decode rule providers YAML: %w", err)
+		}
+		return nil, errors.New("rule providers YAML root must be a safe mapping")
+	}
+	root := document.Content[0]
+	names := make(map[string]struct{}, len(root.Content)/2)
+	for index := 0; index < len(root.Content); index += 2 {
+		key := root.Content[index]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" || strings.TrimSpace(key.Value) == "" {
+			return nil, errors.New("rule providers YAML contains an invalid key")
+		}
+		if _, exists := names[key.Value]; exists {
+			return nil, fmt.Errorf("rule providers YAML contains duplicate key %q", key.Value)
+		}
+		names[key.Value] = struct{}{}
+	}
+	return names, nil
+}
+
+func safeMigrationYAMLNode(node *yaml.Node) bool {
+	if node.Kind == yaml.AliasNode || node.Anchor != "" {
+		return false
+	}
+	allowedTags := map[string]bool{
+		"": true, "!!map": true, "!!seq": true, "!!str": true, "!!bool": true,
+		"!!int": true, "!!float": true, "!!null": true, "tag:yaml.org,2002:map": true,
+		"tag:yaml.org,2002:seq": true, "tag:yaml.org,2002:str": true,
+		"tag:yaml.org,2002:bool": true, "tag:yaml.org,2002:int": true,
+		"tag:yaml.org,2002:float": true, "tag:yaml.org,2002:null": true,
+	}
+	if !allowedTags[node.Tag] {
+		return false
+	}
+	for _, child := range node.Content {
+		if !safeMigrationYAMLNode(child) {
+			return false
+		}
+	}
+	return true
 }
 
 func createAuditLogs(ctx context.Context, tx *sql.Tx) error {

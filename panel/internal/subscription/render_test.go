@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -9,9 +10,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func defaultRoutingPresetForTest(t *testing.T) *RoutingPreset {
+	t.Helper()
+	_, service := newSubscriptionTestService(t)
+	values, err := service.ListRoutingPresets(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range values {
+		if values[index].IsDefault {
+			return &values[index]
+		}
+	}
+	t.Fatal("default routing preset not found")
+	return nil
+}
+
 func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 	data := SubscriptionData{
-		Title: "我的机场",
+		Title:         "我的机场",
+		RoutingPreset: defaultRoutingPresetForTest(t),
 		Nodes: []proxystore.ClientShare{
 			{
 				Client:      proxystore.Client{UUID: "11111111-1111-1111-1111-111111111111"},
@@ -155,7 +173,7 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 }
 
 func TestRenderMihomoTLSOmitsRealityOptions(t *testing.T) {
-	body, err := RenderMihomoSubscription(SubscriptionData{Nodes: []proxystore.ClientShare{{
+	body, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: defaultRoutingPresetForTest(t), Nodes: []proxystore.ClientShare{{
 		Client: proxystore.Client{UUID: "uuid"}, DisplayName: "TLS 节点", Protocol: proxystore.ProtocolVLESS,
 		Address: "tls.example.com", Port: 443, Security: proxystore.SecurityTLS,
 		ServerName: "www.example.com", Fingerprint: proxystore.Fingerprint,
@@ -182,6 +200,7 @@ func TestRenderMihomoTLSOmitsRealityOptions(t *testing.T) {
 
 func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) {
 	body, err := RenderMihomoSubscription(SubscriptionData{
+		RoutingPreset: defaultRoutingPresetForTest(t),
 		Nodes: []proxystore.ClientShare{{
 			Client: proxystore.Client{UUID: "uuid"}, DisplayName: "Custom", Protocol: proxystore.ProtocolVLESS,
 			Address: "custom.example.com", Port: 443, Security: proxystore.SecurityTLS,
@@ -214,20 +233,26 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 	}
 }
 
-func TestRenderMihomoCustomFullTemplateAndPlanOverride(t *testing.T) {
+func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 	node := proxystore.ClientShare{
 		Client: proxystore.Client{UUID: "uuid"}, DisplayName: "Node A", Protocol: proxystore.ProtocolVLESS,
 		Address: "node.example.com", Port: 443, Security: proxystore.SecurityTLS,
 		ServerName: "node.example.com", Fingerprint: proxystore.Fingerprint,
 	}
-	custom := &SubscriptionTemplate{ConfigYAML: `mixed-port: 9999
-proxy-groups:
-  - name: Custom
-    type: select
-    proxies: ["{{all}}", DIRECT, "{{all}}"]
-rules:
-  - MATCH,Custom`}
-	body, err := RenderMihomoSubscription(SubscriptionData{Nodes: []proxystore.ClientShare{node}, Template: custom})
+	custom := &SubscriptionTemplate{ConfigYAML: "mixed-port: 9999\ndns:\n  enable: false"}
+	routing := &RoutingPreset{
+		Name: "Plan", Enabled: true, RuleProvidersYAML: "{}",
+		Groups: []RoutingGroup{
+			{Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
+			{Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, NodeIDs: []int64{7, 999}, IncludeAll: true},
+			{Name: "Empty", Type: "select"},
+		},
+		Rules: []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"},
+	}
+	body, err := RenderMihomoSubscription(SubscriptionData{
+		Nodes: []proxystore.ClientShare{node}, PublishedNodeNames: map[int64]string{7: "Node A"}, Template: custom,
+		RoutingPreset: routing,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,27 +260,7 @@ rules:
 	if err := yaml.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.ProxyGroups) != 1 || !slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"Node A", "DIRECT"}) ||
-		!slices.Equal(parsed.Rules, []string{"MATCH,Custom"}) {
-		t.Fatalf("full template routing = %+v\n%s", parsed, body)
-	}
-
-	body, err = RenderMihomoSubscription(SubscriptionData{
-		Nodes: []proxystore.ClientShare{node}, PublishedNodeNames: map[int64]string{7: "Node A"}, Template: custom,
-		RoutingGroups: []RoutingGroup{
-			{Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
-			{Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, NodeIDs: []int64{7, 999}, IncludeAll: true},
-			{Name: "Empty", Type: "select"},
-		},
-		RoutingRules: []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := yaml.Unmarshal(body, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if len(parsed.ProxyGroups) != 3 ||
+	if parsed.Mode != "rule" || len(parsed.ProxyGroups) != 3 ||
 		!slices.Equal(parsed.ProxyGroups[1].Proxies, []string{"Other", "DIRECT", "Node A"}) ||
 		!slices.Equal(parsed.ProxyGroups[2].Proxies, []string{"DIRECT"}) ||
 		!slices.Equal(parsed.Rules, []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"}) {
@@ -264,25 +269,20 @@ rules:
 }
 
 func TestRenderMihomoRuleSetRequiresProvider(t *testing.T) {
-	template := &SubscriptionTemplate{ConfigYAML: `proxy-groups:
-  - name: Custom
-    type: select
-    proxies: [DIRECT]
-rules:
-  - RULE-SET,Missing,Custom
-  - MATCH,Custom`}
-	if _, err := RenderMihomoSubscription(SubscriptionData{Template: template}); err == nil ||
-		!strings.Contains(err.Error(), `missing rule provider "Missing"`) {
+	routing := &RoutingPreset{Name: "Custom", Enabled: true,
+		Groups:            []RoutingGroup{{Name: "Custom", Type: "select", Proxies: []string{"DIRECT"}}},
+		RuleProvidersYAML: "{}", Rules: []string{"RULE-SET,Missing,Custom", "MATCH,Custom"}}
+	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); !errors.Is(err, ErrInvalidRoutingPreset) {
 		t.Fatalf("missing provider error = %v", err)
 	}
-	template.ConfigYAML += "\nrule-providers:\n  Missing:\n    type: http\n    behavior: classical\n    format: yaml\n    interval: 86400\n    url: https://example.com/rules.yaml"
-	if _, err := RenderMihomoSubscription(SubscriptionData{Template: template}); err != nil {
+	routing.RuleProvidersYAML = "Missing:\n  type: http\n  behavior: classical\n  format: yaml\n  interval: 86400\n  url: https://example.com/rules.yaml"
+	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); err != nil {
 		t.Fatalf("valid RULE-SET render error = %v", err)
 	}
 }
 
 func TestBuiltinMihomoProviders(t *testing.T) {
-	body, err := RenderMihomoSubscription(SubscriptionData{})
+	body, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: defaultRoutingPresetForTest(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

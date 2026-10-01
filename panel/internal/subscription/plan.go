@@ -3,7 +3,6 @@ package subscription
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,7 +14,7 @@ import (
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_groups_json, routing_rules_json, template_id, created_at, updated_at
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription plans: %w", err)
@@ -47,7 +46,7 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
 	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_groups_json, routing_rules_json, template_id, created_at, updated_at
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
@@ -66,7 +65,7 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	value, err := normalizePlan(Plan{
 		Name: input.Name, SubscriptionTitle: input.SubscriptionTitle,
 		Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
-		RoutingGroups: input.RoutingGroups, RoutingRules: input.RoutingRules, TemplateID: input.TemplateID,
+		RoutingPresetID: input.RoutingPresetID, TemplateID: input.TemplateID,
 	})
 	if err != nil {
 		return Plan{}, err
@@ -75,13 +74,15 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	if err := validatePlanTemplateRef(ctx, s.db, value.TemplateID); err != nil {
 		return Plan{}, err
 	}
-	routingGroupsJSON, _ := json.Marshal(value.RoutingGroups)
-	routingRulesJSON, _ := json.Marshal(value.RoutingRules)
+	value.RoutingPresetID, err = resolvePlanRoutingPresetRef(ctx, s.db, value.RoutingPresetID, nil)
+	if err != nil {
+		return Plan{}, err
+	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_plans
-		(name, subscription_title, enabled, traffic_limit_bytes, routing_groups_json, routing_rules_json, template_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, subscription_title, enabled, traffic_limit_bytes, routing_preset_id, template_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		value.Name, nullableString(value.SubscriptionTitle), value.Enabled,
-		nullableInt64(value.TrafficLimitBytes), routingGroupsJSON, routingRulesJSON,
+		nullableInt64(value.TrafficLimitBytes), nullableInt64(value.RoutingPresetID),
 		nullableInt64(value.TemplateID), now.Unix(), now.Unix())
 	if err != nil {
 		return Plan{}, fmt.Errorf("create subscription plan: %w", err)
@@ -101,7 +102,7 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	}
 	defer tx.Rollback()
 	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_groups_json, routing_rules_json, template_id, created_at, updated_at
+		routing_preset_id, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
@@ -121,12 +122,9 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	if input.TrafficLimitBytesSet {
 		current.TrafficLimitBytes = input.TrafficLimitBytes
 	}
-	if input.RoutingGroupsSet != input.RoutingRulesSet {
-		return Plan{}, nil, ErrInvalidPlanRouting
-	}
-	if input.RoutingGroupsSet {
-		current.RoutingGroups = input.RoutingGroups
-		current.RoutingRules = input.RoutingRules
+	previousRoutingPresetID := current.RoutingPresetID
+	if input.RoutingPresetIDSet {
+		current.RoutingPresetID = input.RoutingPresetID
 	}
 	if input.TemplateIDSet {
 		current.TemplateID = input.TemplateID
@@ -138,13 +136,15 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	if err := validatePlanTemplateRef(ctx, tx, current.TemplateID); err != nil {
 		return Plan{}, nil, err
 	}
-	routingGroupsJSON, _ := json.Marshal(current.RoutingGroups)
-	routingRulesJSON, _ := json.Marshal(current.RoutingRules)
+	current.RoutingPresetID, err = resolvePlanRoutingPresetRef(ctx, tx, current.RoutingPresetID, previousRoutingPresetID)
+	if err != nil {
+		return Plan{}, nil, err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET
 		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?,
-		routing_groups_json = ?, routing_rules_json = ?, template_id = ?, updated_at = ? WHERE id = ?`,
+		routing_preset_id = ?, template_id = ?, updated_at = ? WHERE id = ?`,
 		current.Name, nullableString(current.SubscriptionTitle), current.Enabled,
-		nullableInt64(current.TrafficLimitBytes), routingGroupsJSON, routingRulesJSON,
+		nullableInt64(current.TrafficLimitBytes), nullableInt64(current.RoutingPresetID),
 		nullableInt64(current.TemplateID), now.Unix(), id)
 	if err != nil {
 		return Plan{}, nil, fmt.Errorf("update subscription plan: %w", err)
@@ -414,12 +414,11 @@ func scanPlan(row rowScanner) (Plan, error) {
 	var value Plan
 	var trafficLimit sql.NullInt64
 	var subscriptionTitle sql.NullString
-	var routingGroupsJSON, routingRulesJSON string
-	var templateID sql.NullInt64
+	var routingPresetID, templateID sql.NullInt64
 	var enabled int
 	var createdAt, updatedAt int64
 	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit,
-		&routingGroupsJSON, &routingRulesJSON, &templateID, &createdAt, &updatedAt)
+		&routingPresetID, &templateID, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -429,11 +428,9 @@ func scanPlan(row rowScanner) (Plan, error) {
 		limit := trafficLimit.Int64
 		value.TrafficLimitBytes = &limit
 	}
-	if err := json.Unmarshal([]byte(routingGroupsJSON), &value.RoutingGroups); err != nil {
-		return Plan{}, fmt.Errorf("decode subscription plan routing groups: %w", err)
-	}
-	if err := json.Unmarshal([]byte(routingRulesJSON), &value.RoutingRules); err != nil {
-		return Plan{}, fmt.Errorf("decode subscription plan routing rules: %w", err)
+	if routingPresetID.Valid {
+		id := routingPresetID.Int64
+		value.RoutingPresetID = &id
 	}
 	if templateID.Valid {
 		id := templateID.Int64
@@ -457,15 +454,8 @@ func normalizePlan(value Plan) (Plan, error) {
 	if value.TrafficLimitBytes != nil && *value.TrafficLimitBytes < 0 {
 		return Plan{}, ErrInvalidTrafficLimit
 	}
-	var err error
-	value.RoutingGroups, value.RoutingRules, err = normalizeRoutingConfiguration(
-		value.RoutingGroups, value.RoutingRules, true, ErrInvalidPlanRouting,
-	)
-	if err != nil {
-		return Plan{}, err
-	}
-	if err := validateRoutingJSONSize(value.RoutingGroups, value.RoutingRules, ErrInvalidPlanRouting); err != nil {
-		return Plan{}, err
+	if value.RoutingPresetID != nil && *value.RoutingPresetID <= 0 {
+		return Plan{}, ErrRoutingPresetNotFound
 	}
 	return value, nil
 }

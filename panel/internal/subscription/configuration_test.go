@@ -2,85 +2,64 @@ package subscription
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-func TestBuildBuiltinMihomoConfigurationParsesTemplateSource(t *testing.T) {
+func TestBuiltinMihomoConfigurationContainsOnlyClientBase(t *testing.T) {
 	value, err := BuildMihomoConfiguration(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var source struct {
-		Groups    []MihomoTemplateGroup `yaml:"proxy-groups"`
-		Rules     []string              `yaml:"rules"`
-		Providers map[string]any        `yaml:"rule-providers"`
+	if value.YAML != builtinMihomoTemplate {
+		t.Fatalf("built-in Mihomo YAML changed during parsing:\n%s", value.YAML)
 	}
-	if err := yaml.Unmarshal([]byte(builtinMihomoTemplate), &source); err != nil {
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(value.YAML), &root); err != nil {
 		t.Fatal(err)
 	}
-	if value.YAML != builtinMihomoTemplate || !slices.Equal(value.Rules, source.Rules) ||
-		len(value.Groups) != len(source.Groups) || len(value.RuleProviders) != len(source.Providers) {
-		t.Fatalf("built-in Mihomo configuration = %+v", value)
-	}
-	for index, group := range source.Groups {
-		if value.Groups[index].Name != group.Name || value.Groups[index].Type != group.Type ||
-			!slices.Equal(value.Groups[index].Proxies, group.Proxies) {
-			t.Fatalf("built-in Mihomo group %d = %+v, want %+v", index, value.Groups[index], group)
+	for _, key := range []string{"proxies", "proxy-groups", "rule-providers", "rules"} {
+		if _, exists := root[key]; exists {
+			t.Fatalf("built-in Mihomo base contains %q:\n%s", key, value.YAML)
 		}
 	}
-	wantProviders := []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"}
-	if !slices.Equal(value.RuleProviders, wantProviders) || len(value.Groups) != 8 || len(value.Rules) != 12 ||
-		!slices.Contains(value.Groups[0].Proxies, "{{all}}") {
-		t.Fatalf("built-in Mihomo metadata = %+v", value)
-	}
-	if strings.Contains(value.YAML, "uuid:") || strings.Contains(value.YAML, "password:") {
-		t.Fatalf("built-in Mihomo YAML contains subscriber credentials:\n%s", value.YAML)
+	for _, key := range []string{"mixed-port", "profile", "sniffer", "dns"} {
+		if _, exists := root[key]; !exists {
+			t.Fatalf("built-in Mihomo base is missing %q", key)
+		}
 	}
 }
 
-func TestBuildMihomoConfigurationAppliesCustomTemplateOverlay(t *testing.T) {
-	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{ConfigYAML: `dns:
-  enable: false
-proxy-groups:
-  - name: Custom
-    type: select
-    proxies: ["{{all}}", DIRECT]
-rules:
-  - MATCH,Custom`})
+func TestBuildMihomoConfigurationAppliesOnlyBaseTemplateOverlay(t *testing.T) {
+	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{ConfigYAML: "dns:\n  enable: false\ntun:\n  enable: false"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(value.Groups) != 1 || value.Groups[0].Name != "Custom" ||
-		!slices.Equal(value.Groups[0].Proxies, []string{"{{all}}", "DIRECT"}) ||
-		!slices.Equal(value.Rules, []string{"MATCH,Custom"}) || !strings.Contains(value.YAML, "mixed-port: 7890") {
-		t.Fatalf("effective Mihomo configuration = %+v", value)
+	if !strings.Contains(value.YAML, "mixed-port: 7890") || !strings.Contains(value.YAML, "enable: false") {
+		t.Fatalf("effective Mihomo base = %s", value.YAML)
+	}
+	for _, key := range []string{"proxies:", "proxy-groups:", "rule-providers:", "rules:"} {
+		if strings.Contains(value.YAML, key) {
+			t.Fatalf("effective Mihomo base contains routing key %q:\n%s", key, value.YAML)
+		}
 	}
 }
 
-func TestRoutingPresetIsCopiedIntoPlan(t *testing.T) {
-	db, service := newSubscriptionTestService(t)
-	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
-	proxy := createSubscriptionTestRealityProxy(t, db, 1, "Internal", 443)
-	node, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
-		Name: "SG-01", Mode: NodeModeDirect, TargetProxyID: proxy.ID, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestRoutingPresetIsLiveReferencedByPlan(t *testing.T) {
+	_, service := newSubscriptionTestService(t)
 	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Streaming", Enabled: true,
-		Groups: []RoutingGroup{{Name: "Streaming", Type: "select", Proxies: []string{"DIRECT"}, NodeIDs: []int64{node.ID}}},
-		Rules:  []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"},
+		Groups:            []RoutingGroup{{Name: "Streaming", Type: "select", Proxies: []string{"DIRECT"}}},
+		RuleProvidersYAML: "{}",
+		Rules:             []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{
-		Name: "Plan", Enabled: true, RoutingGroups: preset.Groups, RoutingRules: preset.Rules,
+		Name: "Plan", Enabled: true, RoutingPresetID: &preset.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,16 +71,15 @@ func TestRoutingPresetIsCopiedIntoPlan(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.DeleteRoutingPreset(t.Context(), preset.ID); err != nil {
-		t.Fatal(err)
-	}
 	stored, err := service.GetPlan(t.Context(), plan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.RoutingGroups) != 1 || stored.RoutingGroups[0].Name != "Streaming" ||
-		!slices.Equal(stored.RoutingRules, []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"}) {
-		t.Fatalf("plan routing changed with preset = %+v / %+v", stored.RoutingGroups, stored.RoutingRules)
+	if stored.RoutingPresetID == nil || *stored.RoutingPresetID != preset.ID {
+		t.Fatalf("plan routing preset = %+v", stored.RoutingPresetID)
+	}
+	if err := service.DeleteRoutingPreset(t.Context(), preset.ID); !errors.Is(err, ErrRoutingPresetReferenced) {
+		t.Fatalf("referenced routing preset deletion error = %v", err)
 	}
 }
 
@@ -110,6 +88,7 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 	for _, config := range []string{
 		"proxies: []",
 		"proxy-groups: []",
+		"rule-providers: {}",
 		"rules: []",
 		"defaults: &defaults\n  enable: true\ndns: *defaults",
 		"dns: !custom value",
@@ -120,18 +99,33 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 			t.Fatalf("template %q error = %v", config, err)
 		}
 	}
-	for _, config := range []string{
-		"dns:\n  enable: false",
-		"proxy-groups:\n  - name: Custom\n    type: select\n    proxies: [DIRECT]\nrules:\n  - MATCH,Custom",
+	if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
+		Name: "Valid", Enabled: true, ConfigYAML: "dns:\n  enable: false",
+	}); err != nil {
+		t.Fatalf("valid template error = %v", err)
+	}
+
+	validGroups := []RoutingGroup{{Name: "AI", Type: "select", Proxies: []string{"DIRECT"}}}
+	for _, providers := range []string{
+		"defaults: &defaults\n  type: http\nOpenAI: *defaults",
+		"OpenAI: !custom value",
+		"- OpenAI",
 	} {
-		if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
-			Name: "Valid", Enabled: true, ConfigYAML: config,
-		}); err != nil {
-			t.Fatalf("valid template %q error = %v", config, err)
+		if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+			Name: "Unsafe", Enabled: true, Groups: validGroups,
+			RuleProvidersYAML: providers, Rules: []string{"MATCH,AI"},
+		}); !errors.Is(err, ErrInvalidRoutingPreset) {
+			t.Fatalf("rule providers %q error = %v", providers, err)
 		}
 	}
 	if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
-		Name: "Cycle", Enabled: true,
+		Name: "Missing", Enabled: true, Groups: validGroups, RuleProvidersYAML: "{}",
+		Rules: []string{"RULE-SET,OpenAI,AI", "MATCH,AI"},
+	}); !errors.Is(err, ErrInvalidRoutingPreset) {
+		t.Fatalf("missing rule provider error = %v", err)
+	}
+	if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Cycle", Enabled: true, RuleProvidersYAML: "{}",
 		Groups: []RoutingGroup{
 			{Name: "A", Type: "select", Proxies: []string{"B"}},
 			{Name: "B", Type: "select", Proxies: []string{"A"}},
@@ -142,16 +136,22 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 	}
 }
 
-func TestUpdatePlanRoutingMustBePaired(t *testing.T) {
+func TestDefaultRoutingPresetCanBeEditedButNotDisabledOrDeleted(t *testing.T) {
 	_, service := newSubscriptionTestService(t)
-	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Plan", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
+	presets, err := service.ListRoutingPresets(t.Context())
+	if err != nil || len(presets) == 0 || !presets[0].IsDefault || !presets[0].Enabled {
+		t.Fatalf("default routing preset = %+v, %v", presets, err)
 	}
-	if _, _, err := service.UpdatePlan(t.Context(), plan.ID, UpdatePlanInput{
-		RoutingGroupsSet: true,
-		RoutingGroups:    []RoutingGroup{{Name: "Default", Type: "select", Proxies: []string{"DIRECT"}}},
-	}); !errors.Is(err, ErrInvalidPlanRouting) {
-		t.Fatalf("unpaired plan routing error = %v", err)
+	name := "默认分流（已编辑）"
+	updated, err := service.UpdateRoutingPreset(t.Context(), presets[0].ID, UpdateRoutingPresetInput{Name: &name})
+	if err != nil || updated.Name != name {
+		t.Fatalf("edit default routing preset = %+v, %v", updated, err)
+	}
+	disabled := false
+	if _, err := service.UpdateRoutingPreset(t.Context(), updated.ID, UpdateRoutingPresetInput{Enabled: &disabled}); !errors.Is(err, ErrDefaultRoutingPreset) {
+		t.Fatalf("disable default routing preset error = %v", err)
+	}
+	if err := service.DeleteRoutingPreset(t.Context(), updated.ID); !errors.Is(err, ErrDefaultRoutingPreset) {
+		t.Fatalf("delete default routing preset error = %v", err)
 	}
 }

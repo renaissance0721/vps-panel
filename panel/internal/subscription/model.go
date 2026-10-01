@@ -55,6 +55,8 @@ var (
 	ErrSubscriptionUnavailable  = errors.New("subscription unavailable")
 	ErrServerNotDistributable   = errors.New("published nodes require administrator-created servers")
 	ErrRoutingPresetNotFound    = errors.New("subscription routing preset not found")
+	ErrRoutingPresetReferenced  = errors.New("subscription routing preset is referenced by a plan")
+	ErrDefaultRoutingPreset     = errors.New("default subscription routing preset is protected")
 	ErrTemplateNotFound         = errors.New("subscription template not found")
 	ErrInvalidRoutingPreset     = errors.New("subscription routing preset is invalid")
 	ErrInvalidPlanRouting       = errors.New("subscription plan routing is invalid")
@@ -117,8 +119,7 @@ type Plan struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
-	RoutingGroups     []RoutingGroup
-	RoutingRules      []string
+	RoutingPresetID   *int64
 	TemplateID        *int64
 	Nodes             []PlanNode
 	CreatedAt         time.Time
@@ -135,8 +136,7 @@ type CreatePlanInput struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
-	RoutingGroups     []RoutingGroup
-	RoutingRules      []string
+	RoutingPresetID   *int64
 	TemplateID        *int64
 }
 
@@ -146,10 +146,8 @@ type UpdatePlanInput struct {
 	Enabled              *bool
 	TrafficLimitBytesSet bool
 	TrafficLimitBytes    *int64
-	RoutingGroupsSet     bool
-	RoutingGroups        []RoutingGroup
-	RoutingRulesSet      bool
-	RoutingRules         []string
+	RoutingPresetIDSet   bool
+	RoutingPresetID      *int64
 	TemplateIDSet        bool
 	TemplateID           *int64
 }
@@ -210,19 +208,20 @@ type SubscriptionData struct {
 	Total              int64
 	Expire             int64
 	PublishedNodeNames map[int64]string
-	RoutingGroups      []RoutingGroup
-	RoutingRules       []string
+	RoutingPreset      *RoutingPreset
 	Template           *SubscriptionTemplate
 }
 
 type RoutingPreset struct {
-	ID        int64
-	Name      string
-	Enabled   bool
-	Groups    []RoutingGroup
-	Rules     []string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                int64
+	Name              string
+	Enabled           bool
+	IsDefault         bool
+	Groups            []RoutingGroup
+	RuleProvidersYAML string
+	Rules             []string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type RoutingGroup struct {
@@ -234,17 +233,19 @@ type RoutingGroup struct {
 }
 
 type CreateRoutingPresetInput struct {
-	Name    string
-	Enabled bool
-	Groups  []RoutingGroup
-	Rules   []string
+	Name              string
+	Enabled           bool
+	Groups            []RoutingGroup
+	RuleProvidersYAML string
+	Rules             []string
 }
 
 type UpdateRoutingPresetInput struct {
-	Name    *string
-	Enabled *bool
-	Groups  *[]RoutingGroup
-	Rules   *[]string
+	Name              *string
+	Enabled           *bool
+	Groups            *[]RoutingGroup
+	RuleProvidersYAML *string
+	Rules             *[]string
 }
 
 type SubscriptionTemplate struct {

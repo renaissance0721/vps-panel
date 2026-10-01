@@ -12,27 +12,31 @@ import (
 )
 
 type routingPresetRequest struct {
-	Name    string                           `json:"name"`
-	Enabled *bool                            `json:"enabled"`
-	Groups  []subscriptionstore.RoutingGroup `json:"groups"`
-	Rules   []string                         `json:"rules"`
+	Name              string                           `json:"name"`
+	Enabled           *bool                            `json:"enabled"`
+	Groups            []subscriptionstore.RoutingGroup `json:"groups"`
+	RuleProvidersYAML string                           `json:"rule_providers_yaml"`
+	Rules             []string                         `json:"rules"`
 }
 
 type updateRoutingPresetRequest struct {
-	Name    *string                           `json:"name"`
-	Enabled *bool                             `json:"enabled"`
-	Groups  *[]subscriptionstore.RoutingGroup `json:"groups"`
-	Rules   *[]string                         `json:"rules"`
+	Name              *string                           `json:"name"`
+	Enabled           *bool                             `json:"enabled"`
+	Groups            *[]subscriptionstore.RoutingGroup `json:"groups"`
+	RuleProvidersYAML *string                           `json:"rule_providers_yaml"`
+	Rules             *[]string                         `json:"rules"`
 }
 
 type routingPresetResponse struct {
-	ID        int64                            `json:"id"`
-	Name      string                           `json:"name"`
-	Enabled   bool                             `json:"enabled"`
-	Groups    []subscriptionstore.RoutingGroup `json:"groups"`
-	Rules     []string                         `json:"rules"`
-	CreatedAt time.Time                        `json:"created_at"`
-	UpdatedAt time.Time                        `json:"updated_at"`
+	ID                int64                            `json:"id"`
+	Name              string                           `json:"name"`
+	Enabled           bool                             `json:"enabled"`
+	IsDefault         bool                             `json:"is_default"`
+	Groups            []subscriptionstore.RoutingGroup `json:"groups"`
+	RuleProvidersYAML string                           `json:"rule_providers_yaml"`
+	Rules             []string                         `json:"rules"`
+	CreatedAt         time.Time                        `json:"created_at"`
+	UpdatedAt         time.Time                        `json:"updated_at"`
 }
 
 type subscriptionTemplateRequest struct {
@@ -57,11 +61,8 @@ type subscriptionTemplateResponse struct {
 }
 
 type mihomoConfigurationResponse struct {
-	Name          string                                  `json:"name"`
-	Groups        []subscriptionstore.MihomoTemplateGroup `json:"groups"`
-	Rules         []string                                `json:"rules"`
-	RuleProviders []string                                `json:"rule_providers"`
-	YAML          string                                  `json:"yaml"`
+	Name string `json:"name"`
+	YAML string `json:"yaml"`
 }
 
 func (s *server) getBuiltinMihomoConfiguration(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -100,8 +101,7 @@ func (s *server) writeMihomoConfiguration(w http.ResponseWriter, template *subsc
 		name = template.Name
 	}
 	writeJSON(w, http.StatusOK, mihomoConfigurationResponse{
-		Name: name, Groups: value.Groups, Rules: value.Rules,
-		RuleProviders: value.RuleProviders, YAML: value.YAML,
+		Name: name, YAML: value.YAML,
 	})
 }
 
@@ -128,18 +128,19 @@ func (s *server) createSubscriptionRoutingPreset(w http.ResponseWriter, r *http.
 		enabled = *request.Enabled
 	}
 	value, err := s.subscriptions.CreateRoutingPreset(r.Context(), subscriptionstore.CreateRoutingPresetInput{
-		Name: request.Name, Enabled: enabled, Groups: request.Groups, Rules: request.Rules,
+		Name: request.Name, Enabled: enabled, Groups: request.Groups,
+		RuleProvidersYAML: request.RuleProvidersYAML, Rules: request.Rules,
 	})
 	if err != nil {
 		writeSubscriptionConfigurationError(w, err)
 		return
 	}
-	s.recordAudit(r, user, "routing_preset.create", "routing_preset", value.ID, "创建分流预设 "+value.Name)
+	s.recordAudit(r, user, "routing_preset.create", "routing_preset", value.ID, "创建分流方案 "+value.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{"routing_preset": toRoutingPresetResponse(value)})
 }
 
 func (s *server) updateSubscriptionRoutingPreset(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "分流预设 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "分流方案 ID 无效")
 	if !ok {
 		return
 	}
@@ -148,18 +149,19 @@ func (s *server) updateSubscriptionRoutingPreset(w http.ResponseWriter, r *http.
 		return
 	}
 	value, err := s.subscriptions.UpdateRoutingPreset(r.Context(), id, subscriptionstore.UpdateRoutingPresetInput{
-		Name: request.Name, Enabled: request.Enabled, Groups: request.Groups, Rules: request.Rules,
+		Name: request.Name, Enabled: request.Enabled, Groups: request.Groups,
+		RuleProvidersYAML: request.RuleProvidersYAML, Rules: request.Rules,
 	})
 	if err != nil {
 		writeSubscriptionConfigurationError(w, err)
 		return
 	}
-	s.recordAudit(r, user, "routing_preset.update", "routing_preset", value.ID, "更新分流预设 "+value.Name)
+	s.recordAudit(r, user, "routing_preset.update", "routing_preset", value.ID, "更新分流方案 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"routing_preset": toRoutingPresetResponse(value)})
 }
 
 func (s *server) deleteSubscriptionRoutingPreset(w http.ResponseWriter, r *http.Request, user auth.User) {
-	id, ok := readPositiveID(w, r.PathValue("id"), "分流预设 ID 无效")
+	id, ok := readPositiveID(w, r.PathValue("id"), "分流方案 ID 无效")
 	if !ok {
 		return
 	}
@@ -167,7 +169,7 @@ func (s *server) deleteSubscriptionRoutingPreset(w http.ResponseWriter, r *http.
 		writeSubscriptionConfigurationError(w, err)
 		return
 	}
-	s.recordAudit(r, user, "routing_preset.delete", "routing_preset", id, "删除分流预设")
+	s.recordAudit(r, user, "routing_preset.delete", "routing_preset", id, "删除分流方案")
 	writeNoContent(w)
 }
 
@@ -239,7 +241,8 @@ func (s *server) deleteSubscriptionTemplate(w http.ResponseWriter, r *http.Reque
 
 func toRoutingPresetResponse(value subscriptionstore.RoutingPreset) routingPresetResponse {
 	return routingPresetResponse{ID: value.ID, Name: value.Name, Enabled: value.Enabled,
-		Groups: value.Groups, Rules: value.Rules, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+		IsDefault: value.IsDefault, Groups: value.Groups, RuleProvidersYAML: value.RuleProvidersYAML,
+		Rules: value.Rules, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func toSubscriptionTemplateResponse(value subscriptionstore.SubscriptionTemplate) subscriptionTemplateResponse {
@@ -250,13 +253,17 @@ func toSubscriptionTemplateResponse(value subscriptionstore.SubscriptionTemplate
 func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, subscriptionstore.ErrRoutingPresetNotFound):
-		writeError(w, http.StatusNotFound, "分流预设不存在")
+		writeError(w, http.StatusNotFound, "分流方案不存在")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
 		writeError(w, http.StatusNotFound, "订阅模板不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset), errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
-		writeError(w, http.StatusBadRequest, "分流预设无效，请检查分组、节点引用和规则")
+		writeError(w, http.StatusBadRequest, "分流方案无效，请检查分组、节点引用、Rule Providers 和规则")
 	case errors.Is(err, subscriptionstore.ErrInvalidTemplate):
-		writeError(w, http.StatusBadRequest, "订阅模板必须是安全有效的 YAML；proxies 由 Panel 注入，proxy-groups 和 rules 必须同时提供")
+		writeError(w, http.StatusBadRequest, "Mihomo 模板必须是安全有效的基础配置 YAML，不能包含 proxies、proxy-groups、rule-providers 或 rules")
+	case errors.Is(err, subscriptionstore.ErrDefaultRoutingPreset):
+		writeError(w, http.StatusConflict, "默认分流方案不能停用或删除")
+	case errors.Is(err, subscriptionstore.ErrRoutingPresetReferenced):
+		writeError(w, http.StatusConflict, "请先切换引用该分流方案的套餐")
 	case errors.Is(err, subscriptionstore.ErrTemplateReferenced):
 		writeError(w, http.StatusConflict, "请先解除套餐对该订阅模板的引用")
 	default:

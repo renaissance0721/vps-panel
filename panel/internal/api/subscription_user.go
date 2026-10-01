@@ -182,6 +182,29 @@ func (s *server) resetSubscriptionUserTraffic(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"user": toSubscriptionUserResponse(value, baseURL, true)})
 }
 
+func (s *server) previewSubscriptionUserMihomo(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "订阅用户 ID 无效")
+	if !ok {
+		return
+	}
+	data, mutations, err := s.subscriptions.GenerateSubscriptionDataForUser(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, subscriptionstore.ErrSubscriptionUnavailable) {
+			writeError(w, http.StatusBadRequest, "订阅用户当前没有可预览的有效套餐和节点")
+			return
+		}
+		writeSubscriptionUserError(w, err)
+		return
+	}
+	s.notifyProxyMutations(mutations)
+	value, err := subscriptionstore.RenderMihomoSubscription(data)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(value)})
+}
+
 func toSubscriptionUserResponse(value subscriptionstore.Subscriber, baseURL string, includeToken bool) subscriptionUserResponse {
 	response := subscriptionUserResponse{
 		UserID: value.UserID, Username: value.Username, PlanID: value.PlanID, PlanName: value.PlanName,

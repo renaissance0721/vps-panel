@@ -57,8 +57,8 @@ var (
 	ErrRoutingPresetNotFound    = errors.New("subscription routing preset not found")
 	ErrTemplateNotFound         = errors.New("subscription template not found")
 	ErrInvalidRoutingPreset     = errors.New("subscription routing preset is invalid")
+	ErrInvalidPlanRouting       = errors.New("subscription plan routing is invalid")
 	ErrInvalidTemplate          = errors.New("subscription template is invalid")
-	ErrRoutingPresetReferenced  = errors.New("subscription routing preset is referenced by a plan")
 	ErrTemplateReferenced       = errors.New("subscription template is referenced by a plan")
 )
 
@@ -117,7 +117,8 @@ type Plan struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
-	RoutingPresetID   *int64
+	RoutingGroups     []RoutingGroup
+	RoutingRules      []string
 	TemplateID        *int64
 	Nodes             []PlanNode
 	CreatedAt         time.Time
@@ -134,7 +135,8 @@ type CreatePlanInput struct {
 	SubscriptionTitle string
 	Enabled           bool
 	TrafficLimitBytes *int64
-	RoutingPresetID   *int64
+	RoutingGroups     []RoutingGroup
+	RoutingRules      []string
 	TemplateID        *int64
 }
 
@@ -144,8 +146,10 @@ type UpdatePlanInput struct {
 	Enabled              *bool
 	TrafficLimitBytesSet bool
 	TrafficLimitBytes    *int64
-	RoutingPresetIDSet   bool
-	RoutingPresetID      *int64
+	RoutingGroupsSet     bool
+	RoutingGroups        []RoutingGroup
+	RoutingRulesSet      bool
+	RoutingRules         []string
 	TemplateIDSet        bool
 	TemplateID           *int64
 }
@@ -206,7 +210,8 @@ type SubscriptionData struct {
 	Total              int64
 	Expire             int64
 	PublishedNodeNames map[int64]string
-	RoutingPreset      *RoutingPreset
+	RoutingGroups      []RoutingGroup
+	RoutingRules       []string
 	Template           *SubscriptionTemplate
 }
 
@@ -215,42 +220,31 @@ type RoutingPreset struct {
 	Name      string
 	Enabled   bool
 	Groups    []RoutingGroup
-	Rules     []RoutingRule
+	Rules     []string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
 type RoutingGroup struct {
-	ID      string               `json:"id"`
-	Name    string               `json:"name"`
-	Type    string               `json:"type"`
-	Members []RoutingGroupMember `json:"members"`
-}
-
-type RoutingGroupMember struct {
-	Type            string `json:"type"`
-	PublishedNodeID int64  `json:"published_node_id,omitempty"`
-	GroupID         string `json:"group_id,omitempty"`
-}
-
-type RoutingRule struct {
-	Type          string `json:"type"`
-	Value         string `json:"value,omitempty"`
-	TargetGroupID string `json:"target_group_id"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Proxies    []string `json:"proxies"`
+	NodeIDs    []int64  `json:"node_ids,omitempty"`
+	IncludeAll bool     `json:"include_all,omitempty"`
 }
 
 type CreateRoutingPresetInput struct {
 	Name    string
 	Enabled bool
 	Groups  []RoutingGroup
-	Rules   []RoutingRule
+	Rules   []string
 }
 
 type UpdateRoutingPresetInput struct {
 	Name    *string
 	Enabled *bool
 	Groups  *[]RoutingGroup
-	Rules   *[]RoutingRule
+	Rules   *[]string
 }
 
 type SubscriptionTemplate struct {

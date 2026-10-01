@@ -391,11 +391,6 @@ func (s *Service) DeletePublishedNode(ctx context.Context, id int64) (*relay.Mut
 	if planReferences != 0 {
 		return nil, ErrPublishedNodeReferenced
 	}
-	if referenced, err := routingPresetReferencesNode(ctx, tx, id); err != nil {
-		return nil, err
-	} else if referenced {
-		return nil, ErrPublishedNodeReferenced
-	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM subscription_published_nodes WHERE id = ?`, id); err != nil {
 		return nil, fmt.Errorf("delete published node: %w", err)
 	}

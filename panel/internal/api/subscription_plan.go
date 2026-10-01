@@ -11,12 +11,13 @@ import (
 )
 
 type createSubscriptionPlanRequest struct {
-	Name              string `json:"name"`
-	SubscriptionTitle string `json:"subscription_title"`
-	Enabled           *bool  `json:"enabled"`
-	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
-	RoutingPresetID   *int64 `json:"routing_preset_id"`
-	TemplateID        *int64 `json:"template_id"`
+	Name              string          `json:"name"`
+	SubscriptionTitle string          `json:"subscription_title"`
+	Enabled           *bool           `json:"enabled"`
+	TrafficLimitBytes *int64          `json:"traffic_limit_bytes"`
+	RoutingGroups     json.RawMessage `json:"routing_groups"`
+	RoutingRules      json.RawMessage `json:"routing_rules"`
+	TemplateID        *int64          `json:"template_id"`
 }
 
 type updateSubscriptionPlanRequest struct {
@@ -24,7 +25,8 @@ type updateSubscriptionPlanRequest struct {
 	SubscriptionTitle *string         `json:"subscription_title"`
 	Enabled           *bool           `json:"enabled"`
 	TrafficLimitBytes json.RawMessage `json:"traffic_limit_bytes"`
-	RoutingPresetID   json.RawMessage `json:"routing_preset_id"`
+	RoutingGroups     json.RawMessage `json:"routing_groups"`
+	RoutingRules      json.RawMessage `json:"routing_rules"`
 	TemplateID        json.RawMessage `json:"template_id"`
 }
 
@@ -38,7 +40,8 @@ type subscriptionPlanResponse struct {
 	SubscriptionTitle string                              `json:"subscription_title"`
 	Enabled           bool                                `json:"enabled"`
 	TrafficLimitBytes *int64                              `json:"traffic_limit_bytes"`
-	RoutingPresetID   *int64                              `json:"routing_preset_id"`
+	RoutingGroups     []subscriptionstore.RoutingGroup    `json:"routing_groups"`
+	RoutingRules      []string                            `json:"routing_rules"`
 	TemplateID        *int64                              `json:"template_id"`
 	Nodes             []subscriptionPublishedNodeResponse `json:"nodes"`
 	CreatedAt         time.Time                           `json:"created_at"`
@@ -67,10 +70,20 @@ func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
+	routingGroups, groupsSet, err := decodeRoutingGroups(request.RoutingGroups)
+	if err != nil || groupsSet != (len(request.RoutingRules) != 0) {
+		writeError(w, http.StatusBadRequest, "分流分组和规则必须成套提供")
+		return
+	}
+	routingRules, _, err := decodeRoutingRules(request.RoutingRules)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "分流规则格式无效")
+		return
+	}
 	value, err := s.subscriptions.CreatePlan(r.Context(), subscriptionstore.CreatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle,
 		Enabled: enabled, TrafficLimitBytes: request.TrafficLimitBytes,
-		RoutingPresetID: request.RoutingPresetID, TemplateID: request.TemplateID,
+		RoutingGroups: routingGroups, RoutingRules: routingRules, TemplateID: request.TemplateID,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
@@ -107,9 +120,18 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "流量额度格式无效")
 		return
 	}
-	routingPresetID, routingPresetIDSet, err := decodeNullableInt64(request.RoutingPresetID)
+	routingGroups, routingGroupsSet, err := decodeRoutingGroups(request.RoutingGroups)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "分流预设格式无效")
+		writeError(w, http.StatusBadRequest, "分流分组格式无效")
+		return
+	}
+	routingRules, routingRulesSet, err := decodeRoutingRules(request.RoutingRules)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "分流规则格式无效")
+		return
+	}
+	if routingGroupsSet != routingRulesSet {
+		writeError(w, http.StatusBadRequest, "分流分组和规则必须成套更新")
 		return
 	}
 	templateID, templateIDSet, err := decodeNullableInt64(request.TemplateID)
@@ -120,7 +142,8 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 	value, mutations, err := s.subscriptions.UpdatePlan(r.Context(), id, subscriptionstore.UpdatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: request.Enabled,
 		TrafficLimitBytesSet: trafficLimitSet, TrafficLimitBytes: trafficLimit,
-		RoutingPresetIDSet: routingPresetIDSet, RoutingPresetID: routingPresetID,
+		RoutingGroupsSet: routingGroupsSet, RoutingGroups: routingGroups,
+		RoutingRulesSet: routingRulesSet, RoutingRules: routingRules,
 		TemplateIDSet: templateIDSet, TemplateID: templateID,
 	})
 	if err != nil {
@@ -173,7 +196,7 @@ func toSubscriptionPlanResponse(value subscriptionstore.Plan) subscriptionPlanRe
 	return subscriptionPlanResponse{
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
 		TrafficLimitBytes: value.TrafficLimitBytes,
-		RoutingPresetID:   value.RoutingPresetID, TemplateID: value.TemplateID,
+		RoutingGroups:     value.RoutingGroups, RoutingRules: value.RoutingRules, TemplateID: value.TemplateID,
 		Nodes: nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -187,6 +210,34 @@ func decodeNullableInt64(raw json.RawMessage) (*int64, bool, error) {
 		return nil, false, err
 	}
 	return value, true, nil
+}
+
+func decodeRoutingGroups(raw json.RawMessage) ([]subscriptionstore.RoutingGroup, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var values []subscriptionstore.RoutingGroup
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, true, err
+	}
+	if values == nil {
+		values = []subscriptionstore.RoutingGroup{}
+	}
+	return values, true, nil
+}
+
+func decodeRoutingRules(raw json.RawMessage) ([]string, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, true, err
+	}
+	if values == nil {
+		values = []string{}
+	}
+	return values, true, nil
 }
 
 func decodeNullableInt(raw json.RawMessage) (*int, bool, error) {
@@ -218,8 +269,8 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "套餐只能包含管理员创建服务器上的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):
 		writeError(w, http.StatusConflict, "请先切换或取消使用该套餐的订阅用户")
-	case errors.Is(err, subscriptionstore.ErrRoutingPresetNotFound):
-		writeError(w, http.StatusBadRequest, "分流预设不存在")
+	case errors.Is(err, subscriptionstore.ErrInvalidPlanRouting):
+		writeError(w, http.StatusBadRequest, "套餐分流无效，请检查分组引用、节点和规则")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
 		writeError(w, http.StatusBadRequest, "订阅模板不存在")
 	default:

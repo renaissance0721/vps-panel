@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,9 +13,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const maxSubscriptionTemplateBytes = 64 << 10
-
-var routingIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+const (
+	maxSubscriptionTemplateBytes = 64 << 10
+	maxRoutingConfigurationBytes = 64 << 10
+	maxRoutingRules              = 512
+	maxRoutingRuleRunes          = 1024
+)
 
 func (s *Service) ListRoutingPresets(ctx context.Context) ([]RoutingPreset, error) {
 	return listRoutingPresets(ctx, s.db)
@@ -58,7 +60,15 @@ func (s *Service) GetRoutingPreset(ctx context.Context, id int64) (RoutingPreset
 func (s *Service) CreateRoutingPreset(ctx context.Context, input CreateRoutingPresetInput) (RoutingPreset, error) {
 	value := RoutingPreset{Name: input.Name, Enabled: input.Enabled, Groups: input.Groups, Rules: input.Rules}
 	value.Name = strings.TrimSpace(value.Name)
-	if err := s.validateRoutingPreset(ctx, value); err != nil {
+	var err error
+	value.Groups, value.Rules, err = normalizeRoutingConfiguration(value.Groups, value.Rules, false, ErrInvalidRoutingPreset)
+	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes || err != nil {
+		if err != nil {
+			return RoutingPreset{}, err
+		}
+		return RoutingPreset{}, ErrInvalidRoutingPreset
+	}
+	if err := validateRoutingJSONSize(value.Groups, value.Rules, ErrInvalidRoutingPreset); err != nil {
 		return RoutingPreset{}, err
 	}
 	groups, _ := json.Marshal(value.Groups)
@@ -95,7 +105,14 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 		value.Rules = *input.Rules
 	}
 	value.Name = strings.TrimSpace(value.Name)
-	if err := s.validateRoutingPreset(ctx, value); err != nil {
+	value.Groups, value.Rules, err = normalizeRoutingConfiguration(value.Groups, value.Rules, false, ErrInvalidRoutingPreset)
+	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes || err != nil {
+		if err != nil {
+			return RoutingPreset{}, err
+		}
+		return RoutingPreset{}, ErrInvalidRoutingPreset
+	}
+	if err := validateRoutingJSONSize(value.Groups, value.Rules, ErrInvalidRoutingPreset); err != nil {
 		return RoutingPreset{}, err
 	}
 	groups, _ := json.Marshal(value.Groups)
@@ -109,14 +126,6 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 }
 
 func (s *Service) DeleteRoutingPreset(ctx context.Context, id int64) error {
-	var references int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM subscription_plans WHERE routing_preset_id = ?`, id).Scan(&references); err != nil {
-		return fmt.Errorf("count subscription routing preset references: %w", err)
-	}
-	if references != 0 {
-		return ErrRoutingPresetReferenced
-	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM subscription_routing_presets WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete subscription routing preset: %w", err)
@@ -129,99 +138,166 @@ func (s *Service) DeleteRoutingPreset(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *Service) validateRoutingPreset(ctx context.Context, value RoutingPreset) error {
-	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes || len(value.Groups) == 0 {
-		return ErrInvalidRoutingPreset
+func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, allowEmpty bool, invalid error) ([]RoutingGroup, []string, error) {
+	if len(groups) == 0 && len(rules) == 0 {
+		if allowEmpty {
+			return []RoutingGroup{}, []string{}, nil
+		}
+		return nil, nil, invalid
 	}
-	groups := make(map[string]RoutingGroup, len(value.Groups))
-	for _, group := range value.Groups {
-		if !routingIDPattern.MatchString(group.ID) || strings.TrimSpace(group.Name) == "" ||
-			utf8.RuneCountInString(group.Name) > maxNameRunes || group.Type != "select" {
-			return ErrInvalidRoutingPreset
-		}
-		if _, exists := groups[group.ID]; exists {
-			return ErrInvalidRoutingPreset
-		}
-		groups[group.ID] = group
+	if len(groups) == 0 || len(rules) > maxRoutingRules {
+		return nil, nil, invalid
 	}
-	for _, group := range value.Groups {
-		if len(group.Members) == 0 {
-			return ErrInvalidRoutingPreset
+	normalizedGroups := make([]RoutingGroup, 0, len(groups))
+	groupsByName := make(map[string]RoutingGroup, len(groups))
+	for _, group := range groups {
+		group.Name = strings.TrimSpace(group.Name)
+		group.Type = strings.TrimSpace(group.Type)
+		if group.Name == "" || utf8.RuneCountInString(group.Name) > maxNameRunes || group.Type != "select" ||
+			group.Name == "DIRECT" || group.Name == "REJECT" {
+			return nil, nil, invalid
 		}
-		for _, member := range group.Members {
-			switch member.Type {
-			case "published_node":
-				if member.PublishedNodeID <= 0 || member.GroupID != "" {
-					return ErrInvalidRoutingPreset
+		if _, exists := groupsByName[group.Name]; exists {
+			return nil, nil, invalid
+		}
+		proxies := make([]string, 0, len(group.Proxies))
+		seenProxies := make(map[string]struct{}, len(group.Proxies))
+		for _, proxy := range group.Proxies {
+			proxy = strings.TrimSpace(proxy)
+			if proxy == "" {
+				return nil, nil, invalid
+			}
+			if _, exists := seenProxies[proxy]; !exists {
+				proxies = append(proxies, proxy)
+				seenProxies[proxy] = struct{}{}
+			}
+		}
+		nodeIDs := make([]int64, 0, len(group.NodeIDs))
+		seenNodeIDs := make(map[int64]struct{}, len(group.NodeIDs))
+		for _, nodeID := range group.NodeIDs {
+			if nodeID <= 0 {
+				return nil, nil, invalid
+			}
+			if _, exists := seenNodeIDs[nodeID]; !exists {
+				nodeIDs = append(nodeIDs, nodeID)
+				seenNodeIDs[nodeID] = struct{}{}
+			}
+		}
+		group.Proxies = proxies
+		group.NodeIDs = nodeIDs
+		normalizedGroups = append(normalizedGroups, group)
+		groupsByName[group.Name] = group
+	}
+	for _, group := range normalizedGroups {
+		for _, proxy := range group.Proxies {
+			if proxy == group.Name {
+				return nil, nil, invalid
+			}
+			if proxy != "DIRECT" && proxy != "REJECT" {
+				if _, exists := groupsByName[proxy]; !exists {
+					return nil, nil, invalid
 				}
-				var exists int
-				if err := s.db.QueryRowContext(ctx,
-					`SELECT 1 FROM subscription_published_nodes WHERE id = ?`, member.PublishedNodeID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-					return ErrPublishedNodeNotFound
-				} else if err != nil {
-					return fmt.Errorf("validate routing preset published node: %w", err)
-				}
-			case "direct":
-				if member.PublishedNodeID != 0 || member.GroupID != "" {
-					return ErrInvalidRoutingPreset
-				}
-			case "group":
-				if member.PublishedNodeID != 0 || member.GroupID == group.ID {
-					return ErrInvalidRoutingPreset
-				}
-				if _, exists := groups[member.GroupID]; !exists {
-					return ErrInvalidRoutingPreset
-				}
-			default:
-				return ErrInvalidRoutingPreset
 			}
 		}
 	}
-	if routingGroupsCyclic(groups) {
-		return ErrInvalidRoutingPreset
+	if routingGroupsCyclic(groupsByName) {
+		return nil, nil, invalid
 	}
-	for _, rule := range value.Rules {
-		switch rule.Type {
-		case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "GEOIP", "GEOSITE":
-			if strings.TrimSpace(rule.Value) == "" || strings.ContainsAny(rule.Value, "\r\n,") {
-				return ErrInvalidRoutingPreset
-			}
-		case "MATCH":
-			if strings.TrimSpace(rule.Value) != "" {
-				return ErrInvalidRoutingPreset
-			}
-		default:
-			return ErrInvalidRoutingPreset
+	groupNames := make(map[string]struct{}, len(groupsByName))
+	for name := range groupsByName {
+		groupNames[name] = struct{}{}
+	}
+	normalizedRules := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		policy, _, err := parseRoutingRule(rule)
+		if err != nil || !validRoutingPolicy(policy, groupNames) {
+			return nil, nil, invalid
 		}
-		if _, exists := groups[rule.TargetGroupID]; !exists {
-			return ErrInvalidRoutingPreset
-		}
+		normalizedRules = append(normalizedRules, rule)
+	}
+	return normalizedGroups, normalizedRules, nil
+}
+
+func validateRoutingJSONSize(groups []RoutingGroup, rules []string, invalid error) error {
+	groupsJSON, err := json.Marshal(groups)
+	if err != nil {
+		return invalid
+	}
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil || len(groupsJSON)+len(rulesJSON) > maxRoutingConfigurationBytes {
+		return invalid
 	}
 	return nil
+}
+
+func parseRoutingRule(rule string) (string, string, error) {
+	if rule == "" || strings.ContainsAny(rule, "\r\n") || utf8.RuneCountInString(rule) > maxRoutingRuleRunes {
+		return "", "", ErrInvalidPlanRouting
+	}
+	parts := strings.Split(rule, ",")
+	for index := range parts {
+		parts[index] = strings.TrimSpace(parts[index])
+		if parts[index] == "" {
+			return "", "", ErrInvalidPlanRouting
+		}
+	}
+	switch parts[0] {
+	case "MATCH":
+		if len(parts) != 2 {
+			return "", "", ErrInvalidPlanRouting
+		}
+		return parts[1], "", nil
+	case "RULE-SET":
+		if len(parts) != 3 && (len(parts) != 4 || parts[3] != "no-resolve") {
+			return "", "", ErrInvalidPlanRouting
+		}
+		return parts[2], parts[1], nil
+	default:
+		if len(parts) < 3 {
+			return "", "", ErrInvalidPlanRouting
+		}
+		policyIndex := len(parts) - 1
+		if parts[policyIndex] == "no-resolve" {
+			if len(parts) < 4 {
+				return "", "", ErrInvalidPlanRouting
+			}
+			policyIndex--
+		}
+		return parts[policyIndex], "", nil
+	}
+}
+
+func validRoutingPolicy(policy string, groupNames map[string]struct{}) bool {
+	if policy == "DIRECT" || policy == "REJECT" {
+		return true
+	}
+	_, exists := groupNames[policy]
+	return exists
 }
 
 func routingGroupsCyclic(groups map[string]RoutingGroup) bool {
 	visiting, visited := map[string]bool{}, map[string]bool{}
 	var visit func(string) bool
-	visit = func(id string) bool {
-		if visiting[id] {
+	visit = func(name string) bool {
+		if visiting[name] {
 			return true
 		}
-		if visited[id] {
+		if visited[name] {
 			return false
 		}
-		visiting[id] = true
-		for _, member := range groups[id].Members {
-			if member.Type == "group" && visit(member.GroupID) {
+		visiting[name] = true
+		for _, member := range groups[name].Proxies {
+			if _, isGroup := groups[member]; isGroup && visit(member) {
 				return true
 			}
 		}
-		visiting[id] = false
-		visited[id] = true
+		visiting[name] = false
+		visited[name] = true
 		return false
 	}
-	for id := range groups {
-		if visit(id) {
+	for name := range groups {
+		if visit(name) {
 			return true
 		}
 	}
@@ -355,11 +431,35 @@ func validateTemplate(value *SubscriptionTemplate) error {
 		document.Content[0].Kind != yaml.MappingNode || !safeYAMLNode(document.Content[0]) {
 		return ErrInvalidTemplate
 	}
+	hasGroups, hasRules := false, false
+	seen := make(map[string]struct{}, len(document.Content[0].Content)/2)
 	for index := 0; index < len(document.Content[0].Content); index += 2 {
-		switch document.Content[0].Content[index].Value {
-		case "proxies", "proxy-groups", "rules":
+		key := document.Content[0].Content[index].Value
+		if _, exists := seen[key]; exists {
 			return ErrInvalidTemplate
 		}
+		seen[key] = struct{}{}
+		switch key {
+		case "proxies":
+			return ErrInvalidTemplate
+		case "proxy-groups":
+			hasGroups = true
+			if document.Content[0].Content[index+1].Kind != yaml.SequenceNode {
+				return ErrInvalidTemplate
+			}
+		case "rules":
+			hasRules = true
+			if document.Content[0].Content[index+1].Kind != yaml.SequenceNode {
+				return ErrInvalidTemplate
+			}
+		case "rule-providers":
+			if document.Content[0].Content[index+1].Kind != yaml.MappingNode {
+				return ErrInvalidTemplate
+			}
+		}
+	}
+	if hasGroups != hasRules {
+		return ErrInvalidTemplate
 	}
 	return nil
 }
@@ -399,48 +499,20 @@ func scanTemplate(row rowScanner) (SubscriptionTemplate, error) {
 	return value, nil
 }
 
-func validatePlanConfigurationRefs(ctx context.Context, query interface {
+func validatePlanTemplateRef(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, routingPresetID, templateID *int64) error {
-	for _, item := range []struct {
-		id       *int64
-		table    string
-		notFound error
-	}{
-		{routingPresetID, "subscription_routing_presets", ErrRoutingPresetNotFound},
-		{templateID, "subscription_templates", ErrTemplateNotFound},
-	} {
-		if item.id == nil {
-			continue
-		}
-		if *item.id <= 0 {
-			return item.notFound
-		}
-		var exists int
-		if err := query.QueryRowContext(ctx, `SELECT 1 FROM `+item.table+` WHERE id = ?`, *item.id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-			return item.notFound
-		} else if err != nil {
-			return fmt.Errorf("validate subscription plan configuration: %w", err)
-		}
+}, templateID *int64) error {
+	if templateID == nil {
+		return nil
+	}
+	if *templateID <= 0 {
+		return ErrTemplateNotFound
+	}
+	var exists int
+	if err := query.QueryRowContext(ctx, `SELECT 1 FROM subscription_templates WHERE id = ?`, *templateID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrTemplateNotFound
+	} else if err != nil {
+		return fmt.Errorf("validate subscription plan template: %w", err)
 	}
 	return nil
-}
-
-func routingPresetReferencesNode(ctx context.Context, query interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, nodeID int64) (bool, error) {
-	values, err := listRoutingPresets(ctx, query)
-	if err != nil {
-		return false, err
-	}
-	for _, value := range values {
-		for _, group := range value.Groups {
-			for _, member := range group.Members {
-				if member.Type == "published_node" && member.PublishedNodeID == nodeID {
-					return true, nil
-				}
-			}
-		}
-	}
-	return false, nil
 }

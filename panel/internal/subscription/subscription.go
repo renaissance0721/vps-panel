@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -25,19 +26,21 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
 	var userID int64
-	var routingPresetID, templateID sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT profiles.user_id, plans.routing_preset_id, plans.template_id
+	err := s.db.QueryRowContext(ctx, `SELECT profiles.user_id
 		FROM subscriber_profiles AS profiles
 		JOIN users ON users.id = profiles.user_id
-		LEFT JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
 		WHERE profiles.subscription_token = ? AND users.role = 'subscriber'`, tokenValue).
-		Scan(&userID, &routingPresetID, &templateID)
+		Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionData{}, nil, ErrSubscriptionNotFound
 	}
 	if err != nil {
 		return SubscriptionData{}, nil, fmt.Errorf("find subscription token: %w", err)
 	}
+	return s.GenerateSubscriptionDataForUser(ctx, userID)
+}
+
+func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID int64) (SubscriptionData, []proxystore.Mutation, error) {
 	mutations, err := s.ReconcileSubscriber(ctx, userID)
 	if err != nil {
 		return SubscriptionData{}, nil, err
@@ -48,6 +51,24 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 	if !subscriber.Active {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
+	}
+	var routingGroupsJSON, routingRulesJSON string
+	var templateID sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_groups_json, plans.routing_rules_json, plans.template_id
+		FROM subscriber_profiles AS profiles
+		JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
+		WHERE profiles.user_id = ?`, userID).Scan(&routingGroupsJSON, &routingRulesJSON, &templateID); errors.Is(err, sql.ErrNoRows) {
+		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
+	} else if err != nil {
+		return SubscriptionData{}, mutations, fmt.Errorf("read subscription plan routing: %w", err)
+	}
+	var routingGroups []RoutingGroup
+	if err := json.Unmarshal([]byte(routingGroupsJSON), &routingGroups); err != nil {
+		return SubscriptionData{}, mutations, fmt.Errorf("decode subscription plan routing groups: %w", err)
+	}
+	var routingRules []string
+	if err := json.Unmarshal([]byte(routingRulesJSON), &routingRules); err != nil {
+		return SubscriptionData{}, mutations, fmt.Errorf("decode subscription plan routing rules: %w", err)
 	}
 
 	type subscriptionNode struct {
@@ -127,16 +148,7 @@ func (s *Service) GenerateSubscriptionData(ctx context.Context, tokenValue strin
 	}
 	result := SubscriptionData{
 		Title: subscriber.SubscriptionTitle, Nodes: shares, Upload: upload, Download: download,
-		PublishedNodeNames: publishedNodeNames,
-	}
-	if routingPresetID.Valid {
-		preset, err := s.GetRoutingPreset(ctx, routingPresetID.Int64)
-		if err != nil {
-			return SubscriptionData{}, mutations, err
-		}
-		if preset.Enabled {
-			result.RoutingPreset = &preset
-		}
+		PublishedNodeNames: publishedNodeNames, RoutingGroups: routingGroups, RoutingRules: routingRules,
 	}
 	if templateID.Valid {
 		template, err := s.GetTemplate(ctx, templateID.Int64)

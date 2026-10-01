@@ -3,12 +3,15 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 )
 
-const LatestSchemaVersion = 5
+const LatestSchemaVersion = 6
 
 type migration struct {
 	version int
@@ -22,6 +25,7 @@ var migrations = []migration{
 	{version: 3, name: "configuration_operations", up: createConfigurationOperations},
 	{version: 4, name: "subscription_templates_and_routing_presets", up: createSubscriptionConfiguration},
 	{version: 5, name: "audit_logs", up: createAuditLogs},
+	{version: 6, name: "materialize_subscription_plan_routing", up: materializeSubscriptionPlanRouting},
 }
 
 func migrate(db *sql.DB) error {
@@ -455,6 +459,266 @@ func createSubscriptionConfiguration(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("create subscription configuration schema: %w", err)
 		}
+	}
+	return nil
+}
+
+type legacyRoutingGroup struct {
+	ID      string                     `json:"id"`
+	Name    string                     `json:"name"`
+	Type    string                     `json:"type"`
+	Members []legacyRoutingGroupMember `json:"members"`
+}
+
+type legacyRoutingGroupMember struct {
+	Type            string `json:"type"`
+	PublishedNodeID int64  `json:"published_node_id,omitempty"`
+	GroupID         string `json:"group_id,omitempty"`
+}
+
+type legacyRoutingRule struct {
+	Type          string `json:"type"`
+	Value         string `json:"value,omitempty"`
+	TargetGroupID string `json:"target_group_id"`
+}
+
+type migratedRoutingGroup struct {
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Proxies    []string `json:"proxies"`
+	NodeIDs    []int64  `json:"node_ids,omitempty"`
+	IncludeAll bool     `json:"include_all,omitempty"`
+}
+
+func materializeSubscriptionPlanRouting(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE subscription_plans ADD COLUMN routing_groups_json TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE subscription_plans ADD COLUMN routing_rules_json TEXT NOT NULL DEFAULT '[]'`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add subscription plan routing columns: %w", err)
+		}
+	}
+
+	type convertedPreset struct {
+		groups string
+		rules  string
+	}
+	converted := make(map[int64]convertedPreset)
+	rows, err := tx.QueryContext(ctx, `SELECT id, groups_json, rules_json FROM subscription_routing_presets ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list routing presets for migration: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		var groupsJSON, rulesJSON string
+		if err := rows.Scan(&id, &groupsJSON, &rulesJSON); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan routing preset for migration: %w", err)
+		}
+		groups, rules, err := convertLegacyRoutingPreset(groupsJSON, rulesJSON)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("convert routing preset %d: %w", id, err)
+		}
+		converted[id] = convertedPreset{groups: groups, rules: rules}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate routing presets for migration: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close routing presets for migration: %w", err)
+	}
+	for id, value := range converted {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_routing_presets SET groups_json = ?, rules_json = ? WHERE id = ?`,
+			value.groups, value.rules, id); err != nil {
+			return fmt.Errorf("store converted routing preset %d: %w", id, err)
+		}
+	}
+
+	planRows, err := tx.QueryContext(ctx, `SELECT id, routing_preset_id FROM subscription_plans WHERE routing_preset_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list plans with routing presets: %w", err)
+	}
+	type planPreset struct{ planID, presetID int64 }
+	plans := make([]planPreset, 0)
+	for planRows.Next() {
+		var value planPreset
+		if err := planRows.Scan(&value.planID, &value.presetID); err != nil {
+			planRows.Close()
+			return fmt.Errorf("scan plan routing preset: %w", err)
+		}
+		plans = append(plans, value)
+	}
+	if err := planRows.Err(); err != nil {
+		planRows.Close()
+		return fmt.Errorf("iterate plan routing presets: %w", err)
+	}
+	if err := planRows.Close(); err != nil {
+		return fmt.Errorf("close plan routing presets: %w", err)
+	}
+	for _, plan := range plans {
+		preset, exists := converted[plan.presetID]
+		if !exists {
+			return fmt.Errorf("plan %d references missing routing preset %d", plan.planID, plan.presetID)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_plans
+			SET routing_groups_json = ?, routing_rules_json = ? WHERE id = ?`, preset.groups, preset.rules, plan.planID); err != nil {
+			return fmt.Errorf("materialize routing preset for plan %d: %w", plan.planID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET routing_preset_id = NULL WHERE routing_preset_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("clear legacy plan routing preset references: %w", err)
+	}
+	return nil
+}
+
+func convertLegacyRoutingPreset(groupsJSON, rulesJSON string) (string, string, error) {
+	var oldGroups []legacyRoutingGroup
+	if err := decodeMigrationJSON(groupsJSON, &oldGroups); err != nil {
+		return "", "", fmt.Errorf("decode groups_json: %w", err)
+	}
+	var oldRules []legacyRoutingRule
+	if err := decodeMigrationJSON(rulesJSON, &oldRules); err != nil {
+		return "", "", fmt.Errorf("decode rules_json: %w", err)
+	}
+	if len(oldGroups) == 0 {
+		return "", "", errors.New("groups must not be empty")
+	}
+	groupNames := make(map[string]string, len(oldGroups))
+	seenNames := make(map[string]struct{}, len(oldGroups))
+	for _, group := range oldGroups {
+		name := strings.TrimSpace(group.Name)
+		if group.ID == "" || name == "" || group.Type != "select" || len(group.Members) == 0 {
+			return "", "", fmt.Errorf("group %q has invalid id, name, type, or members", group.ID)
+		}
+		if _, exists := groupNames[group.ID]; exists {
+			return "", "", fmt.Errorf("duplicate group id %q", group.ID)
+		}
+		if _, exists := seenNames[name]; exists {
+			return "", "", fmt.Errorf("duplicate group name %q", name)
+		}
+		groupNames[group.ID] = name
+		seenNames[name] = struct{}{}
+	}
+	newGroups := make([]migratedRoutingGroup, 0, len(oldGroups))
+	for _, group := range oldGroups {
+		value := migratedRoutingGroup{Name: groupNames[group.ID], Type: "select", Proxies: []string{}, NodeIDs: []int64{}}
+		seenProxies := make(map[string]struct{})
+		seenNodeIDs := make(map[int64]struct{})
+		for _, member := range group.Members {
+			switch member.Type {
+			case "direct":
+				if member.PublishedNodeID != 0 || member.GroupID != "" {
+					return "", "", fmt.Errorf("group %q has invalid DIRECT member", group.ID)
+				}
+				if _, exists := seenProxies["DIRECT"]; !exists {
+					value.Proxies = append(value.Proxies, "DIRECT")
+					seenProxies["DIRECT"] = struct{}{}
+				}
+			case "published_node":
+				if member.PublishedNodeID <= 0 || member.GroupID != "" {
+					return "", "", fmt.Errorf("group %q has invalid published node member", group.ID)
+				}
+				if _, exists := seenNodeIDs[member.PublishedNodeID]; !exists {
+					value.NodeIDs = append(value.NodeIDs, member.PublishedNodeID)
+					seenNodeIDs[member.PublishedNodeID] = struct{}{}
+				}
+			case "group":
+				name, exists := groupNames[member.GroupID]
+				if !exists || member.PublishedNodeID != 0 || member.GroupID == group.ID {
+					return "", "", fmt.Errorf("group %q has invalid group reference %q", group.ID, member.GroupID)
+				}
+				if _, exists := seenProxies[name]; !exists {
+					value.Proxies = append(value.Proxies, name)
+					seenProxies[name] = struct{}{}
+				}
+			default:
+				return "", "", fmt.Errorf("group %q has unknown member type %q", group.ID, member.Type)
+			}
+		}
+		newGroups = append(newGroups, value)
+	}
+	if migratedRoutingGroupsCyclic(newGroups) {
+		return "", "", errors.New("routing groups contain a cycle")
+	}
+	newRules := make([]string, 0, len(oldRules))
+	for _, rule := range oldRules {
+		target, exists := groupNames[rule.TargetGroupID]
+		if !exists {
+			return "", "", fmt.Errorf("rule references unknown group %q", rule.TargetGroupID)
+		}
+		switch rule.Type {
+		case "MATCH":
+			if strings.TrimSpace(rule.Value) != "" {
+				return "", "", errors.New("MATCH rule contains a value")
+			}
+			newRules = append(newRules, "MATCH,"+target)
+		case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "GEOIP", "GEOSITE":
+			value := strings.TrimSpace(rule.Value)
+			if value == "" || strings.ContainsAny(value, "\r\n,") {
+				return "", "", fmt.Errorf("%s rule contains an invalid value", rule.Type)
+			}
+			newRules = append(newRules, strings.Join([]string{rule.Type, value, target}, ","))
+		default:
+			return "", "", fmt.Errorf("unknown rule type %q", rule.Type)
+		}
+	}
+	groups, err := json.Marshal(newGroups)
+	if err != nil {
+		return "", "", fmt.Errorf("encode migrated groups: %w", err)
+	}
+	rules, err := json.Marshal(newRules)
+	if err != nil {
+		return "", "", fmt.Errorf("encode migrated rules: %w", err)
+	}
+	return string(groups), string(rules), nil
+}
+
+func migratedRoutingGroupsCyclic(groups []migratedRoutingGroup) bool {
+	byName := make(map[string]migratedRoutingGroup, len(groups))
+	for _, group := range groups {
+		byName[group.Name] = group
+	}
+	visiting, visited := make(map[string]bool), make(map[string]bool)
+	var visit func(string) bool
+	visit = func(name string) bool {
+		if visiting[name] {
+			return true
+		}
+		if visited[name] {
+			return false
+		}
+		visiting[name] = true
+		for _, member := range byName[name].Proxies {
+			if _, exists := byName[member]; exists && visit(member) {
+				return true
+			}
+		}
+		visiting[name] = false
+		visited[name] = true
+		return false
+	}
+	for name := range byName {
+		if visit(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeMigrationJSON(raw string, value any) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return errors.New("unexpected trailing JSON value")
+	} else if !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decode trailing JSON data: %w", err)
 	}
 	return nil
 }

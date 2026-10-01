@@ -1437,6 +1437,39 @@ h1 {
   background: #ffffff;
 }
 
+.routing-group-editor,
+.routing-member-list,
+.routing-editor-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.routing-group-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.routing-group-heading,
+.routing-member-row,
+.routing-preset-apply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.routing-group-heading .n-input,
+.routing-member-row .settings-input,
+.routing-preset-apply .settings-input {
+  flex: 1;
+}
+
+.routing-add-actions {
+  justify-content: flex-start;
+}
+
 .subscription-node-picker {
   display: grid;
   gap: 8px;

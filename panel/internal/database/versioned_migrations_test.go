@@ -1,12 +1,115 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestMigrationFiveToSixMaterializesPlanRouting(t *testing.T) {
+	dataDir := t.TempDir()
+	path := filepath.Join(dataDir, "panel.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:5] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	oldGroups := `[{"id":"default","name":"Default","type":"select","members":[{"type":"published_node","published_node_id":7},{"type":"direct"}]},{"id":"stream","name":"Streaming","type":"select","members":[{"type":"group","group_id":"default"}]}]`
+	oldRules := `[{"type":"DOMAIN-SUFFIX","value":"example.com","target_group_id":"stream"},{"type":"MATCH","target_group_id":"default"}]`
+	if _, err := db.Exec(`INSERT INTO subscription_routing_presets
+		(id, name, enabled, groups_json, rules_json, created_at, updated_at) VALUES (1, 'Legacy', 1, ?, ?, 1, 1)`, oldGroups, oldRules); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_plans
+		(id, name, enabled, routing_preset_id, created_at, updated_at) VALUES (2, 'Plan', 1, 1, 1, 1)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var presetGroups, presetRules, planGroups, planRules string
+	var legacyRef sql.NullInt64
+	if err := db.QueryRow(`SELECT groups_json, rules_json FROM subscription_routing_presets WHERE id = 1`).
+		Scan(&presetGroups, &presetRules); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT routing_groups_json, routing_rules_json, routing_preset_id
+		FROM subscription_plans WHERE id = 2`).Scan(&planGroups, &planRules, &legacyRef); err != nil {
+		t.Fatal(err)
+	}
+	if presetGroups != planGroups || presetRules != planRules || legacyRef.Valid ||
+		!strings.Contains(planGroups, `"name":"Default"`) || !strings.Contains(planGroups, `"node_ids":[7]`) ||
+		strings.Contains(planGroups, `"members"`) ||
+		planRules != `["DOMAIN-SUFFIX,example.com,Streaming","MATCH,Default"]` {
+		t.Fatalf("migrated preset/plan = preset %s %s, plan %s %s, ref %+v",
+			presetGroups, presetRules, planGroups, planRules, legacyRef)
+	}
+	assertLatestMigrationHistory(t, db)
+}
+
+func TestMigrationSixRejectsCorruptRoutingJSONAtomically(t *testing.T) {
+	dataDir := t.TempDir()
+	path := filepath.Join(dataDir, "panel.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:5] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_routing_presets
+		(id, name, enabled, groups_json, rules_json, created_at, updated_at)
+		VALUES (1, 'Broken', 1,
+		'[{"id":"default","name":"Default","type":"select","members":[{"type":"direct"}],"unknown":true}]',
+		'[{"type":"MATCH","target_group_id":"default"}]', 1, 1)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if migrated, err := Open(dataDir); err == nil {
+		migrated.Close()
+		t.Fatal("corrupt routing preset unexpectedly migrated")
+	} else if !strings.Contains(err.Error(), `unknown field "unknown"`) {
+		t.Fatalf("corrupt routing migration error = %v", err)
+	}
+	inspect, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inspect.Close()
+	var version, newColumns int
+	if err := inspect.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := inspect.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('subscription_plans')
+		WHERE name IN ('routing_groups_json', 'routing_rules_json')`).Scan(&newColumns); err != nil {
+		t.Fatal(err)
+	}
+	if version != 5 || newColumns != 0 {
+		t.Fatalf("failed migration state = version %d, new columns %d", version, newColumns)
+	}
+}
 
 func TestLegacySchemaFixturesBootstrapToLatestAndReopen(t *testing.T) {
 	tests := []struct {

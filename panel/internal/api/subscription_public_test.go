@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +21,14 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	handler := NewHandler(db, t.TempDir())
+	initialized := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialized.Code != http.StatusCreated || len(initialized.Result().Cookies()) == 0 {
+		t.Fatalf("initialize admin = %d %s", initialized.Code, initialized.Body.String())
+	}
+	adminCookie := initialized.Result().Cookies()[0]
 	if _, err := db.Exec(`INSERT INTO servers (id, name, created_by_role, status, created_at, updated_at)
 		VALUES (1, 'SG', 'admin', 'offline', 1, 1)`); err != nil {
 		t.Fatal(err)
@@ -72,7 +81,6 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewHandler(db, t.TempDir())
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/public-token", nil))
 	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
@@ -122,8 +130,16 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		config.Proxies[0].RealityOptions.PublicKey == "" || config.Proxies[0].RealityOptions.ShortID == "" ||
 		len(config.ProxyGroups) != 8 || config.ProxyGroups[0].Name != "🚀 默认代理" ||
 		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != config.Proxies[0].Name ||
-		len(config.Rules) != 11 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
+		len(config.Rules) != 12 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
+	}
+	preview := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/users/100/mihomo-preview", nil, adminCookie)
+	var previewPayload struct {
+		YAML string `json:"yaml"`
+	}
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &previewPayload) != nil ||
+		previewPayload.YAML != mihomo.Body.String() {
+		t.Fatalf("admin Mihomo preview = %d %s", preview.Code, preview.Body.String())
 	}
 	var storedName string
 	if err := db.QueryRow(`SELECT name FROM subscription_published_nodes WHERE id = ?`, node.ID).Scan(&storedName); err != nil || storedName != node.Name {

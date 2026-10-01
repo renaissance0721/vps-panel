@@ -2,7 +2,6 @@ package subscription
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -64,110 +63,264 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 		proxies = append(proxies, value)
 		proxyNames = append(proxyNames, node.DisplayName)
 	}
-	defaultProxyNames := append(append([]string(nil), proxyNames...), "DIRECT")
-	groups := []mihomoProxyGroup{{Name: "节点选择", Type: "select", Proxies: defaultProxyNames}}
-	rules := []string{"MATCH,节点选择"}
-	if data.RoutingPreset != nil {
-		var err error
-		groups, rules, err = renderRoutingPreset(*data.RoutingPreset, data.PublishedNodeNames)
+	document, root, err := decodeMihomoDocument(builtinMihomoTemplate, "built-in Mihomo template")
+	if err != nil {
+		return nil, err
+	}
+	if data.Template != nil {
+		_, overlay, err := decodeMihomoDocument(data.Template.ConfigYAML, "custom Mihomo template")
 		if err != nil {
 			return nil, err
 		}
+		hasGroups, hasRules := mappingValue(overlay, "proxy-groups") != nil, mappingValue(overlay, "rules") != nil
+		if mappingValue(overlay, "proxies") != nil || hasGroups != hasRules {
+			return nil, ErrInvalidTemplate
+		}
+		for index := 0; index < len(overlay.Content); index += 2 {
+			setMappingValue(root, overlay.Content[index].Value, overlay.Content[index+1])
+		}
 	}
-	templateYAML := builtinMihomoTemplate
-	if data.Template != nil {
-		templateYAML = data.Template.ConfigYAML
+	proxyNode, err := encodeYAMLValue(proxies)
+	if err != nil {
+		return nil, fmt.Errorf("encode Mihomo proxies: %w", err)
 	}
-	var config map[string]any
-	if err := yaml.Unmarshal([]byte(templateYAML), &config); err != nil {
-		return nil, fmt.Errorf("decode subscription template: %w", err)
-	}
-	if _, exists := config["mode"]; !exists {
-		config["mode"] = "rule"
-	}
-	config["proxies"] = proxies
-	if data.Template == nil && data.RoutingPreset == nil {
-		if err := expandBuiltinMihomoProxyGroups(config, proxyNames); err != nil {
+	setMappingValue(root, "proxies", proxyNode)
+
+	if len(data.RoutingGroups) != 0 || len(data.RoutingRules) != 0 {
+		groups, rules, err := normalizeRoutingConfiguration(
+			data.RoutingGroups, data.RoutingRules, false, ErrInvalidPlanRouting,
+		)
+		if err != nil {
 			return nil, err
 		}
-	} else {
-		config["proxy-groups"] = groups
-		config["rules"] = rules
+		resolvedGroups := resolveRoutingGroups(groups, data.PublishedNodeNames, proxyNames)
+		groupsNode, err := encodeYAMLValue(resolvedGroups)
+		if err != nil {
+			return nil, fmt.Errorf("encode Mihomo routing groups: %w", err)
+		}
+		rulesNode, err := encodeYAMLValue(rules)
+		if err != nil {
+			return nil, fmt.Errorf("encode Mihomo routing rules: %w", err)
+		}
+		setMappingValue(root, "proxy-groups", groupsNode)
+		setMappingValue(root, "rules", rulesNode)
 	}
-	return yaml.Marshal(config)
+	if err := expandMihomoAll(root, proxyNames); err != nil {
+		return nil, err
+	}
+	if err := validateRenderedMihomo(root, proxyNames); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(document)
 }
 
-func expandBuiltinMihomoProxyGroups(config map[string]any, proxyNames []string) error {
-	rawGroups, exists := config["proxy-groups"]
-	if !exists {
-		return errors.New("built-in Mihomo template has no proxy groups")
-	}
-	encodedGroups, err := yaml.Marshal(rawGroups)
-	if err != nil {
-		return fmt.Errorf("encode built-in Mihomo proxy groups: %w", err)
-	}
-	var groups []mihomoProxyGroup
-	if err := yaml.Unmarshal(encodedGroups, &groups); err != nil {
-		return fmt.Errorf("decode built-in Mihomo proxy groups: %w", err)
-	}
-	for index := range groups {
-		members := make([]string, 0, len(groups[index].Proxies)+len(proxyNames))
-		for _, member := range groups[index].Proxies {
-			if member == "{{all}}" {
-				members = append(members, proxyNames...)
-				continue
-			}
-			members = append(members, member)
+func decodeMihomoDocument(source, label string) (*yaml.Node, *yaml.Node, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(source), &document); err != nil || len(document.Content) != 1 ||
+		document.Content[0].Kind != yaml.MappingNode || !safeYAMLNode(document.Content[0]) {
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode %s: %w", label, err)
 		}
-		groups[index].Proxies = members
+		return nil, nil, fmt.Errorf("decode %s: root must be a safe mapping", label)
 	}
-	config["proxy-groups"] = groups
+	root := document.Content[0]
+	seen := make(map[string]struct{}, len(root.Content)/2)
+	for index := 0; index < len(root.Content); index += 2 {
+		key := root.Content[index].Value
+		if _, exists := seen[key]; exists {
+			return nil, nil, fmt.Errorf("decode %s: duplicate key %q", label, key)
+		}
+		seen[key] = struct{}{}
+	}
+	return &document, root, nil
+}
+
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
+	}
 	return nil
 }
 
-func renderRoutingPreset(preset RoutingPreset, names map[int64]string) ([]mihomoProxyGroup, []string, error) {
-	groupNames := make(map[string]string, len(preset.Groups))
-	for _, group := range preset.Groups {
-		groupNames[group.ID] = group.Name
+func setMappingValue(mapping *yaml.Node, key string, value *yaml.Node) {
+	for index := 0; index < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			mapping.Content[index+1] = value
+			return
+		}
 	}
-	groups := make([]mihomoProxyGroup, 0, len(preset.Groups))
-	for _, group := range preset.Groups {
-		members := make([]string, 0, len(group.Members))
-		for _, member := range group.Members {
-			switch member.Type {
-			case "published_node":
-				name, exists := names[member.PublishedNodeID]
-				if !exists {
-					return nil, nil, fmt.Errorf("routing group %q references unavailable published node %d", group.Name, member.PublishedNodeID)
-				}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+}
+
+func encodeYAMLValue(value any) (*yaml.Node, error) {
+	encoded, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(encoded, &document); err != nil {
+		return nil, err
+	}
+	return document.Content[0], nil
+}
+
+func resolveRoutingGroups(groups []RoutingGroup, names map[int64]string, allNames []string) []mihomoProxyGroup {
+	values := make([]mihomoProxyGroup, 0, len(groups))
+	for _, group := range groups {
+		members := make([]string, 0, len(group.Proxies)+len(group.NodeIDs)+len(allNames))
+		members = append(members, group.Proxies...)
+		for _, nodeID := range group.NodeIDs {
+			if name, exists := names[nodeID]; exists {
 				members = append(members, name)
-			case "direct":
-				members = append(members, "DIRECT")
-			case "group":
-				name, exists := groupNames[member.GroupID]
-				if !exists {
-					return nil, nil, fmt.Errorf("routing group %q references unavailable group %q", group.Name, member.GroupID)
-				}
-				members = append(members, name)
-			default:
-				return nil, nil, ErrInvalidRoutingPreset
 			}
 		}
-		groups = append(groups, mihomoProxyGroup{Name: group.Name, Type: "select", Proxies: members})
-	}
-	rules := make([]string, 0, len(preset.Rules))
-	for _, rule := range preset.Rules {
-		groupName, exists := groupNames[rule.TargetGroupID]
-		if !exists {
-			return nil, nil, ErrInvalidRoutingPreset
+		if group.IncludeAll {
+			members = append(members, allNames...)
 		}
-		if rule.Type == "MATCH" {
-			rules = append(rules, "MATCH,"+groupName)
-		} else {
-			rules = append(rules, strings.Join([]string{rule.Type, rule.Value, groupName}, ","))
+		members = uniqueStrings(members)
+		if len(members) == 0 {
+			members = []string{"DIRECT"}
+		}
+		values = append(values, mihomoProxyGroup{Name: group.Name, Type: group.Type, Proxies: members})
+	}
+	return values
+}
+
+func expandMihomoAll(root *yaml.Node, proxyNames []string) error {
+	groups := mappingValue(root, "proxy-groups")
+	if groups == nil || groups.Kind != yaml.SequenceNode {
+		return fmt.Errorf("Mihomo template proxy-groups must be a sequence")
+	}
+	for _, group := range groups.Content {
+		if group.Kind != yaml.MappingNode {
+			return fmt.Errorf("Mihomo proxy group must be a mapping")
+		}
+		members := mappingValue(group, "proxies")
+		if members == nil {
+			members = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			setMappingValue(group, "proxies", members)
+		}
+		if members.Kind != yaml.SequenceNode {
+			return fmt.Errorf("Mihomo proxy group proxies must be a sequence")
+		}
+		resolved := make([]string, 0, len(members.Content)+len(proxyNames))
+		for _, member := range members.Content {
+			if member.Kind != yaml.ScalarNode || member.Tag != "!!str" {
+				return fmt.Errorf("Mihomo proxy group member must be a string")
+			}
+			if member.Value == "{{all}}" {
+				resolved = append(resolved, proxyNames...)
+			} else {
+				resolved = append(resolved, member.Value)
+			}
+		}
+		resolved = uniqueStrings(resolved)
+		if len(resolved) == 0 {
+			resolved = []string{"DIRECT"}
+		}
+		members.Content = members.Content[:0]
+		for _, member := range resolved {
+			members.Content = append(members.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: member})
 		}
 	}
-	return groups, rules, nil
+	return nil
+}
+
+func validateRenderedMihomo(root *yaml.Node, proxyNames []string) error {
+	groupsNode := mappingValue(root, "proxy-groups")
+	rulesNode := mappingValue(root, "rules")
+	if groupsNode == nil || groupsNode.Kind != yaml.SequenceNode || rulesNode == nil || rulesNode.Kind != yaml.SequenceNode {
+		return fmt.Errorf("Mihomo template must contain proxy-groups and rules sequences")
+	}
+	proxySet := make(map[string]struct{}, len(proxyNames))
+	for _, name := range proxyNames {
+		proxySet[name] = struct{}{}
+	}
+	groups := make(map[string]RoutingGroup, len(groupsNode.Content))
+	for _, groupNode := range groupsNode.Content {
+		nameNode, typeNode, proxiesNode := mappingValue(groupNode, "name"), mappingValue(groupNode, "type"), mappingValue(groupNode, "proxies")
+		if nameNode == nil || nameNode.Kind != yaml.ScalarNode || nameNode.Value == "" ||
+			typeNode == nil || typeNode.Kind != yaml.ScalarNode || proxiesNode == nil || proxiesNode.Kind != yaml.SequenceNode {
+			return fmt.Errorf("Mihomo proxy group is missing name, type, or proxies")
+		}
+		if _, exists := groups[nameNode.Value]; exists {
+			return fmt.Errorf("Mihomo proxy group name %q is duplicated", nameNode.Value)
+		}
+		members := make([]string, 0, len(proxiesNode.Content))
+		for _, member := range proxiesNode.Content {
+			if member.Kind != yaml.ScalarNode || member.Tag != "!!str" || member.Value == "{{all}}" {
+				return fmt.Errorf("Mihomo proxy group %q contains an invalid member", nameNode.Value)
+			}
+			members = append(members, member.Value)
+		}
+		groups[nameNode.Value] = RoutingGroup{Name: nameNode.Value, Type: typeNode.Value, Proxies: members}
+	}
+	for name, group := range groups {
+		for _, member := range group.Proxies {
+			if member == "DIRECT" || member == "REJECT" {
+				continue
+			}
+			if _, exists := proxySet[member]; exists {
+				continue
+			}
+			if _, exists := groups[member]; !exists {
+				return fmt.Errorf("Mihomo proxy group %q references unknown member %q", name, member)
+			}
+		}
+	}
+	if routingGroupsCyclic(groups) {
+		return fmt.Errorf("Mihomo proxy groups contain a cycle")
+	}
+	groupNames := make(map[string]struct{}, len(groups))
+	for name := range groups {
+		groupNames[name] = struct{}{}
+	}
+	providers := make(map[string]struct{})
+	if providersNode := mappingValue(root, "rule-providers"); providersNode != nil {
+		if providersNode.Kind != yaml.MappingNode {
+			return fmt.Errorf("Mihomo rule-providers must be a mapping")
+		}
+		for index := 0; index < len(providersNode.Content); index += 2 {
+			providers[providersNode.Content[index].Value] = struct{}{}
+		}
+	}
+	if len(rulesNode.Content) > maxRoutingRules {
+		return fmt.Errorf("Mihomo rules exceed the supported limit")
+	}
+	for _, ruleNode := range rulesNode.Content {
+		if ruleNode.Kind != yaml.ScalarNode || ruleNode.Tag != "!!str" {
+			return fmt.Errorf("Mihomo rule must be a string")
+		}
+		policy, provider, err := parseRoutingRule(ruleNode.Value)
+		if err != nil || !validRoutingPolicy(policy, groupNames) {
+			return fmt.Errorf("Mihomo rule %q has an invalid policy", ruleNode.Value)
+		}
+		if provider != "" {
+			if _, exists := providers[provider]; !exists {
+				return fmt.Errorf("Mihomo rule %q references missing rule provider %q", ruleNode.Value, provider)
+			}
+		}
+	}
+	return nil
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func renderMihomoProxy(share proxystore.ClientShare) (mihomoProxy, error) {

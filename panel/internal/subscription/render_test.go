@@ -76,15 +76,16 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 		}
 	}
 	wantRules := []string{
-		"GEOSITE,category-ai-!cn,🤖 AI",
-		"GEOSITE,youtube,▶️ YouTube",
-		"GEOSITE,netflix,🎬 Netflix",
-		"GEOSITE,telegram,✈️ Telegram",
-		"GEOSITE,tiktok,🎵 TikTok",
-		"GEOSITE,apple,🍎 Apple",
-		"GEOSITE,microsoft,Ⓜ️ Microsoft",
-		"GEOSITE,private,DIRECT",
-		"GEOSITE,cn,DIRECT",
+		"RULE-SET,OpenAI,🤖 AI",
+		"RULE-SET,Claude,🤖 AI",
+		"RULE-SET,Gemini,🤖 AI",
+		"RULE-SET,YouTube,▶️ YouTube",
+		"RULE-SET,Netflix,🎬 Netflix",
+		"RULE-SET,Telegram,✈️ Telegram",
+		"RULE-SET,TikTok,🎵 TikTok",
+		"RULE-SET,Apple,🍎 Apple",
+		"RULE-SET,Copilot,Ⓜ️ Microsoft",
+		"RULE-SET,Microsoft,Ⓜ️ Microsoft",
 		"GEOIP,CN,DIRECT,no-resolve",
 		"MATCH,🚀 默认代理",
 	}
@@ -199,10 +200,106 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 	if err := yaml.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := raw["mixed-port"]; exists || len(parsed.ProxyGroups) != 1 ||
-		parsed.ProxyGroups[0].Name != "节点选择" ||
+	dns := raw["dns"].(map[string]any)
+	if raw["mixed-port"] != 7890 || dns["enable"] != false || len(parsed.ProxyGroups) != 8 ||
+		parsed.ProxyGroups[0].Name != "🚀 默认代理" ||
 		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"Custom", "DIRECT"}) ||
-		!slices.Equal(parsed.Rules, []string{"MATCH,节点选择"}) {
+		!slices.Equal(parsed.Rules, []string{
+			"RULE-SET,OpenAI,🤖 AI", "RULE-SET,Claude,🤖 AI", "RULE-SET,Gemini,🤖 AI",
+			"RULE-SET,YouTube,▶️ YouTube", "RULE-SET,Netflix,🎬 Netflix", "RULE-SET,Telegram,✈️ Telegram",
+			"RULE-SET,TikTok,🎵 TikTok", "RULE-SET,Apple,🍎 Apple", "RULE-SET,Copilot,Ⓜ️ Microsoft",
+			"RULE-SET,Microsoft,Ⓜ️ Microsoft", "GEOIP,CN,DIRECT,no-resolve", "MATCH,🚀 默认代理",
+		}) {
 		t.Fatalf("custom Mihomo template behavior changed:\n%s", body)
+	}
+}
+
+func TestRenderMihomoCustomFullTemplateAndPlanOverride(t *testing.T) {
+	node := proxystore.ClientShare{
+		Client: proxystore.Client{UUID: "uuid"}, DisplayName: "Node A", Protocol: proxystore.ProtocolVLESS,
+		Address: "node.example.com", Port: 443, Security: proxystore.SecurityTLS,
+		ServerName: "node.example.com", Fingerprint: proxystore.Fingerprint,
+	}
+	custom := &SubscriptionTemplate{ConfigYAML: `mixed-port: 9999
+proxy-groups:
+  - name: Custom
+    type: select
+    proxies: ["{{all}}", DIRECT, "{{all}}"]
+rules:
+  - MATCH,Custom`}
+	body, err := RenderMihomoSubscription(SubscriptionData{Nodes: []proxystore.ClientShare{node}, Template: custom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed mihomoConfig
+	if err := yaml.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.ProxyGroups) != 1 || !slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"Node A", "DIRECT"}) ||
+		!slices.Equal(parsed.Rules, []string{"MATCH,Custom"}) {
+		t.Fatalf("full template routing = %+v\n%s", parsed, body)
+	}
+
+	body, err = RenderMihomoSubscription(SubscriptionData{
+		Nodes: []proxystore.ClientShare{node}, PublishedNodeNames: map[int64]string{7: "Node A"}, Template: custom,
+		RoutingGroups: []RoutingGroup{
+			{Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
+			{Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, NodeIDs: []int64{7, 999}, IncludeAll: true},
+			{Name: "Empty", Type: "select"},
+		},
+		RoutingRules: []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.ProxyGroups) != 3 ||
+		!slices.Equal(parsed.ProxyGroups[1].Proxies, []string{"Other", "DIRECT", "Node A"}) ||
+		!slices.Equal(parsed.ProxyGroups[2].Proxies, []string{"DIRECT"}) ||
+		!slices.Equal(parsed.Rules, []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"}) {
+		t.Fatalf("plan routing override = %+v\n%s", parsed, body)
+	}
+}
+
+func TestRenderMihomoRuleSetRequiresProvider(t *testing.T) {
+	template := &SubscriptionTemplate{ConfigYAML: `proxy-groups:
+  - name: Custom
+    type: select
+    proxies: [DIRECT]
+rules:
+  - RULE-SET,Missing,Custom
+  - MATCH,Custom`}
+	if _, err := RenderMihomoSubscription(SubscriptionData{Template: template}); err == nil ||
+		!strings.Contains(err.Error(), `missing rule provider "Missing"`) {
+		t.Fatalf("missing provider error = %v", err)
+	}
+	template.ConfigYAML += "\nrule-providers:\n  Missing:\n    type: http\n    behavior: classical\n    format: yaml\n    interval: 86400\n    url: https://example.com/rules.yaml"
+	if _, err := RenderMihomoSubscription(SubscriptionData{Template: template}); err != nil {
+		t.Fatalf("valid RULE-SET render error = %v", err)
+	}
+}
+
+func TestBuiltinMihomoProviders(t *testing.T) {
+	body, err := RenderMihomoSubscription(SubscriptionData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		Providers map[string]struct {
+			Type, Behavior, Format, URL string
+			Interval                    int
+		} `yaml:"rule-providers"`
+	}
+	if err := yaml.Unmarshal(body, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"} {
+		provider, exists := value.Providers[name]
+		if !exists || provider.Type != "http" || provider.Behavior != "classical" || provider.Format != "yaml" ||
+			provider.Interval != 86400 || !strings.Contains(provider.URL, "/"+name+"/") {
+			t.Fatalf("provider %q = %+v", name, provider)
+		}
 	}
 }

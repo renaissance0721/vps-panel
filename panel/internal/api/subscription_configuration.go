@@ -13,14 +13,14 @@ type routingPresetRequest struct {
 	Name    string                           `json:"name"`
 	Enabled *bool                            `json:"enabled"`
 	Groups  []subscriptionstore.RoutingGroup `json:"groups"`
-	Rules   []subscriptionstore.RoutingRule  `json:"rules"`
+	Rules   []string                         `json:"rules"`
 }
 
 type updateRoutingPresetRequest struct {
 	Name    *string                           `json:"name"`
 	Enabled *bool                             `json:"enabled"`
 	Groups  *[]subscriptionstore.RoutingGroup `json:"groups"`
-	Rules   *[]subscriptionstore.RoutingRule  `json:"rules"`
+	Rules   *[]string                         `json:"rules"`
 }
 
 type routingPresetResponse struct {
@@ -28,7 +28,7 @@ type routingPresetResponse struct {
 	Name      string                           `json:"name"`
 	Enabled   bool                             `json:"enabled"`
 	Groups    []subscriptionstore.RoutingGroup `json:"groups"`
-	Rules     []subscriptionstore.RoutingRule  `json:"rules"`
+	Rules     []string                         `json:"rules"`
 	CreatedAt time.Time                        `json:"created_at"`
 	UpdatedAt time.Time                        `json:"updated_at"`
 }
@@ -205,9 +205,7 @@ func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset), errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
 		writeError(w, http.StatusBadRequest, "分流预设无效，请检查分组、节点引用和规则")
 	case errors.Is(err, subscriptionstore.ErrInvalidTemplate):
-		writeError(w, http.StatusBadRequest, "订阅模板不是安全有效的 YAML，且不能覆盖 proxies、proxy-groups 或 rules")
-	case errors.Is(err, subscriptionstore.ErrRoutingPresetReferenced):
-		writeError(w, http.StatusConflict, "请先解除套餐对该分流预设的引用")
+		writeError(w, http.StatusBadRequest, "订阅模板必须是安全有效的 YAML；proxies 由 Panel 注入，proxy-groups 和 rules 必须同时提供")
 	case errors.Is(err, subscriptionstore.ErrTemplateReferenced):
 		writeError(w, http.StatusConflict, "请先解除套餐对该订阅模板的引用")
 	default:

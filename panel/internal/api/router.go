@@ -127,6 +127,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("PATCH /api/admin/subscription/users/{id}", s.requireAdmin(s.updateSubscriptionUser))
 	mux.HandleFunc("POST /api/admin/subscription/users/{id}/token/regenerate", s.requireAdmin(s.regenerateSubscriptionUserToken))
 	mux.HandleFunc("POST /api/admin/subscription/users/{id}/traffic/reset", s.requireAdmin(s.resetSubscriptionUserTraffic))
+	mux.HandleFunc("GET /api/admin/subscription/users/{id}/mihomo-preview", s.requireAdmin(s.previewSubscriptionUserMihomo))
 	mux.HandleFunc("GET /api/subscriber/me", s.requireSubscriber(s.getSubscriberMe))
 	mux.HandleFunc("GET /api/subscriber/nodes", s.requireSubscriber(s.listSubscriberNodes))
 	mux.HandleFunc("POST /api/subscriber/subscription/regenerate", s.requireSubscriber(s.regenerateSubscriberToken))

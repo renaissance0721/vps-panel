@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 const portalSource = await readFile(new URL('../src/views/SubscriberPortalView.vue', import.meta.url), 'utf8')
 const managementSource = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
+const groupEditorSource = await readFile(new URL('../src/components/subscription/RoutingGroupEditor.vue', import.meta.url), 'utf8')
 const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const clientSource = await readFile(new URL('../src/components/proxy/ClientList.vue', import.meta.url), 'utf8')
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
@@ -190,4 +191,51 @@ test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => 
   assert.match(clientSource, /client\.subscription_managed/)
   assert.match(clientSource, /订阅托管/)
   assert.match(clientSource, /v-if="!client\.subscription_managed"/)
+})
+
+test('分流预设使用可视化策略组和逐行规则编辑器', () => {
+  assert.doesNotMatch(managementSource, /Groups JSON|Rules JSON|routingGroupsJSON|routingRulesJSON|published_node_id/)
+  for (const label of ['包含套餐全部节点', '指定 Published Node', '添加 DIRECT', '添加 REJECT', '添加分组引用', '上移', '下移']) {
+    assert.match(groupEditorSource, new RegExp(label))
+  }
+  assert.match(groupEditorSource, /node.name/)
+  assert.match(groupEditorSource, /node_ids/)
+  assert.match(managementSource, /Rules（一行一条 Mihomo rule）/)
+  assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
+})
+
+test('分流预设支持新建编辑删除和启停', () => {
+  assert.match(managementSource, /function openCreateRoutingPreset/)
+  assert.match(managementSource, /function openEditRoutingPreset/)
+  assert.match(managementSource, /async function saveRoutingPreset/)
+  assert.match(managementSource, /async function deleteRoutingPreset/)
+  assert.match(managementSource, /method: id \? 'PATCH' : 'POST'/)
+  assert.match(managementSource, /v-model:value="routingEnabled"/)
+})
+
+test('套餐复制预设并可恢复模板分流', () => {
+  assert.doesNotMatch(managementSource, /routing_preset_id|planRoutingPresetID/)
+  assert.match(managementSource, /routing_groups: planRoutingGroups.value/)
+  assert.match(managementSource, /routing_rules: routingRules/)
+  assert.match(managementSource, /function applyRoutingPreset\(\)[\s\S]*cloneRoutingGroups\(preset.groups\)[\s\S]*preset.rules.join/)
+  assert.match(managementSource, /function restoreTemplateRouting\(\)[\s\S]*planRoutingGroups.value = \[\][\s\S]*planRoutingRulesText.value = ''/)
+  for (const label of ['套用分组与规则预设', '编辑当前分流', '恢复模板分流', '使用 Mihomo 模板内置分流']) {
+    assert.match(managementSource, new RegExp(label))
+  }
+})
+
+test('完整 Mihomo 模板支持默认文案和编辑', () => {
+  assert.match(managementSource, /内置默认 Mihomo 模板/)
+  assert.match(managementSource, /Mihomo 模板是完整配置底稿，可包含 DNS、TUN、sniffer、rule-providers、proxy-groups 和 rules；真实 proxies 始终由 Panel 动态注入。/)
+  assert.match(managementSource, /function openEditTemplate/)
+  assert.match(managementSource, /method: id \? 'PATCH' : 'POST'/)
+  assert.match(managementSource, /v-model:value="templateEnabled"/)
+})
+
+test('订阅用户可预览并复制正式 Mihomo YAML', () => {
+  assert.match(managementSource, /预览 Mihomo/)
+  assert.match(managementSource, /\/api\/admin\/subscription\/users\/\$\{value.user_id\}\/mihomo-preview/)
+  assert.match(managementSource, /mihomoPreviewYAML.value = response.yaml/)
+  assert.match(managementSource, /navigator.clipboard.writeText\(mihomoPreviewYAML.value\)/)
+  assert.match(managementSource, /复制 YAML/)
 })

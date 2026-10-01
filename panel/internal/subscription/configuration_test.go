@@ -2,17 +2,14 @@ package subscription
 
 import (
 	"errors"
-	"strings"
+	"slices"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
-func TestRoutingPresetTemplateRenderingUsesStableNodeIDs(t *testing.T) {
+func TestRoutingPresetIsCopiedIntoPlan(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
 	proxy := createSubscriptionTestRealityProxy(t, db, 1, "Internal", 443)
-	insertSubscriptionTestSubscriber(t, db, 100, "alice")
 	node, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
 		Name: "SG-01", Mode: NodeModeDirect, TargetProxyID: proxy.ID, Enabled: true,
 	})
@@ -21,101 +18,35 @@ func TestRoutingPresetTemplateRenderingUsesStableNodeIDs(t *testing.T) {
 	}
 	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Streaming", Enabled: true,
-		Groups: []RoutingGroup{{
-			ID: "streaming", Name: "Streaming", Type: "select",
-			Members: []RoutingGroupMember{{Type: "published_node", PublishedNodeID: node.ID}, {Type: "direct"}},
-		}},
-		Rules: []RoutingRule{{Type: "DOMAIN-SUFFIX", Value: "example.com", TargetGroupID: "streaming"},
-			{Type: "MATCH", TargetGroupID: "streaming"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	template, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
-		Name: "Mihomo", Enabled: true, ConfigYAML: "dns:\n  enable: true\ntun:\n  enable: false",
+		Groups: []RoutingGroup{{Name: "Streaming", Type: "select", Proxies: []string{"DIRECT"}, NodeIDs: []int64{node.ID}}},
+		Rules:  []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{
-		Name: "Plan", Enabled: true, RoutingPresetID: &preset.ID, TemplateID: &template.ID,
+		Name: "Plan", Enabled: true, RoutingGroups: preset.Groups, RoutingRules: preset.Rules,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, []int64{node.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := service.UpdateSubscriber(t.Context(), 100, UpdateSubscriberInput{PlanIDSet: true, PlanID: &plan.ID}); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
-	if err != nil {
-		t.Fatal(err)
-	}
-	base64Before := RenderBase64Subscription(data)
-	assertRenderedRoutingName(t, data, FormatNodeDisplayName("SG-01", 100))
-
-	name := "SG Premium"
-	multiplier := 250
-	if _, _, err := service.UpdatePublishedNode(t.Context(), node.ID, UpdatePublishedNodeInput{
-		Name: &name, TrafficMultiplierBP: &multiplier,
+	changedGroups := []RoutingGroup{{Name: "Changed", Type: "select", Proxies: []string{"REJECT"}}}
+	changedRules := []string{"MATCH,Changed"}
+	if _, err := service.UpdateRoutingPreset(t.Context(), preset.ID, UpdateRoutingPresetInput{
+		Groups: &changedGroups, Rules: &changedRules,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	updated, _, err := service.GenerateSubscriptionData(t.Context(), "test-token")
+	if err := service.DeleteRoutingPreset(t.Context(), preset.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := service.GetPlan(t.Context(), plan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRenderedRoutingName(t, updated, FormatNodeDisplayName(name, multiplier))
-	routingOnly := updated
-	routingOnly.Template = nil
-	routingOnlyBody, err := RenderMihomoSubscription(routingOnly)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var routingOnlyConfig map[string]any
-	if err := yaml.Unmarshal(routingOnlyBody, &routingOnlyConfig); err != nil {
-		t.Fatal(err)
-	}
-	if routingOnlyConfig["mixed-port"] != 7890 ||
-		!strings.Contains(string(routingOnlyBody), "DOMAIN-SUFFIX,example.com,Streaming") ||
-		strings.Contains(string(routingOnlyBody), "MATCH,🚀 默认代理") {
-		t.Fatalf("routing preset did not overlay built-in Mihomo template:\n%s", routingOnlyBody)
-	}
-	if base64Before == RenderBase64Subscription(updated) {
-		t.Fatal("renaming a node should change its URI display name")
-	}
-	withoutRouting := updated
-	withoutRouting.RoutingPreset = nil
-	withoutRouting.Template = nil
-	if RenderBase64Subscription(withoutRouting) != RenderBase64Subscription(updated) {
-		t.Fatal("routing preset or template changed Base64 output")
-	}
-	if _, _, err := service.SetPlanNodes(t.Context(), plan.ID, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.DeletePublishedNode(t.Context(), node.ID); !errors.Is(err, ErrPublishedNodeReferenced) {
-		t.Fatalf("delete referenced node error = %v", err)
-	}
-}
-
-func assertRenderedRoutingName(t *testing.T, data SubscriptionData, want string) {
-	t.Helper()
-	body, err := RenderMihomoSubscription(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parsed map[string]any
-	if err := yaml.Unmarshal(body, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), want) || !strings.Contains(string(body), "DOMAIN-SUFFIX,example.com,Streaming") {
-		t.Fatalf("rendered Mihomo config lacks dynamic node/rule:\n%s", body)
-	}
-	if _, exists := parsed["dns"]; !exists {
-		t.Fatalf("template DNS settings missing:\n%s", body)
+	if len(stored.RoutingGroups) != 1 || stored.RoutingGroups[0].Name != "Streaming" ||
+		!slices.Equal(stored.RoutingRules, []string{"DOMAIN-SUFFIX,example.com,Streaming", "MATCH,Streaming"}) {
+		t.Fatalf("plan routing changed with preset = %+v / %+v", stored.RoutingGroups, stored.RoutingRules)
 	}
 }
 
@@ -123,6 +54,8 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 	_, service := newSubscriptionTestService(t)
 	for _, config := range []string{
 		"proxies: []",
+		"proxy-groups: []",
+		"rules: []",
 		"defaults: &defaults\n  enable: true\ndns: *defaults",
 		"dns: !custom value",
 	} {
@@ -132,14 +65,38 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 			t.Fatalf("template %q error = %v", config, err)
 		}
 	}
+	for _, config := range []string{
+		"dns:\n  enable: false",
+		"proxy-groups:\n  - name: Custom\n    type: select\n    proxies: [DIRECT]\nrules:\n  - MATCH,Custom",
+	} {
+		if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
+			Name: "Valid", Enabled: true, ConfigYAML: config,
+		}); err != nil {
+			t.Fatalf("valid template %q error = %v", config, err)
+		}
+	}
 	if _, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
 		Name: "Cycle", Enabled: true,
 		Groups: []RoutingGroup{
-			{ID: "a", Name: "A", Type: "select", Members: []RoutingGroupMember{{Type: "group", GroupID: "b"}}},
-			{ID: "b", Name: "B", Type: "select", Members: []RoutingGroupMember{{Type: "group", GroupID: "a"}}},
+			{Name: "A", Type: "select", Proxies: []string{"B"}},
+			{Name: "B", Type: "select", Proxies: []string{"A"}},
 		},
-		Rules: []RoutingRule{{Type: "MATCH", TargetGroupID: "a"}},
+		Rules: []string{"MATCH,A"},
 	}); !errors.Is(err, ErrInvalidRoutingPreset) {
 		t.Fatalf("cyclic routing preset error = %v", err)
+	}
+}
+
+func TestUpdatePlanRoutingMustBePaired(t *testing.T) {
+	_, service := newSubscriptionTestService(t)
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Plan", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.UpdatePlan(t.Context(), plan.ID, UpdatePlanInput{
+		RoutingGroupsSet: true,
+		RoutingGroups:    []RoutingGroup{{Name: "Default", Type: "select", Proxies: []string{"DIRECT"}}},
+	}); !errors.Is(err, ErrInvalidPlanRouting) {
+		t.Fatalf("unpaired plan routing error = %v", err)
 	}
 }

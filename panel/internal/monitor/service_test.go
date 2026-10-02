@@ -193,15 +193,18 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 			}
 		}
 	}
-	for _, tc := range []struct{ hours, count int }{{1, 8}, {6, 10}, {24, 12}} {
+	for _, tc := range []struct {
+		hours, count      int
+		tcpRate, icmpRate float64
+	}{{1, 8, 50, 0}, {6, 10, 200.0 / 3, 50}, {24, 12, 50, 100.0 / 3}} {
 		h, err := s.History(ctx, 1, tc.hours, caps[1])
-		if err != nil || len(h.Samples) != tc.count || len(h.Tasks) != 2 {
+		if err != nil || len(h.Samples) != tc.count || len(h.Tasks) != 2 || h.RangeHours != tc.hours {
 			t.Fatalf("history %d = %+v %v", tc.hours, h, err)
 		}
-		if h.Tasks[0].FailureRate == nil || *h.Tasks[0].FailureRate != 50 {
+		if h.Tasks[0].FailureRate == nil || math.Abs(*h.Tasks[0].FailureRate-tc.tcpRate) > .001 {
 			t.Fatalf("TCP failure rate = %+v", h.Tasks[0])
 		}
-		if h.Tasks[1].FailureRate == nil || math.Abs(*h.Tasks[1].FailureRate-100.0/3) > .001 {
+		if h.Tasks[1].FailureRate == nil || math.Abs(*h.Tasks[1].FailureRate-tc.icmpRate) > .001 {
 			t.Fatalf("ICMP loss includes permission/DNS: %+v", h.Tasks[1])
 		}
 		if h.Tasks[0].LatestLatencyMS != nil || h.Tasks[0].LatestOutcome != "cancelled" {
@@ -233,6 +236,50 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 	h, err := s.History(ctx, 1, 1, caps[1])
 	if err != nil || h.Tasks[0].LatestLatencyMS == nil || *h.Tasks[0].LatestLatencyMS != latency {
 		t.Fatalf("latest success: %+v %v", h, err)
+	}
+}
+
+func TestProbeHistoryRangeBoundariesAndEmptySummary(t *testing.T) {
+	s, db, caps := probeTestService(t)
+	task, err := s.Save(t.Context(), 0, probeInput(), caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := s.now()
+	for _, sample := range []struct {
+		at      time.Time
+		latency int
+	}{
+		{now.Add(-24*time.Hour - time.Millisecond), 99},
+		{now.Add(-24 * time.Hour), 24},
+		{now.Add(-6 * time.Hour), 6},
+		{now.Add(-time.Hour - time.Millisecond), 2},
+		{now.Add(time.Millisecond), 100},
+	} {
+		if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, 'success', ?)`, task.ID, sample.at.UnixMilli(), sample.latency); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ hours, count int }{{1, 0}, {6, 2}, {24, 3}} {
+		h, err := s.History(t.Context(), 1, tc.hours, caps[1])
+		if err != nil || len(h.Samples) != tc.count || len(h.Tasks) != 1 {
+			t.Fatalf("history = %+v %v", h, err)
+		}
+		summary := h.Tasks[0]
+		if tc.count == 0 {
+			if summary.LatestLatencyMS != nil || summary.FailureRate != nil || summary.LatestOutcome != "" {
+				t.Fatalf("empty range leaked summary: %+v", summary)
+			}
+		} else if summary.LatestLatencyMS == nil || *summary.LatestLatencyMS != 2 || summary.FailureRate == nil || *summary.FailureRate != 0 {
+			t.Fatalf("range summary = %+v", summary)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, 'success', 1)`, task.ID, now.Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	h, err := s.History(t.Context(), 1, 1, caps[1])
+	if err != nil || len(h.Samples) != 1 || h.Tasks[0].LatestLatencyMS == nil || *h.Tasks[0].LatestLatencyMS != 1 {
+		t.Fatalf("inclusive boundary = %+v %v", h, err)
 	}
 }
 

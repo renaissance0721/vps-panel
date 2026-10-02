@@ -150,11 +150,13 @@ their last declared capabilities. Default rules also apply when an Agent reconne
 gaining capability support. Disabled tasks are never dispatched or accepted for ingestion.
 
 `GET /api/monitor/servers/{server_id}/latency?hours=6` follows the existing manager and
-server access checks. Only 1, 6 and 24 hours are accepted (default 6). The response includes
-`tasks`, `samples`, `from` and `to`; each task includes `interval_seconds`, `latest_outcome`,
-`latest_latency_ms` and a 24-hour `failure_rate` percentage (null with no eligible samples).
-The latest outcome is used even when unsuccessful, so old success latency does not mask
-failure. TCP failure rate counts DNS/connection failures and timeouts versus successes;
+server access checks. Only 1, 6 and 24 hours are accepted (default 1). The response includes
+`range_hours`, `tasks`, `samples`, `from` and `to`; each task includes `interval_seconds`,
+`latest_outcome`, `latest_latency_ms` and a `failure_rate` percentage for the requested range
+(null with no eligible samples). Both samples and summaries use the same inclusive time
+window. No samples in that window means an empty latest outcome and null latency/rate,
+even if older samples exist. The latest outcome is used even when unsuccessful, so old
+success latency does not mask failure. TCP failure rate counts DNS/connection failures and timeouts versus successes;
 ICMP loss counts timeouts versus successful Echoes only. Permission errors and cancellation
 are excluded from both rates; ICMP DNS failures are excluded as well.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -337,6 +338,57 @@ func TestMonitorAPIPermissionsAndRanges(t *testing.T) {
 	}
 	if response := performRequest(t, handler, "GET", "/api/monitor/servers/1/latency", nil, nil); response.Code != 401 {
 		t.Fatal("anonymous history access")
+	}
+}
+
+func TestMonitorLatencyAPISummaryFollowsHours(t *testing.T) {
+	db, handler, cookie := monitorTestAPI(t)
+	for _, stmt := range []string{
+		`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (1, 'probe', 'offline', 1, 1)`,
+		`INSERT INTO agents (server_id, token_hash, version, capabilities_json, registered_at, created_at, updated_at) VALUES (1, 'test', 'v1', '["probe.tcp","probe.icmp"]', 1, 1, 1)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, kind := range []string{"tcp", "icmp"} {
+		target := "example.com"
+		if kind == "tcp" {
+			target += ":443"
+		}
+		response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": kind, "type": kind, "target": target}, cookie)
+		if response.Code != 201 {
+			t.Fatal(response.Body.String())
+		}
+	}
+	now := time.Now()
+	for _, id := range []int{1, 2} {
+		for _, age := range []time.Duration{2 * time.Hour, 10 * time.Hour} {
+			if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, 'timeout', NULL)`, id, now.Add(-age).UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, 'success', 42)`, id, now.Add(-30*time.Minute).UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		query        string
+		hours, count int
+		rate         float64
+	}{
+		{"", 1, 2, 0}, {"?hours=1", 1, 2, 0}, {"?hours=6", 6, 4, 50}, {"?hours=24", 24, 6, 200.0 / 3},
+	} {
+		response := performRequest(t, handler, "GET", "/api/monitor/servers/1/latency"+tc.query, nil, cookie)
+		var h monitor.History
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &h) != nil || h.RangeHours != tc.hours || len(h.Samples) != tc.count || len(h.Tasks) != 2 {
+			t.Fatalf("history = %d %s", response.Code, response.Body.String())
+		}
+		for _, task := range h.Tasks {
+			if task.FailureRate == nil || math.Abs(*task.FailureRate-tc.rate) > .001 || task.LatestLatencyMS == nil || *task.LatestLatencyMS != 42 {
+				t.Fatalf("%d hours summary = %+v", tc.hours, task)
+			}
+		}
 	}
 }
 

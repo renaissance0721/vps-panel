@@ -25,5 +25,5 @@ export type ProbeSample = {
   latency_ms: number | null
   outcome: ProbeOutcome
 }
-export type LatencyHistory = { tasks: ProbeSummary[]; samples: ProbeSample[]; from: string; to: string }
+export type LatencyHistory = { range_hours: LatencyHours; tasks: ProbeSummary[]; samples: ProbeSample[]; from: string; to: string }
 export type LatencyHours = 1 | 6 | 24

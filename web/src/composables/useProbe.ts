@@ -17,6 +17,13 @@ export function probeOutcomeLabel(outcome: ProbeOutcome | ''): string {
   return { success: '成功', timeout: '超时', dns_error: 'DNS 解析失败', connect_error: '连接失败', permission_error: '无 ICMP / 网络权限', cancelled: '已取消', '': '暂无数据' }[outcome]
 }
 
+export const probeColors = ['#4b8acb', '#36967c', '#c18b32', '#9470b6', '#c8687b', '#448e9c', '#8b9444', '#ba754a']
+
+export function probeLabel(task: LatencyHistory['tasks'][number], tasks: LatencyHistory['tasks']): string {
+  const duplicate = tasks.some(other => other.id !== task.id && other.name === task.name && other.type === task.type)
+  return `${task.name} ${task.type.toUpperCase()}${duplicate ? ` #${task.id}` : ''}`
+}
+
 export function useProbeHistory() {
   const history = ref<LatencyHistory | null>(null)
   const loading = ref(false)
@@ -109,6 +116,6 @@ export function latencySeries(history: LatencyHistory) {
       data.push([time, latency])
       previous = time
     }
-    return { id: String(task.id), name: `${task.name} ${task.type.toUpperCase()} #${task.id}`, type: 'line' as const, connectNulls: false, showSymbol: true, symbolSize: 4, smooth: false, data }
+    return { id: String(task.id), name: probeLabel(task, history.tasks), type: 'line' as const, encode: { x: 0, y: 1, tooltip: [1] }, connectNulls: false, showSymbol: true, symbolSize: 4, smooth: false, lineStyle: { width: 2 }, data }
   })
 }

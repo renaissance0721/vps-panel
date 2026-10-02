@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, effectScope } from 'vue'
+import { createRenderer, createSSRApp, effectScope, nextTick, reactive, ssrContextKey } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let loader, useProbeHistory, useProbeTasks, latencySeries, supportsProbe, probeTarget, Detail, View, Manager
@@ -28,7 +28,7 @@ function server(overrides = {}) {
 function task(overrides = {}) {
   return { id: 1, name: 'Tokyo TCP', type: 'tcp', target: 'example.com', port: 443, interval_seconds: 60, enabled: true, default_on: false, server_ids: [1], created_at: '', updated_at: '', latest_latency_ms: 42, latest_outcome: 'success', failure_rate: 0.2, ...overrides }
 }
-function history(tasks = [task()], samples = []) { return { tasks, samples, from: '2026-10-02T00:00:00Z', to: '2026-10-02T06:00:00Z' } }
+function history(tasks = [task()], samples = [], hours = 1) { return { range_hours: hours, tasks, samples, from: '2026-10-02T00:00:00Z', to: '2026-10-02T06:00:00Z' } }
 function response(value, status = 200) { return { ok: status < 400, status, json: async () => value } }
 async function render(component, props, configure = () => {}) {
   const original = component.setup
@@ -50,7 +50,8 @@ test('探针卡片只打开独立详情，按现有 ServerRecord 显示基础信
   for (const forbidden of ['所有者', '访问范围', '到期', '续费', 'Agent 类型', 'Agent 版本', 'Agent API', 'Agent 升级', '一键诊断', '出站', '防火墙', '删除服务器', '安装令牌', '流量配置']) assert.ok(!detail.html.includes(forbidden), forbidden)
   assert.match(detail.html, /当前 Agent 不支持延迟探测/)
   assert.match(detail.html, /1 小时/); assert.match(detail.html, /6 小时/); assert.match(detail.html, /24 小时/)
-  assert.equal(detail.bindings.hours.value, 6)
+  assert.equal(detail.bindings.hours.value, 1)
+  assert.match(detail.html, /aria-pressed="true"[^>]*>1 小时/)
   const missing = await render(Detail, { server: server({ system_info: null, metrics: null, agent_capabilities: [] }), show: true })
   assert.doesNotMatch(missing.html, /undefined|NaN|Infinity/)
   assert.ok(missing.html.includes('—'))
@@ -100,14 +101,79 @@ test('网络延迟区域渲染加载、错误、无任务和无样本状态', as
     [b => { b.reset(); b.loading.value = true }, /正在加载延迟历史/],
     [b => { b.reset(); b.error.value = '测试错误' }, /测试错误/],
     [b => { b.reset(); b.history.value = history([]) }, /尚未分配延迟探测任务/],
-    [b => { b.reset(); b.history.value = history([task({ type: 'icmp', latest_latency_ms: null, latest_outcome: 'permission_error', failure_rate: null })]) }, /所选时段暂无延迟数据/],
+    [b => { b.reset(); b.history.value = history([task({ type: 'icmp', latest_latency_ms: null, latest_outcome: '', failure_rate: null })]) }, /该时间范围内暂无延迟数据/],
   ]) {
     const { html } = await render(Detail, { server: server(), show: true }, configure)
     assert.match(html, expected)
+    assert.doesNotMatch(html, /网络延迟历史折线图/)
   }
   assert.equal(supportsProbe(server(), 'tcp'), true)
   assert.equal(supportsProbe(server(), 'icmp'), false)
   assert.equal(supportsProbe(server({ agent_capabilities: [], agent_version: 'v100.0.0', agent_implementation: 'vps-panel-agent' }), 'tcp'), false)
+})
+
+test('详情默认请求并高亮 1 小时，切换和刷新使用当前范围，重开恢复默认', async () => {
+  const pending = []
+  globalThis.fetch = (url, options) => new Promise(resolve => pending.push({ url, options, resolve }))
+  const props = reactive({ show: true, server: server() })
+  // Mount the real setup/watchers in a component scope; no browser or chart is needed here.
+  let b
+  const renderer = createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null })
+  const app = renderer.createApp({ setup() { b = Detail.setup(props, { expose() {} }); return () => null } })
+  app.provide(ssrContextKey, {})
+  app.mount({})
+  try {
+    assert.equal(b.hours.value, 1)
+    assert.equal(pending[0].url, '/api/monitor/servers/1/latency?hours=1')
+    for (const [range, rate] of [[6, 50], [24, 75]]) {
+      const previous = pending.at(-1)
+      b.hours.value = range
+      await nextTick()
+      assert.equal(previous.options.signal.aborted, true)
+      assert.equal(b.loading.value, true)
+      assert.equal(b.history.value, null)
+      const current = pending.at(-1)
+      assert.equal(current.url, `/api/monitor/servers/1/latency?hours=${range}`)
+      current.resolve(response(history([task({ failure_rate: rate })], [], range)))
+      await new Promise(resolve => setImmediate(resolve))
+      previous.resolve(response(history([task({ failure_rate: 99 })])))
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(b.history.value.range_hours, range)
+      assert.equal(b.history.value.tasks[0].failure_rate, rate)
+    }
+    b.refresh()
+    assert.equal(pending.at(-1).url, '/api/monitor/servers/1/latency?hours=24')
+    props.show = false
+    await nextTick()
+    assert.equal(b.history.value, null)
+    assert.equal(pending.at(-1).options.signal.aborted, true)
+    props.show = true
+    await nextTick()
+    assert.equal(b.hours.value, 1)
+    assert.equal(pending.at(-1).url, '/api/monitor/servers/1/latency?hours=1')
+  } finally { app.unmount() }
+})
+
+test('摘要在图表上方，TCP 失败率与 ICMP 丢包率随响应范围和值变化', async () => {
+  globalThis.fetch = async () => response(history())
+  for (const [hours, rate] of [[1, 0], [6, 50], [24, 75]]) {
+    const tasks = [task({ name: '上海电信', failure_rate: rate }), task({ id: 2, name: 'Cloudflare', type: 'icmp', port: null, latest_latency_ms: 20, failure_rate: rate })]
+    const samples = tasks.map(t => ({ task_id: t.id, timestamp: '2026-10-02T00:01:00Z', outcome: 'success', latency_ms: t.latest_latency_ms }))
+    const { html } = await render(Detail, { server: server(), show: true }, b => { b.reset(); b.hours.value = hours; b.history.value = history(tasks, samples, hours) })
+    assert.match(html, new RegExp(`${hours}小时失败率 ${rate.toFixed(1)}%`))
+    assert.match(html, new RegExp(`${hours}小时丢包率 ${rate.toFixed(1)}%`))
+    assert.doesNotMatch(html, /24h/)
+    assert.match(html, /最近 42.0 ms/)
+    assert.match(html, /最近 20.0 ms/)
+    assert.ok(html.indexOf('aria-label="探测摘要"') < html.indexOf('aria-label="延迟图表"'))
+    assert.ok(html.indexOf('上海电信 TCP') < html.indexOf('网络延迟历史折线图'))
+    assert.deepEqual(latencySeries(history(tasks, samples)).map(s => s.name), ['上海电信 TCP', 'Cloudflare ICMP'])
+  }
+  const empty = await render(Detail, { server: server(), show: true }, b => { b.reset(); b.history.value = history([task({ latest_latency_ms: null, latest_outcome: '', failure_rate: null })]) })
+  assert.match(empty.html, /暂无数据/)
+  assert.match(empty.html, /1小时失败率 —/)
+  assert.match(empty.html, /该时间范围内暂无延迟数据/)
+  assert.doesNotMatch(empty.html, /0\.0 ms|0\.0%|网络延迟历史折线图/)
 })
 
 test('多 series 保留零延迟，timeout、无数据和离线缺口均断线', () => {

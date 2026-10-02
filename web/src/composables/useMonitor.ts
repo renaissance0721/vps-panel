@@ -49,14 +49,3 @@ export function metricPercent(used: number | undefined, total: number | undefine
   if (used === undefined || total === undefined || !Number.isFinite(used) || !Number.isFinite(total) || used < 0 || total <= 0) return null
   return Math.min(100, (used / total) * 100)
 }
-
-export function monitorRelativeTime(value: string | null | undefined, now: number): string {
-  const time = Date.parse(value ?? '')
-  if (!Number.isFinite(time)) return '—'
-  const seconds = Math.max(0, Math.floor((now - time) / 1000))
-  if (seconds < 5) return '刚刚'
-  if (seconds < 60) return `${seconds} 秒前`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`
-  return `${Math.floor(seconds / 86400)} 天前`
-}

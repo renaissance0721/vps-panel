@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NModal, NSelect, NSpin } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NModal, NSpin } from 'naive-ui'
 import type { ServerRecord } from '../../types/server'
 import type { LatencyHours } from '../../types/monitor'
 import { formatBytes, formatUptime, statusLabel } from '../../server'
-import { probeOutcomeLabel, supportsProbe, useProbeHistory } from '../../composables/useProbe'
+import { probeColors, probeLabel, probeOutcomeLabel, supportsProbe, useProbeHistory } from '../../composables/useProbe'
 
 const LatencyChart = defineAsyncComponent(() => import('./LatencyChart.vue'))
 const props = defineProps<{ server: ServerRecord; show: boolean }>()
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
-const hours = ref<LatencyHours>(6)
-const rangeOptions = [{ label: '1 小时', value: 1 }, { label: '6 小时', value: 6 }, { label: '24 小时', value: 24 }]
+const hours = ref<LatencyHours>(1)
+const rangeOptions: LatencyHours[] = [1, 6, 24]
 const supported = computed(() => supportsProbe(props.server, 'tcp') || supportsProbe(props.server, 'icmp'))
 const { history, loading, error, load, reset } = useProbeHistory()
 const fields = computed(() => {
@@ -26,7 +26,7 @@ const fields = computed(() => {
   ]
 })
 function refresh() { if (props.show && supported.value) void load(props.server.id, hours.value) }
-watch(() => props.server.id, () => { hours.value = 6 })
+watch([() => props.server.id, () => props.show], () => { if (props.show) hours.value = 1 })
 watch([() => props.server.id, () => props.show, hours, supported, () => props.server.agent_capabilities?.join(',')], () => {
   if (!props.show || !supported.value) reset()
   else refresh()
@@ -42,23 +42,27 @@ watch([() => props.server.id, () => props.show, hours, supported, () => props.se
         <dl class="monitor-basic-info"><div v-for="[label, value] in fields" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl>
       </section>
       <section class="monitor-latency-section" aria-label="网络延迟">
-        <div class="section-heading">
-          <h3>网络延迟</h3>
-          <div class="monitor-range-actions"><n-select v-model:value="hours" :options="rangeOptions" aria-label="延迟时间范围" /><n-button :disabled="!supported || loading" @click="refresh">刷新</n-button></div>
+        <h3>网络延迟</h3>
+        <div class="monitor-range-actions">
+          <div role="group" aria-label="延迟时间范围"><n-button v-for="range in rangeOptions" :key="range" size="small" :type="hours === range ? 'primary' : 'default'" :aria-pressed="hours === range" @click="hours = range">{{ range }} 小时</n-button></div>
+          <n-button size="small" :disabled="!supported || loading" @click="refresh">刷新</n-button>
         </div>
         <n-empty v-if="!supported" description="当前 Agent 不支持延迟探测" />
         <n-spin v-else-if="loading" description="正在加载延迟历史…" class="monitor-history-loading" />
         <n-alert v-else-if="error" type="error" title="无法加载延迟历史">{{ error }} <n-button size="small" @click="refresh">重试</n-button></n-alert>
         <template v-else-if="history">
-          <n-empty v-if="!history.tasks.length" description="尚未分配延迟探测任务" />
-          <template v-else>
-            <n-empty v-if="!history.samples.length" description="所选时段暂无延迟数据" />
-            <LatencyChart v-else :history="history" />
-            <ul class="monitor-probe-summaries"><li v-for="task in history.tasks" :key="task.id">
-              <strong>{{ task.name }} {{ task.type.toUpperCase() }}</strong>
-              <span>最近 {{ task.latest_latency_ms === null ? probeOutcomeLabel(task.latest_outcome) : `${task.latest_latency_ms.toFixed(1)} ms` }} · 24h {{ task.type === 'icmp' ? '丢包率' : '失败率' }} {{ task.failure_rate === null ? '—' : `${task.failure_rate.toFixed(1)}%` }}</span>
+          <div class="monitor-probe-overview" aria-label="探测摘要">
+            <n-empty v-if="!history.tasks.length" description="尚未分配延迟探测任务" />
+            <ul v-else class="monitor-probe-summaries"><li v-for="(task, index) in history.tasks" :key="task.id" :style="{ '--probe-color': probeColors[index % probeColors.length] }">
+              <strong>{{ probeLabel(task, history.tasks) }}</strong>
+              <span class="monitor-probe-latest">{{ task.latest_outcome ? '最近 ' : '' }}{{ task.latest_latency_ms === null ? probeOutcomeLabel(task.latest_outcome) : `${task.latest_latency_ms.toFixed(1)} ms` }}</span>
+              <span class="monitor-probe-rate">{{ history.range_hours }}小时{{ task.type === 'icmp' ? '丢包率' : '失败率' }} {{ task.failure_rate === null ? '—' : `${task.failure_rate.toFixed(1)}%` }}</span>
             </li></ul>
-          </template>
+          </div>
+          <div class="monitor-chart-panel" aria-label="延迟图表">
+            <n-empty v-if="!history.tasks.length || !history.samples.length" description="该时间范围内暂无延迟数据" />
+            <LatencyChart v-else :history="history" />
+          </div>
         </template>
       </section>
     </n-card>

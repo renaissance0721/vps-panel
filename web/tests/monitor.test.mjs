@@ -5,7 +5,7 @@ import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { createSSRApp, effectScope, nextTick, ref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
-import { useMonitor, metricPercent, monitorRelativeTime } from '../src/composables/useMonitor.ts'
+import { useMonitor, metricPercent } from '../src/composables/useMonitor.ts'
 
 // Test fixtures only: the application always receives real ServerRecord[] from App.
 function server(id, seconds, rx = 1000, tx = 2000, overrides = {}) {
@@ -71,18 +71,13 @@ test('计数器归零、重启、倒退时间与离线重连不会产生负数�
   } finally { scope.stop() }
 })
 
-test('比例和相对时间处理零容量、缺失数据及边界', () => {
+test('比例处理零容量、缺失数据及边界', () => {
   assert.equal(metricPercent(0, 1024), 0)
   assert.equal(metricPercent(256, 1024), 25)
   assert.equal(metricPercent(2048, 1024), 100)
   for (const values of [[0, 0], [undefined, 1024], [NaN, 100], [-1, 100]]) {
     assert.equal(metricPercent(...values), null)
   }
-  assert.equal(monitorRelativeTime(null, 100000), '—')
-  assert.equal(monitorRelativeTime('invalid', 100000), '—')
-  assert.equal(monitorRelativeTime(new Date(96000).toISOString(), 100000), '刚刚')
-  assert.equal(monitorRelativeTime(new Date(95000).toISOString(), 100000), '5 秒前')
-  assert.equal(monitorRelativeTime(new Date(0).toISOString(), 600000), '10 分钟前')
 })
 
 let loader, MonitorCard, MonitorView, MetricRing
@@ -103,18 +98,19 @@ after(async () => { await loader?.close() })
 
 test('卡片渲染周期流量、网速和离线旧指标；缺失 metrics 安全显示', async () => {
   const value = server(1, 100)
-  const online = await renderToString(createSSRApp(MonitorCard, { server: value, now: 105000, speed: { txSpeed: 1024, rxSpeed: 2048 } }))
+  const online = await renderToString(createSSRApp(MonitorCard, { server: value, speed: { txSpeed: 1024, rxSpeed: 2048 } }))
   assert.match(online, /↑ 1 KiB\/s/)
   assert.match(online, /↓ 2 KiB\/s/)
   assert.match(online, /↑ 8 KiB/)
   assert.match(online, /↓ 4 KiB/)
-  assert.match(online, /最后更新：5 秒前/)
-  const offline = await renderToString(createSSRApp(MonitorCard, { server: { ...value, status: 'offline' }, now: 700000, speed: { txSpeed: 1024, rxSpeed: 2048 } }))
+  assert.doesNotMatch(online, /最后更新|最后在线|<footer/)
+  for (const label of ['Server 1', '在线', 'Debian', 'CPU', 'RAM', 'Disk', '网络', '本周期流量']) assert.ok(online.includes(label), label)
+  const offline = await renderToString(createSSRApp(MonitorCard, { server: { ...value, status: 'offline' }, speed: { txSpeed: 1024, rxSpeed: 2048 } }))
   assert.match(offline, /指标为最后上报值/)
   assert.match(offline, /23.4%/)
-  assert.match(offline, /最后在线：10 分钟前/)
+  assert.doesNotMatch(offline, /最后更新|最后在线/)
   assert.doesNotMatch(offline, /KiB\/s/)
-  const pending = await renderToString(createSSRApp(MonitorCard, { server: { ...value, status: 'pending', metrics: null, system_info: null }, now: 700000 }))
+  const pending = await renderToString(createSSRApp(MonitorCard, { server: { ...value, status: 'pending', metrics: null, system_info: null } }))
   assert.match(pending, /待注册/)
   assert.doesNotMatch(pending, /NaN|Infinity|undefined/)
 })

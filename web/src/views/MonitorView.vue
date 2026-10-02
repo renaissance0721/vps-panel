@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, toRef } from 'vue'
+import { computed, ref, toRef } from 'vue'
 import { NButton, NEmpty, NInput, NSelect } from 'naive-ui'
 import type { ServerRecord } from '../types/server'
 import { metricPercent, useMonitor } from '../composables/useMonitor'
@@ -17,7 +17,6 @@ const { speeds } = useMonitor(toRef(props, 'servers'))
 const search = ref('')
 const status = ref<'all' | 'online' | 'offline'>('all')
 const sort = ref<'default' | 'cpu' | 'memory' | 'disk' | 'name'>('default')
-const now = ref(Date.now())
 const statusOptions = [{ label: '全部', value: 'all' }, { label: '在线', value: 'online' }, { label: '离线', value: 'offline' }]
 const sortOptions = [
   { label: '默认顺序', value: 'default' }, { label: 'CPU · 从高到低', value: 'cpu' },
@@ -45,9 +44,6 @@ const visibleServers = computed(() => {
   return result
 })
 
-let clockTimer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { clockTimer = setInterval(() => { now.value = Date.now() }, 10_000) })
-onUnmounted(() => { if (clockTimer !== undefined) clearInterval(clockTimer) })
 </script>
 
 <template>
@@ -67,7 +63,7 @@ onUnmounted(() => { if (clockTimer !== undefined) clearInterval(clockTimer) })
     </n-empty>
     <n-empty v-else-if="!visibleServers.length" class="monitor-empty" description="没有匹配的服务器" />
     <div v-else class="monitor-grid">
-      <MonitorCard v-for="server in visibleServers" :key="server.id" :server="server" :speed="speeds.get(server.id)" :now="now" @view-server="viewMonitor" />
+      <MonitorCard v-for="server in visibleServers" :key="server.id" :server="server" :speed="speeds.get(server.id)" @view-server="viewMonitor" />
     </div>
     <MonitorServerDetail v-if="monitorDetailOpen && selectedMonitorServer" v-model:show="monitorDetailOpen" :server="selectedMonitorServer" />
     <ProbeTaskManager v-if="probeManagerOpen && role === 'admin'" v-model:show="probeManagerOpen" :servers="servers" />

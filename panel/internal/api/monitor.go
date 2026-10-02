@@ -161,7 +161,7 @@ func (s *server) getMonitorLatency(w http.ResponseWriter, r *http.Request, user 
 	if !ok || !s.requireServerAccess(w, r, user, id) {
 		return
 	}
-	hours := 6
+	hours := 1
 	if raw, present := r.URL.Query()["hours"]; present {
 		if len(raw) != 1 {
 			writeMonitorError(w, monitor.ErrInvalid)

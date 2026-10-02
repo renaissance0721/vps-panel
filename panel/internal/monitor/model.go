@@ -72,10 +72,11 @@ type ProbeSummary struct {
 }
 
 type History struct {
-	Tasks   []ProbeSummary `json:"tasks"`
-	Samples []ProbeRecord  `json:"samples"`
-	From    time.Time      `json:"from"`
-	To      time.Time      `json:"to"`
+	RangeHours int            `json:"range_hours"`
+	Tasks      []ProbeSummary `json:"tasks"`
+	Samples    []ProbeRecord  `json:"samples"`
+	From       time.Time      `json:"from"`
+	To         time.Time      `json:"to"`
 }
 
 func Supports(capabilities map[string]bool, kind string) bool {

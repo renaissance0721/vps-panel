@@ -2,16 +2,13 @@
 import { computed } from 'vue'
 import type { ServerRecord } from '../../types/server'
 import { formatBytes, formatUptime, statusLabel } from '../../server'
-import { metricPercent, monitorRelativeTime, type MonitorSpeed } from '../../composables/useMonitor'
+import { metricPercent, type MonitorSpeed } from '../../composables/useMonitor'
 import MetricRing from './MetricRing.vue'
 
-const props = defineProps<{ server: ServerRecord; speed?: MonitorSpeed; now: number }>()
+const props = defineProps<{ server: ServerRecord; speed?: MonitorSpeed }>()
 const emit = defineEmits<{ 'view-server': [server: ServerRecord] }>()
 const metrics = computed(() => props.server.metrics)
 const online = computed(() => props.server.status === 'online')
-const lastTime = computed(() => online.value
-  ? metrics.value?.updated_at || props.server.last_seen_at
-  : props.server.last_seen_at || metrics.value?.updated_at)
 
 function bytes(value: number | undefined | null): string {
   return value === undefined || value === null || !Number.isFinite(value) || value < 0 ? '—' : formatBytes(value)
@@ -49,9 +46,6 @@ function speedText(value: number | undefined | null): string {
         <span title="本周期下载">↓ {{ bytes(metrics?.cycle_rx_bytes) }}</span>
       </div>
     </div>
-    <footer class="monitor-card-footer">
-      <span :title="lastTime || undefined">{{ online ? '最后更新' : '最后在线' }}：{{ monitorRelativeTime(lastTime, now) }}</span>
-      <span v-if="!online && metrics">指标为最后上报值</span>
-    </footer>
+    <footer v-if="!online && metrics" class="monitor-card-footer">指标为最后上报值</footer>
   </article>
 </template>

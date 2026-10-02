@@ -1700,11 +1700,7 @@ h1 {
 .monitor-upload { color: #288668; }
 .monitor-download { color: #3789d2; }
 .monitor-card-footer {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 4px 10px;
-  margin-top: 12px;
+  margin-top: 8px;
   color: var(--color-text-secondary);
   font-size: 11px;
 }
@@ -1719,15 +1715,18 @@ h1 {
 .monitor-basic-info dt { color: var(--color-text-secondary); font-size: 12px; }
 .monitor-basic-info dd { margin: 4px 0 0; overflow-wrap: anywhere; }
 .monitor-latency-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--color-border); }
-.monitor-latency-section .section-heading { flex-wrap: wrap; gap: 12px; }
-.monitor-latency-section .section-heading h3 { margin: 0; }
-.monitor-range-actions { display: flex; gap: 8px; }
-.monitor-range-actions .n-select { width: 110px; }
-.monitor-latency-chart { width: 100%; height: 340px; }
+.monitor-range-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; }
+.monitor-range-actions > div { display: flex; gap: 6px; }
+.monitor-latency-chart { width: 100%; height: 360px; }
 .monitor-history-loading { display: block; padding: 70px 0; text-align: center; }
-.monitor-probe-summaries { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.monitor-probe-summaries li { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
-.monitor-probe-summaries span { color: var(--color-text-secondary); font-size: 12px; }
+.monitor-probe-overview { margin-bottom: 16px; }
+.monitor-probe-summaries { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.monitor-probe-summaries li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-left: 3px solid var(--probe-color); border-radius: var(--radius-control); background: var(--color-surface); box-shadow: 0 2px 8px rgb(40 80 120 / 3%); overflow-wrap: anywhere; }
+.monitor-probe-summaries strong { flex-basis: 100%; font-size: 13px; font-weight: 600; }
+.monitor-probe-latest { font-size: 14px; font-variant-numeric: tabular-nums; }
+.monitor-probe-rate { color: var(--color-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.monitor-chart-panel { min-width: 0; padding: 12px 8px 8px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-surface); }
+.monitor-chart-panel > .n-empty, .monitor-probe-overview > .n-empty { padding: 28px 0; }
 .monitor-probe-table-wrapper { overflow-x: auto; }
 .monitor-probe-table { width: 100%; border-collapse: collapse; text-align: left; }
 .monitor-probe-table th, .monitor-probe-table td { padding: 10px 8px; border-bottom: 1px solid var(--color-border); }

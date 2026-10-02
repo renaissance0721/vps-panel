@@ -5,7 +5,7 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { LatencyHistory } from '../../types/monitor'
-import { latencySeries } from '../../composables/useProbe'
+import { latencySeries, probeColors } from '../../composables/useProbe'
 
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 const props = defineProps<{ history: LatencyHistory }>()
@@ -15,12 +15,18 @@ let observer: ResizeObserver | undefined
 function update() {
   chart?.setOption({
     animation: false,
-    color: ['#4b8acb', '#46a68b', '#d3a14c', '#9c79bc', '#ce7180'],
-    grid: { left: 56, right: 20, top: 24, bottom: 90 },
-    tooltip: { trigger: 'axis', renderMode: 'richText', valueFormatter: (value: unknown) => typeof value === 'number' ? `${value.toFixed(1)} ms` : '—' },
-    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#607089' } },
-    xAxis: { type: 'time', min: Date.parse(props.history.from), max: Date.parse(props.history.to), axisLabel: { hideOverlap: true } },
-    yAxis: { type: 'value', name: '延迟 ms', min: 0 },
+    color: probeColors,
+    grid: { left: 12, right: 16, top: 68, bottom: 16, containLabel: true },
+    tooltip: {
+      trigger: 'axis', renderMode: 'richText', confine: true,
+      backgroundColor: '#fff', borderColor: '#e1e8f0', padding: 12,
+      textStyle: { color: '#34445a', fontSize: 12 },
+      axisPointer: { type: 'line', lineStyle: { color: '#9aafc3', type: 'dashed' } },
+      valueFormatter: (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(1)} ms` : '—',
+    },
+    legend: { type: 'scroll', top: 4, left: 8, right: 8, itemWidth: 18, itemHeight: 8, textStyle: { color: '#607089', fontSize: 12 } },
+    xAxis: { type: 'time', min: Date.parse(props.history.from), max: Date.parse(props.history.to), axisLabel: { hideOverlap: true, color: '#718096' }, axisLine: { lineStyle: { color: '#dce5ef' } }, axisTick: { show: false } },
+    yAxis: { type: 'value', name: 'ms', min: 0, splitNumber: 4, nameTextStyle: { color: '#718096' }, axisLabel: { color: '#718096' }, splitLine: { lineStyle: { color: '#edf1f6', type: 'dashed' } } },
     series: latencySeries(props.history),
   }, { notMerge: true })
 }

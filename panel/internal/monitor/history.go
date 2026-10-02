@@ -10,7 +10,7 @@ func (s *Service) History(ctx context.Context, serverID int64, hours int, capabi
 		return History{}, ErrInvalid
 	}
 	now := s.now().UTC()
-	response := History{Tasks: []ProbeSummary{}, Samples: []ProbeRecord{}, From: now.Add(-time.Duration(hours) * time.Hour), To: now}
+	response := History{RangeHours: hours, Tasks: []ProbeSummary{}, Samples: []ProbeRecord{}, From: now.Add(-time.Duration(hours) * time.Hour), To: now}
 	tasks, err := s.Desired(ctx, serverID, capabilities)
 	if err != nil {
 		return History{}, err
@@ -18,7 +18,7 @@ func (s *Service) History(ctx context.Context, serverID int64, hours int, capabi
 	for _, task := range tasks {
 		summary := ProbeSummary{ProbeTask: task}
 		rows, err := s.db.QueryContext(ctx, `SELECT ts, outcome, latency_ms FROM monitor_probe_records
-			WHERE server_id = ? AND task_id = ? AND ts >= ? AND ts <= ? ORDER BY ts, rowid`, serverID, task.ID, now.Add(-24*time.Hour).UnixMilli(), now.UnixMilli())
+			WHERE server_id = ? AND task_id = ? AND ts >= ? AND ts <= ? ORDER BY ts, rowid`, serverID, task.ID, response.From.UnixMilli(), response.To.UnixMilli())
 		if err != nil {
 			return History{}, err
 		}
@@ -40,9 +40,7 @@ func (s *Service) History(ctx context.Context, serverID int64, hours int, capabi
 					failed++
 				}
 			}
-			if !sample.Timestamp.Before(response.From) {
-				response.Samples = append(response.Samples, sample)
-			}
+			response.Samples = append(response.Samples, sample)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()

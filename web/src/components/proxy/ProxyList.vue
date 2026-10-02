@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  onUnmounted,
   ref,
   toRefs,
 } from 'vue'
@@ -79,6 +80,7 @@ async function dropProxy(id: number) {
   endDrag()
   if (source && !search.value.trim()) await reorderProxy.value(source, id)
 }
+onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
 <template>

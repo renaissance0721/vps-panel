@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { onUnmounted, computed, ref } from 'vue'
 import { NButton, NInput, NSwitch } from 'naive-ui'
 import { beginDragPreview, endDragPreview } from '../../drag'
 
@@ -119,6 +119,7 @@ function firstGroupReference(index: number) {
 }
 
 function startGroupDrag(event: DragEvent, index: number) {
+  if (props.readonly) return
   const source = (event.currentTarget as HTMLElement | null)?.closest('.routing-group-card') as HTMLElement | null
   if (!source || !beginDragPreview(event, source, String(index))) return
   draggedGroupIndex.value = index
@@ -131,7 +132,7 @@ function endGroupDrag() {
 }
 
 function dragOverGroup(event: DragEvent, index: number) {
-  if (draggedGroupIndex.value === null || draggedGroupIndex.value === index) return
+  if (props.readonly || draggedGroupIndex.value === null || draggedGroupIndex.value === index) return
   event.preventDefault()
   groupDropTargetIndex.value = index
 }
@@ -139,12 +140,13 @@ function dragOverGroup(event: DragEvent, index: number) {
 function dropGroup(index: number) {
   const sourceIndex = draggedGroupIndex.value
   endGroupDrag()
-  if (sourceIndex === null || sourceIndex === index) return
+  if (props.readonly || sourceIndex === null || sourceIndex === index) return
   update((values) => {
     const [group] = values.splice(sourceIndex, 1)
     values.splice(index, 0, group)
   })
 }
+onUnmounted(() => { if (draggedGroupIndex.value !== null) endGroupDrag() })
 </script>
 
 <template>

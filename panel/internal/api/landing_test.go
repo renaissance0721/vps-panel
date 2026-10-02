@@ -27,6 +27,57 @@ func createLandingForAPI(t *testing.T, handler http.Handler, cookie *http.Cookie
 	return created.Landing
 }
 
+func TestLandingOrderIsPersonalAndOnlyIncludesVisibleNodes(t *testing.T) {
+	db, handler, accounts := setupAccessTest(t)
+	defer db.Close()
+	create := func(cookie *http.Cookie, name, visibility string) landingResponse {
+		return createLandingForAPI(t, handler, cookie, createLandingRequest{
+			Name: name, Visibility: visibility, URI: "vless://uuid@example.com:443",
+		})
+	}
+	private := create(accounts.adminCookie, "Own private", "private")
+	public := create(accounts.adminCookie, "Own public", "public")
+	shared := create(accounts.memberCookie, "Shared", "public")
+	hidden := create(accounts.memberCookie, "Hidden", "private")
+	// Verify created_at takes precedence over ID, and ties use ID descending.
+	if _, err := db.Exec(`UPDATE landing_nodes SET created_at = CASE WHEN id = ? THEN 2 ELSE 1 END`, private.ID); err != nil {
+		t.Fatal(err)
+	}
+	expectOrderAPI(t, handler, accounts.adminCookie, "/api/landings", "landings", private.ID, shared.ID, public.ID)
+	expectOrderAPI(t, handler, accounts.memberCookie, "/api/landings", "landings", hidden.ID, shared.ID, public.ID)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", private.ID, "down", http.StatusNoContent)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", public.ID, "up", http.StatusNoContent)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", shared.ID, "down", http.StatusNoContent)
+	expectOrderAPI(t, handler, accounts.adminCookie, "/api/landings", "landings", public.ID, shared.ID, private.ID)
+	expectOrderAPI(t, handler, accounts.memberCookie, "/api/landings", "landings", hidden.ID, shared.ID, public.ID)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", hidden.ID, "up", http.StatusNotFound)
+	moveOrderAPI(t, handler, accounts.memberCookie, "landings", private.ID, "up", http.StatusNotFound)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", private.ID, "sideways", http.StatusBadRequest)
+	moveOrderAPI(t, handler, nil, "landings", private.ID, "up", http.StatusUnauthorized)
+	newNode := create(accounts.adminCookie, "New", "private")
+	expectOrderAPI(t, handler, accounts.adminCookie, "/api/landings", "landings", newNode.ID, public.ID, shared.ID, private.ID)
+	sharedPath := "/api/landings/" + strconv.FormatInt(shared.ID, 10)
+	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+		if response := performRequest(t, handler, method, sharedPath, map[string]string{"name": "Forbidden"}, accounts.adminCookie); response.Code != http.StatusNotFound {
+			t.Fatalf("reorder granted %s permission: %d", method, response.Code)
+		}
+	}
+	if response := performRequest(t, handler, http.MethodPatch, sharedPath, map[string]string{"visibility": "private"}, accounts.memberCookie); response.Code != http.StatusOK {
+		t.Fatalf("make shared node private: %d", response.Code)
+	}
+	expectOrderAPI(t, handler, accounts.adminCookie, "/api/landings", "landings", newNode.ID, public.ID, private.ID)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", shared.ID, "up", http.StatusNotFound)
+	moveOrderAPI(t, handler, accounts.adminCookie, "landings", private.ID, "up", http.StatusNoContent)
+	expectOrderAPI(t, handler, accounts.adminCookie, "/api/landings", "landings", newNode.ID, private.ID, public.ID)
+	if response := performRequest(t, handler, http.MethodDelete, sharedPath, nil, accounts.memberCookie); response.Code != http.StatusNoContent {
+		t.Fatalf("delete landing: %d", response.Code)
+	}
+	var stale int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM user_landing_order WHERE landing_id = ?`, shared.ID).Scan(&stale); err != nil || stale != 0 {
+		t.Fatalf("deleted landing order = %d, %v", stale, err)
+	}
+}
+
 func TestLandingAPIAccessAndSecretRedaction(t *testing.T) {
 	db, handler, accounts := setupAccessTest(t)
 	defer db.Close()

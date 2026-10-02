@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { onUnmounted, computed, ref, watch } from 'vue'
 import { NButton, NTag } from 'naive-ui'
 import type { RoutingGroup } from './RoutingGroupEditor.vue'
 import { beginDragPreview, endDragPreview } from '../../drag'
@@ -88,6 +88,7 @@ function drop(groupKey: string, nodeID: number) {
   ids.splice(newIndex, 0, value)
   updateGroup(groupKey, ids)
 }
+onUnmounted(() => { if (dragged.value !== null) endDrag() })
 </script>
 
 <template>

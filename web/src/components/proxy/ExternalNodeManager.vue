@@ -3,6 +3,8 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
 
 import { api } from '../../api/client'
+import { beginDragPreview, endDragPreview } from '../../drag'
+import { moveRow, persistMove } from '../../reorder'
 import { relayEndpointLabel } from '../../relay'
 import {
   autofillExternalNodeName,
@@ -19,6 +21,9 @@ type ExternalNodeShare = {
 }
 
 const landings = ref<LandingRecord[]>([])
+const draggedID = ref<number | null>(null)
+const dropTargetID = ref<number | null>(null)
+const reorderingID = ref<number | null>(null)
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
@@ -194,7 +199,48 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(clearCopiedState)
+function startDrag(event: DragEvent, id: number) {
+  if (reorderingID.value !== null || !event.dataTransfer) return
+  const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
+  draggedID.value = id
+}
+
+function endDrag() {
+  endDragPreview()
+  draggedID.value = null
+  dropTargetID.value = null
+}
+
+function dragOver(event: DragEvent, id: number) {
+  if (draggedID.value === null || draggedID.value === id || reorderingID.value !== null) return
+  event.preventDefault()
+  dropTargetID.value = id
+}
+
+async function dropExternalNode(id: number) {
+  const sourceID = draggedID.value
+  endDrag()
+  if (sourceID === null || reorderingID.value !== null) return
+  const move = moveRow(landings.value, sourceID, id)
+  if (!move) return
+  reorderingID.value = sourceID
+  error.value = ''
+  try {
+    await persistMove(move, (direction) => api(`/api/landings/${sourceID}/reorder`, {
+      method: 'POST', body: JSON.stringify({ direction }),
+    }), loadExternalNodes)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '调整外部节点顺序失败'
+  } finally {
+    reorderingID.value = null
+  }
+}
+
+onUnmounted(() => {
+  clearCopiedState()
+  if (draggedID.value !== null) endDrag()
+})
 </script>
 
 <template>
@@ -208,9 +254,12 @@ onUnmounted(clearCopiedState)
     <n-empty v-else-if="landings.length === 0" description="当前没有外部节点" />
     <div v-else class="server-table-wrap">
       <table class="server-table external-node-table">
-        <thead><tr><th>名称</th><th>协议</th><th>地址</th><th>端口</th><th>可见性</th><th>所有者状态</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="value in landings" :key="value.id">
+        <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>协议</th><th>地址</th><th>端口</th><th>可见性</th><th>所有者状态</th><th>操作</th></tr></thead>
+        <TransitionGroup tag="tbody" name="table-row-order">
+          <tr v-for="value in landings" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropExternalNode(value.id)">
+            <td class="reorder-cell">
+              <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null }" :draggable="reorderingID === null" title="拖动排序" aria-label="拖动外部节点排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
+            </td>
             <td>{{ value.name }}</td>
             <td>{{ landingProtocolLabel(value.protocol) }}</td>
             <td>{{ value.host }}</td>
@@ -225,7 +274,7 @@ onUnmounted(clearCopiedState)
               </template>
             </td>
           </tr>
-        </tbody>
+        </TransitionGroup>
       </table>
     </div>
   </n-card>

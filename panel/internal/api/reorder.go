@@ -38,6 +38,10 @@ func (s *server) reorderRelay(w http.ResponseWriter, r *http.Request, user auth.
 	s.reorder(w, r, user, listorder.Relays)
 }
 
+func (s *server) reorderLanding(w http.ResponseWriter, r *http.Request, user auth.User) {
+	s.reorder(w, r, user, listorder.Landings)
+}
+
 func (s *server) reorder(w http.ResponseWriter, r *http.Request, user auth.User, kind listorder.Kind) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "资源 ID 无效")
 	if !ok {

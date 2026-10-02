@@ -194,6 +194,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("POST /api/clients/{id}/traffic/reset", s.requireManager(s.resetProxyClientTraffic))
 	mux.HandleFunc("GET /api/clients/{id}/share", s.requireManager(s.getProxyClientShare))
 	mux.HandleFunc("GET /api/landings", s.requireManager(s.listLandings))
+	mux.HandleFunc("POST /api/landings/{id}/reorder", s.requireManager(s.reorderLanding))
 	mux.HandleFunc("POST /api/landings", s.requireManager(s.createLanding))
 	mux.HandleFunc("GET /api/landings/{id}", s.requireManager(s.getLanding))
 	mux.HandleFunc("GET /api/landings/{id}/share", s.requireManager(s.getLandingShare))

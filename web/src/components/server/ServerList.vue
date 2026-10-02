@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  onUnmounted,
   ref,
   toRefs,
 } from 'vue'
@@ -82,6 +83,7 @@ async function dropServer(id: number, archived: boolean) {
   endDrag()
   if (source) await reorderServer.value(source, id)
 }
+onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
 <template>

@@ -11,9 +11,10 @@ import (
 type Kind string
 
 const (
-	Servers Kind = "servers"
-	Proxies Kind = "proxies"
-	Relays  Kind = "relays"
+	Servers  Kind = "servers"
+	Proxies  Kind = "proxies"
+	Relays   Kind = "relays"
+	Landings Kind = "landings"
 )
 
 var (
@@ -33,6 +34,8 @@ func tableAndColumn(kind Kind) (string, string) {
 		return "user_proxy_order", "proxy_id"
 	case Relays:
 		return "user_relay_order", "relay_id"
+	case Landings:
+		return "user_landing_order", "landing_id"
 	default:
 		panic("unknown list order kind")
 	}
@@ -87,6 +90,9 @@ func (s *Store) Sort(ctx context.Context, userID int64, kind Kind, defaultIDs []
 
 func visibleQuery(kind Kind, archived bool) string {
 	switch kind {
+	case Landings:
+		return `SELECT id FROM landing_nodes WHERE owner_user_id = ? OR visibility = 'public'
+			ORDER BY created_at DESC, id DESC`
 	case Servers:
 		archive := "IS NULL"
 		if archived {

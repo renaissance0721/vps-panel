@@ -3,10 +3,12 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 )
 
 type createLandingRequest struct {
@@ -45,6 +47,16 @@ func (s *server) listLandings(w http.ResponseWriter, r *http.Request, user auth.
 		return
 	}
 	response := make([]landingResponse, 0, len(values))
+	ids := make([]int64, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.Landings, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	sort.SliceStable(values, func(i, j int) bool { return ranks[values[i].ID] < ranks[values[j].ID] })
 	for _, value := range values {
 		response = append(response, toLandingResponse(value))
 	}

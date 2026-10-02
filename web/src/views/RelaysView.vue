@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  onUnmounted,
   computed,
   onMounted,
   ref,
@@ -32,6 +33,7 @@ import {
   type ClientStatus,
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
+import { beginDragPreview, endDragPreview } from '../drag'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
 import {
   landingProtocolLabel,
@@ -233,12 +235,13 @@ async function reorderRelay(value: RelayRecord, targetID: number) {
 
 function startDrag(event: DragEvent, id: number) {
   if (reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
+  const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
   draggedID.value = id
-  event.dataTransfer.effectAllowed = 'move'
-  event.dataTransfer.setData('text/plain', String(id))
 }
 
 function endDrag() {
+  endDragPreview()
   draggedID.value = null
   dropTargetID.value = null
 }
@@ -558,6 +561,7 @@ import {
 import {
   formatTime,
 } from '../format'
+onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
 <template>
@@ -580,7 +584,7 @@ import {
     <div v-else class="server-table-wrap">
       <table class="server-table relay-table">
         <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>客户端</th><th>Network</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody>
+        <TransitionGroup tag="tbody" name="table-row-order">
           <tr v-for="value in filteredRelays" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropRelay(value.id)">
             <td class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
@@ -611,7 +615,7 @@ import {
               <n-button v-if="!value.subscription_published" size="small" type="error" secondary @click="removeRelay(value)">删除</n-button>
             </td>
           </tr>
-        </tbody>
+        </TransitionGroup>
       </table>
     </div>
   </n-card>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onUnmounted, computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import RoutingBindingEditor, { type RoutingBindings } from '../components/subscription/RoutingBindingEditor.vue'
@@ -1238,6 +1238,7 @@ onMounted(async () => {
     loading.value = false
   }
 })
+onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDrag() })
 </script>
 
 <template>

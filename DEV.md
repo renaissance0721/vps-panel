@@ -137,6 +137,7 @@ web/src/
 ├── App.vue
 ├── views/
 │   ├── OverviewView.vue
+│   ├── MonitorView.vue
 │   ├── ServersView.vue
 │   ├── ProxiesView.vue
 │   ├── RelaysView.vue
@@ -144,11 +145,13 @@ web/src/
 │   └── SubscriptionManagementView.vue
 ├── components/
 │   ├── server/
+│   ├── monitor/
 │   ├── proxy/
 │   └── share/
 ├── composables/
 │   ├── useOverview.ts
 │   ├── useServers.ts
+│   ├── useMonitor.ts
 │   ├── useProxies.ts
 │   ├── useProxyForm.ts
 │   └── useClientForm.ts
@@ -1525,6 +1528,7 @@ currentPage
 
 ```text
 概览
+探针
 服务器
 代理节点
 中转
@@ -1542,6 +1546,8 @@ currentPage
 ```
 
 VIP 只显示“个人订阅”。订阅管理默认打开个人订阅。
+
+探针位于概览与服务器之间，对管理后台的 admin / vip 展示当前账号可访问的 `ServerRecord[]`。页面复用 App 的 5 秒服务器轮询，以卡片显示 CPU、内存、磁盘、运行时间与周期 RX / TX；网速由相邻 `metrics.updated_at` 的 NIC counter 差值派生，首次采样、离线或计数器重置显示 `—`。相对时间每 10 秒更新，不增加 API 请求。点击服务器名称复用已有详情 Modal。
 
 没有 Router。
 

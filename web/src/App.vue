@@ -34,6 +34,7 @@ import {
   useOverview,
 } from './composables/useOverview'
 import OverviewView from './views/OverviewView.vue'
+import MonitorView from './views/MonitorView.vue'
 import ServersView from './views/ServersView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
@@ -64,9 +65,10 @@ const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'audit'
+type AdminPage = 'overview' | 'monitor' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'audit'
 const pageTitles: Record<AdminPage, string> = {
   overview: '概览',
+  monitor: '探针',
   servers: '服务器',
   proxies: '代理节点',
   relays: '中转',
@@ -449,6 +451,13 @@ onUnmounted(stopServerPolling)
             </button>
             <button
               type="button"
+              :class="{ active: currentPage === 'monitor' }"
+              @click="selectPage('monitor')"
+            >
+              探针
+            </button>
+            <button
+              type="button"
               :class="{ active: currentPage === 'servers' }"
               @click="selectPage('servers')"
             >
@@ -526,6 +535,7 @@ onUnmounted(stopServerPolling)
                 <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
                 <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
+                <MonitorView v-if="currentPage === 'monitor'" :servers="servers" @view-server="serverState.viewServer" />
                 <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
                 <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
                 <SubscriptionManagementView

@@ -218,6 +218,21 @@ test('分流方案使用策略组、结构化规则源和逐行规则编辑器',
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
 })
 
+test('分流方案弹窗将策略组、远程规则集和 Rules 拆成可独立折叠滚动区', () => {
+  for (const state of ['routingGroupsExpanded', 'routingProvidersExpanded', 'routingRulesExpanded']) {
+    assert.match(managementSource, new RegExp(`const ${state} = ref\\(true\\)`))
+    assert.match(managementSource, new RegExp(`@click="${state} = !${state}"`))
+  }
+  assert.match(managementSource, /function openCreateRoutingPreset[\s\S]*routingGroupsExpanded\.value = true[\s\S]*routingProvidersExpanded\.value = true[\s\S]*routingRulesExpanded\.value = true/)
+  assert.match(managementSource, /function openEditRoutingPreset[\s\S]*routingGroupsExpanded\.value = true[\s\S]*routingProvidersExpanded\.value = true[\s\S]*routingRulesExpanded\.value = true/)
+  assert.equal((managementSource.match(/class="routing-config-section"/g) ?? []).length, 3)
+  assert.equal((managementSource.match(/class="routing-config-scroll routing-config-scroll-/g) ?? []).length, 3)
+  assert.match(styleSource, /\.routing-config-scroll\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
+  assert.match(managementSource, /远程规则集（Rule Providers）/)
+  assert.match(managementSource, /这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。/)
+  assert.match(managementSource, /Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。/)
+})
+
 test('个人和共享订阅分别编辑自身节点 binding 并用拖拽排序', () => {
   assert.match(managementSource, /const personalRoutingBindings = ref<RoutingBindings>\(\{\}\)/)
   assert.match(managementSource, /const planRoutingBindings = ref<RoutingBindings>\(\{\}\)/)
@@ -225,7 +240,7 @@ test('个人和共享订阅分别编辑自身节点 binding 并用拖拽排序',
   assert.match(managementSource, /\/api\/admin\/subscription\/plans\/\$\{id\}\/routing-bindings/)
   assert.match(managementSource, /:nodes="personalNodes\.map\(\(node\) => \(\{ id: node\.id, name: node\.display_name \}\)\)"/)
   assert.match(managementSource, /:nodes="nodes\.filter\(\(node\) => planNodeIDs\.includes\(node\.id\)\)\.map/)
-  assert.match(bindingEditorSource, /策略组节点绑定/)
+  assert.match(bindingEditorSource, /指定策略组节点（可选）/)
   assert.match(bindingEditorSource, /function startDrag[\s\S]*beginDragPreview[\s\S]*function drop[\s\S]*ids\.splice\(newIndex, 0, value\)/)
   assert.doesNotMatch(bindingEditorSource, />上移<|>下移</)
   assert.match(styleSource, /\.routing-binding-selected-row\.routing-binding-dragging\s*\{[^}]*opacity:\s*0\.38/s)
@@ -253,8 +268,14 @@ test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编�
   assert.match(managementSource, /personalStatusType\(node\.status\)/)
   assert.match(managementSource, /const id = nextPersonalNodeID--[\s\S]*personalNodes\.value\.push/)
   assert.doesNotMatch(managementSource, /if \(personalNodes\.value\.some\(\(node\) => node\.source_type === source\.source_type && node\.source_id === source\.source_id\)\) return/)
-  assert.match(managementSource, /function openEditPersonal[\s\S]*expandedPersonalNodeIDs\.value = new Set\(\)/)
-  assert.match(managementSource, /function addPersonalSource[\s\S]*expandedPersonalNodeIDs\.value = new Set\(\[\.\.\.expandedPersonalNodeIDs\.value, id\]\)/)
+  assert.match(managementSource, /function resetPersonalEditorUI[\s\S]*personalSourceAdderExpanded\.value = false[\s\S]*expandedPersonalNodeIDs\.value = new Set\(\)/)
+  assert.match(managementSource, /function openEditPersonal[\s\S]*resetPersonalEditorUI\(\)/)
+  const addSourceStart = managementSource.indexOf('function addPersonalSource')
+  const addSource = managementSource.slice(addSourceStart, managementSource.indexOf('async function addAllPersonalSources', addSourceStart))
+  const addAllStart = managementSource.indexOf('async function addAllPersonalSources')
+  const addAll = managementSource.slice(addAllStart, managementSource.indexOf('function removePersonalNode', addAllStart))
+  assert.doesNotMatch(addSource, /expandedPersonalNodeIDs/)
+  assert.doesNotMatch(addAll, /expandedPersonalNodeIDs/)
   assert.match(managementSource, /@click="togglePersonalNodeDetails\(node\.id\)"/)
   assert.match(managementSource, /v-if="expandedPersonalNodeIDs\.has\(node\.id\)" class="personal-node-details"/)
   assert.match(managementSource, /<TransitionGroup tag="div" class="personal-node-list" name="personal-node-order">/)
@@ -271,6 +292,45 @@ test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编�
   assert.match(styleSource, /\.personal-node-item\.personal-node-dragging\s*{[^}]*opacity:\s*0\.38/s)
   assert.match(styleSource, /\.personal-node-item\.personal-node-drop-target\s*{[^}]*border-color:\s*var\(--color-primary\)[^}]*transform:/s)
   assert.match(styleSource, /\.personal-node-order-move\s*{[^}]*transition:\s*transform/s)
+})
+
+test('个人订阅候选来源是默认折叠且可搜索的临时添加器', () => {
+  assert.match(managementSource, /const personalSourceAdderExpanded = ref\(false\)/)
+  assert.match(managementSource, /function resetPersonalEditorUI[\s\S]*personalSourceAdderExpanded\.value = false[\s\S]*personalSourceSearch\.value = ''/)
+  assert.match(managementSource, /@click="togglePersonalSourceAdder"[^>]*>[\s\S]*\+ 添加节点/)
+  assert.match(managementSource, /v-if="personalSourceAdderExpanded" class="subscription-node-picker personal-source-adder"/)
+  assert.match(managementSource, /v-model:value="personalSourceSearch"[^>]*placeholder="搜索节点名称或详情"/)
+  assert.match(managementSource, /filteredPersonalSources[\s\S]*source\.name[\s\S]*source\.detail/)
+  assert.match(managementSource, /personalSourceTypes:[^\n]*\['proxy', 'relay', 'landing'\]/)
+  assert.match(managementSource, /class="personal-source-scroll"[\s\S]*v-for="sourceType in personalSourceTypes"/)
+  assert.match(styleSource, /\.personal-source-scroll\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
+  assert.doesNotMatch(managementSource, /节点来源选择器/)
+})
+
+test('个人订阅节点摘要常驻删除且详情区不重复删除', () => {
+  const summaryStart = managementSource.indexOf('<div class="personal-node-summary">')
+  const detailsStart = managementSource.indexOf('<div v-if="expandedPersonalNodeIDs.has(node.id)" class="personal-node-details">')
+  const summary = managementSource.slice(summaryStart, detailsStart)
+  const details = managementSource.slice(detailsStart, managementSource.indexOf('</div>\n        </div>', detailsStart))
+  assert.match(summary, /personal-node-details-button[\s\S]*personal-node-delete-button[\s\S]*removePersonalNode\(index\)/)
+  assert.doesNotMatch(details, /removePersonalNode|>删除(?:节点)?</)
+  assert.match(managementSource, /function removePersonalNode[\s\S]*personalRoutingBindings\.value = pruneRoutingBindingNode[\s\S]*expanded\.delete\(id\)/)
+  assert.match(styleSource, /\.personal-node-summary\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto auto auto;/s)
+})
+
+test('Routing Binding 使用默认折叠的高级区和独立策略组摘要', () => {
+  assert.match(managementSource, /<RoutingBindingEditor[\s\S]*v-model="personalRoutingBindings"[\s\S]*default-collapsed[\s\S]*:reset-key="personalBindingEditorKey"/)
+  assert.match(bindingEditorSource, /defaultCollapsed:\s*false[\s\S]*const editorExpanded = ref\(!props\.defaultCollapsed\)/)
+  assert.match(bindingEditorSource, /const expandedGroupKeys = ref<Set<string>>\(new Set\(\)\)/)
+  assert.match(bindingEditorSource, /watch\(\(\) => props\.resetKey[\s\S]*expandedGroupKeys\.value = new Set\(\)/)
+  assert.match(bindingEditorSource, /function toggleGroup[\s\S]*new Set\(expandedGroupKeys\.value\)[\s\S]*expanded\.has\(groupKey\)/)
+  assert.match(bindingEditorSource, /v-if="expandedGroupKeys\.has\(group\.key\)" class="routing-binding-group-content"/)
+  assert.match(bindingEditorSource, /if \(count === 0\) return '未指定'/)
+  assert.match(bindingEditorSource, /group\.include_all \? `\$\{count\} 个优先节点` : `\$\{count\} 个节点`/)
+  assert.match(bindingEditorSource, /v-if="group\.include_all"[^>]*>包含全部节点</)
+  assert.match(bindingEditorSource, /用于为某些策略组额外指定当前订阅中的节点。开启“包含订阅全部节点”的策略组通常无需在这里选择。/)
+  assert.match(bindingEditorSource, /如果策略组开启“包含订阅全部节点”，这里指定的节点会优先排在前面，其余节点随后补入。/)
+  assert.match(styleSource, /\.routing-binding-editor-body\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
 })
 
 test('分流方案支持编辑且默认方案不能停用或删除', () => {

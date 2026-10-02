@@ -185,6 +185,9 @@ const routingGroups = ref<RoutingGroup[]>([])
 const routingProviders = ref<RoutingRuleProvider[]>([])
 const routingRulesText = ref('')
 const routingFormError = ref('')
+const routingGroupsExpanded = ref(true)
+const routingProvidersExpanded = ref(true)
+const routingRulesExpanded = ref(true)
 const templateModalOpen = ref(false)
 const editingTemplate = ref<SubscriptionTemplate | null>(null)
 const templateName = ref('')
@@ -234,6 +237,10 @@ const personalPreviewYAML = ref('')
 const personalQR = ref<PersonalSubscription | null>(null)
 const personalQROpen = ref(false)
 const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
+const personalSourceAdderExpanded = ref(false)
+const personalSourceSearch = ref('')
+const personalBindingEditorKey = ref(0)
+const planBindingEditorKey = ref(0)
 const expandedPersonalNodeIDs = ref<Set<number>>(new Set())
 const draggedPersonalNodeID = ref<number | null>(null)
 const personalDropTargetID = ref<number | null>(null)
@@ -261,6 +268,11 @@ const selectablePersonalTemplates = computed(() => templates.value.filter((value
 ))
 const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
 const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
+const filteredPersonalSources = computed(() => {
+  const query = personalSourceSearch.value.trim().toLocaleLowerCase()
+  if (!query) return personalSources.value
+  return personalSources.value.filter((source) => `${source.name}\n${source.detail}`.toLocaleLowerCase().includes(query))
+})
 const routingRuleLines = computed({
   get: () => routingLines(routingRulesText.value),
   set: (value: string[]) => { routingRulesText.value = value.join('\n') },
@@ -376,6 +388,13 @@ function pruneRoutingBindingNode(bindings: RoutingBindings, nodeID: number) {
   return Object.fromEntries(Object.entries(bindings).map(([key, ids]) => [key, ids.filter((id) => id !== nodeID)]))
 }
 
+function resetPersonalEditorUI() {
+  personalSourceAdderExpanded.value = false
+  personalSourceSearch.value = ''
+  expandedPersonalNodeIDs.value = new Set()
+  personalBindingEditorKey.value++
+}
+
 function openCreatePersonal() {
   editingPersonal.value = null
   personalName.value = ''
@@ -387,7 +406,7 @@ function openCreatePersonal() {
   personalNodes.value = []
   personalRoutingBindings.value = {}
   personalSources.value = []
-  expandedPersonalNodeIDs.value = new Set()
+  resetPersonalEditorUI()
   personalFormError.value = ''
   personalModalOpen.value = true
 }
@@ -405,11 +424,18 @@ async function openEditPersonal(value: PersonalSubscription) {
     personalMihomoTemplateID.value = current.mihomo_template_id ?? 0
     personalNodes.value = clonePersonalNodes(current.nodes)
     personalRoutingBindings.value = cloneRoutingBindings(current.routing_bindings)
-    expandedPersonalNodeIDs.value = new Set()
+    resetPersonalEditorUI()
     personalFormError.value = ''
     personalModalOpen.value = true
     await loadPersonalSources()
   })
+}
+
+async function togglePersonalSourceAdder() {
+  personalSourceAdderExpanded.value = !personalSourceAdderExpanded.value
+  if (personalSourceAdderExpanded.value && personalSources.value.length === 0 && personalClientName.value.trim()) {
+    await loadPersonalSources()
+  }
 }
 
 async function loadPersonalSources() {
@@ -451,10 +477,10 @@ function addPersonalSource(source: PersonalSource) {
     entry_host: null, entry_port: null, requires_client: source.requires_client,
     status: source.status, status_detail: source.status_detail,
   })
-  expandedPersonalNodeIDs.value = new Set([...expandedPersonalNodeIDs.value, id])
 }
 
-function addAllPersonalSources() {
+async function addAllPersonalSources() {
+  if (personalSources.value.length === 0) await loadPersonalSources()
   for (const source of personalSources.value) addPersonalSource(source)
 }
 
@@ -777,6 +803,7 @@ function openCreatePlan() {
   planRoutingBindings.value = {}
   planRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
   planTemplateID.value = 0
+  planBindingEditorKey.value++
   planModalOpen.value = true
 }
 
@@ -795,6 +822,7 @@ function populatePlanForm(value: Plan) {
 function openEditPlan(value: Plan) {
   planFormError.value = ''
   populatePlanForm(value)
+  planBindingEditorKey.value++
   planModalOpen.value = true
 }
 
@@ -963,6 +991,9 @@ function openCreateRoutingPreset() {
   routingProviders.value = []
   routingRulesText.value = ''
   routingFormError.value = ''
+  routingGroupsExpanded.value = true
+  routingProvidersExpanded.value = true
+  routingRulesExpanded.value = true
   routingModalOpen.value = true
 }
 
@@ -974,6 +1005,9 @@ function openEditRoutingPreset(value: RoutingPreset) {
   routingProviders.value = cloneRoutingProviders(value.rule_providers)
   routingRulesText.value = value.rules.join('\n')
   routingFormError.value = ''
+  routingGroupsExpanded.value = true
+  routingProvidersExpanded.value = true
+  routingRulesExpanded.value = true
   routingModalOpen.value = true
 }
 
@@ -1310,17 +1344,27 @@ onMounted(async () => {
     <h3>Mihomo 输出</h3>
     <label><span>Mihomo 模板</span><select v-model.number="personalMihomoTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in selectablePersonalTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
     <h3>节点</h3>
-    <div class="modal-actions"><n-button secondary attr-type="button" :loading="personalSourcesLoading" @click="loadPersonalSources">刷新可用来源</n-button><n-button secondary attr-type="button" :disabled="personalSources.length === 0" @click="addAllPersonalSources">添加全部可用节点</n-button></div>
-    <fieldset class="subscription-node-picker"><legend>节点来源选择器</legend>
-      <div v-for="sourceType in personalSourceTypes" :key="sourceType" class="personal-source-group">
-        <strong>{{ personalSourceLabel(sourceType) }}</strong>
-        <span v-if="personalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无可访问来源</span>
-        <div v-for="source in personalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
-          <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
-          <n-button secondary size="small" attr-type="button" @click="addPersonalSource(source)">添加节点</n-button>
+    <div class="modal-actions routing-add-actions">
+      <n-button secondary attr-type="button" :aria-expanded="personalSourceAdderExpanded" @click="togglePersonalSourceAdder">{{ personalSourceAdderExpanded ? '收起添加' : '+ 添加节点' }}</n-button>
+      <n-button secondary attr-type="button" :loading="personalSourcesLoading" :disabled="!personalClientName.trim()" @click="addAllPersonalSources">添加全部可用节点</n-button>
+    </div>
+    <section v-if="personalSourceAdderExpanded" class="subscription-node-picker personal-source-adder">
+      <div class="collapsible-section-header"><strong>添加节点</strong><n-button size="tiny" secondary attr-type="button" @click="personalSourceAdderExpanded = false">收起</n-button></div>
+      <div class="personal-source-toolbar">
+        <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" />
+        <n-button secondary attr-type="button" :loading="personalSourcesLoading" @click="loadPersonalSources">刷新</n-button>
+      </div>
+      <div class="personal-source-scroll">
+        <div v-for="sourceType in personalSourceTypes" :key="sourceType" class="personal-source-group">
+          <strong>{{ personalSourceLabel(sourceType) }}</strong>
+          <span v-if="filteredPersonalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无匹配的可访问来源</span>
+          <div v-for="source in filteredPersonalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
+            <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
+            <n-button secondary size="small" attr-type="button" @click="addPersonalSource(source)">添加</n-button>
+          </div>
         </div>
       </div>
-    </fieldset>
+    </section>
     <fieldset class="subscription-node-picker"><legend>已选节点（拖动调整订阅顺序）</legend>
       <n-empty v-if="personalNodes.length === 0" description="尚未选择节点" />
       <TransitionGroup tag="div" class="personal-node-list" name="personal-node-order">
@@ -1337,7 +1381,8 @@ onMounted(async () => {
             <span class="drag-handle" draggable="true" aria-label="拖动个人订阅节点排序" title="拖动排序" @dragstart="startPersonalNodeDrag($event, node.id)" @dragend="endPersonalNodeDrag"><span></span><span></span><span></span></span>
             <div class="personal-node-heading"><strong>{{ node.display_name || '未命名节点' }}</strong><small>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</small></div>
             <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag>
-            <n-button size="small" secondary attr-type="button" @click="togglePersonalNodeDetails(node.id)">{{ expandedPersonalNodeIDs.has(node.id) ? '收起详情' : '详情' }}</n-button>
+            <n-button class="personal-node-details-button" size="small" secondary attr-type="button" @click="togglePersonalNodeDetails(node.id)">{{ expandedPersonalNodeIDs.has(node.id) ? '收起详情' : '详情' }}</n-button>
+            <n-button class="personal-node-delete-button" size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除</n-button>
           </div>
           <div v-if="expandedPersonalNodeIDs.has(node.id)" class="personal-node-details">
             <dl><div><dt>来源类型</dt><dd>{{ personalSourceLabel(node.source_type) }}</dd></div><div><dt>实际来源</dt><dd>{{ node.source_name }}</dd></div></dl>
@@ -1348,7 +1393,6 @@ onMounted(async () => {
             <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
-            <div class="modal-actions"><n-button size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除节点</n-button></div>
           </div>
         </div>
       </TransitionGroup>
@@ -1357,6 +1401,8 @@ onMounted(async () => {
       v-model="personalRoutingBindings"
       :groups="selectedPersonalRoutingGroups"
       :nodes="personalNodes.map((node) => ({ id: node.id, name: node.display_name }))"
+      default-collapsed
+      :reset-key="personalBindingEditorKey"
     />
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
@@ -1384,11 +1430,11 @@ onMounted(async () => {
     <p class="form-help">{{ routingPreviewHelp }}</p>
     <h3>策略组</h3>
     <RoutingGroupEditor :model-value="routingPreviewGroups" readonly />
-    <h3>规则源（Rule Providers）</h3>
-    <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
+    <h3>远程规则集（Rule Providers）</h3>
+    <p class="form-help">这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。</p>
     <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
     <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
-    <p class="form-help">Rules 决定命中规则后进入哪个策略组，并按从上到下的顺序匹配，先命中先生效。</p>
+    <p class="form-help">Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。</p>
     <div class="modal-actions"><n-button @click="routingPreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
@@ -1402,24 +1448,37 @@ onMounted(async () => {
     <n-alert v-if="routingFormError" type="error" closable @close="routingFormError = ''">{{ routingFormError }}</n-alert>
     <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" /></label>
     <div class="switch-row"><span>启用方案</span><n-switch v-model:value="routingEnabled" :disabled="Boolean(editingRoutingPreset?.is_default)" /></div>
-    <p class="form-help">策略组顺序决定生成到客户端后的策略组排列顺序。</p>
-    <RoutingGroupEditor v-model="routingGroups" v-model:rules="routingRuleLines" @validation-error="routingFormError = $event" />
-    <fieldset class="subscription-node-picker"><legend>规则源（Rule Providers）</legend>
-      <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
-      <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
-        <label><span>名称</span><n-input :value="provider.name" placeholder="Google" @update:value="setRoutingProviderName(index, $event)" /></label>
-        <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
-        <label><span>类型</span><select v-model="provider.type" class="settings-input"><option value="http">http</option></select></label>
-        <label><span>Behavior</span><n-input v-model:value="provider.behavior" placeholder="classical" /></label>
-        <label><span>Format</span><n-input v-model:value="provider.format" placeholder="yaml" /></label>
-        <label><span>更新间隔（秒）</span><n-input-number v-model:value="provider.interval" :min="1" :precision="0" /></label>
-        <n-button type="error" secondary attr-type="button" @click="removeRoutingProvider(index)">删除规则源</n-button>
+    <section class="routing-config-section">
+      <div class="collapsible-section-header"><strong>策略组</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingGroupsExpanded" @click="routingGroupsExpanded = !routingGroupsExpanded">{{ routingGroupsExpanded ? '收起' : '展开' }}</n-button></div>
+      <div v-if="routingGroupsExpanded" class="routing-config-scroll routing-config-scroll-groups">
+        <p class="form-help">策略组顺序决定生成到客户端后的策略组排列顺序。</p>
+        <RoutingGroupEditor v-model="routingGroups" v-model:rules="routingRuleLines" @validation-error="routingFormError = $event" />
       </div>
-      <n-button secondary attr-type="button" @click="addRoutingProvider">添加规则源</n-button>
-    </fieldset>
-    <label><span>Rules（一行一条 Mihomo rule）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
-    <p class="form-help">Rules 决定命中规则后进入哪个策略组，并按从上到下的顺序匹配，先命中先生效。</p>
-    <div class="modal-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
+    </section>
+    <section class="routing-config-section">
+      <div class="collapsible-section-header"><strong>远程规则集（Rule Providers）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingProvidersExpanded" @click="routingProvidersExpanded = !routingProvidersExpanded">{{ routingProvidersExpanded ? '收起' : '展开' }}</n-button></div>
+      <div v-if="routingProvidersExpanded" class="routing-config-scroll routing-config-scroll-providers">
+        <p class="form-help">这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。</p>
+        <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
+          <label><span>名称</span><n-input :value="provider.name" placeholder="Google" @update:value="setRoutingProviderName(index, $event)" /></label>
+          <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
+          <label><span>类型</span><select v-model="provider.type" class="settings-input"><option value="http">http</option></select></label>
+          <label><span>Behavior</span><n-input v-model:value="provider.behavior" placeholder="classical" /></label>
+          <label><span>Format</span><n-input v-model:value="provider.format" placeholder="yaml" /></label>
+          <label><span>更新间隔（秒）</span><n-input-number v-model:value="provider.interval" :min="1" :precision="0" /></label>
+          <n-button type="error" secondary attr-type="button" @click="removeRoutingProvider(index)">删除规则集</n-button>
+        </div>
+        <n-button secondary attr-type="button" @click="addRoutingProvider">添加远程规则集</n-button>
+      </div>
+    </section>
+    <section class="routing-config-section">
+      <div class="collapsible-section-header"><strong>规则（Rules）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingRulesExpanded" @click="routingRulesExpanded = !routingRulesExpanded">{{ routingRulesExpanded ? '收起' : '展开' }}</n-button></div>
+      <div v-if="routingRulesExpanded" class="routing-config-scroll routing-config-scroll-rules">
+        <p class="form-help">Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。</p>
+        <label><span>Rules（一行一条 Mihomo rule）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
+      </div>
+    </section>
+    <div class="modal-actions subscription-form-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
   <n-modal v-model:show="templateModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingTemplate ? '编辑 Mihomo 模板' : '新增 Mihomo 模板'" closable @close="templateModalOpen = false"><form class="auth-form" @submit.prevent="saveTemplate">
@@ -1476,6 +1535,7 @@ onMounted(async () => {
       v-model="planRoutingBindings"
       :groups="selectedPlanRoutingGroups"
       :nodes="nodes.filter((node) => planNodeIDs.includes(node.id)).map((node) => ({ id: node.id, name: nodeDisplayName(node) }))"
+      :reset-key="planBindingEditorKey"
     />
     <div class="modal-actions subscription-form-actions"><n-button @click="planModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>

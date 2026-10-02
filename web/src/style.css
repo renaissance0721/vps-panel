@@ -1482,6 +1482,41 @@ h1 {
   background: #ffffff;
 }
 
+.collapsible-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.routing-config-section {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+}
+
+.routing-config-section > .collapsible-section-header {
+  min-height: 40px;
+  padding: 8px 12px;
+  background: var(--color-surface-muted);
+}
+
+.routing-config-scroll {
+  display: grid;
+  gap: 12px;
+  max-height: min(30vh, 340px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px;
+  border-top: 1px solid var(--color-border);
+  overflow-wrap: anywhere;
+}
+
+.routing-config-scroll-rules {
+  max-height: min(34vh, 360px);
+}
+
 .routing-group-editor,
 .routing-member-list,
 .routing-editor-panel {
@@ -1533,10 +1568,18 @@ h1 {
 }
 
 .routing-binding-editor,
+.routing-binding-editor-body,
 .routing-binding-group,
+.routing-binding-group-content,
 .routing-binding-selected-list {
   display: grid;
   gap: 8px;
+}
+
+.routing-binding-editor-body {
+  max-height: min(52vh, 480px);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .routing-binding-group {
@@ -1544,6 +1587,25 @@ h1 {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
+}
+
+.routing-binding-group-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.routing-binding-group-name {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.routing-binding-order-title {
+  font-size: 13px;
 }
 
 .routing-binding-selected-row {
@@ -1584,6 +1646,34 @@ h1 {
   background: #ffffff;
 }
 
+.personal-source-adder {
+  gap: 12px;
+}
+
+.personal-source-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.personal-source-scroll {
+  display: grid;
+  gap: 10px;
+  max-height: min(45vh, 420px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.personal-source-scroll .invitation-row > div {
+  min-width: 0;
+}
+
+.personal-source-scroll .invitation-row span,
+.personal-source-scroll .invitation-row small {
+  overflow-wrap: anywhere;
+}
+
 .personal-node-editor > div {
   display: flex;
   flex-wrap: wrap;
@@ -1610,7 +1700,7 @@ h1 {
 
 .personal-node-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   min-height: 48px;
@@ -1682,11 +1772,27 @@ h1 {
 
 @media (max-width: 640px) {
   .personal-node-summary {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .personal-node-summary > .drag-handle {
+    grid-row: 1 / span 2;
   }
 
   .personal-node-summary > .n-tag {
     grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .personal-node-details-button {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .personal-node-delete-button {
+    grid-column: 4;
+    grid-row: 1 / span 2;
   }
 
   .personal-node-details {
@@ -1695,6 +1801,19 @@ h1 {
 
   .personal-node-details dl {
     grid-template-columns: 1fr;
+  }
+
+  .routing-binding-group-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .routing-binding-group-summary > .form-help {
+    grid-column: 1;
+  }
+
+  .routing-binding-group-summary > .n-button {
+    grid-column: 2;
+    grid-row: 1 / span 2;
   }
 }
 

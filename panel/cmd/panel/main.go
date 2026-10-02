@@ -68,18 +68,22 @@ func run() error {
 	cancelReset()
 
 	restoreRequested := make(chan struct{}, 1)
+	handler := api.NewHandlerWithBackup(db, webDir, panelVersion, api.BackupConfig{
+		DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
+		EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
+		RestoreRequested: restoreRequested,
+	})
 	server := &http.Server{
-		Addr: listenAddr,
-		Handler: api.NewHandlerWithBackup(db, webDir, panelVersion, api.BackupConfig{
-			DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
-			EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
-			RestoreRequested: restoreRequested,
-		}),
+		Addr:              listenAddr,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	notificationsDone := make(chan struct{})
+	go func() { defer close(notificationsDone); handler.RunNotifications(shutdownContext) }()
+	defer func() { stop(); <-notificationsDone }()
 	probeCleanupDone := make(chan struct{})
 	go func() {
 		defer close(probeCleanupDone)

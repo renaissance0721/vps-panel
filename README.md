@@ -4,6 +4,12 @@
 
 当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
 
+管理员可在「探针 → 通知设置」配置第一版 Telegram 通知：离线、恢复在线、服务器周期流量阈值及测试消息。先向 Bot 发送消息，或将 Bot 加入目标群组并授予发送权限，再填写 Bot Token 和数字 Chat ID（支持 `-100…` 群组 ID）。测试使用当前表单内容，成功后再保存。Token 仅存于 Panel SQLite，设置接口只返回是否已配置；留空保留旧 Token，清除需单独打开清除开关，不会下发给 Agent。
+
+在线 watcher 每 30 秒读取当前 Agent WebSocket 连接表，默认持续离线 3 分钟才提醒；Panel 重启后从首次观察到断线重新计算完整宽限，忽略待注册、从未连接、已归档和删除中的服务器。只有实际发送成功的离线消息才配对恢复提醒。同轮离线、恢复和流量分别合并发送，每条最多展示 20 台，其余显示数量。时间采用 Asia/Shanghai（UTC+8）。
+
+流量 watcher 每 60 秒复用现有 `Server.TrafficUsedBytes()`（单向 TX / 双向 RX+TX，含手动校准），默认 80% 起、每增加 10% 提醒并在 100% 提醒用尽。一次跨过多个档位只发最高档，100% 后不再递增；周期改变或校准低于起点后重新计数。通知采用容量 64 的非阻塞内存队列和单个后台发送器，HTTP 超时 15 秒、禁止重定向；网络错误、超时、429、5xx 最多尝试 3 次，间隔至少 10 秒并遵守 Telegram `retry_after`。事件生成状态先持久化，队列满或最终失败只记录日志，不在下一轮重复生成；进程退出时队列不补发。迁移版本 16 新增 `notification_settings` 和 `server_notification_state`，没有新增第三方依赖。
+
 Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。Phase 8B 已完成 Agent 侧固定官方 Xray `v26.3.27` 的 SHA256 校验安装、独立受管路径、基础配置校验与原子替换、服务启停、健康检查和失败回滚。
 
 Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。

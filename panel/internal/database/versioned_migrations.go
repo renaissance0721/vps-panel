@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 15
+const LatestSchemaVersion = 16
 
 type migration struct {
 	version            int
@@ -38,6 +38,41 @@ var migrations = []migration{
 	{version: 13, name: "user_landing_order", up: createUserLandingOrder},
 	{version: 14, name: "case_sensitive_usernames", up: migrateCaseSensitiveUsernames, disableForeignKeys: true},
 	{version: 15, name: "user_account_order", up: createUserAccountOrder},
+	{version: 16, name: "telegram_notifications", up: createNotifications},
+}
+
+const notificationSettingsStatement = `CREATE TABLE IF NOT EXISTS notification_settings (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	telegram_bot_token TEXT NOT NULL DEFAULT '',
+	telegram_chat_id TEXT NOT NULL DEFAULT '',
+	online_enabled INTEGER NOT NULL DEFAULT 1 CHECK (online_enabled IN (0, 1)),
+	offline_grace_minutes INTEGER NOT NULL DEFAULT 3 CHECK (offline_grace_minutes BETWEEN 1 AND 60),
+	recovery_enabled INTEGER NOT NULL DEFAULT 1 CHECK (recovery_enabled IN (0, 1)),
+	traffic_enabled INTEGER NOT NULL DEFAULT 1 CHECK (traffic_enabled IN (0, 1)),
+	traffic_threshold_percent INTEGER NOT NULL DEFAULT 80 CHECK (traffic_threshold_percent BETWEEN 50 AND 100),
+	traffic_step_percent INTEGER NOT NULL DEFAULT 10 CHECK (traffic_step_percent IN (5, 10, 20)),
+	traffic_full_enabled INTEGER NOT NULL DEFAULT 1 CHECK (traffic_full_enabled IN (0, 1)),
+	updated_at INTEGER NOT NULL
+)`
+
+const notificationStateStatement = `CREATE TABLE IF NOT EXISTS server_notification_state (
+	server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+	offline_notified_at INTEGER,
+	offline_started_at INTEGER,
+	traffic_cycle_started_at INTEGER,
+	traffic_last_notified_step INTEGER NOT NULL DEFAULT 0 CHECK (traffic_last_notified_step BETWEEN 0 AND 100),
+	updated_at INTEGER NOT NULL
+)`
+
+const notificationDefaultsStatement = `INSERT OR IGNORE INTO notification_settings (id, updated_at) VALUES (1, 0)`
+
+func createNotifications(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{notificationSettingsStatement, notificationStateStatement, notificationDefaultsStatement} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const userAccountOrderStatement = `CREATE TABLE IF NOT EXISTS user_account_order (

@@ -61,6 +61,14 @@ func (s *Service) IsCurrentConnection(serverID int64, connection *Connection) bo
 	return s.connections[serverID] == connection
 }
 
+// IsConnected reports the current connection, including a replacement connection
+// whose predecessor may still be finishing its disconnect handler.
+func (s *Service) IsConnected(serverID int64) bool {
+	s.connectionsMu.Lock()
+	defer s.connectionsMu.Unlock()
+	return s.connections[serverID] != nil
+}
+
 func (s *Service) DisconnectCurrent(serverID int64, connection *Connection) (bool, error) {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()

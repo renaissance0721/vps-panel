@@ -3,6 +3,9 @@ package database
 // schemaStatements defines the current schema without altering migration order.
 func schemaStatements() []string {
 	return []string{
+		notificationSettingsStatement,
+		notificationStateStatement,
+		notificationDefaultsStatement,
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL UNIQUE,

@@ -6,12 +6,14 @@ import { metricPercent, useMonitor } from '../composables/useMonitor'
 import MonitorCard from '../components/monitor/MonitorCard.vue'
 import MonitorServerDetail from '../components/monitor/MonitorServerDetail.vue'
 import ProbeTaskManager from '../components/monitor/ProbeTaskManager.vue'
+import NotificationSettings from '../components/monitor/NotificationSettings.vue'
 
 const props = defineProps<{ servers: ServerRecord[]; role?: string }>()
 const selectedMonitorServerID = ref<number | null>(null)
 const selectedMonitorServer = computed(() => props.servers.find(server => server.id === selectedMonitorServerID.value) ?? null)
 const monitorDetailOpen = ref(false)
 const probeManagerOpen = ref(false)
+const notificationsOpen = ref(false)
 function viewMonitor(server: ServerRecord) { selectedMonitorServerID.value = server.id; monitorDetailOpen.value = true }
 const { speeds } = useMonitor(toRef(props, 'servers'))
 const search = ref('')
@@ -57,6 +59,7 @@ const visibleServers = computed(() => {
       <label><span>筛选</span><n-select v-model:value="status" :options="statusOptions" aria-label="服务器状态" /></label>
       <label><span>排序</span><n-select v-model:value="sort" :options="sortOptions" aria-label="服务器排序" /></label>
       <n-button v-if="role === 'admin'" @click="probeManagerOpen = true">延迟探测</n-button>
+      <n-button v-if="role === 'admin'" @click="notificationsOpen = true">通知设置</n-button>
     </div>
     <n-empty v-if="!servers.length" class="monitor-empty" description="暂无服务器">
       <template #extra>请先在「服务器」页面添加服务器并安装 Agent。</template>
@@ -67,5 +70,6 @@ const visibleServers = computed(() => {
     </div>
     <MonitorServerDetail v-if="monitorDetailOpen && selectedMonitorServer" v-model:show="monitorDetailOpen" :server="selectedMonitorServer" />
     <ProbeTaskManager v-if="probeManagerOpen && role === 'admin'" v-model:show="probeManagerOpen" :servers="servers" />
+    <NotificationSettings v-if="notificationsOpen && role === 'admin'" v-model:show="notificationsOpen" />
   </div>
 </template>

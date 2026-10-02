@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
+	"github.com/renaissance0721/vps-panel/panel/internal/notification"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -30,6 +32,7 @@ type server struct {
 	panelVersion         string
 	agents               *agentcontrol.Service
 	monitor              *monitor.Service
+	notifications        *notification.Service
 	probeMu              sync.Mutex
 	backup               BackupConfig
 	backupMu             sync.Mutex
@@ -53,7 +56,14 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 	return NewHandlerWithBackup(db, webRoot, panelVersion, BackupConfig{})
 }
 
-func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) http.Handler {
+type Handler struct {
+	http.Handler
+	notifications *notification.Service
+}
+
+func (h *Handler) RunNotifications(ctx context.Context) { h.notifications.Run(ctx) }
+
+func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) *Handler {
 	relays := relaystore.NewService(db)
 	s := &server{
 		db:                   db,
@@ -72,7 +82,12 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		loginLimiter:         newLoginLimiter(),
 		passwordResetLimiter: newLoginLimiter(),
 	}
+	s.notifications = notification.NewService(db, s.servers, s.agents)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/notifications/settings", s.requireAdmin(s.getNotificationSettings))
+	mux.HandleFunc("PUT /api/notifications/settings", s.requireAdmin(s.saveNotificationSettings))
+	mux.HandleFunc("POST /api/notifications/test", s.requireAdmin(s.testNotification))
+	mux.HandleFunc("GET /api/notifications/test/{id}", s.requireAdmin(s.getNotificationTest))
 	mux.HandleFunc("GET /sub/{rest...}", s.getPublicSubscriptionPath)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)
@@ -215,5 +230,5 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		http.NotFound(w, r)
 	})
 	mux.Handle("/", s.spa())
-	return requestMetadataMiddleware(mux)
+	return &Handler{Handler: requestMetadataMiddleware(mux), notifications: s.notifications}
 }

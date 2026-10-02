@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 )
 
@@ -195,6 +196,99 @@ func TestServerAccessScopesListsMutationsAndAdminOperations(t *testing.T) {
 	var accessRows int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM server_access WHERE server_id = ?`, publicServer.Server.ID).Scan(&accessRows); err != nil || accessRows != 0 {
 		t.Fatalf("public access rows = %d, error %v", accessRows, err)
+	}
+}
+
+func TestServerAccessOnlyAcceptsManagementAccounts(t *testing.T) {
+	db, handler, accounts := setupAccessTest(t)
+	defer db.Close()
+	ids := map[string]int64{"admin": accounts.adminID, "vip": accounts.memberID}
+	cookies := map[string]*http.Cookie{}
+	for _, role := range []string{"user", "subscriber"} {
+		result, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at)
+			VALUES (?, 'hash', ?, 1, 1)`, role, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[role], err = result.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, _, err := auth.NewService(db).CreateSession(t.Context(), ids[role])
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookies[role] = &http.Cookie{Name: sessionCookieName, Value: token}
+	}
+	private := createAccessTestServer(t, handler, accounts.adminCookie, "Private", "private", nil)
+	path := "/api/servers/" + strconv.FormatInt(private.Server.ID, 10)
+	for _, test := range []struct {
+		name    string
+		userIDs []int64
+		valid   bool
+	}{
+		{"admin", []int64{ids["admin"]}, true},
+		{"vip", []int64{ids["vip"]}, true},
+		{"user", []int64{ids["user"]}, false},
+		{"subscriber", []int64{ids["subscriber"]}, false},
+		{"mixed user", []int64{ids["admin"], ids["vip"], ids["user"]}, false},
+		{"mixed subscriber", []int64{ids["admin"], ids["vip"], ids["subscriber"]}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var beforeCount int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&beforeCount); err != nil {
+				t.Fatal(err)
+			}
+			beforeAccess := performRequest(t, handler, http.MethodGet, path, nil, accounts.adminCookie)
+			payload := map[string]any{"name": test.name, "visibility": "private", "user_ids": test.userIDs}
+			created := performRequest(t, handler, http.MethodPost, "/api/servers", payload, accounts.adminCookie)
+			updated := performRequest(t, handler, http.MethodPatch, path+"/access", map[string]any{
+				"visibility": "private", "user_ids": test.userIDs,
+			}, accounts.adminCookie)
+			if test.valid {
+				if created.Code != http.StatusCreated || updated.Code != http.StatusOK {
+					t.Fatalf("manager access rejected: create=%d %s, update=%d %s", created.Code, created.Body.String(), updated.Code, updated.Body.String())
+				}
+			} else {
+				if created.Code != http.StatusBadRequest || updated.Code != http.StatusBadRequest {
+					t.Fatalf("non-manager access accepted: create=%d, update=%d", created.Code, updated.Code)
+				}
+				afterAccess := performRequest(t, handler, http.MethodGet, path, nil, accounts.adminCookie)
+				if beforeAccess.Code != http.StatusOK || afterAccess.Code != http.StatusOK || beforeAccess.Body.String() != afterAccess.Body.String() {
+					t.Fatal("rejected update changed server state")
+				}
+				var afterCount int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&afterCount); err != nil || afterCount != beforeCount {
+					t.Fatalf("rejected creation left a server: count=%d, error=%v", afterCount, err)
+				}
+			}
+		})
+	}
+	public := createAccessTestServer(t, handler, accounts.adminCookie, "Public", "public", nil)
+	publicPath := "/api/servers/" + strconv.FormatInt(public.Server.ID, 10)
+	for role, cookie := range cookies {
+		// Historical rows cannot bypass the separate manager role gate.
+		if _, err := db.Exec(`INSERT INTO server_access (server_id, user_id) VALUES (?, ?)`, private.Server.ID, ids[role]); err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"/api/servers", path, publicPath} {
+			if response := performRequest(t, handler, http.MethodGet, target, nil, cookie); response.Code != http.StatusForbidden {
+				t.Fatalf("%s accessed %s: %d", role, target, response.Code)
+			}
+		}
+		for _, request := range []struct{ method, target string }{
+			{http.MethodPost, "/api/servers"}, {http.MethodPatch, path + "/access"},
+		} {
+			response := performRequest(t, handler, request.method, request.target, map[string]any{
+				"name": "Denied", "visibility": "private", "user_ids": []int64{ids[role]},
+			}, cookie)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("%s performed %s: %d", role, request.method, response.Code)
+			}
+		}
+		if response := performRequest(t, handler, http.MethodPatch, path, map[string]any{"owner_user_id": ids[role]}, accounts.adminCookie); response.Code != http.StatusOK {
+			t.Fatalf("owner eligibility changed for %s: %d", role, response.Code)
+		}
 	}
 }
 

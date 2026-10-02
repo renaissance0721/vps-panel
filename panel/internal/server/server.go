@@ -39,6 +39,8 @@ func (s *Service) CreateForUser(
 		if err != nil {
 			return CreatedServer{}, err
 		}
+	} else {
+		userIDs = []int64{}
 	}
 
 	enrollment, err := agentcontrol.NewEnrollment(s.now)
@@ -157,7 +159,8 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 	arguments := []any{}
 	if userID > 0 {
 		accessCondition = ` AND (servers.visibility = 'public' OR EXISTS (
-			SELECT 1 FROM server_access WHERE server_access.server_id = servers.id AND server_access.user_id = ?
+			SELECT 1 FROM server_access JOIN users ON users.id = server_access.user_id
+			WHERE server_access.server_id = servers.id AND server_access.user_id = ? AND users.role IN ('admin', 'vip')
 		))`
 		arguments = append(arguments, userID)
 	}
@@ -166,7 +169,8 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
-		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
+		 COALESCE((SELECT group_concat(server_access.user_id) FROM server_access JOIN users ON users.id = server_access.user_id
+		   WHERE server_id = servers.id AND users.role IN ('admin', 'vip')), ''),
 		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
@@ -214,7 +218,8 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
-		 COALESCE((SELECT group_concat(user_id) FROM server_access WHERE server_id = servers.id), ''),
+		 COALESCE((SELECT group_concat(server_access.user_id) FROM server_access JOIN users ON users.id = server_access.user_id
+		   WHERE server_id = servers.id AND users.role IN ('admin', 'vip')), ''),
 		 servers.archived_at, servers.expires_at, servers.renewal_period_months, servers.auto_renew, servers.renewal_anchor_day,
 		 servers.monthly_traffic_limit_bytes, servers.traffic_count_mode,
 		 servers.traffic_reset_day, servers.traffic_reset_time,

@@ -108,6 +108,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const accessVisibility = ref<ServerRecord['visibility']>('public')
   const accessUserIDs = ref<number[]>([])
   const orderedUsers = computed(() => adminFirst(users.value))
+  const serverAccessUsers = computed(() => adminFirst(users.value.filter(user => user.role === 'admin' || user.role === 'vip')))
   const serverListMode = ref<'active' | 'archived'>('active')
   const serverReorderingID = ref<number | null>(null)
   const copiedCommand = ref(false)
@@ -1035,6 +1036,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     state,
     users,
     orderedUsers,
+    serverAccessUsers,
     health,
     submitting,
     formatTime,

@@ -20,7 +20,7 @@ const props = defineProps<{
     | 'serverVisibility'
     | 'submitting'
     | 'ensureCreateCurrentUser'
-    | 'orderedUsers'
+    | 'serverAccessUsers'
     | 'serverAccessUserIDs'
     | 'state'
   >
@@ -32,7 +32,7 @@ const {
   serverVisibility,
   submitting,
   ensureCreateCurrentUser,
-  orderedUsers,
+  serverAccessUsers,
   serverAccessUserIDs,
   state,
 } = toRefs(props.model)
@@ -59,13 +59,13 @@ const {
                     :disabled="submitting"
                     @change="ensureCreateCurrentUser"
                   >
-                    <option value="public">公开（所有已登录账号）</option>
+                    <option value="public">公开（所有管理账号）</option>
                     <option value="private">私有（仅指定账号）</option>
                   </select>
                 </label>
                 <fieldset v-if="serverVisibility === 'private'" class="server-access-users">
-                  <legend>允许访问的账号</legend>
-                  <label v-for="user in orderedUsers" :key="user.id" class="server-access-user">
+                  <legend>允许访问的管理账号</legend>
+                  <label v-for="user in serverAccessUsers" :key="user.id" class="server-access-user">
                     <input
                       v-model="serverAccessUserIDs"
                       type="checkbox"

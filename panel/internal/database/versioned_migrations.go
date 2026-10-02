@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 16
+const LatestSchemaVersion = 17
 
 type migration struct {
 	version            int
@@ -39,6 +39,13 @@ var migrations = []migration{
 	{version: 14, name: "case_sensitive_usernames", up: migrateCaseSensitiveUsernames, disableForeignKeys: true},
 	{version: 15, name: "user_account_order", up: createUserAccountOrder},
 	{version: 16, name: "telegram_notifications", up: createNotifications},
+	{version: 17, name: "server_access_management_users", up: cleanupServerAccessUsers},
+}
+
+func cleanupServerAccessUsers(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `DELETE FROM server_access
+		WHERE user_id IN (SELECT id FROM users WHERE role NOT IN ('admin', 'vip'))`)
+	return err
 }
 
 const notificationSettingsStatement = `CREATE TABLE IF NOT EXISTS notification_settings (

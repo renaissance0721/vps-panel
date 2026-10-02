@@ -12,6 +12,7 @@ const props = defineProps<{
     | 'nameInput'
     | 'ownerUserID'
     | 'orderedUsers'
+    | 'serverAccessUsers'
     | 'accessVisibility'
     | 'accessUserIDs'
     | 'state'
@@ -31,6 +32,7 @@ const {
   nameInput,
   ownerUserID,
   orderedUsers,
+  serverAccessUsers,
   accessVisibility,
   accessUserIDs,
   state,
@@ -95,14 +97,14 @@ watch(expirationInput, (value) => {
             :disabled="submitting"
             @change="ensureAccessCurrentUser"
           >
-            <option value="public">公开（所有已登录账号）</option>
+            <option value="public">公开（所有管理账号）</option>
             <option value="private">私有（仅指定账号）</option>
           </select>
         </label>
 
         <fieldset v-if="accessVisibility === 'private'" class="server-access-users">
-          <legend>允许访问的账号</legend>
-          <label v-for="user in orderedUsers" :key="user.id" class="server-access-user">
+          <legend>允许访问的管理账号</legend>
+          <label v-for="user in serverAccessUsers" :key="user.id" class="server-access-user">
             <input
               v-model="accessUserIDs"
               type="checkbox"

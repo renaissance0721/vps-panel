@@ -9,9 +9,10 @@ const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import
 test('服务器创建和详情支持公开/私有访问范围与账号选择', () => {
   assert.match(appSource, /visibility:\s*serverVisibility\.value/)
   assert.match(appSource, /user_ids:\s*serverVisibility\.value === 'private'/)
-  assert.match(appSource, /公开（所有已登录账号）/)
+  assert.match(appSource, /公开（所有管理账号）/)
+  assert.doesNotMatch(appSource, /公开（所有已登录账号）/)
   assert.match(appSource, /私有（仅指定账号）/)
-  assert.match(appSource, /允许访问的账号/)
+  assert.match(appSource, /允许访问的管理账号/)
   assert.match(appSource, /修改基本信息/)
   assert.match(appSource, /\/api\/servers\/\$\{id\}\/access/)
   assert.match(appSource, /user\.id === state\?\.user\?\.id/)

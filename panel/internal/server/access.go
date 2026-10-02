@@ -83,7 +83,9 @@ func canAccessServer(ctx context.Context, query rowQuerier, userID, serverID int
 			WHERE id = ? AND (
 				visibility = 'public' OR EXISTS (
 					SELECT 1 FROM server_access
+					JOIN users ON users.id = server_access.user_id
 					WHERE server_access.server_id = servers.id AND server_access.user_id = ?
+					AND users.role IN ('admin', 'vip')
 				)
 			)
 		)`,
@@ -132,7 +134,7 @@ func validateAccessUsers(ctx context.Context, query rowQuerier, userIDs []int64)
 	for _, userID := range userIDs {
 		var exists bool
 		if err := query.QueryRowContext(ctx,
-			`SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)`, userID,
+			`SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND role IN ('admin', 'vip'))`, userID,
 		).Scan(&exists); err != nil {
 			return fmt.Errorf("validate server access user: %w", err)
 		}

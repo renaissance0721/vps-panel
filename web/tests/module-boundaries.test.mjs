@@ -50,10 +50,10 @@ function serverRecord(overrides = {}) {
   }
 }
 
-function serverModel() {
+function serverModel(users = ref([])) {
   const state = ref({ authenticated: true, user: { id: 1, username: 'admin', role: 'admin' } })
   const error = ref(''), submitting = ref(false)
-  const model = useServers(state, ref([]), ref({ status: 'ok', database: 'ok', version: 'v0.20.0' }), submitting, error, async action => {
+  const model = useServers(state, users, ref({ status: 'ok', database: 'ok', version: 'v0.20.0' }), submitting, error, async action => {
     submitting.value = true
     try { await action() } finally { submitting.value = false }
   })
@@ -66,6 +66,51 @@ async function render(path, model, extra = {}) {
 }
 
 function json(value, status = 200) { return new Response(JSON.stringify(value), { status }) }
+
+test('Server 私有访问仅渲染管理账号，保持当前账号及独立所有者选项', async () => {
+  const users = ref([
+    { id: 2, username: 'bob', role: 'vip' },
+    { id: 3, username: 'dave', role: 'user' },
+    { id: 1, username: 'alice', role: 'admin' },
+    { id: 4, username: 'eve', role: 'subscriber' },
+  ])
+  const { model } = serverModel(users)
+  assert.deepEqual(model.serverAccessUsers.value.map(user => user.id), [1, 2])
+  assert.deepEqual(model.orderedUsers.value.map(user => user.id), [1, 2, 3, 4])
+  assert.deepEqual(users.value.map(user => user.id), [2, 3, 1, 4])
+  model.serverVisibility.value = 'private'
+  model.serverAccessUserIDs.value = [2]
+  model.ensureCreateCurrentUser()
+  assert.deepEqual(model.serverAccessUserIDs.value, [2, 1])
+  model.viewServer(serverRecord({ visibility: 'private', access_user_ids: [1, 2] }))
+  model.openBasicInfoModal()
+  model.accessUserIDs.value = [2]
+  model.ensureAccessCurrentUser()
+  assert.deepEqual(model.accessUserIDs.value, [2, 1])
+
+  for (const path of ['components/server/ServerForm.vue', 'components/server/ServerBasicInfoForm.vue']) {
+    const html = await render(path, model)
+    assert.match(html, /公开（所有管理账号）/)
+    const access = html.match(/<fieldset\b[^>]*class="server-access-users"[\s\S]*?<\/fieldset>/)?.[0]
+    assert.ok(access, 'private access fieldset is rendered')
+    assert.match(access, /允许访问的管理账号/)
+    assert.match(access, /alice/)
+    assert.match(access, /bob/)
+    assert.doesNotMatch(access, /dave|eve/)
+    assert.equal((access.match(/type="checkbox"/g) ?? []).length, 2)
+    const current = access.match(/<input[^>]*value="1"[^>]*>/)?.[0]
+    assert.match(current, /checked/)
+    assert.match(current, /disabled/)
+    assert.ok(access.indexOf('alice') < access.indexOf('bob'))
+    if (path.includes('ServerBasicInfoForm')) {
+      const owner = html.match(/<select[^>]*>[\s\S]*?<\/select>/)?.[0]
+      assert.match(owner, /dave/)
+      assert.match(owner, /eve/)
+    }
+  }
+  users.value.push({ id: 5, username: 'carol', role: 'vip' })
+  assert.deepEqual(model.serverAccessUsers.value.map(user => user.id), [1, 2, 5])
+})
 
 function bulkUpgradeServer(id, overrides = {}) {
   return serverRecord({

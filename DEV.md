@@ -103,7 +103,9 @@ API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 L
 ## 7. Server 与 Metrics
 
 Server 管理包含基本信息、分组、归属、访问范围、续期、流量配置和生命周期。
-公开 Server 对符合角色门禁的管理用户可见；私有 Server 通过 `server_access` 控制访问。
+Server 的公开 / 私有访问范围只针对 `admin` / `vip`：公开对所有管理账号可见，私有通过 `server_access` 授权指定管理账号。
+写入时拒绝 `user` / `subscriber`，读取授权和判断私有访问时也检查账号角色，历史无效授权由数据迁移清理。
+普通用户和订阅用户继续使用各自门户、Client 分配和订阅模型，不通过 `server_access` 授权。
 管理员也受 Server 访问检查约束，不能把 admin 理解为自动绕过所有资源 ACL。
 
 Agent 连接时报告系统信息，并持续报告 CPU、内存、磁盘、uptime 和 NIC 累计计数。

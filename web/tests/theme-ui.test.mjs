@@ -95,7 +95,7 @@ test('布尔型选项统一使用 NSwitch，真正的账号和节点多选保留
     source('components/server/ServerBasicInfoForm.vue'),
     source('views/SubscriptionManagementView.vue'),
   ])
-  assert.match(serverForm, /允许访问的账号[\s\S]*type="checkbox"/)
-  assert.match(basicInfo, /允许访问的账号[\s\S]*type="checkbox"/)
+  assert.match(serverForm, /允许访问的管理账号[\s\S]*type="checkbox"/)
+  assert.match(basicInfo, /允许访问的管理账号[\s\S]*type="checkbox"/)
   assert.match(subscriptions, /包含节点[\s\S]*type="checkbox"/)
 })

@@ -14,7 +14,7 @@ test('admin 在服务器私有访问列表优先，组内顺序稳定', async ()
   assert.deepEqual(users.map((user) => user.id), [1, 2, 3, 4])
   assert.match(await source('composables/useServers.ts'), /adminFirst\(users\.value\)/)
   for (const path of ['components/server/ServerForm.vue', 'components/server/ServerBasicInfoForm.vue']) {
-    assert.match(await source(path), /v-for="user in orderedUsers"/)
+    assert.match(await source(path), /v-for="user in serverAccessUsers"/)
   }
   assert.match(await source('components/server/ServerForm.vue'), /user\.id === state\?\.user\?\.id/)
 })

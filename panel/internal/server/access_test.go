@@ -15,6 +15,8 @@ func TestServerPrivateAccessLifecycle(t *testing.T) {
 		 VALUES (2, 'bob', 'hash', 'vip', 1, 1)`,
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
 		 VALUES (3, 'carol', 'hash', 'vip', 1, 1)`,
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		 VALUES (4, 'dave', 'hash', 'user', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -23,8 +25,10 @@ func TestServerPrivateAccessLifecycle(t *testing.T) {
 	if _, err := service.CreateForUser(context.Background(), "Invalid visibility", "hidden", nil, 1); !errors.Is(err, ErrInvalidVisibility) {
 		t.Fatalf("invalid visibility error = %v", err)
 	}
-	if _, err := service.CreateForUser(context.Background(), "Invalid user", VisibilityPrivate, []int64{999}, 1); !errors.Is(err, ErrInvalidServerAccess) {
-		t.Fatalf("invalid access user creation error = %v", err)
+	for _, userIDs := range [][]int64{{999}, {4}, {5}, {1, 2, 4}, {1, 2, 5}} {
+		if _, err := service.CreateForUser(context.Background(), "Invalid user", VisibilityPrivate, userIDs, 1); !errors.Is(err, ErrInvalidServerAccess) {
+			t.Fatalf("invalid access %v creation error = %v", userIDs, err)
+		}
 	}
 	var serverCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCount); err != nil || serverCount != 0 {
@@ -64,8 +68,10 @@ func TestServerPrivateAccessLifecycle(t *testing.T) {
 		t.Fatalf("desired state version changed from %d to %d", desiredVersion, updatedDesiredVersion)
 	}
 
-	if _, err := service.UpdateAccess(context.Background(), created.ID, 1, VisibilityPrivate, []int64{999}); !errors.Is(err, ErrInvalidServerAccess) {
-		t.Fatalf("invalid user UpdateAccess() error = %v", err)
+	for _, userIDs := range [][]int64{{999}, {4}, {5}, {1, 2, 4}, {1, 2, 5}} {
+		if _, err := service.UpdateAccess(context.Background(), created.ID, 1, VisibilityPrivate, userIDs); !errors.Is(err, ErrInvalidServerAccess) {
+			t.Fatalf("invalid access %v UpdateAccess() error = %v", userIDs, err)
+		}
 	}
 	current, err := service.Get(context.Background(), created.ID)
 	if err != nil || !equalInt64s(current.AccessUserIDs, []int64{1, 3}) {
@@ -116,6 +122,64 @@ func TestServerPrivateAccessLifecycle(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM server_access WHERE server_id = ?`, cascade.ID).Scan(&accessCount); err != nil || accessCount != 0 {
 		t.Fatalf("server cascade access rows = %d, error %v", accessCount, err)
+	}
+	public, err := service.CreateForUser(t.Context(), "Public", VisibilityPublic, []int64{4, 5}, 1)
+	if err != nil || len(public.AccessUserIDs) != 0 {
+		t.Fatalf("public creation returned access IDs: %v, %v", public.AccessUserIDs, err)
+	}
+}
+
+func TestServerAccessIgnoresNonManagerRows(t *testing.T) {
+	service, db := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		VALUES (1, 'alice', 'hash', 'admin', 1, 1), (2, 'bob', 'hash', 'vip', 1, 1),
+		(4, 'dave', 'hash', 'user', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateForUser(t.Context(), "Private", VisibilityPrivate, []int64{1}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{4, 5} {
+		if _, err := db.Exec(`INSERT INTO server_access (server_id, user_id) VALUES (?, ?)`, created.ID, id); err != nil {
+			t.Fatal(err)
+		}
+		allowed, err := service.CanAccess(t.Context(), id, created.ID)
+		if err != nil || allowed {
+			t.Fatalf("dirty row granted access to %d: %v, %v", id, allowed, err)
+		}
+		listed, err := service.ListForUser(t.Context(), id)
+		if err != nil || len(listed) != 0 {
+			t.Fatalf("dirty row leaked private server to %d: %+v, %v", id, listed, err)
+		}
+		if _, err := service.UpdateAccess(t.Context(), created.ID, id, VisibilityPublic, nil); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("dirty row allowed access mutation by %d: %v", id, err)
+		}
+	}
+	current, err := service.Get(t.Context(), created.ID)
+	if err != nil || !equalInt64s(current.AccessUserIDs, []int64{1, 2}) {
+		t.Fatalf("Get returned invalid access IDs: %+v, %v", current.AccessUserIDs, err)
+	}
+	listed, err := service.ListForUser(t.Context(), 1)
+	if err != nil || len(listed) != 1 || !equalInt64s(listed[0].AccessUserIDs, []int64{1, 2}) {
+		t.Fatalf("List returned invalid access IDs: %+v, %v", listed, err)
+	}
+	enrollment, err := service.CreateEnrollment(t.Context(), created.ID)
+	if err != nil || !equalInt64s(enrollment.AccessUserIDs, []int64{1, 2}) {
+		t.Fatalf("CreateEnrollment returned invalid access IDs: %+v, %v", enrollment.AccessUserIDs, err)
+	}
+	if err := service.Archive(t.Context(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := service.ListArchivedForUser(t.Context(), 1)
+	if err != nil || len(archived) != 1 || !equalInt64s(archived[0].AccessUserIDs, []int64{1, 2}) {
+		t.Fatalf("archived list returned invalid access IDs: %+v, %v", archived, err)
+	}
+	for _, id := range []int64{4, 5} {
+		archived, err := service.ListArchivedForUser(t.Context(), id)
+		if err != nil || len(archived) != 0 {
+			t.Fatalf("dirty row leaked archived private server to %d: %+v, %v", id, archived, err)
+		}
 	}
 }
 

@@ -17,7 +17,7 @@ type Service struct {
 func NewService(db *sql.DB) *Service { return &Service{db: db, now: time.Now} }
 
 func (s *Service) List(ctx context.Context) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, target, port, interval_seconds, enabled, created_at, updated_at FROM monitor_probe_tasks ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, target, port, interval_seconds, enabled, default_on, created_at, updated_at FROM monitor_probe_tasks ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +25,7 @@ func (s *Service) List(ctx context.Context) ([]Task, error) {
 	for rows.Next() {
 		var v Task
 		var created, updated int64
-		if err := rows.Scan(&v.ID, &v.Name, &v.Type, &v.Target, &v.Port, &v.IntervalSeconds, &v.Enabled, &created, &updated); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.Type, &v.Target, &v.Port, &v.IntervalSeconds, &v.Enabled, &v.DefaultOn, &created, &updated); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -59,13 +59,16 @@ func (s *Service) List(ctx context.Context) ([]Task, error) {
 	return values, assignments.Err()
 }
 
-// Save replaces a task and its assignments atomically. The caller holds current connection
-// capabilities stable for the duration of this operation; stored Agent versions are never used.
+// Save replaces a task and its assignments atomically. Capabilities must be explicitly
+// reported by the current connection, or last reported by the Agent while offline.
 func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities map[int64]map[string]bool) (Task, error) {
 	value.ID = id
 	value.Name, value.Target = strings.TrimSpace(value.Name), strings.TrimSpace(value.Target)
 	if err := ValidateTask(value.ProbeTask); err != nil {
 		return Task{}, err
+	}
+	if value.DefaultOn {
+		value.ServerIDs = nil // A rule, never a materialized copy of the current server list.
 	}
 	seen := map[int64]bool{}
 	for _, serverID := range value.ServerIDs {
@@ -103,16 +106,9 @@ func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities m
 		if !exists {
 			return Task{}, fmt.Errorf("%w: server unavailable", ErrInvalid)
 		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM monitor_probe_servers WHERE server_id = ? AND task_id != ?`, serverID, id).Scan(&count); err != nil {
-			return Task{}, err
-		}
-		if count >= MaxProbeTasks {
-			return Task{}, ErrTaskLimit
-		}
 	}
 	if id == 0 {
-		result, err := tx.ExecContext(ctx, `INSERT INTO monitor_probe_tasks (name, type, target, port, interval_seconds, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, value.Name, value.Type, value.Target, value.Port, value.IntervalSeconds, value.Enabled, now.Unix(), now.Unix())
+		result, err := tx.ExecContext(ctx, `INSERT INTO monitor_probe_tasks (name, type, target, port, interval_seconds, enabled, default_on, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, value.Name, value.Type, value.Target, value.Port, value.IntervalSeconds, value.Enabled, value.DefaultOn, now.Unix(), now.Unix())
 		if err != nil {
 			return Task{}, err
 		}
@@ -121,7 +117,7 @@ func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities m
 			return Task{}, err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE monitor_probe_tasks SET name = ?, type = ?, target = ?, port = ?, interval_seconds = ?, enabled = ?, updated_at = ? WHERE id = ?`, value.Name, value.Type, value.Target, value.Port, value.IntervalSeconds, value.Enabled, now.Unix(), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE monitor_probe_tasks SET name = ?, type = ?, target = ?, port = ?, interval_seconds = ?, enabled = ?, default_on = ?, updated_at = ? WHERE id = ?`, value.Name, value.Type, value.Target, value.Port, value.IntervalSeconds, value.Enabled, value.DefaultOn, now.Unix(), id); err != nil {
 			return Task{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM monitor_probe_servers WHERE task_id = ?`, id); err != nil {
@@ -135,6 +131,22 @@ func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities m
 		if _, err := tx.ExecContext(ctx, `INSERT INTO monitor_probe_servers (task_id, server_id) VALUES (?, ?)`, value.ID, serverID); err != nil {
 			return Task{}, err
 		}
+	}
+	// Reserve capacity for defaults even before servers connect or gain capabilities.
+	// Count configured tasks (including disabled ones), as manual assignments do.
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM monitor_probe_tasks WHERE default_on = 1) +
+		COALESCE((SELECT MAX(n) FROM (
+			SELECT COUNT(*) AS n FROM monitor_probe_servers a
+			JOIN monitor_probe_tasks t ON t.id = a.task_id
+			JOIN servers s ON s.id = a.server_id
+			WHERE t.default_on = 0 AND s.archived_at IS NULL AND s.decommission_status = ''
+			GROUP BY a.server_id)), 0)`).Scan(&count); err != nil {
+		return Task{}, err
+	}
+	if count > MaxProbeTasks {
+		return Task{}, ErrTaskLimit
 	}
 	return value, tx.Commit()
 }

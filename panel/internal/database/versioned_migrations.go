@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 11
+const LatestSchemaVersion = 12
 
 type migration struct {
 	version int
@@ -33,6 +33,12 @@ var migrations = []migration{
 	{version: 9, name: "personal_subscription_node_instances", up: migratePersonalSubscriptionNodeInstances},
 	{version: 10, name: "routing_bindings", up: migrateRoutingBindings},
 	{version: 11, name: "monitor_probes", up: createMonitorProbes},
+	{version: 12, name: "monitor_probe_default_on", up: addMonitorProbeDefaultOn},
+}
+
+func addMonitorProbeDefaultOn(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `ALTER TABLE monitor_probe_tasks ADD COLUMN default_on INTEGER NOT NULL DEFAULT 0 CHECK(default_on IN (0,1))`)
+	return err
 }
 
 func createMonitorProbes(ctx context.Context, tx *sql.Tx) error {

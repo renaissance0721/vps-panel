@@ -2,15 +2,16 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
+	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 func (s *server) listProbes(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -32,18 +33,18 @@ func (s *server) saveProbe(w http.ResponseWriter, r *http.Request, user auth.Use
 		}
 	}
 	var request struct {
-		Name            *string         `json:"name"`
-		Type            *string         `json:"type"`
-		Target          *string         `json:"target"`
-		Port            json.RawMessage `json:"port"`
-		IntervalSeconds *int            `json:"interval_seconds"`
-		Enabled         *bool           `json:"enabled"`
-		ServerIDs       *[]int64        `json:"server_ids"`
+		Name            *string  `json:"name"`
+		Type            *string  `json:"type"`
+		Target          *string  `json:"target"`
+		IntervalSeconds *int     `json:"interval_seconds"`
+		Enabled         *bool    `json:"enabled"`
+		DefaultOn       *bool    `json:"default_on"`
+		ServerIDs       *[]int64 `json:"server_ids"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	value := monitor.Task{ProbeTask: monitor.ProbeTask{IntervalSeconds: 60}, Enabled: true}
+	value := monitor.Task{ProbeTask: monitor.ProbeTask{IntervalSeconds: 60}, Enabled: true, DefaultOn: true}
 	// Serialize PATCH reads and writes as well as the full-list push.
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
@@ -66,6 +67,10 @@ func (s *server) saveProbe(w http.ResponseWriter, r *http.Request, user auth.Use
 			return
 		}
 	}
+	target := value.Target
+	if value.Type == "tcp" && value.Port != nil {
+		target = net.JoinHostPort(value.Target, strconv.Itoa(*value.Port))
+	}
 	if request.Name != nil {
 		value.Name = *request.Name
 	}
@@ -73,13 +78,13 @@ func (s *server) saveProbe(w http.ResponseWriter, r *http.Request, user auth.Use
 		value.Type = *request.Type
 	}
 	if request.Target != nil {
-		value.Target = *request.Target
+		target = *request.Target
 	}
-	if request.Port != nil {
-		if json.Unmarshal(request.Port, &value.Port) != nil {
-			writeMonitorError(w, monitor.ErrInvalid)
-			return
-		}
+	var err error
+	value.Target, value.Port, err = monitor.ParseTarget(value.Type, target)
+	if err != nil {
+		writeMonitorError(w, err)
+		return
 	}
 	if request.IntervalSeconds != nil {
 		value.IntervalSeconds = *request.IntervalSeconds
@@ -87,10 +92,31 @@ func (s *server) saveProbe(w http.ResponseWriter, r *http.Request, user auth.Use
 	if request.Enabled != nil {
 		value.Enabled = *request.Enabled
 	}
+	if request.DefaultOn != nil {
+		value.DefaultOn = *request.DefaultOn
+	}
 	if request.ServerIDs != nil {
 		value.ServerIDs = *request.ServerIDs
 	}
-	err := s.agents.WithProbeCapabilities(func(capabilities map[int64]map[string]bool) error {
+	err = s.agents.WithProbeCapabilities(func(capabilities map[int64]map[string]bool) error {
+		if !value.DefaultOn {
+			for _, serverID := range value.ServerIDs {
+				if _, connected := capabilities[serverID]; connected {
+					continue
+				}
+				stored, err := s.servers.Get(r.Context(), serverID)
+				if err != nil {
+					if errors.Is(err, serverstore.ErrNotFound) {
+						return monitor.ErrInvalid
+					}
+					return err
+				}
+				capabilities[serverID] = make(map[string]bool)
+				for _, capability := range stored.AgentCapabilities {
+					capabilities[serverID][capability] = true
+				}
+			}
+		}
 		var err error
 		value, err = s.monitor.Save(r.Context(), id, value, capabilities)
 		return err

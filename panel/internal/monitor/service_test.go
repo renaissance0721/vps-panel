@@ -235,3 +235,106 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 		t.Fatalf("latest success: %+v %v", h, err)
 	}
 }
+
+func TestDefaultProbeMatchingIngestionAndHistory(t *testing.T) {
+	s, db, caps := probeTestService(t)
+	value := probeInput()
+	value.DefaultOn = true
+	value.ServerIDs = []int64{999} // Default rules never materialize/require explicit assignments.
+	task, err := s.Save(t.Context(), 0, value, nil)
+	if err != nil || len(task.ServerIDs) != 0 {
+		t.Fatalf("save = %+v %v", task, err)
+	}
+	list, err := s.List(t.Context())
+	if err != nil || len(list) != 1 || !list[0].DefaultOn || len(list[0].ServerIDs) != 0 {
+		t.Fatalf("list = %+v %v", list, err)
+	}
+	for _, tc := range []struct {
+		id   int64
+		caps map[string]bool
+		want int
+	}{
+		{1, caps[1], 1}, {2, caps[2], 1}, {1, nil, 0}, {1, map[string]bool{CapabilityICMP: true}, 0}, {999, caps[1], 0},
+	} {
+		got, err := s.Desired(t.Context(), tc.id, tc.caps)
+		if err != nil || len(got) != tc.want {
+			t.Fatalf("desired = %+v %v", got, err)
+		}
+	}
+	result := ProbeResult{TaskID: task.ID, Outcome: "timeout"}
+	if err := s.Ingest(t.Context(), 2, caps[2], result); err != nil {
+		t.Fatal(err)
+	}
+	h, err := s.History(t.Context(), 2, 6, caps[2])
+	if err != nil || len(h.Tasks) != 1 || len(h.Samples) != 1 || h.Tasks[0].LatestOutcome != "timeout" {
+		t.Fatalf("history = %+v %v", h, err)
+	}
+	if err := s.Ingest(t.Context(), 2, nil, result); !errors.Is(err, ErrInvalidResult) {
+		t.Fatalf("unsupported result = %v", err)
+	}
+	for _, update := range []string{`UPDATE servers SET decommission_status = 'pending' WHERE id = 2`, `UPDATE servers SET decommission_status = '', archived_at = 1 WHERE id = 2`} {
+		if _, err := db.Exec(update); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.Desired(t.Context(), 2, caps[2]); err != nil || len(got) != 0 {
+			t.Fatalf("unavailable desired = %+v %v", got, err)
+		}
+		if err := s.Ingest(t.Context(), 2, caps[2], result); !errors.Is(err, ErrInvalidResult) {
+			t.Fatalf("unavailable result = %v", err)
+		}
+	}
+	task.Enabled = false
+	if _, err := s.Save(t.Context(), task.ID, task, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Desired(t.Context(), 1, caps[1]); err != nil || len(got) != 0 {
+		t.Fatalf("disabled = %+v %v", got, err)
+	}
+	if err := s.Ingest(t.Context(), 1, caps[1], result); !errors.Is(err, ErrInvalidResult) {
+		t.Fatalf("disabled result = %v", err)
+	}
+	task.Enabled, task.DefaultOn, task.ServerIDs = true, false, []int64{1}
+	if _, err := s.Save(t.Context(), task.ID, task, caps); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Desired(t.Context(), 1, caps[1]); err != nil || len(got) != 1 {
+		t.Fatalf("manual = %+v %v", got, err)
+	}
+}
+
+func TestDefaultProbeCapacityIncludesManualTasks(t *testing.T) {
+	s, _, caps := probeTestService(t)
+	value := probeInput()
+	value.DefaultOn = true
+	var task Task
+	for range MaxProbeTasks - 1 {
+		var err error
+		task, err = s.Save(t.Context(), 0, value, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	manual, err := s.Save(t.Context(), 0, probeInput(), caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Save(t.Context(), 0, value, nil); !errors.Is(err, ErrTaskLimit) {
+		t.Fatalf("default bypassed limit: %v", err)
+	}
+	if _, err := s.Save(t.Context(), 0, probeInput(), caps); !errors.Is(err, ErrTaskLimit) {
+		t.Fatalf("manual bypassed limit: %v", err)
+	}
+	manual.DefaultOn = true
+	if _, err := s.Save(t.Context(), manual.ID, manual, caps); err != nil {
+		t.Fatalf("conversion at limit: %v", err)
+	}
+	if _, err := s.Save(t.Context(), task.ID, task, nil); err != nil {
+		t.Fatalf("edit at limit: %v", err)
+	}
+	if _, err := s.Save(t.Context(), 0, value, nil); !errors.Is(err, ErrTaskLimit) {
+		t.Fatalf("global limit: %v", err)
+	}
+	if got, err := s.Desired(t.Context(), 1, caps[1]); err != nil || len(got) != MaxProbeTasks {
+		t.Fatalf("rollback = %d %v", len(got), err)
+	}
+}

@@ -7,7 +7,7 @@ import vue from '@vitejs/plugin-vue'
 import { createSSRApp, effectScope } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-let loader, useProbeHistory, useProbeTasks, latencySeries, supportsProbe, Detail, View, Manager
+let loader, useProbeHistory, useProbeTasks, latencySeries, supportsProbe, probeTarget, Detail, View, Manager
 const originalFetch = globalThis.fetch
 before(async () => {
   loader = await createServer({
@@ -15,7 +15,7 @@ before(async () => {
     resolve: { alias: { 'naive-ui': fileURLToPath(new URL('./helpers/ui-stubs.mjs', import.meta.url)) } },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, optimizeDeps: { noDiscovery: true, include: [] },
   })
-  ;({ useProbeHistory, useProbeTasks, latencySeries, supportsProbe } = await loader.ssrLoadModule('/src/composables/useProbe.ts'))
+  ;({ useProbeHistory, useProbeTasks, latencySeries, supportsProbe, probeTarget } = await loader.ssrLoadModule('/src/composables/useProbe.ts'))
   ;({ default: Detail } = await loader.ssrLoadModule('/src/components/monitor/MonitorServerDetail.vue'))
   ;({ default: View } = await loader.ssrLoadModule('/src/views/MonitorView.vue'))
   ;({ default: Manager } = await loader.ssrLoadModule('/src/components/monitor/ProbeTaskManager.vue'))
@@ -26,7 +26,7 @@ function server(overrides = {}) {
   return { id: 1, name: 'Tokyo', status: 'online', agent_capabilities: ['probe.tcp'], system_info: { hostname: 'host', os_name: 'Debian', os_version: '12', kernel: '6.1', arch: 'amd64', ipv4: ['192.0.2.1'], ipv6: ['2001:db8::1'], public_ipv4: '198.51.100.1' }, metrics: { memory_total_bytes: 1024, disk_total_bytes: 4096, uptime_seconds: 60 }, ...overrides }
 }
 function task(overrides = {}) {
-  return { id: 1, name: 'Tokyo TCP', type: 'tcp', target: 'example.com', port: 443, interval_seconds: 60, enabled: true, server_ids: [1], created_at: '', updated_at: '', latest_latency_ms: 42, latest_outcome: 'success', failure_rate: 0.2, ...overrides }
+  return { id: 1, name: 'Tokyo TCP', type: 'tcp', target: 'example.com', port: 443, interval_seconds: 60, enabled: true, default_on: false, server_ids: [1], created_at: '', updated_at: '', latest_latency_ms: 42, latest_outcome: 'success', failure_rate: 0.2, ...overrides }
 }
 function history(tasks = [task()], samples = []) { return { tasks, samples, from: '2026-10-02T00:00:00Z', to: '2026-10-02T06:00:00Z' } }
 function response(value, status = 200) { return { ok: status < 400, status, json: async () => value } }
@@ -127,7 +127,7 @@ test('多 series 保留零延迟，timeout、无数据和离线缺口均断线',
   assert.equal(samples.length, 5)
 })
 
-test('任务管理 CRUD 请求、默认值、ICMP 端口清空及不支持节点提示', async () => {
+test('任务管理 CRUD 请求使用 endpoint，不发送独立端口', async () => {
   const requests = []
   globalThis.fetch = async (url, options) => {
     requests.push({ url, options })
@@ -138,7 +138,7 @@ test('任务管理 CRUD 请求、默认值、ICMP 端口清空及不支持节点
   const state = useProbeTasks()
   await state.load()
   assert.equal(state.tasks.value.length, 1)
-  const input = { name: 'new', type: 'tcp', target: 'example.com', port: 443, interval_seconds: 60, enabled: true, server_ids: [1] }
+  const input = { name: 'new', type: 'tcp', target: 'example.com:443', interval_seconds: 60, enabled: true, default_on: false, server_ids: [1] }
   assert.equal(await state.save(null, input), true)
   assert.equal(requests.at(-1).options.method, 'POST')
   assert.equal(await state.save(1, { ...input, name: 'updated' }), true)
@@ -151,12 +151,88 @@ test('任务管理 CRUD 请求、默认值、ICMP 端口清空及不支持节点
   for (const text of ['新建任务', '名称', '类型', '目标', '周期', '执行节点数', '状态', '编辑', '删除', '保存']) assert.ok(html.includes(text), text)
   assert.equal(bindings.form.value.interval_seconds, 60)
   assert.equal(bindings.serverOptions.value[1].disabled, true)
-  assert.match(bindings.serverOptions.value[1].label, /不支持 TCP/)
+  assert.match(bindings.serverOptions.value[1].label, /Agent 不支持 TCPing/)
   bindings.edit(task())
-  bindings.form.value.type = 'icmp'
+  assert.equal(bindings.form.value.target, 'example.com:443')
   await bindings.submit()
-  assert.equal(JSON.parse(requests.at(-1).options.body).port, null)
+  assert.equal(JSON.parse(requests.at(-1).options.body).target, 'example.com:443')
+  assert.equal('port' in JSON.parse(requests.at(-1).options.body), false)
+  bindings.form.value.type = 'icmp'
+  bindings.form.value.target = '2400:3200::1'
+  await bindings.submit()
+  assert.equal(JSON.parse(requests.at(-1).options.body).target, '2400:3200::1')
+  assert.equal('port' in JSON.parse(requests.at(-1).options.body), false)
   globalThis.fetch = async () => response({ error: '保存失败' }, 400)
   assert.equal(await state.save(null, input), false)
   assert.equal(state.error.value, '保存失败')
+})
+
+test('TCP endpoint 显示与编辑包含 IPv6 方括号，表单没有独立端口输入', async () => {
+  assert.equal(probeTarget(task()), 'example.com:443')
+  assert.equal(probeTarget(task({ target: '1.1.1.1', port: 80 })), '1.1.1.1:80')
+  assert.equal(probeTarget(task({ target: '2400:3200::1' })), '[2400:3200::1]:443')
+  assert.equal(probeTarget(task({ type: 'icmp', target: '2400:3200::1', port: null })), '2400:3200::1')
+  const { html, bindings } = await render(Manager, { show: true, servers: [] }, b => {
+    b.tasks.value = [task(), task({ id: 2, target: '2400:3200::1' })]
+    b.edit(task({ target: '2400:3200::1' }))
+  })
+  assert.equal(bindings.form.value.target, '[2400:3200::1]:443')
+  assert.match(html, /example.com:443/)
+  assert.match(html, /\[2400:3200::1\]:443/)
+  assert.match(html, /example.com:443 \/ 1.1.1.1:80 \/ \[IPv6\]:443/)
+  assert.doesNotMatch(html, /TCP 端口|<label>端口/)
+  assert.equal('port' in bindings.form.value, false)
+})
+
+test('全选与清空仅作用于当前兼容节点，离线能力与连接状态分离', async () => {
+  const servers = [
+    server(), server({ id: 2, status: 'offline' }),
+    server({ id: 3, archived_at: '2026-10-02T00:00:00Z' }),
+    server({ id: 4, decommission_status: 'pending' }),
+    server({ id: 5, agent_capabilities: ['probe.icmp'] }),
+    server({ id: 6, agent_capabilities: [], status: 'offline' }),
+  ]
+  const { bindings, html } = await render(Manager, { show: true, servers }, b => { b.edit(); b.form.value.default_on = false })
+  assert.match(html, /全选/); assert.match(html, /清空/)
+  bindings.selectAll()
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2])
+  assert.equal(bindings.selectionUnavailable.value, false)
+  assert.match(bindings.serverOptions.value[1].label, /当前离线/)
+  assert.doesNotMatch(bindings.serverOptions.value[1].label, /不支持/)
+  assert.equal(bindings.serverOptions.value[1].disabled, false)
+  assert.match(bindings.serverOptions.value[5].label, /不支持 TCPing.*当前离线/)
+  bindings.clearSelection()
+  assert.deepEqual(bindings.form.value.server_ids, [])
+  bindings.form.value.type = 'icmp'
+  bindings.selectAll()
+  assert.deepEqual(bindings.form.value.server_ids, [5])
+  bindings.form.value.type = 'tcp'
+  assert.equal(bindings.selectionUnavailable.value, true)
+})
+
+test('新任务默认应用到全部兼容节点；两个开关使用横向行，规则不提交节点快照', async () => {
+  const { bindings, html } = await render(Manager, { show: true, servers: [server(), server({ id: 2, status: 'offline' })] }, b => {
+    b.edit(); b.tasks.value = [task({ default_on: true, server_ids: [] }), task({ id: 2 })]
+  })
+  assert.equal(bindings.form.value.default_on, true)
+  assert.equal(bindings.form.value.enabled, true)
+  assert.match(html, /全部兼容节点/)
+  assert.match(html, /1 台/)
+  assert.match(html, /自动应用于当前及后续新增的兼容服务器。/)
+  assert.match(html, /<select[^>]*disabled[^>]*aria-label="执行服务器"/)
+  for (const name of ['默认应用到新服务器', '启用']) {
+    assert.ok(html.includes(`<div class="monitor-probe-switch-row"><span>${name}</span>`))
+  }
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+  assert.match(css, /\.monitor-probe-switch-row\s*\{[^}]*display: flex;[^}]*align-items: center;[^}]*justify-content: space-between;/)
+  let input
+  globalThis.fetch = async (_, options) => { input = JSON.parse(options.body); return response({ task: task({ default_on: true, server_ids: [] }) }) }
+  bindings.form.value.name = 'default'
+  bindings.form.value.target = 'example.com:443'
+  bindings.form.value.server_ids = [1]
+  await bindings.submit()
+  assert.equal(input.default_on, true)
+  assert.deepEqual(input.server_ids, [])
+  bindings.edit(task({ default_on: false }))
+  assert.equal(bindings.form.value.default_on, false)
 })

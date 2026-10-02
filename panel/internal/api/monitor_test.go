@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 	if initial := readProbeList(t, conn); len(initial.Tasks) != 0 || initial.Version != 1 {
 		t.Fatalf("initial = %+v", initial)
 	}
-	input := map[string]any{"name": "TCP", "type": "tcp", "target": "example.com", "port": 443, "server_ids": []int64{created.ID}}
+	input := map[string]any{"name": "TCP", "type": "tcp", "target": "example.com:443", "default_on": false, "server_ids": []int64{created.ID}}
 	response := performRequest(t, handler, "POST", "/api/monitor/probes", input, cookie)
 	if response.Code != 201 {
 		t.Fatalf("create = %d %s", response.Code, response.Body.String())
@@ -98,7 +99,7 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 		t.Fatalf("created list = %+v", list)
 	}
 	input["type"] = "icmp"
-	input["port"] = nil
+	input["target"] = "example.com"
 	if response := performRequest(t, handler, "POST", "/api/monitor/probes", input, cookie); response.Code != 400 {
 		t.Fatalf("unsupported create = %d", response.Code)
 	}
@@ -156,10 +157,8 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 	}
 	conn.CloseNow()
 	waitForServerStatus(t, servers, created.ID, "offline")
-	input["type"] = "tcp"
-	input["port"] = 443
-	if response := performRequest(t, handler, "POST", "/api/monitor/probes", input, cookie); response.Code != 400 {
-		t.Fatal("stored capabilities allowed offline assignment")
+	if response := performRequest(t, handler, "PATCH", path, map[string]any{"name": "offline edit"}, cookie); response.Code != 200 {
+		t.Fatalf("offline capable assignment rejected: %s", response.Body.String())
 	}
 	conn = connect()
 	if list := readProbeList(t, conn); list.Version != 1 || len(list.Tasks) != 1 {
@@ -179,6 +178,127 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 	}
 	if response := performRequest(t, handler, "GET", "/api/monitor/probes", nil, cookie); response.Code != 200 {
 		t.Fatal(response.Body.String())
+	}
+}
+
+func TestProbeAPIEndpointsAndDefaults(t *testing.T) {
+	_, handler, cookie := monitorTestAPI(t)
+	for _, tc := range []struct {
+		kind, target, host, message string
+		port                        int
+	}{
+		{"tcp", "example.com:443", "example.com", "", 443},
+		{"tcp", "1.1.1.1:80", "1.1.1.1", "", 80},
+		{"tcp", "[2400:3200::1]:443", "2400:3200::1", "", 443},
+		{"icmp", "example.com", "example.com", "", 0},
+		{"icmp", "1.1.1.1", "1.1.1.1", "", 0},
+		{"icmp", "2400:3200::1", "2400:3200::1", "", 0},
+		{"tcp", "example.com", "", "TCP 探测目标必须包含端口，例如 example.com:443", 0},
+		{"tcp", "2001:db8::1:443", "", "IPv6 TCP 目标请使用 [IPv6]:端口 格式", 0},
+		{"tcp", "example.com:0", "", "TCP 端口", 0},
+		{"tcp", "example.com:65536", "", "TCP 端口", 0},
+		{"tcp", "example.com:https", "", "TCP 端口", 0},
+		{"tcp", "example.com:+443", "", "TCP 端口", 0},
+		{"tcp", ":443", "", "有效的主机名或 IP", 0},
+		{"icmp", "example.com:80", "", "不能包含端口", 0},
+		{"icmp", "[2400:3200::1]:443", "", "不能包含端口", 0},
+	} {
+		t.Run(tc.kind+tc.target, func(t *testing.T) {
+			response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": "probe", "type": tc.kind, "target": tc.target}, cookie)
+			if tc.message != "" {
+				if response.Code != 400 || !strings.Contains(response.Body.String(), tc.message) {
+					t.Fatalf("response = %d %s", response.Code, response.Body.String())
+				}
+				return
+			}
+			var saved struct {
+				Task monitor.Task `json:"task"`
+			}
+			if response.Code != 201 || json.Unmarshal(response.Body.Bytes(), &saved) != nil {
+				t.Fatalf("create = %d %s", response.Code, response.Body.String())
+			}
+			if saved.Task.Target != tc.host || !saved.Task.DefaultOn || !saved.Task.Enabled || len(saved.Task.ServerIDs) != 0 {
+				t.Fatalf("task = %+v", saved.Task)
+			}
+			if tc.port == 0 && saved.Task.Port != nil || tc.port != 0 && (saved.Task.Port == nil || *saved.Task.Port != tc.port) {
+				t.Fatalf("port = %v", saved.Task.Port)
+			}
+			path := "/api/monitor/probes/" + strconv.FormatInt(saved.Task.ID, 10)
+			response = performRequest(t, handler, "PATCH", path, map[string]any{"enabled": false}, cookie)
+			if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &saved) != nil || saved.Task.Enabled || !saved.Task.DefaultOn || saved.Task.Target != tc.host {
+				t.Fatalf("patch = %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestDefaultProbeNewConnectionAndCapabilityUpgrade(t *testing.T) {
+	db, handler, cookie := monitorTestAPI(t)
+	for _, kind := range []string{"tcp", "icmp"} {
+		target := "example.com"
+		if kind == "tcp" {
+			target += ":443"
+		}
+		response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": kind, "type": kind, "target": target}, cookie)
+		if response.Code != 201 {
+			t.Fatal(response.Body.String())
+		}
+	}
+	servers := serverstore.NewService(db)
+	created, err := servers.Create(t.Context(), "new server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "v1.0.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panel := httptest.NewServer(handler)
+	defer panel.Close()
+	connect := func(capabilities string) *websocket.Conn {
+		t.Helper()
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+registered.Token)
+		header.Set("X-VPS-Panel-Agent-Implementation", "third-party")
+		header.Set("X-VPS-Panel-Agent-Version", "v1.0.0")
+		header.Set("X-VPS-Panel-Agent-API", "1")
+		header.Set("X-VPS-Panel-Agent-Capabilities", capabilities)
+		conn, _, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{HTTPHeader: header})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.CloseNow() })
+		return conn
+	}
+	// The task predates the server. Its first capable connection gets it without any assignment.
+	conn := connect("probe.icmp")
+	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Type != "icmp" {
+		t.Fatalf("initial = %+v", list)
+	}
+	conn.CloseNow()
+	waitForServerStatus(t, servers, created.ID, "offline")
+	// Upgrade gains TCP support: the new full list includes both tasks immediately.
+	conn = connect("probe.icmp,probe.tcp")
+	if list := readProbeList(t, conn); len(list.Tasks) != 2 || list.Version != 1 {
+		t.Fatalf("upgraded = %+v", list)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_servers`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("materialized assignments = %d, %v", count, err)
+	}
+	response := performRequest(t, handler, "PATCH", "/api/monitor/probes/1", map[string]any{"enabled": false}, cookie)
+	if response.Code != 200 {
+		t.Fatal(response.Body.String())
+	}
+	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Type != "icmp" {
+		t.Fatalf("disabled = %+v", list)
+	}
+	response = performRequest(t, handler, "PATCH", "/api/monitor/probes/2", map[string]any{"default_on": false}, cookie)
+	if response.Code != 200 {
+		t.Fatal(response.Body.String())
+	}
+	if list := readProbeList(t, conn); len(list.Tasks) != 0 {
+		t.Fatalf("manual with no assignments = %+v", list)
 	}
 }
 

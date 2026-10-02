@@ -7,6 +7,12 @@ export function supportsProbe(server: ServerRecord, type: ProbeType): boolean {
   return server.agent_capabilities?.includes(`probe.${type}`) ?? false
 }
 
+export function probeTarget(task: Pick<ProbeTask, 'type' | 'target' | 'port'>): string {
+  if (task.type !== 'tcp' || task.port === null) return task.target
+  const host = task.target.includes(':') ? `[${task.target}]` : task.target
+  return `${host}:${task.port}`
+}
+
 export function probeOutcomeLabel(outcome: ProbeOutcome | ''): string {
   return { success: '成功', timeout: '超时', dns_error: 'DNS 解析失败', connect_error: '连接失败', permission_error: '无 ICMP / 网络权限', cancelled: '已取消', '': '暂无数据' }[outcome]
 }

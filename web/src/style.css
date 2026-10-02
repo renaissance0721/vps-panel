@@ -1735,6 +1735,12 @@ h1 {
 .monitor-probe-table td { overflow-wrap: anywhere; }
 .monitor-probe-form { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
 .monitor-probe-form label { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.monitor-probe-server-field { margin-bottom: 14px; }
+.monitor-probe-server-heading, .monitor-probe-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.monitor-probe-server-heading { margin-bottom: 6px; }
+.monitor-probe-server-heading > span:last-child { display: flex; gap: 12px; }
+.monitor-probe-switch-row { margin-bottom: 14px; }
+.monitor-probe-help { margin: -6px 0 14px; color: var(--color-text-secondary); font-size: 12px; }
 .monitor-probe-error { margin: 12px 0; }
 @media (max-width: 600px) {
   .monitor-basic-info, .monitor-probe-summaries { grid-template-columns: minmax(0, 1fr); }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,7 +21,7 @@ const (
 var (
 	ErrInvalid       = errors.New("invalid probe")
 	ErrNotFound      = errors.New("probe task not found")
-	ErrUnsupported   = errors.New("current Agent connection does not support this probe")
+	ErrUnsupported   = errors.New("Agent 未声明支持此探测类型")
 	ErrTaskLimit     = errors.New("each server supports at most 64 probe tasks")
 	ErrInvalidResult = errors.New("invalid probe result")
 )
@@ -37,6 +38,7 @@ type ProbeTask struct {
 type Task struct {
 	ProbeTask
 	Enabled   bool      `json:"enabled"`
+	DefaultOn bool      `json:"default_on"`
 	ServerIDs []int64   `json:"server_ids"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -78,6 +80,35 @@ type History struct {
 
 func Supports(capabilities map[string]bool, kind string) bool {
 	return (kind == "tcp" && capabilities[CapabilityTCP]) || (kind == "icmp" && capabilities[CapabilityICMP])
+}
+
+// ParseTarget translates the management API endpoint into the existing Agent fields.
+func ParseTarget(kind, target string) (string, *int, error) {
+	target = strings.TrimSpace(target)
+	if kind == "icmp" {
+		if !validTarget(target) {
+			return "", nil, fmt.Errorf("%w: ICMP 探测目标必须是 IP 地址或主机名，不能包含端口", ErrInvalid)
+		}
+		return target, nil, nil
+	}
+	if kind != "tcp" {
+		return "", nil, fmt.Errorf("%w: type must be tcp or icmp", ErrInvalid)
+	}
+	host, rawPort, err := net.SplitHostPort(target)
+	if err != nil {
+		if strings.Count(target, ":") > 1 && !strings.HasPrefix(target, "[") {
+			return "", nil, fmt.Errorf("%w: IPv6 TCP 目标请使用 [IPv6]:端口 格式", ErrInvalid)
+		}
+		return "", nil, fmt.Errorf("%w: TCP 探测目标必须包含端口，例如 example.com:443", ErrInvalid)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil || port < 1 || port > 65535 || strings.Trim(rawPort, "0123456789") != "" {
+		return "", nil, fmt.Errorf("%w: TCP 端口必须为 1-65535 的整数", ErrInvalid)
+	}
+	if !validTarget(host) {
+		return "", nil, fmt.Errorf("%w: TCP 探测目标必须是有效的主机名或 IP 地址", ErrInvalid)
+	}
+	return host, &port, nil
 }
 
 // ValidateTask is shared with the Agent: a malformed desired list cannot bypass hard limits.

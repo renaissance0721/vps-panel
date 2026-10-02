@@ -80,10 +80,10 @@ Official automatic upgrade is available to an identified v1 Agent only when `imp
 
 ## Network probes
 
-The official Agent declares `probe.tcp` and `probe.icmp` independently. Probe assignment,
-delivery, and ingestion require explicit capabilities from the current WebSocket connection.
-No implementation name or release version implies support. Offline history uses the last
-explicit capability report. A TCP-only Agent receives no ICMP tasks.
+The official Agent declares `probe.tcp` and `probe.icmp` independently. Delivery and ingestion
+require explicit capabilities from the current WebSocket connection. Offline assignment and
+history use the last explicit capability report. No implementation name or release version
+implies support. A TCP-only Agent receives no ICMP tasks.
 
 Probe tasks are separate from the Xray/Realm desired state. On connection and on task or
 assignment changes, the Panel sends the complete enabled task list for that Agent:
@@ -99,9 +99,11 @@ The Panel serializes all notifications through the connection's existing write m
 The Agent sends results through its existing main writer loop. A failed delivery closes the
 socket so that reconnection restores the complete desired list; there is no command replay.
 
-Both ends enforce at most **64 assigned tasks per server** and an interval of **5–86400
-seconds** (default 60). TCP targets are IP literals or hostnames with a separate port
-(1–65535); ICMP port must be null. URLs, bracketed IPv6 and host:port strings are rejected.
+Both ends enforce at most **64 tasks per server** and an interval of **5–86400 seconds**
+(default 60). Configured defaults and manual assignments share this limit, including disabled
+tasks, reserving capacity before servers connect or gain capabilities. In the Agent protocol,
+TCP targets are IP literals or hostnames with a separate port (1–65535); ICMP port must be
+null. The Agent target field contains only the host, without IPv6 brackets or a port.
 
 TCP resolves DNS with a 2-second bound before measuring latency. It makes one concurrent
 wave of connections to at most three distinct resolved addresses, including IPv4 and IPv6,
@@ -124,7 +126,7 @@ Outcomes are `success`, `timeout`, `dns_error`, `connect_error`, `permission_err
 `cancelled`. Success requires a finite, nonnegative `latency_ms`. Other outcomes store NULL;
 negative failure sentinels are never stored. Cancelled/replaced workers are not reported.
 The Panel timestamps receipt, derives server identity from authentication, and verifies the
-current connection, enabled task, assignment, capability and result values before insertion.
+current connection, enabled task, default rule or assignment, capability and result values before insertion.
 Late results for removed/disabled tasks are discarded without breaking the Agent connection.
 
 Admin-only task management:
@@ -134,10 +136,18 @@ Admin-only task management:
 - `PATCH /api/monitor/probes/{id}` → `{ "task": ... }` (omitted fields retained)
 - `DELETE /api/monitor/probes/{id}` → `204`
 
-Task fields are `name`, `type`, `target`, `port`, `interval_seconds`, `enabled`, `server_ids`.
-Assignment requires a currently connected, capable, non-archived/non-decommissioning node.
-Existing assignments survive disconnection; editing an assignment with offline nodes requires
-removing those nodes or waiting for reconnection.
+Input fields are `name`, `type`, `target`, `interval_seconds`, `enabled`, `default_on`, `server_ids`.
+The management API accepts TCP endpoints such as `example.com:443`, `1.1.1.1:80`, or
+`[2400:3200::1]:443`. Go parses the endpoint into the existing database/Agent host and port.
+ICMP accepts only a hostname or bare IP, without a port. Task responses retain separate
+`target` and `port` fields; the UI recombines them for display and editing.
+
+New tasks default to `enabled=true` and `default_on=true`. A default task matches all current
+and future compatible, non-archived/non-decommissioning servers without materializing any
+`monitor_probe_servers` rows; `server_ids` is cleared in this mode. Setting `default_on=false`
+uses only explicit assignments. Manual selection accepts compatible offline servers using
+their last declared capabilities. Default rules also apply when an Agent reconnects after
+gaining capability support. Disabled tasks are never dispatched or accepted for ingestion.
 
 `GET /api/monitor/servers/{server_id}/latency?hours=6` follows the existing manager and
 server access checks. Only 1, 6 and 24 hours are accepted (default 6). The response includes
@@ -149,7 +159,8 @@ ICMP loss counts timeouts versus successful Echoes only. Permission errors and c
 are excluded from both rates; ICMP DNS failures are excluded as well.
 
 Schema migration 11 adds `monitor_probe_tasks`, `monitor_probe_servers`, and
-`monitor_probe_records`. Task/server deletion cascades to assignments and history; server
+`monitor_probe_records`. Migration 12 adds `default_on` with a database default of false,
+preserving the scope of existing tasks. Task/server deletion cascades to assignments and history; server
 archival also clears them. The Panel cleans records older than seven days at startup and
 hourly, using an indexed timestamp. There are no rollups. The chart keeps failures as null
 points and inserts a gap when consecutive reports are more than 1.5 task intervals apart.

@@ -10,6 +10,8 @@ Agent API v1 adds explicit implementation identity, protocol version, and capabi
 
 Implementations use lowercase letters, digits, `.`, `_`, and `-`, with a maximum length of 128 characters. Capabilities use the same character set, have a maximum length of 64 characters, and are normalized by deduplicating and sorting them. At most 64 capabilities may be declared.
 
+An identified API v1 Agent must supply a nonempty implementation and release version. The release version is trimmed and limited to 64 Unicode code points. API version `0` requires an empty implementation; capability identifiers must be nonempty, and the 64-entry limit applies before deduplication.
+
 ## Registration
 
 `POST /api/agent/register` keeps its existing URL and fields and accepts three additional fields:
@@ -42,13 +44,14 @@ The implementation must match the value saved at registration. A legacy record w
 
 ## Existing protocol operations
 
-- Desired state: `GET /api/agent/config` returns the desired-state `version`, the Server-level `block_china_inbound` flag, plus Xray and Realm configuration. `config_changed` tells an online Agent to fetch a newer version.
+- Desired state: `GET /api/agent/config` returns the desired-state `version`, the Server-level `decommission` and `block_china_inbound` flags, plus Xray and Realm configuration, each with `enabled` and `purge`. `config_changed` tells an online Agent to fetch a newer version.
 - Config result: `POST /api/agent/config/result` reports the applied desired-state version and `success` or `failed` status.
 - Heartbeat: WebSocket `heartbeat` refreshes liveness.
 - System information: WebSocket `system_info` reports hostname, OS, kernel, architecture, addresses, and public IPv4.
 - Metrics: WebSocket `metrics` reports CPU, memory, disk, uptime, and network counters.
 - Client traffic: `POST /api/agent/traffic` reports per-client uplink and downlink counters.
 - Diagnostics: an Agent declaring `diagnostics_v1` can receive `diagnostic_request` and reply with `diagnostic_result`. The Panel uses capabilities from the current online connection, not stale stored metadata.
+- Upgrade: `agent_upgrade` requests an eligible Agent upgrade. `POST /api/agent/upgrade/result` accepts `version`, `status: "failed"`, and `message` for failure reporting; successful completion is detected when the Agent reconnects with the requested target version.
 
 An Agent must ignore unknown WebSocket message types so that the protocol can gain additive messages without breaking older implementations.
 
@@ -68,15 +71,25 @@ client_traffic
 diagnostics_v1
 self_upgrade
 firewall.cn_block
+managed_runtime_purge
+self_decommission
 probe.tcp
 probe.icmp
 ```
 
-Unknown but syntactically valid capabilities are retained. For an explicitly identified API v1 Agent, the Panel uses declared capabilities to control Proxy and Relay creation or enablement, IPv4/IPv6 outbound preference, and diagnostics UI availability. Disabling, deleting, and restoring outbound preference to `auto` remain available. Legacy Agents keep the previous compatibility behavior because their capabilities are unknown rather than empty.
+Unknown but syntactically valid capabilities are retained. For an explicitly identified API v1 Agent, the Panel uses declared capabilities to control Proxy and Relay creation or enablement, IPv4/IPv6 outbound preference, and diagnostics UI availability. Disabling and restoring outbound preference to `auto` remain available. Deletion still follows resource-reference checks; deleting the last Proxy or Relay row additionally requires explicit `managed_runtime_purge` support when the Server has a nonempty stored Agent version. The current deletion handlers skip this capability guard when that version is empty; this exception does not establish remote cleanup support. Legacy Agents keep the previous compatibility behavior for ordinary configuration capabilities, but are not assumed to support managed cleanup.
 
 `firewall.cn_block` is intentionally stricter: an Agent must identify as API v1 and explicitly declare the capability before the Panel allows the Server setting to change from disabled to enabled. Legacy Agents are not assumed to support it. Disabling the setting remains available.
 
 Official automatic upgrade is available to an identified v1 Agent only when `implementation` is `vps-panel-agent` and `self_upgrade` is declared. A third-party Agent never receives the official `agent_upgrade` message, regardless of its version string.
+
+## Managed cleanup and decommission
+
+`managed_runtime_purge` and `self_decommission` require explicit declarations by an identified API v1 Agent; Legacy compatibility does not imply either capability.
+
+For normal desired state, `xray.purge` / `realm.purge` is true when the Server has no corresponding Proxy / Relay rows. Disabled rows still count: a disabled configuration requests stopping the service without purging its managed runtime. An Agent supporting purge must remove only resources owned by this project, not unrelated installations or firewall rules.
+
+Normal Server removal requires both capabilities and sets `decommission=true`, `block_china_inbound=false`, both runtime `enabled` flags to false, both `purge` flags to true, and empty `proxies` / `relays` lists. The official Agent cleans managed runtimes, firewall resources and managed ACME data, then prepares self-uninstallation. It reports the matching desired-state version through the existing config-result endpoint before activating self-uninstallation. Only a successful matching result archives the Server and revokes its Agent credentials; a failed result leaves the operation failed and the credentials available for retry. Force removal does not confirm remote cleanup.
 
 ## Network probes
 

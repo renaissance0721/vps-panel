@@ -1,2497 +1,349 @@
-# VPS Panel DEV.md
-
-> 项目：`renaissance0721/vps-panel`
->
-> 文档定位：VPS Panel 的**统一开发指南**。本文合并并替代原来的“总开发指导”和“前端 UI Guide”，作为后续人工开发、Codex 任务拆解、架构边界和验收的单一参考。
->
-> 生成基线：`main @ d278da91`（2026-10-01）。
->
-> 若本文与当前代码发生冲突：
->
-> 1. **当前实际运行行为以代码为准**；
-> 2. **开发原则以根目录 `AGENTS.md` 为最高约束**；
-> 3. 若是有意改变产品语义，应先改实现，再同步更新本文；
-> 4. 不允许为了“让代码符合旧文档”而恢复已经被当前实现淘汰的结构。
-
----
-
-# 0. 核心原则
-
-VPS Panel 的长期目标是一个**简单、统一、可迁移、可验证**的多 VPS 管理面板，而不是机场销售系统，也不是远程 Shell 平台。
-
-固定原则：
-
-- 一台 Server 对应一个统一 Agent。
-- Panel 保存业务状态，Agent 负责目标机上的执行。
-- Panel ↔ Agent 以 **desired state + 结果回报** 为主，不下发任意 Shell。
-- 第一代理后端固定为 Xray；中转后端固定为 Realm。
-- Server / Proxy / Client / Relay 是当前核心业务模型，不提前引入 `CoreInstance`、`Chain`、通用 Driver、插件系统等抽象。
-- 管理角色保持 `admin / vip`，受限账号使用 `user / subscriber`，不做复杂 RBAC。
-- SQLite 是当前唯一数据库，不为未来数据库提前抽象 Repository Provider。
-- 前端继续使用 Vue 3 + TypeScript + Naive UI；不提前引入 Vue Router、Pinia、新 UI Framework 或通用 Schema Form。
-- 所有任务遵守 `AGENTS.md`：**简单、可运行、可验证、最小 diff**。
-
-当存在两种方案：
-
-```text
-A：直接、代码少、满足当前真实需求
-B：高度抽象、扩展性强、代码多、主要服务未来需求
-```
-
-默认选择 A。
-
----
-
-# 1. 当前产品边界
-
-当前已经具备：
-
-- admin / vip 邀请制认证
-- Server public / private 访问控制
-- Server 归档、彻底删除、Agent 重新绑定
-- Agent 一次性 Enrollment + 长期 Token
-- Agent WebSocket 在线状态、Heartbeat、静态系统信息、动态指标
-- Agent 单台原地升级，以及管理员批量升级所有当前可升级的官方 Agent
-- Agent API v1 identity metadata 与 capability 持久化
-- Proxy / Relay / 出站偏好 capability enforcement 与 diagnostics UI 控制
-- Server 到期与续费设置
-- Server 月流量统计、额度、重置周期、手动校准
-- Panel ↔ Agent desired-state 配置同步
-- Xray 托管
-- VLESS + TCP + TLS / REALITY + XTLS Vision
-- TLS 手动证书 + ACME 自动证书
-- Shadowsocks 2022 multi-user
-- Client 独立凭据、启停、流量、额度、周期、到期
-- Realm 托管
-- Relay TCP / UDP / TCP+UDP 中转
-- Relay 绑定目标 Proxy / 手动地址
-- 代理节点页支持管理完整的外部 VLESS / Shadowsocks 节点；可按需查看、复制原始 URI、生成二维码并作为 Relay 目标，内部仍使用 Landing 模型
-- Relay 可选择目标 Proxy 的某个 Client 用于派生分享 URI
-- VLESS / Shadowsocks Client 分享 URI
-- Proxy / Relay 二维码，本地浏览器生成
-- 订阅用户 → 共享订阅（内部 Plan）→ 发布节点的 Base64 / Mihomo 订阅
-- admin / vip 独立的多个人订阅，支持 Proxy / Relay / Landing 节点实例、Auto / Base64 / Mihomo 链接和二维码
-- 通用分流方案（策略组 + 结构化 Rule Providers + Rules）与 Mihomo 客户端模板
-- Server Xray 出站 IPv4 / IPv6 偏好
-- Server 级禁止中国 IP 访问受管 Proxy / Relay 入站
-- 整站 ZIP 备份 / 恢复
-- 一键诊断
-- 账号级列表顺序持久化与拖拽排序
-
-当前**没有**：
-
-- Shadowrocket / sing-box 专用 renderer
-- 多跳 Chain
-- 通用插件系统
-- 通用 Agent Task Runner
-- 任意命令执行 API
-- 多角色 RBAC
-- 历史 Metrics 图表
-- 完整通知系统
-- 自动 Panel URL 迁移
-
-旧文档中的 Phase 编号只保留历史参考价值。当前继续开发时，应以**当前代码 + 本文“未实现 / 下一步”**为边界，不再机械按照旧 Phase 数字推进。
-
----
-
-# 2. 当前仓库结构
-
-后端是 Go 模块化单体：
-
-```text
-panel/
-├── cmd/
-│   ├── panel/                  Panel 进程入口
-│   └── agent/                  官方 Agent
-│       ├── xray*.go            Xray 生命周期 / renderer / apply
-│       ├── realm*.go           Realm 生命周期 / renderer / apply
-│       ├── china_firewall.go   中国 IP 入站限制
-│       ├── acme.go             ACME
-│       ├── client_traffic.go   Client 流量上报
-│       ├── diagnostics.go      Agent 侧诊断
-│       ├── metrics.go          系统指标
-│       ├── system_info.go      静态系统信息
-│       └── upgrade*.go         Agent 自升级
-│
-└── internal/
-    ├── api/                    HTTP / WebSocket API 编排层
-    ├── auth/                   用户、Session、邀请
-    ├── server/                 Server 业务
-    ├── agentcontrol/           Enrollment、注册、连接、配置同步、升级、诊断请求
-    ├── proxy/                  Proxy / Client / 分享 / 流量
-    ├── landing/                外部节点与 VLESS / Shadowsocks URI 解析
-    ├── subscription/           共享订阅、个人订阅、分流与 Base64 / Mihomo 渲染
-    ├── relay/                  Relay 业务与 desired state
-    ├── backup/                 ZIP 备份与恢复
-    ├── diagnostic/             诊断协议模型和校验
-    ├── listorder/              账号级列表顺序
-    ├── database/               SQLite schema / migration
-    ├── token/                  Token helper
-    └── version/                Release 版本比较
-```
-
-前端当前结构：
-
-```text
-web/src/
-├── App.vue
-├── views/
-│   ├── OverviewView.vue
-│   ├── MonitorView.vue
-│   ├── ServersView.vue
-│   ├── ProxiesView.vue
-│   ├── RelaysView.vue
-│   ├── SubscriberPortalView.vue
-│   └── SubscriptionManagementView.vue
-├── components/
-│   ├── server/
-│   ├── monitor/
-│   ├── proxy/
-│   └── share/
-├── composables/
-│   ├── useOverview.ts
-│   ├── useServers.ts
-│   ├── useMonitor.ts
-│   ├── useProxies.ts
-│   ├── useProxyForm.ts
-│   └── useClientForm.ts
-├── types/
-├── api/client.ts
-├── server.ts
-├── proxy.ts
-├── relay.ts
-├── traffic.ts
-└── style.css
-```
-
-当前不需要为了“更标准”继续拆出 Controller / Repository / UseCase / Adapter / Store 等层级。
-
----
-
-# 3. 核心业务模型
-
-## 3.1 Server
-
-Server 代表一台真实 VPS / 主机。
-
-关系：
-
-```text
-Server
-├── Agent
-├── Proxy
-│   └── Client
-└── Relay
-```
-
-Server 不是 Proxy，也不是节点凭据。
-
-当前 Server 的主要语义：
-
-```text
-id
-name
-status = pending | online | offline
-visibility = public | private
-outbound_preference = auto | prefer_ipv4 | prefer_ipv6
-block_china_inbound = 0 | 1
-desired_state_version
-archived_at
-expires_at
-renewal_period_months = NULL | 1 | 3 | 6 | 12 | 24 | 36
-auto_renew = 0 | 1
-renewal_anchor_day = NULL | 1..31
-monthly_traffic_limit_bytes
-traffic_count_mode = single | bidirectional
-traffic_reset_day
-traffic_reset_time
-created_at
-updated_at
-```
-
-Server 动态信息由 Agent 上报，不由用户手工编辑：
-
-- hostname
-- OS / version
-- kernel
-- arch
-- IPv4 / IPv6
-- public IPv4
-- CPU
-- RAM
-- root disk
-- uptime
-- NIC RX / TX
-
-### Server 时间语义
-
-业务时间固定按：
-
-```text
-Asia/Shanghai
-UTC+8
-```
-
-用于：
-
-- Server 到期日期
-- 月流量重置
-- Client 流量周期
-- Client 到期时间
-
-数据库时间戳继续使用 UTC / Unix Timestamp。
-
-如果月重置日为 29 / 30 / 31，而当月不存在该日期，使用该月最后一天同一时间。
-
-### Server 到期与续费
-
-- `expires_at` 仍表示 Asia/Shanghai 当天 23:59:59。
-- 续费周期固定支持 1 / 3 / 6 / 12 / 24 / 36 个月，也可以不设置。
-- 自动续费仅按周期顺延 Panel 中记录的到期日期，不调用 VPS 商家 API，也不代表商家已付款。
-- 月末和闰年按 `renewal_anchor_day` 计算目标月份的有效日期，避免经过短月份后续费日漂移。
-- Panel 启动时会追赶停机期间错过的周期，之后每小时检查一次。
-- 已移除的 Server 保留续费配置，但不会自动续费。
-
----
-
-## 3.2 Agent
-
-Agent 是 Server 的统一执行层。
-
-当前官方实现：
-
-```text
-vps-panel-agent
-```
-
-职责：
-
-- 注册并保存长期身份
-- 建立认证 WebSocket
-- Heartbeat
-- system_info
-- metrics
-- public IPv4 探测
-- REST desired state 拉取
-- 配置 apply 结果回报
-- Client 流量上报
-- Xray 管理
-- Realm 管理
-- 受管 Proxy / Relay 入站的中国 IP 限制
-- ACME
-- 一键诊断
-- 官方 Agent 自升级
-
-固定原则：
-
-> 一台 Server 不拆成“监控 Agent / Xray Agent / Realm Agent / Relay Agent”。
-
-以后即使支持第三方 Agent，也仍然是一台 Server 一个当前控制 Agent，只是 Agent implementation 可以不同。
-
----
-
-## 3.3 Proxy
-
-Proxy 表示一个真实代理入站。
-
-当前协议：
-
-```text
-vless
-shadowsocks
-```
-
-共同字段：
-
-```text
-server_id
-name
-protocol
-listen_port
-entry_host_mode = auto | manual
-entry_host
-enabled
-config_json
-```
-
-`config_json` 是 Panel 后端严格控制的内部协议配置，不允许浏览器提交任意 Xray JSON。
-
-### 入口地址
-
-```text
-entry_host_mode = auto
-→ 使用 Server.public_ipv4
-
-entry_host_mode = manual
-→ 使用 entry_host
-```
-
-只影响客户端连接地址 / 分享 URI。
-
-不会自动改变：
-
-- TLS SNI
-- REALITY server_name
-- REALITY target
-- 证书域名
-- 服务端监听地址
-
----
-
-## 3.4 Client
-
-Client 是 Proxy 下的独立设备 / 用户 / 凭据。
-
-```text
-Proxy
-├── PC
-├── iPhone
-└── Android
-```
-
-Client 不是新 Proxy，不拥有独立端口，也不运行独立 Xray。
-
-当前 Client 支持：
-
-- 独立凭据
-- enabled
-- VLESS `client_udp443`
-- 流量统计
-- 流量额度
-- daily / weekly / monthly / never 周期
-- 手动重置本周期流量
-- 到期时间
-- 派生实际可用状态
-- 分享 URI
-- QR
-
-实际可用状态：
-
-```text
-effective_enabled
-= enabled
-  && !expired
-  && !quota_exhausted
-```
-
-达到额度 / 到期后，Client 从 Xray desired state 中失效，但凭据不删除；周期重置或配置恢复后可继续使用原凭据。
-
-普通 Client API / UI 不单独展示：
-
-- VLESS UUID
-- Shadowsocks password
-- REALITY private key
-- TLS private key
-
-需要分享时，后端生成最终 URI。
-
----
+# VPS Panel Development Guide
+
+本文描述当前 main 分支的主要架构和长期开发约束。若文档与实现冲突，以当前代码、schema / migration、API 和 UI 的实际行为为准。
 
-## 3.5 Relay
+安装与日常使用见 [README](README.md)，AI 执行规则见 [AGENTS](AGENTS.md)，协议字段与兼容性见 [Agent API v1](docs/agent-api-v1.md)。
 
-业务层统一叫：
+## 1. 项目目标与原则
 
-```text
-Relay
-```
-
-UI 中文名称：
-
-```text
-中转
-```
-
-Realm 是 Agent 本地执行 Relay 的实现，不是用户层业务资源名称。
-
-Relay 当前支持：
-
-```text
-target_type = proxy | landing | manual
-network = tcp | udp | tcp,udp
-entry_host_mode = auto | manual
-```
+项目将服务器管理、代理、中转、订阅和轻量探针放在一个可独立部署的系统中。
+采用 Go 单体 Panel、SQLite 和一个统一 Agent，优先保证简单、可运行、可验证。
 
-目标为 Proxy：
+Panel 保存业务状态，Agent 执行目标 VPS 操作。受管服务通过 desired state 同步，不提供任意远程 shell。
+现有功能按实际需求演进；只有真实重复或多个实际实现出现时，才引入必要抽象。
 
-- 数据库存 `target_proxy_id`
-- desired state 生成时实时解析目标 Proxy 地址与端口
+## 2. 技术栈
 
-目标为外部节点（内部 `target_type = landing`）：
+| 部分 | 当前实现 |
+| --- | --- |
+| Panel / Agent | Go；同一个 Go module，独立命令入口 |
+| HTTP / WebSocket | 标准库 `net/http`、`github.com/coder/websocket` |
+| 数据库 | SQLite，`modernc.org/sqlite` 驱动 |
+| Web | Vue 3、TypeScript、Vite、Naive UI |
+| 图表 / 分享 | ECharts、qrcode |
+| 受管服务 | Xray、Realm；acme.sh 用于自动 TLS |
+| 网络探测 | TCP connect、pro-bing ICMP |
+| 通知 | Panel 直接调用 Telegram Bot API |
+| 部署 | 原生 systemd；Agent 也支持 OpenRC；可选 Docker Compose |
 
-- `landing_nodes` 保存 owner、public/private、协议、解析后的 Host/Port 和敏感原始 URI
-- private 仅 owner 可见和获取完整 URI，admin 不绕过；public 允许所有登录用户获取完整可连接 URI，但仍仅 owner 可编辑或删除
-- Relay 数据库存 `target_landing_id`，desired state 仍只向 Agent 下发解析后的 Host/Port/Network
-- `GET /api/landings/{id}/share` 按权限返回原始 URI；`GET /api/landings` 等普通列表不批量返回 credential
-- 最终中转 URI 由后端读取当前原始 URI并只替换 Relay 入口 endpoint，与外部节点直接分享的原始 URI 明确分开
-- 内部 `landing` 在用户 UI 中统一显示为“外部节点”
-- 公开外部节点意味着其他登录用户能够获得其完整可连接 URI
+Go 工具链要求见 [go.mod](panel/go.mod)。前端依赖及实际命令见 [package.json](web/package.json)，安装使用锁文件。
+Release workflow 使用 Node.js 22；本地使用该系列最新维护版本，避免旧 Node 不支持 Vite 或测试中的 TypeScript 导入。
+受管内核版本和校验值维护在 Agent 源码中，不在长期文档复制版本号。
 
-目标为手动地址：
+## 3. 仓库结构
 
-- 保存 Host/IP + Port
+| 路径 | 职责 |
+| --- | --- |
+| [panel/cmd/panel](panel/cmd/panel) | Panel 启动、后台维护任务、备份恢复与健康检查 |
+| [panel/cmd/agent](panel/cmd/agent) | Agent 注册、连接、采集、探测、受管服务与自身生命周期 |
+| [panel/internal/api](panel/internal/api) | 路由、认证门禁、DTO、安装脚本与业务入口 |
+| [panel/internal/agentcontrol](panel/internal/agentcontrol) | Agent 身份、连接、能力、配置同步与升级状态 |
+| [panel/internal/server](panel/internal/server) | Server 元数据、访问权限、指标、周期流量和生命周期 |
+| [panel/internal/proxy](panel/internal/proxy) / [relay](panel/internal/relay) / [landing](panel/internal/landing) | 代理、Client、中转、外部节点 |
+| [panel/internal/subscription](panel/internal/subscription) | 个人订阅、套餐分发、订阅用户、路由与输出 |
+| [panel/internal/monitor](panel/internal/monitor) / [notification](panel/internal/notification) | 探测任务与历史、Telegram 通知 |
+| [panel/internal/auth](panel/internal/auth) / [listorder](panel/internal/listorder) | 用户与会话、按用户保存的列表顺序 |
+| [panel/internal/database](panel/internal/database) / [backup](panel/internal/backup) | schema、迁移、数据库备份与恢复 |
+| [web/src](web/src) | 页面、组件、composables、类型与共享样式 |
+| [scripts](scripts) / [deploy](deploy) | 原生 Panel 安装与管理、可选 Compose 部署 |
 
-### `target_client_id` 的正确语义
+业务通常沿 API Handler → 现有领域 Service → SQLite 展开，不要求为简单功能增加额外层级。
 
-当前 Relay 可以额外保存：
+## 4. 核心领域模型
 
-```text
-target_client_id
-```
+| 模型 | 含义与边界 |
+| --- | --- |
+| Server | 一台受管理 VPS 的业务记录；保存访问权限、归属、流量配置及 Agent 状态 |
+| Agent | Server 的执行端身份和连接；使用独立 Agent Token 认证 |
+| Proxy | Server 上的 Xray 入站及协议配置，不等于一个用户凭据 |
+| Client | Proxy 下的凭据、配额与生命周期，可分配给普通用户或由订阅系统管理 |
+| Relay | Server 上的 Realm 转发规则，引用目标 Proxy / Landing 或手动地址 |
+| Landing | Panel 保存的外部节点，不会因此在远端安装 Agent |
+| Subscription | 将可用节点、路由和配置模板组织成用户可获取的订阅 |
+| Probe Task | 独立网络探测任务，与代理配置的版本和生效流程分开 |
 
-它只用于：
+`created_by_user_id` / `created_by_role` 表示创建来源，`owner_user_id` 表示可调整的归属。
+归属、访问权限、创建来源各有用途，不能相互替代；订阅分发等业务还会检查创建来源。
 
-- UI 显示“目标客户端”
-- 派生对应 Client 的中转分享 URI / QR
+## 5. Panel / Agent 架构
 
-它**不进入 Realm L4 转发语义**。
+Panel 负责认证、业务校验、持久化、Web API、订阅输出、探测历史和通知。
+Agent 负责目标机上的系统采集、探测、Xray / Realm、受管防火墙、诊断和升级。
+Web 提供管理与监控界面，不承担最终权限判断。
 
-也就是说：
+配置变更在数据库事务内更新业务记录和 Server 的 desired-state version，并记录配置操作。
+Panel 通过已有 WebSocket 通知在线 Agent；Agent 获取完整目标配置，执行后回报对应版本的结果。
+周期拉取用于恢复漏掉的通知，重连也重新同步。保存成功和目标机应用成功是不同状态，UI 展示 pending / success / failed。
 
-> 选中 Client 不是 Relay 的独占认证规则。
+Agent 对受管配置先生成候选内容、校验并替换，失败时保留或尝试恢复可用配置。
+不同受管服务的操作不构成跨服务原子事务，不能把某一服务的回滚描述为整台 VPS 的完整恢复。
 
-只要目标 Proxy 上其他凭据仍有效，它们在网络层仍可能通过这个 Relay 访问目标 Proxy。
+Server 正常移除进入 decommission 流程，要求 Agent 明确支持清理和自卸载。
+Agent 清理受管资源并准备自卸载后回报成功，Panel 才归档记录并撤销 Agent 凭据。
+强制移除仅处理 Panel 侧记录，不能承诺远端已卸载；永久删除与归档也应区分。
 
-删除 Client 时 `target_client_id` 使用 `ON DELETE SET NULL`，旧 Relay 仍然有效。
+## 6. Agent API 与 capability
 
----
+一次性 Enrollment Token 用于初次注册或受控重新绑定；成功后 Agent 使用长期 Agent Token 访问 HTTP 与 WebSocket。
+实现身份、软件版本和协议版本是三个独立概念，不能用版本字符串证明官方身份。
 
-## 3.6 账号级排序
+API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 Legacy 的兼容规则，和探测、受管清理等要求显式声明的能力，并不完全相同。
+调用现有 capability 判断函数，遵循协议为具体功能定义的规则，避免自行扩大 Legacy 兜底。
 
-Server、Proxy、Relay 顺序是**账号偏好**，不是资源状态。
+在线诊断、探测下发和结果接收使用当前连接的能力；离线任务分配及历史展示可使用最后声明的能力。
+官方自升级对已标识 API v1 Agent 要求官方 implementation 和 `self_upgrade`；第三方实现不能仅凭版本号进入官方升级流程。
+升级成功由目标版本 Agent 重新连接确认，失败通过专用 HTTP 结果接口回报。
 
-数据库：
+未知的 WebSocket 消息类型保持可忽略兼容。Panel 下行复用连接写锁，Agent 上行复用主写循环。
+状态写入需确认仍是当前连接，避免被替换的旧连接覆盖新状态。
 
-```text
-user_server_order
-user_proxy_order
-user_relay_order
-```
+注册字段、认证头、能力列表、desired state、结果与升级接口、Legacy 行为均见 [Agent API v1](docs/agent-api-v1.md)。
+本指南不复制其 JSON 定义。
 
-排序：
+## 7. Server 与 Metrics
 
-- 不修改 desired state
-- 不通知 Agent
-- 不改变其他账号排序
-- 搜索状态下 Proxy / Relay 不允许拖拽，避免“可见子集相邻关系”歧义
+Server 管理包含基本信息、分组、归属、访问范围、续期、流量配置和生命周期。
+公开 Server 对符合角色门禁的管理用户可见；私有 Server 通过 `server_access` 控制访问。
+管理员也受 Server 访问检查约束，不能把 admin 理解为自动绕过所有资源 ACL。
 
-## 3.7 Subscription
+Agent 连接时报告系统信息，并持续报告 CPU、内存、磁盘、uptime 和 NIC 累计计数。
+Panel 保存最新指标与更新时间；Server 在线状态与当前 Agent 连接相关，启动时会清理旧在线状态。
 
-订阅当前有两条相互独立的链路：
+前端网络速度根据相邻有效 NIC 样本计算，重复时间戳不生成新速度；离线、计数回退或重启时重新建立基线。
+缺失指标不当作零使用率。当前没有 CPU / RAM / Disk 的历史时序库。
 
-```text
-订阅用户 → Plan（UI：共享订阅）→ PublishedNode → subscriber_clients
-个人订阅 → 显式选择 Proxy | Relay | Landing 实例 → 实时解析节点
-```
+续期信息属于 Panel 业务元数据。自动续期在 Panel 启动和周期维护时处理，不直接执行支付或购买。
+日期计算使用既有上海时区和月末规则，修改时复用 [renewal.go](panel/internal/server/renewal.go)。
 
-共享订阅保留流量额度、到期、重置周期和 `subscriber_clients` reconcile。后端模型、表名和 API 继续使用 `Plan` / `subscription_plans`；“共享订阅”只是用户界面名称。
+## 8. Monitor / Probe
 
-个人订阅：
+[MonitorView](web/src/views/MonitorView.vue) 复用 App 中现有 `ServerRecord` 列表及轮询。
+[useMonitor](web/src/composables/useMonitor.ts) 计算资源比例和网络速度；详情使用独立的 `MonitorServerDetail`，不嵌回服务器管理详情。
 
-- 归属单一 admin / vip，同一账号可建立多个；普通 user / subscriber 不可使用。
-- 每个组有独立随机 token，重置后旧链接立即失效。
-- 不依赖 Plan，不创建 `subscriber_clients` / `subscriber_usage`，不拥有独立流量额度或到期时间。
-- 节点来源是当前用户可访问的 Proxy、Relay 或 Landing，保存明确选择而不自动追加新节点；Published Node 只属于共享订阅链路。
-- `personal_subscription_nodes` 的每一行是独立订阅节点实例。同一 `source_type + source_id` 可以重复，每个实例独立保存 `display_name`、`entry_host`、`entry_port`、`enabled` 和 `position`；显示名称在同一组内仍须唯一。
-- 保存个人订阅节点时按节点 `id` 执行 UPDATE / INSERT / DELETE，已有实例的 ID 保持稳定；删除实例会同步清理该个人订阅的分流绑定。
-- Proxy 每次按 `client_name` 实时精确匹配非订阅托管 Client，不持久化 `client_id`。Admin 只能匹配未分配或分配给自己的 Client；VIP 只能匹配分配给自己的 Client。
-- Relay 默认使用自身入口。目标为 Proxy 时，按个人订阅的 `client_name` 匹配目标 Proxy Client；目标为 Landing 时使用 Landing 自带凭据；手动目标 Relay 不作为个人订阅候选来源。
-- Landing 继续使用自身 URI 凭据，并遵守现有 owner / public 可见性。
-- 实例的 `entry_host` / `entry_port` 为 `NULL` 时使用来源默认入口，非空时只覆盖该实例的地址 / 端口。
-- 单个来源不可用时保留配置并在生成时跳过；最终没有可用节点时返回明确错误。
+管理员管理 Probe Task，可设为默认应用到兼容服务器，也可手动选择服务器。
+TCP 与 ICMP 分别由 `probe.tcp` / `probe.icmp` 声明；不能因 Agent 名称或版本推断支持。
+任务通过现有 WebSocket 下发独立的完整 desired task list，不进入 Xray / Realm desired state。
 
-三种来源会先转换为简单、客户端无关的 `ResolvedSubscriptionNode`。Base64 renderer 从它生成 URI，Mihomo renderer 从它生成 `proxies`；当前不建立通用 renderer interface 或新协议 DSL。
+Agent 执行 TCP connect 或 ICMP Echo，Panel 验证当前连接、任务状态、分配范围及能力后保存结果。
+历史查询沿用管理角色与 Server ACL；前端支持 1h / 6h / 24h 延迟曲线和相应失败率，SQLite 定期清理过期探测记录。
+权限错误等本机问题不应被展示成 ICMP 丢包；失败和报告间断保留图表空隙。
 
-分流与客户端配置职责分离：
+精确超时、任务上限、结果枚举、窗口统计及 API 字段见 [网络探测协议](docs/agent-api-v1.md#network-probes)。
 
-```text
-RoutingPreset = 策略组 + []RoutingRuleProvider + []string Rules
-SubscriptionTemplate = Mihomo 客户端基础配置
-```
+## 9. Proxy / Xray
 
-`RoutingPreset` 的策略组使用创建后不变的 `key` 作为内部标识，只保存 `name / type / proxies / include_all`，不保存任何具体节点 ID。个人订阅和共享订阅分别在自己的 `routing_bindings_json` 中以策略组 key 保存有序节点 ID；个人订阅只能绑定自己的 `personal_subscription_nodes`，共享订阅只能绑定 Plan 已拥有的 Published Node。
+Proxy 保存服务端入站配置，Client 保存其下独立凭据。当前支持 VLESS over TCP 的 TLS / REALITY，以及 Shadowsocks 2022。
+配置校验、分享参数和实际下发应使用相同业务来源，避免 UI、分享链接与 Agent 配置出现三套规则。
 
-`RoutingRuleProvider` 的业务字段为 `name / url / type / behavior / format / interval`。SQLite 继续使用 `rule_providers_yaml` 内部序列化，Service 负责与结构化 API 互转；不支持的 YAML 字段必须明确报错，不得静默丢失。
+TLS 可以使用手动证书，或由 Agent 通过受管 acme.sh 申请 Let's Encrypt HTTP-01 证书并续期。
+自动 TLS 要求域名指向目标 Agent VPS、TCP 80 可达；证书申请、候选证书应用和续期由 Agent 处理。
+Panel 自身 HTTPS 由部署层的 Caddy 管理，两者不是同一证书流程。
 
----
+REALITY 的公钥、私钥和客户端展示参数分开处理。普通列表 DTO 不应返回私钥或完整客户端凭据。
+需要分享信息时，通过已有受权限控制的接口获取。
 
-# 4. 账号、权限与资源可见性
+Agent 管理专属的 Xray 二进制、配置、服务与防火墙规则；不接管任意既有 Xray 安装。
+禁用最后一个 Proxy 与删除最后一条 Proxy 记录不同：前者停用，后者会请求清理受管运行时。
+已记录非空 Agent 版本时，删除最后一条记录要求显式清理能力；版本为空时当前入口跳过此检查，不能据此认定远端支持清理。
 
-## 4.1 角色
+## 10. Relay / Realm
 
-当前角色：
+Relay 描述入口 Server 的监听与目标，支持 TCP、UDP、TCP+UDP。
+目标可以是已有 Proxy、Landing 或手动 host / port；引用更新时按现有逻辑同步所涉及 Server 的 desired state。
 
-```text
-admin
-vip
-user / subscriber
-```
+分享链接的入口地址来自 Relay，协议及认证参数来自目标节点，不能因中转地址改变而丢失目标 TLS / REALITY 参数。
+监听端口与 Proxy 共用现有端口预留检查，避免跨模块冲突。
 
-规则：
+普通用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
+这些资源不能绕过其归属流程直接修改。最后一条 Relay 的删除沿用与 Proxy 相同的清理能力检查。
 
-- 首次初始化创建唯一 admin。
-- admin 可创建 24 小时一次性邀请。
-- 邀请可创建 vip 或受限的普通 / 订阅用户。
-- vip 不能操作 admin invitation / 整站备份 / Agent 官方升级 / 永久删除 Server 等 admin-only 能力。
-- admin 和 vip 可以管理各自的个人订阅；这项能力严格按 owner 隔离，admin 不默认越权读写他人的个人订阅。
-- 普通 / 订阅用户只使用自己的受限门户和共享订阅，不进入个人订阅管理。
-- 不做 Owner / SuperAdmin / Operator / Viewer。
-- 不做自定义权限矩阵。
+Agent 在专属目录和服务中管理 Realm；清理只针对本项目拥有的运行时和防火墙资源。
 
-## 4.2 Server public / private
+## 11. Subscription / Client / Landing
 
-```text
-public
-→ 所有已登录账号可访问
+### Client
 
-private
-→ 只有 server_access 中的账号可访问
-```
+Client 有独立凭据、启停状态、流量配额和到期时间，实际可用性由业务状态共同决定。
+普通 Client 可分配给 `user`；订阅系统创建的 Client 具有专门映射与生命周期，不应通过普通管理入口绕过约束。
+Client 分享链接及二维码包含连接凭据，应按敏感信息处理。
 
-`servers.owner_user_id` 记录创建这台 Server 的账号；owner 是持久化的创建者元数据，与 `visibility` 和 `server_access` 的访问范围语义相互独立。
+### Landing
 
-重要：
+Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和必要参数。
+当前解析支持有明确边界，例如 VLESS 传输限制及不支持 Shadowsocks plugin；输入按现有解析器校验，不能原样下发任意配置。
 
-> admin 不自动绕过 private Server。
+私有节点仅所有者访问；公开节点可被有管理权限的用户使用，修改仍限所有者。
+这里的公开可见不等于任何登录角色都获得管理 API 权限。Landing 不创建远端服务，也不增加远端流量采集。
 
-角色权限和资源权限是两套独立判断。
+### 订阅
 
-资源继承：
+管理用户的个人订阅按 owner 隔离，组织可访问的节点来源、节点实例及路由绑定。
+管理员的订阅分发维护发布节点、套餐、subscriber 资料及相应 Client / Relay；subscriber 通过独立门户访问自己的资源。
 
-```text
-Server
-├── Proxy
-│   └── Client
-└── Relay
-```
+模板、路由配置及绑定由现有 subscription 模块校验并输出 Mihomo 配置。
+引用节点的权限、停用、到期、流量限制和删除影响，都应通过该模块已有生成与协调逻辑处理。
+公开订阅地址以不可猜测的 Token 授权；Token 重置后旧链接失效，不应记录到日志。
 
-- Proxy / Client 完全继承所属 Server。
-- Relay 需要用户能访问源 Server。
-- Relay 目标是 Proxy 时，还必须能访问目标 Proxy 所属 Server。
-- 无权限资源对用户 API 尽量按不存在处理，避免 IDOR / 资源枚举。
+## 12. Traffic
 
-Server access：
+Server 流量来自 NIC 累计计数的增量，和 Xray Client 流量是两套不同口径。
+前者覆盖 VPS 网络活动，后者用于代理凭据及订阅用户统计，不能互相替代或重复累计。
 
-- 只影响用户 API / UI
-- 不进入 Agent desired state
-- 不递增 desired_state_version
+Server 周期流量支持单向或双向计算、限额、周期重置和手动校准。
+单向使用发送量，双向使用接收量加发送量；展示和通知复用正式 `TrafficUsedBytes` 计算，包含周期调整值与边界处理。
+计数回退、Agent / VPS 重启和周期切换应沿用既有基线及增量逻辑。
 
----
+Agent 从受管 Xray 的统计获取 Client 数据，通过认证 HTTP 回报。
+Panel 累计使用量并协调 Client 配额、到期及订阅用量，必要时更新 desired state。
+流量上限是业务控制，不能视为运营商计费的精确替代。
 
-# 5. Panel ↔ Agent 通信
+## 13. Notification
 
-通信分成两类：
+[notification](panel/internal/notification) 目前只发送 Telegram 的 Server 离线、恢复、流量阈值通知。
+设置入口位于探针页面，仅管理员可读取配置、修改和测试；读取结果不返回 Bot Token 原文。
 
-```text
-WebSocket
-→ 在线状态、Heartbeat、system_info、metrics、轻量通知、诊断
+Panel watcher 使用当前在线连接和正式 Server 流量数据判断事件，跳过不适用的服务器。
+离线需要经过宽限期；恢复通知以实际成功发送过离线通知为前提，避免把尚未通知的短暂断连作为恢复事件。
 
-REST
-→ 注册、desired state、apply 结果、Client 流量、升级失败回报
-```
+配置及每台 Server 的离线 / 流量通知状态保存在 SQLite，流量提醒按周期和阈值去重。
+异步发送器将 Telegram 网络请求与 Agent 消息处理分开；有界队列和有限重试不构成可靠消息队列，也不承诺消息必达。
+重启后结合重建的连接状态重新判断，不直接按陈旧的在线记录群发离线消息。
 
-## 5.1 当前 Agent HTTP API
+目前没有 CPU、内存、磁盘或 Probe 延迟阈值通知，也没有其他通知渠道。
+具体发送重试和错误处理维护在源码与测试中，不在本指南重复参数。
 
-现有 URL 保持稳定：
+## 14. Auth / Access Control
 
-```text
-POST /api/agent/register
-GET  /api/agent/config
-POST /api/agent/config/result
-POST /api/agent/traffic
-POST /api/agent/upgrade/result
-GET  /api/agent/ws
-```
+[auth](panel/internal/auth) 负责初始化、账号、邀请、密码和会话；API Handler 执行角色及资源访问校验。
 
-不要为了“版本化”随意改成：
+| 角色 | 主要边界 |
+| --- | --- |
+| `admin` | 系统设置、账号、邀请、通知、探测任务、备份、订阅分发等；管理资源仍检查相应 ACL |
+| `vip` | 管理可访问的 Server / Proxy / Relay / Landing 和自己的个人订阅 |
+| `user` | 普通用户门户、分配的 Client 节点和授权的个人中转 |
+| `subscriber` | 独立订阅门户和自己的套餐资源 |
 
-```text
-/api/v1/agent/...
-```
+`requireManager` 对应 admin / vip；普通用户和订阅用户有分别受限的路由，不应仅用“已登录”代替这些门禁。
+Server 的公开可见性不赋予普通用户管理权限。具体敏感操作还会额外要求 admin。
 
-除非未来发生真正 breaking protocol change。
+首次初始化只创建管理员。管理员可生成一次性、有效期 24 小时的邀请，角色为 vip / user / subscriber，默认 vip。
+用户名去除首尾空白后使用 3–64 个 ASCII 字母、数字、点、下划线或连字符，数据库比较区分大小写。
+密码按 UTF-8 字节长度校验为 6–72 字节，使用 bcrypt；已有 Session 和密码变更 / 重置流程需一起考虑。
 
-## 5.2 当前 WebSocket Header
+隐藏按钮只是 UI 行为。新增读写 API、分享、导出或订阅来源时，后端必须独立校验对应角色与资源权限。
 
-当前 Agent 发送：
+## 15. Database / Migration / Backup
 
-```text
-Authorization: Bearer <agent_token>
-X-VPS-Panel-Agent-Implementation: <implementation>
-X-VPS-Panel-Agent-Version: <version>
-X-VPS-Panel-Agent-API: 1
-X-VPS-Panel-Agent-Capabilities: diagnostics_v1
-```
+SQLite 使用单连接、外键和 WAL。schema 定义见 [schema.go](panel/internal/database/schema.go)，版本迁移入口见 [versioned_migrations.go](panel/internal/database/versioned_migrations.go)。
+旧库兼容转换由现有迁移代码衔接；版本号以源码为准，不在文档维护迁移历史清单。
 
-Agent 注册与 WebSocket 会保存并刷新 `implementation`、`version`、`api_version` 和完整 capability list。明确声明 API v1 的 Agent 会按 capability 限制 Proxy、Relay 和出站偏好；诊断执行仍以当前在线连接的 `diagnostics_v1` 为最终依据。Legacy Agent（`implementation=""`、`api_version=0`）保持兼容模式，但全新的 `firewall.cn_block` 必须由 API v1 Agent 显式声明，Legacy 不自动视为支持。
+数据库改动必须同时覆盖：
 
-## 5.3 当前消息类型
+- 空库初始化后的最终 schema。
+- 已有数据库的版本升级路径。
+- 迁移测试中的数据保留、外键、唯一性、默认值和重复启动行为。
 
-Panel → Agent：
+仅修改 `CREATE TABLE IF NOT EXISTS` 无法升级已有表。重建表时需验证外键引用、索引及自增序列等原有约束。
+不要用删除用户数据库来替代 migration。
 
-```text
-config_changed
-agent_upgrade
-diagnostic_request
-```
+管理员备份导出通过 SQLite 快照生成 ZIP，并包含 manifest、校验信息及相关部署配置。
+导入验证归档和数据库后暂存，Panel 重启时替换数据库；迁移成功后提交，否则尝试回滚旧库。
+备份域名必须与当前 Panel 匹配，不能把它当作自动重写所有 Agent 地址的工具。
 
-Agent → Panel：
+备份包含凭据与业务数据，应按敏感文件保管；它不备份各 Agent VPS 的整个文件系统。
+原生安装器的升级快照与用户导入 / 导出备份用途不同，修改其一不能假定另一个自动覆盖。
 
-```text
-heartbeat
-system_info
-metrics
-diagnostic_result
-```
+## 16. Frontend
 
-双方对：
+[App.vue](web/src/App.vue) 使用 Vue 状态切换页面，当前没有 Vue Router 或 Pinia。
+管理入口包括概览、探针、服务器、代理、中转、订阅、账号、拼车和审计等页面，按角色显示；user / subscriber 使用各自门户。
 
-- 非 JSON
-- 非文本
-- `type` 为空
-- 已知类型但 payload 非法
+页面逻辑优先放在现有 views / composables，局部展示放在对应领域组件。
+API 访问复用 [api/client.ts](web/src/api/client.ts)，类型与后端 DTO 保持一致，格式化函数和 CSS 变量沿用现有实现。
+Naive UI 提供表单、表格、对话框等基础 UI；响应式布局在共享样式和组件中维护。
 
-可以视为协议错误。
+[drag.ts](web/src/drag.ts) 统一拖拽预览、边缘自动滚动和清理；[reorder.ts](web/src/reorder.ts) 提供顺序移动、持久化和失败恢复。
+Server / Proxy / Relay / Landing / 用户列表复用后端 listorder，顺序是当前用户的偏好，不应递增 Agent 配置版本。
+个人订阅节点和路由编辑器的顺序属于其自身配置数组，不能机械改用全局列表顺序表。
 
-对于**合法 JSON + 非空未知 type**：
+轮询和拖拽需要协调，避免刷新覆盖正在调整的顺序。组件卸载应清理监听器、计时器及未完成请求。
+Monitor 继续共享 Server 数据源，探测任务和通知配置使用各自 API，不再创建另一套 Server 状态缓存。
 
-> 当前官方 Panel 与官方 Agent 都应忽略并继续连接。
+## 17. Deployment / Release
 
-这条规则用于前向兼容。
+原生安装与 `vp` 操作见 [README](README.md)，不在此重复安装命令。
+Panel 安装器需要 systemd；Agent 安装器根据 systemd / OpenRC 选择服务配置。
 
-## 5.4 WebSocket 不承载完整配置
+同机运行时的核心隔离：
 
-WebSocket `config_changed` 只通知：
+| 内容 | 原生默认位置 |
+| --- | --- |
+| Panel 程序 / 数据 | `/opt/vps-panel/panel` / `/var/lib/vps-panel/panel` |
+| Panel 环境配置 | `/etc/vps-panel/panel/environment` |
+| Agent 程序 / 凭据 | `/opt/vps-panel/agent` / `/etc/vps-panel-agent/config.json` |
+| 受管 Xray / Realm | 各自专属目录与服务，由 Agent 管理 |
 
-```json
-{
-  "type": "config_changed",
-  "version": 17
-}
-```
+Panel 更新、卸载和历史布局迁移不得跨越其资源边界删除同机 Agent 或受管内核。
+Agent 清理也不得删除非本项目拥有的服务、目录和防火墙规则。
 
-Agent 收到后重新：
+Panel 本地运行读取 `PANEL_LISTEN_ADDR`、`PANEL_DATA_DIR`、`PANEL_WEB_DIR`；默认分别为 `127.0.0.1:8080`、`data`、`../web/dist`。
+生产域名模式使用 Caddy 反向代理；IP 模式和 Compose 的对外端口不同，以 README 的对应安装方式为准。
 
-```text
-GET /api/agent/config
-```
+Release workflow 对 `v*` tag 构建 Linux amd64 / arm64 的 Panel 和 Agent，版本由构建参数注入。
+Panel 压缩包带构建后的 Web；`SHA256SUMS` 当前覆盖 Agent 文件。手动 workflow dispatch 可构建，但发布 Release 的步骤以 tag 为条件。
+发布验证应对应 tag 的实际 commit 和上传产物，不能只看本地代码或工作流已启动。
 
-完整配置始终走 REST。
+## 18. Security
 
----
+认证凭据、分享密钥、私钥及备份内容均为敏感数据。
+普通列表、审计记录、错误响应和日志应只暴露完成该操作所需的信息。
+Telegram Token 保存在数据库中，读取 API 的遮蔽不等于数据库加密。
 
-# 6. Desired State 与配置同步
+Panel 与 Agent 的公网连接推荐 HTTPS / WSS，网络层加密不替代 Token 与后端授权。
+capability 只描述支持能力，不是额外的授权凭据，也不能证明第三方 Agent 的可信程度。
 
-固定控制链路：
+Agent 执行的操作限定为已定义的配置、探测、诊断和生命周期流程，不提供任意命令执行接口。
+路径、端口、下载、归档和外部输入校验应复用已有边界；日志中的上游错误也要检查是否含凭据。
 
-```text
-浏览器修改业务资源
-↓
-Panel 保存 SQLite
-↓
-对应 Server desired_state_version + 1
-↓
-如 Agent 在线，WS 发送 config_changed(version)
-↓
-Agent GET /api/agent/config
-↓
-Agent 生成候选配置
-↓
-校验
-↓
-原子替换
-↓
-重启 / reload
-↓
-健康检查
-↓
-成功：POST /api/agent/config/result success
-失败：回滚并 POST failed
-```
+## 19. Testing
 
-Agent 另有约 30 秒 REST 轮询兜底，所以 WebSocket 丢通知不会永久失步。
+以下命令在相应目录执行。根据改动范围选择相关测试；核心 backend、schema 或协议修改运行完整 Go 测试。
 
-删除 Proxy / Client / Relay 同样遵守 desired-state 语义：
-
-> Panel 数据库删除成功只表示“目标状态已改变”；真正远端运行态清理，以 Agent apply 结果为准。
-
-删除 Client 只会从对应 Xray 配置移除 credential，不影响其他 Client。删除非最后一个 Proxy / Relay 会重新生成 Xray / Realm 配置；删除最后一条 row 时，desired state 的 `purge` 会让 Agent 完整删除对应受管运行时、service unit、配置和防火墙规则。禁用最后一条 row 只会停止服务并保留受管安装，不等同于 purge。
-
-禁止：
-
-- 任意 Shell API
-- 通用 Task Runner
-- 在 WebSocket 中发送整份 Xray / Realm 配置
-- Panel 直接写远端 `/etc/xray/config.json`
-
----
-
-# 7. Xray 管理
-
-当前 Agent 固定管理官方 Xray：
-
-```text
-v26.3.27
-```
-
-当前受管路径：
-
-```text
-/opt/vps-panel/xray/xray
-/opt/vps-panel/xray/.managed-by-vps-panel
-/etc/vps-panel/xray/config.json
-/etc/vps-panel/xray/config.previous.json
-/etc/systemd/system/vps-panel-xray.service   # systemd
-```
-
-Agent 只管理自己的受管路径。
-
-如果没有 managed marker 而目标路径已有第三方内容，必须拒绝接管，不允许覆盖用户已有 Xray。
-
-配置 apply 必须：
-
-1. 生成完整 candidate。
-2. 用真实 Xray binary 校验。
-3. 保存 previous。
-4. 原子替换 current。
-5. 重启服务。
-6. 检查 listener / 运行状态。
-7. 失败恢复 previous。
-
-Xray 和 Realm 的 rollback 独立，不互相覆盖。
-
----
-
-# 8. VLESS
-
-当前固定服务端语义：
-
-```text
-protocol = VLESS
-transport = TCP
-flow = xtls-rprx-vision
-security = tls | reality
-```
-
-支持：
-
-```text
-VLESS + TCP + TLS + XTLS Vision
-VLESS + TCP + REALITY + XTLS Vision
-```
-
-## 8.1 Client UDP/443
-
-`client_udp443` 是 Client 分享参数，不是服务端入站模式。
-
-服务端所有 Client flow 仍固定：
-
-```text
-xtls-rprx-vision
-```
-
-客户端 URI：
-
-```text
-client_udp443 = false
-→ xtls-rprx-vision
-
-client_udp443 = true
-→ xtls-rprx-vision-udp443
-```
-
-不要把 `-udp443` 写进服务端 Xray Client flow。
-
-## 8.2 TLS
-
-TLS 支持：
-
-```text
-acme
-manual
-```
-
-### 自动 ACME
-
-当前：
-
-- Let's Encrypt
-- HTTP-01 standalone
-- ECC P-256
-- 每约 12 小时检查
-- 到期前约 30 天尝试续期
-- 申请时临时处理 TCP 80 防火墙
-
-不支持：
-
-- DNS-01
-- wildcard
-- 自定义 CA
-
-自动模式私钥不进入 Panel 数据库和 desired state。
-
-受管路径：
-
-```text
-/opt/vps-panel/acme/acme.sh
-/var/lib/vps-panel/acme/
-/etc/vps-panel/xray/certs/<domain>/fullchain.pem
-/etc/vps-panel/xray/certs/<domain>/private.key
-```
-
-删除 Proxy 不自动删除证书，避免影响同域名其他节点。
-
-### 手动 TLS
-
-手动模式允许 Panel 保存所需 PEM 并下发给 Agent。
-
-敏感 TLS private key 不应出现在普通详情 API / UI / 日志中。
-
-## 8.3 REALITY
-
-REALITY 私钥由 Panel 业务层管理后进入 desired state 给官方 Agent；普通分享只输出客户端所需 public key，不输出 private key。
-
-当前分享 URI 应复用项目已有 canonical generator，不在 UI 重新拼协议 URL。
-
----
-
-# 9. Shadowsocks
-
-当前支持 Shadowsocks 2022：
-
-```text
-2022-blake3-aes-128-gcm
-2022-blake3-aes-256-gcm
-```
-
-特点：
-
-- multi-user
-- TCP + UDP
-- Client 独立 password
-- Agent 维护 TCP / UDP 防火墙规则
-- 分享使用 SIP002 URI
-
-Shadowsocks 不适用：
-
-- TLS
-- REALITY
-- XTLS Flow
-- VLESS `client_udp443`
-
-UI 对不适用字段显示 `--`，不要制造虚假概念。
-
----
-
-# 10. Xray 出站 IPv4 / IPv6 偏好
-
-Server 当前可设置：
-
-```text
-auto
-prefer_ipv4
-prefer_ipv6
-```
-
-官方 Agent 通过 Xray Freedom outbound 的：
-
-```text
-streamSettings.sockopt.domainStrategy
-```
-
-实现：
-
-```text
-auto
-→ 不强行写策略
-
-prefer_ipv4
-→ UseIPv4v6
-
-prefer_ipv6
-→ UseIPv6v4
-```
-
-固定边界：
-
-- 不改 `/etc/gai.conf`
-- 不改系统 route
-- 不改 sysctl
-- 不改系统 DNS
-- 不影响 Realm
-
-这是 Xray 受管配置的一部分，修改会递增 desired state version。
-
----
-
-# 11. Realm / Relay
-
-Agent 固定使用官方 Realm：
-
-```text
-v2.9.4
-```
-
-当前受管路径：
-
-```text
-/opt/vps-panel/realm/realm
-/opt/vps-panel/realm/.managed-by-vps-panel
-/etc/vps-panel/realm/config.toml
-/etc/vps-panel/realm/config.previous.toml
-/etc/systemd/system/vps-panel-realm.service   # systemd
-/etc/init.d/vps-panel-realm                   # Alpine OpenRC
-```
-
-同一 Server 的全部 enabled Relay 合并为一个 Realm 进程、多 endpoint 配置。
-
-支持：
-
-```text
-TCP
-UDP
-TCP + UDP
-```
-
-Relay target 为 Proxy 时：
-
-- 实际 target host 根据目标 Proxy 的 entry mode 动态解析
-- 实际 target port 使用目标 Proxy listen_port
-- Proxy 地址 / 端口改变时，所有引用它的 Relay source Server 必须 bump desired state
-- 目标 Server public IPv4 改变时，使用 auto 地址的 Relay 也必须 bump
-
-Realm apply：
-
-- candidate 校验
-- 原子替换
-- restart
-- TCP listener probe
-- UDP local socket probe
-- 独立防火墙 owner
-- 失败回滚
-
-禁用最后一个 Relay：
-
-- 停止 / disable Realm
-- 清理 current / previous config
-- 清理 Realm-owned 防火墙规则
-- 保留 binary / marker / service 文件供再次启用
-
-## 11.1 禁止中国 IP 入站
-
-Server 的 `block_china_inbound` 只限制 desired state 中 VPS Panel 管理的 VLESS、Shadowsocks 和 Realm listener 端口。Agent 从 APNIC delegated 数据提取 CN（不含 HK / MO / TW）的 IPv4 / IPv6 前缀，缓存到 `/var/lib/vps-panel/agent/firewall/cn-prefixes.json`，并使用独立拥有的 `inet vps_panel_cn_block` nftables 表和 interval set 应用规则。
-
-该功能不扫描、不检测也不修改 SSH 或其他系统服务端口，不 flush 系统 ruleset，也不接管用户、UFW 或 Docker 的规则。启用必须由 API v1 Agent 显式声明 `firewall.cn_block`；Legacy Agent 不自动视为支持。
-
----
-
-# 12. 分享与二维码
-
-## 12.1 Client 直连 URI
-
-连接地址：
-
-```text
-Proxy.entry_host_mode = manual
-→ entry_host
-
-Proxy.entry_host_mode = auto
-→ Server.public_ipv4
-```
-
-每个 Client 独立生成自己的 URI。
-
-当前支持：
-
-- VLESS URI
-- Shadowsocks SIP002 URI
-- 复制
-- 浏览器本地 QR
-
-QR 必须使用本地前端库生成。
-
-禁止把含凭据 URI 发送给第三方二维码服务。
-
-## 12.2 Relay 派生 URI
-
-Relay 选择一个 `target_client_id` 后：
-
-```text
-目标 Client 原凭据
-+
-目标 Proxy 协议参数
-+
-Relay 客户端入口地址 / 端口
-=
-Relay 分享 URI
-```
-
-只替换客户端连接 endpoint，不改变协议密钥和目标 Proxy 业务配置。
-
-## 12.3 共享订阅与个人订阅
-
-共享订阅的公开链接归属订阅用户 token；Plan 本身不直接提供可复制链接。个人订阅每组有独立 token：
-
-```text
-/sub/personal/{token}         → Base64
-/sub/personal/{token}/mihomo  → Mihomo YAML
-/sub/personal/{token}/auto    → Mihomo User-Agent 检测，其他回退 Base64
-```
-
-Base64 和 Mihomo 均复用后端 canonical share 语义。实例的自定义名称只改变最终 URI fragment / Mihomo proxy name，入口覆盖只改变该实例最终 endpoint，不修改底层 Proxy、Relay、Landing 或 Client。Mihomo 最终配置为：
-
-```text
-Mihomo Template
-+ 动态 proxies
-+ RoutingPreset proxy-groups
-+ 当前订阅的 routing bindings
-+ RoutingPreset rule-providers
-+ RoutingPreset rules
-```
-
-策略组成员顺序固定为 `group.proxies`、显式 routing binding、`include_all` 剩余可用节点，并在保持首次出现顺序的前提下去重。个人节点本次不可用时只从输出跳过，不删除 binding；策略组最终没有可用成员时返回明确错误，不能回退为 `DIRECT`。公开订阅响应的 `Content-Disposition` filename 只使用订阅标题，不追加 `.yaml` 或 `.txt`。
-
-当前未实现 Shadowrocket / sing-box 专用 renderer，也不支持 Trojan / Hysteria / TUIC 订阅节点。
-
----
-
-# 13. Server / Client 流量
-
-## 13.1 Server 流量
-
-Server 总流量来自 Linux 网卡累计计数：
-
-```text
-NIC RX / TX
-```
-
-不是 Xray Client 流量之和。
-
-模式：
-
-```text
-single
-→ 当前按 TX 计费
-
-bidirectional
-→ RX + TX
-```
-
-支持：
-
-- 月额度
-- 每月重置日 / 时间
-- 90% warning
-- 100% exhausted
-- 手动校准
-
-手动校准通过 adjustment 表达，不篡改 Agent 原始 NIC counter。
-
-## 13.2 Client 流量
-
-Client 流量来自 Xray per-client stats。
-
-Agent 使用稳定非敏感 stats ID，例如内部 `vp-client-*`，不把 UUID / password 当统计标识。
-
-Agent 约每 15 秒走：
-
-```text
-POST /api/agent/traffic
-```
-
-Panel 保存：
-
-- Xray baseline
-- cycle uplink
-- cycle downlink
-- last activity
-
-Server 流量和 Client 流量是两套独立口径，不互相反推。
-
----
-
-# 14. 一键诊断
-
-入口：
-
-```text
-POST /api/servers/{id}/diagnostics
-```
-
-当前要求 Agent 在线且当前 WebSocket 声明：
-
-```text
-diagnostics_v1
-```
-
-## 14.1 Panel 侧检查
-
-包括：
-
-- Agent 在线状态
-- desired / applied config version
-- 最近一次 config sync 状态
-- 从 Panel 所在网络探测节点公网 TCP 入口
-
-Panel 只会主动连接安全校验后的公网地址。域名入口先解析全部地址；只要结果中包含 loopback、私网、链路本地、CGNAT 或其他非公网地址，本次 TCP 探测就会跳过。通过校验后直接连接已解析的 IP，不再用原 hostname 二次解析。
-
-## 14.2 Agent 侧检查
-
-包括：
-
-- Xray service
-- 当前 Xray config 文件状态 / 语法
-- Xray TCP listener
-- Realm service
-- Realm TCP listener
-- Realm UDP local socket
-- Relay DNS
-- Relay target TCP
-- TLS 证书存在、有效期、域名匹配
-
-## 14.3 明确不表示
-
-当前诊断**不是**完整协议健康检查。
-
-不做：
-
-- VLESS 完整认证握手
-- Shadowsocks 完整协议握手
-- 远端 UDP 可达性
-- 自动修复
-- 修改系统状态
-
-因此：
-
-> TCP connect 成功只表示指定网络位置可以建立 TCP 连接，不等于代理协议一定可用。
-
-## 14.4 UI 例外
-
-资源查看仍统一使用 Modal。
-
-“一键诊断”当前使用右侧 Drawer，是专门的临时诊断结果面板，不视为资源详情页；不要因此把 Server / Proxy / Relay 详情改成 Drawer。
-
----
-
-# 15. 备份与恢复
-
-当前整站备份已经实现，不再属于未来 Phase。
-
-入口：admin only。
-
-```text
-GET  /api/admin/backup/export
-POST /api/admin/backup/import
-```
-
-## 15.1 导出
-
-当前使用 SQLite：
-
-```text
-VACUUM INTO
-```
-
-生成一致性快照，包含已提交 WAL 数据。
-
-ZIP 当前包含：
-
-```text
-manifest.json
-data/panel.db
-deployment/environment          # 有则加入
-deployment/vps-panel.caddy      # 有则加入
-SHA256SUMS
-```
-
-备份格式：
-
-```text
-format = vps-panel-backup
-format_version = 1
-```
-
-备份文件是高敏感文件，因为 SQLite 快照包含完整业务数据与 token hash / Client credential 等持久化内容。
-
-## 15.2 导入
-
-当前实现：
-
-1. admin 选择 ZIP。
-2. UI 明确覆盖警告。
-3. 用户输入 `RESTORE` 二次确认。
-4. Panel 校验 ZIP 路径、大小、格式、SHA256、SQLite integrity / foreign key、核心 schema。
-5. 备份版本不得高于当前 Panel。
-6. **备份 `panel_domain` 必须与当前 `PANEL_DOMAIN` 相同。**
-7. 导入只先写入 `/var/lib/vps-panel/panel/restore/` pending state。
-8. Panel 重启后在 `database.Open()` 前替换数据库。
-9. 当前数据库先保存 rollback copy。
-10. 新数据库打开 / migration 失败则回滚。
-
-## 15.3 当前恢复边界
-
-当前实现不是旧文档规划中的“未初始化页面直接恢复”。
-
-现状：
-
-- 需要先进入一个已初始化 Panel
-- 只允许 admin 调用导入
-- 没有独立的导入预览页面
-- deployment 文件会进入 ZIP，但当前恢复核心是 SQLite 数据库
-- Panel URL / 域名不同不会自动迁移 Agent
-
-跨 VPS 推荐：
-
-```text
-保持原 Panel 域名
-↓
-新 VPS 安装 Panel
-↓
-把当前 Panel 域名切为原域名
-↓
-导入备份
-↓
-DNS 指向新 VPS
-↓
-Agent 使用原 panel_url + 原 token 自动重连
-```
-
-未来若实现域名迁移，应设计**专用 Panel URL 迁移消息**，不要建立任意 Task Runner。
-
----
-
-# 16. Agent 生命周期
-
-## 16.1 Enrollment
-
-Server 创建后生成一次性 Enrollment Token。
-
-类型：
-
-```text
-initial
-rebind
-```
-
-当前规则：
-
-- Token 只显示一次。
-- 数据库只保存 hash。
-- 新 Enrollment 会使旧未使用 Enrollment 失效。
-- 已有 Agent 时重新生成 Enrollment 会撤销旧 Agent 凭据并关闭在线连接。
-- 有效 Enrollment 可以直接覆盖目标 VPS 上已有 Agent 配置，不需要 `--force`。
-- 注册成功后才原子替换本地 config。
-
-## 16.2 Agent 本地配置
-
-```text
-/etc/vps-panel-agent/config.json
-```
-
-包含：
-
-```text
-panel_url
-server_id
-agent_id
-agent_token
-```
-
-权限必须保持：
-
-```text
-0600
-```
-
-## 16.3 Agent 自动升级
-
-正式版本 Panel 可以要求官方 Agent 升级到同版本。
-
-管理员批量升级由前端编排：固定最多同时升级 3 台，重复调用现有单 Agent 升级接口并通过 Server 列表轮询确认结果。批量进度不是新的后端 Task Runner，也不单独持久化。
-
-流程：
-
-- WS `agent_upgrade`
-- 下载固定 tag 二进制
-- SHA256SUMS 校验
-- `version` 校验
-- 原子替换
-- 服务重启
-- 保留旧 binary 直到升级后稳定连接
-- 失败回滚
-
-禁止自动降级。
-
-旧 Agent 可使用：
-
-```text
-/upgrade-agent.sh
-```
-
-bootstrap 保留原 Agent config，不重新注册。
-
-## 16.4 Server 退役与强制移除
-
-正常删除 Server 是 desired-state 驱动的 decommission：Panel 先保留 Agent 身份并标记 `pending`，Agent 依次 purge 受管 Xray、Realm、Proxy / Realm / 中国入站防火墙与 ACME 状态，准备并在成功上报后启动 detached self-uninstall；Panel 收到当前版本的成功结果后才 archive Server、撤销 Agent 身份。清理失败会保留 Agent 和 Server，并用同一 desired version 自动重试。
-
-管理员 `DELETE /api/servers/{id}/force` 只强制移除 Panel 管理关系、撤销 Agent 并关闭连接，不能保证远端 VPS 已清理。`DELETE /api/servers/{id}/permanent` 仍只永久删除已经 archived 的数据库历史。
-
-自动退役严格要求 Agent API v1 显式声明 `managed_runtime_purge` 与 `self_decommission`；删除最后一个 Proxy / Relay 严格要求 `managed_runtime_purge`。这些 destructive capability 不使用 Legacy fallback。
-
----
-
-# 17. 第三方 Agent：当前状态与边界
-
-当前 Panel 已正式识别并持久化：
-
-```text
-implementation
-version
-api_version
-capabilities
-```
-
-明确声明 API v1 的 Agent 按 capability 控制 Proxy / Relay 创建与启用、IPv4 / IPv6 出站偏好和 diagnostics UI。真正执行诊断时仍使用当前在线 `Connection.Capabilities`。
-
-Legacy Agent 使用兼容模式：
-
-```text
-implementation = ""
-api_version = 0
-```
-
-其 capability 视为 unknown，不因空 capability list 禁止现有功能。
-
-## 17.1 当前最小 Agent API v1
-
-当前已实现字段：
-
-```text
-implementation
-version
-api_version
-capabilities
-```
-
-含义：
-
-```text
-implementation
-→ 这是谁，例如 vps-panel-agent / BoardRay
-
-version
-→ 这个实现自己的版本
-
-api_version
-→ 它兼容哪一版 VPS Panel Agent 协议
-
-capabilities
-→ 它真正支持哪些当前功能
-```
-
-capability 与真实 Panel 功能直接对应，例如：
-
-```text
-proxy.vless.tls.acme
-proxy.vless.tls.manual
-proxy.vless.reality
-proxy.shadowsocks
-relay.realm
-outbound_preference
-metrics
-client_traffic
-diagnostics_v1
-self_upgrade
-```
-
-不要只写过粗的：
-
-```text
-xray.vless
-xray.tls
-```
-
-否则无法区分“TLS ACME 支持但手动 TLS 不支持”等真实差异。
-
-## 17.2 当前实现边界
-
-除非单独开启对应任务，否则不要：
-
-- 预先建 Plugin SDK
-- 建 Agent Provider/Factory 层
-- 建通用 Driver ABI
-- 改现有 Agent API URL
-- 静默过滤 Agent 不支持的 desired state
-
-当前已实现 Agent identity、官方自动升级安全边界，以及 Proxy / Relay / 出站偏好 / diagnostics UI 的 capability 控制；不会静默过滤、降级或修改已有 desired state。
-
----
-
-# 18. 数据库
-
-当前 SQLite 核心表：
-
-```text
-users
-admin_invitations
-sessions
-servers
-server_access
-user_server_order
-agent_enrollments
-agents
-server_system_info
-server_metrics
-proxies
-user_proxy_order
-clients
-client_metrics
-relays
-user_relay_order
-```
-
-## 18.1 Migration 原则
-
-当前版本化 schema 的 `LatestSchemaVersion` 为 10。v9 重建 `personal_subscription_nodes` 以移除来源唯一约束、将个人来源从 `published` 迁移为 `proxy` / `relay`，并加入可空的逐实例 `entry_host` / `entry_port`。v10 为 RoutingPreset 策略组补稳定 key、移除旧 `node_ids`，并给 `subscription_plans`、`personal_subscription_groups` 增加 `routing_bindings_json`；旧 Plan binding 只迁移其实际拥有的 Published Node，个人订阅不猜测旧 Published Node 对应关系。
-
-每次 schema 变更：
-
-- 更新 `schema.go` 作为当前完整 schema
-- 在 `migrations.go` 增加兼容旧数据库的 migration
-- migration 必须幂等
-- 不能要求用户手改 SQLite
-- 不能因为新增字段重建整张表，除非 SQLite 约束确实要求且有可靠数据迁移
-- 外键和旧数据必须保留
-
-## 18.2 JSON 字段
-
-当前 `config_json` / `credential_json`：
-
-- 是受后端严格控制的内部结构
-- decode 时应拒绝未知字段
-- 不允许前端提交任意 Xray / Realm JSON
-- 不应成为通用 extension bag
-
-## 18.3 SQLite 约束
-
-保持：
-
-- foreign keys
-- unique
-- CHECK
-- transaction
-
-不要因为“Go 已经校验”就移除数据库关键约束。
-
----
-
-# 19. 前端产品骨架
-
-本节已把原 Frontend Guide 合并进统一文档。
-
-## 19.1 技术栈
-
-固定：
-
-```text
-Vue 3
-TypeScript
-Naive UI
-Vite
-```
-
-当前额外前端依赖：
-
-```text
-qrcode
-```
-
-不要为了页面开发新增：
-
-- Vue Router
-- Pinia
-- 新 UI Framework
-- 通用 Table Engine
-- Schema Form Engine
-- 大型 Design System
-
-除非出现明确、当前的重复问题。
-
-## 19.2 导航
-
-当前 `App.vue` 使用轻量：
-
-```text
-currentPage
-```
-
-切换：
-
-```text
-概览
-探针
-服务器
-代理节点
-中转
-订阅管理
-```
-
-订阅管理对 admin 和 vip 可见。Admin 内部 Tab 顺序固定为：
-
-```text
-个人订阅
-订阅用户
-共享订阅
-发布节点
-分流模板
-```
-
-VIP 只显示“个人订阅”。订阅管理默认打开个人订阅。
-
-探针位于概览与服务器之间，对管理后台的 admin / vip 展示当前账号可访问的 `ServerRecord[]`。页面复用 App 的 5 秒服务器轮询，以卡片显示 CPU、内存、磁盘、运行时间与周期 RX / TX；网速由相邻 `metrics.updated_at` 的 NIC counter 差值派生，首次采样、离线或计数器重置显示 `—`。相对时间每 10 秒更新，不增加 API 请求。点击服务器名称复用已有详情 Modal。
-
-没有 Router。
-
-不要仅为了“URL 更标准”引入 Router。
-
-## 19.3 Desktop 布局
-
-Sidebar 当前固定：
-
-```text
-width: 192px
-position: fixed
-left: 0
-top: 0
-height: 100vh
-```
-
-主内容：
-
-```text
-margin-left: 192px
-width: calc(100% - 192px)
-```
-
-原则：
-
-- Sidebar 稳定，不随页面变化。
-- 主内容尽量使用横向空间。
-- 不套窄 `max-width` 居中容器。
-- 资源列表优先用宽表格。
-- 不把每个资源做成大卡片瀑布流。
-
-## 19.4 Mobile
-
-当前：
-
-```text
-<= 720px
-```
-
-Sidebar 变为滑出菜单，并显示 backdrop / mobile header。
-
-移动端允许表格横向滚动。
-
-不要为了移动端重新设计完全不同的数据语义。
-
----
-
-# 20. 资源页面 UI 规则
-
-## 20.1 Server
-
-当前正常服务器主列表保持紧凑：
-
-```text
-排序
-名称 + public/private
-状态
-本周期流量
-到期时间
-操作
-```
-
-已移除列表：
-
-```text
-排序
-名称
-移除时间
-创建时间
-操作
-```
-
-Server 的详细 IP、系统信息、Agent 版本、资源使用等放在详情 Modal，不要求全部塞进主列表。
-
-当前详情 Modal 包含：
-
-- 基本信息
-- access 范围
-- 到期日期、续费周期和自动续费
-- Agent / system info
-- CPU / RAM / Disk / Uptime
-- 中国 IP 入站限制：开关、desired/apply 状态和最近配置错误；使用 APNIC IPv4 / IPv6 数据且不影响 SSH
-- 流量设置
-- Xray 出站偏好
-- Agent 升级
-- Enrollment / rebind
-- admin 的彻底删除
-- 一键诊断入口
-
-不要把详情改成独立详情路由。
-
-## 20.2 Proxy
-
-当前主列表列固定为：
-
-```text
-排序
-名称
-服务器
-IP / 地址
-端口
-协议
-传输
-安全层
-流控
-状态
-操作
-```
-
-VLESS：
-
-```text
-协议：VLESS
-传输：TCP
-安全：TLS / REALITY
-流控：XTLS Vision
-```
-
-Shadowsocks 不适用字段显示 `--`。
-
-Client 不做独立主导航页，继续属于 Proxy 详情。
-
-Proxy 详情：
-
-- 公共 Proxy 参数
-- Client 紧凑列表
-- Client 查看 / 编辑 / 启停 / 删除
-- 复制链接
-- QR
-
-## 20.3 Relay / 中转
-
-当前主列表：
-
-```text
-排序
-名称
-服务器
-入口地址
-监听端口
-目标
-客户端
-Network
-状态
-操作
-```
-
-目标为 Proxy 时，“目标”只显示：
-
-```text
-Proxy 名称 · Port
-```
-
-不重复显示目标 IP。
-
-“客户端”列显示：
-
-```text
-目标 Client 名称
-```
-
-无选择则：
-
-```text
-—
-```
-
-Relay 详情继续用 Modal。
-
-## 20.4 详情交互
-
-默认：
-
-```text
-Server 详情 → Modal
-Proxy 详情  → Modal
-Client 详情 → Modal
-Relay 详情  → Modal
-```
-
-禁止：
-
-- 主表行内展开
-- 每个资源新开独立详情路由
-- 右侧 Drawer 挤压列表
-
-例外：
-
-```text
-服务器一键诊断 → Drawer
-```
-
-这是临时诊断面板，不是资源详情页。
-
----
-
-# 21. 前端表格、搜索、排序和 Modal
-
-## 21.1 表格
-
-统一：
-
-- 表头轻量
-- 行高稳定
-- 文本优先单行
-- 长字段使用次级文本 / overflow
-- 状态用轻量 Tag
-- 操作放最右
-- 操作按钮用小尺寸
-- 不给每行套 Card
-
-技术字段如 endpoint / latency 可使用等宽字体。
-
-## 21.2 搜索
-
-当前：
-
-- Proxy 有搜索
-- Relay 有搜索
-- Server 当前没有统一搜索框
-
-不要为了“所有页面看起来一样”强行抽一套通用 Query Builder。
-
-真正需要 Server 搜索时再加。
-
-## 21.3 拖拽排序
-
-当前使用 HTML5 Drag & Drop，并复用已有 reorder API。
-
-服务器、代理节点、个人订阅已选节点、分流策略组和订阅内策略组节点 binding 都从左侧把手开始拖动。共享的拖拽预览会克隆完整行 / 节点项并交给浏览器 `setDragImage`，源项立即降低透明度，目标项显示插入提示；结束时统一清理预览和拖拽状态。个人订阅节点在本地重排后重新计算 `position`，保存时整体提交；策略组与 binding 直接按数组顺序保存。
-
-原则：
-
-- 排序偏好按账号保存
-- 不改业务资源状态
-- 不改 desired state
-- 不触发 Agent
-- 搜索过滤时避免含糊排序
-
-## 21.4 Modal 尺寸
-
-当前实现按业务复杂度区分，而不是强制统一宽度。
-
-大致：
-
-```text
-Server detail      ~960px
-Proxy form         ~760px
-Proxy detail       ~1180px
-Relay form         ~640px
-Relay detail       ~960px
-Client form/detail ~560px
-```
-
-允许随内容微调，但不要为了加一个字段改成全屏工作台。
-
----
-
-# 22. 视觉原则
-
-整体：
-
-```text
-浅背景
-轻边框
-稳定绿色主色
-高信息密度
-少量状态 Tag
-```
-
-可以参考 Komari 一类监控面板的：
-
-- 空间利用
-- 信息密度
-- 固定 Sidebar
-- 宽列表思路
-
-禁止复制：
-
-- Logo
-- 品牌
-- 原 CSS
-- 原配色数值
-- 原组件结构
-- 原文案 / 按钮顺序
-- 像素级页面布局
-
-避免：
-
-- 大渐变
-- 玻璃拟态
-- 大面积阴影
-- 超大圆角
-- 大动画
-- 每个区块都套 Card
-
----
-
-# 23. 部署与目录边界
-
-## 23.1 Panel
-
-Panel 默认原生安装，不以 Docker 为主路径。
-
-当前支持：
-
-```text
-Debian / Ubuntu
-systemd
-amd64 / arm64
-```
-
-目录：
-
-```text
-/opt/vps-panel/panel/
-├── vps-panel
-├── web/
-└── .vps-panel-install
-
-/var/lib/vps-panel/panel/
-/etc/vps-panel/panel/environment
-/etc/systemd/system/vps-panel.service
-```
-
-Panel 以：
-
-```text
-User=vps-panel
-Group=vps-panel
-```
-
-运行。
-
-## 23.2 Agent
-
-支持：
-
-```text
-Debian / Ubuntu + systemd
-Alpine + OpenRC
-amd64 / arm64
-```
-
-目录：
-
-```text
-/opt/vps-panel/agent/vps-panel-agent
-/etc/vps-panel-agent/config.json
-/etc/systemd/system/vps-panel-agent.service
-/etc/init.d/vps-panel-agent
-```
-
-## 23.3 Panel / Agent 同机
-
-当前目录已经分离，允许同一 VPS 同时安装 Panel 和 Agent。
-
-共享根：
-
-```text
-/opt/vps-panel
-/var/lib/vps-panel
-/etc/vps-panel
-```
-
-开发原则：
-
-- 共享父目录应允许需要的服务遍历。
-- 子目录保持各自严格权限。
-- 不对共享根做递归 `chmod -R` / `chown -R`。
-- 安装 / 升级 / 卸载只能操作自己拥有的子目录。
-- Panel 卸载不能删除 Agent / Xray / Realm / ACME。
-- Agent 操作不能覆盖 Panel 子目录。
-- 对受管路径继续拒绝 symlink。
-
----
-
-# 24. Panel 域名与 Caddy
-
-Panel 两种入口：
-
-```text
-无域名
-→ 0.0.0.0:8080
-
-有域名
-→ Panel 127.0.0.1:8080
-→ Caddy HTTPS reverse proxy
-```
-
-配置：
-
-```text
-/etc/vps-panel/panel/environment
-/etc/caddy/vps-panel.caddy
-```
-
-`vp domain` 负责域名调整。
-
-未来 Panel URL 迁移不能靠备份 ZIP 猜测远端 Agent 新地址；如实现，应设计专用迁移协议。
-
----
-
-# 25. 安全
-
-## 25.1 Password
-
-用户密码只保存强哈希，当前认证实现继续使用项目现有方案。
-
-不记录明文密码。
-
-登录失败使用进程内时间窗口限流，同时按 client IP + normalized username 和 client IP 总量计数。只有本机 loopback 反向代理传入的 `X-Forwarded-For` / `X-Real-IP` 会用于识别真实客户端地址。
-
-## 25.2 Token
-
-以下原始 Token 数据库只保存 hash：
-
-- Session Token
-- Admin Invitation Token
-- Agent Enrollment Token
-- Agent Long-term Token
-
-原始值只在必要时显示一次。
-
-共享订阅和个人订阅 token 需要用于公开链接查找，当前数据库保存实际值。它们是 bearer secret，不写日志；重新生成后旧值立即失效。
-
-基于 Session Cookie 的 POST / PUT / PATCH / DELETE API 要求同源 `Origin`，缺失时回退校验 `Referer`；Agent Bearer API 不使用这项浏览器 Session 防护。
-
-## 25.3 Agent secret
-
-Agent Token：
-
-- 本地 config 0600
-- 不放 URL query
-- 不写日志
-- 不写错误信息
-- 管理 UI 不重复展示
-
-## 25.4 Proxy secret
-
-以下不应出现在普通 UI / 日志：
-
-- VLESS UUID
-- Shadowsocks password
-- REALITY private key
-- TLS private key
-
-前端复制最终 URI，而不是复制裸 secret。
-
-## 25.5 备份
-
-ZIP 包必须视为敏感文件：
-
-- admin only
-- no-store
-- 上传 / 解压大小限制
-- zip-slip 防护
-- symlink / 非普通文件拒绝
-- SHA256
-- SQLite integrity / FK 校验
-- 临时文件清理
-- 原子 / 可回滚恢复
-
-## 25.6 远程控制
-
-禁止增加：
-
-```text
-POST /api/agent/exec
-```
-
-或任何等价的任意 shell / command runner。
-
-## 25.7 Panel URL
-
-域名部署生成 Agent 安装命令时固定使用配置中的 `PANEL_DOMAIN`，不使用请求 `Host`。直接 IP / `:80` 部署继续使用经过格式校验的当前请求地址。
-
-少数无法用 desired state 表达的操作必须是**专用、结构化、可校验**协议。
-
----
-
-# 26. 第三方项目参考边界
-
-VPS Panel 的实现必须保持独立。
-
-允许研究第三方项目的：
-
-- 功能清单
-- 用户流程
-- 协议字段含义
-- API 职责
-- 配置验证顺序
-- renderer / validator / apply / rollback 这种高层职责划分
-
-禁止：
-
-- 复制源代码
-- 逐函数翻译
-- 改变量名后复用
-- 机械复制 API path / JSON schema
-- 机械复制数据库 schema
-- 复制 Xray / Realm 模板
-- 复制安装脚本
-- 复制 systemd unit
-- 复制 UI 组件结构 / 文案 / CSS
-- 带入第三方面板特征字符串
-
-协议实现优先参考：
-
-```text
-Xray 官方文档
-Xray 官方示例
-上游源码行为
-Realm 官方发布 / 文档
-```
-
-第三方面板只能用于理解“有人实现过什么需求”，不能成为代码来源。
-
----
-
-# 27. API 设计原则
-
-用户 API 与 Agent API 当前都保持简单。
-
-当前用户态主要路由：
-
-```text
-/api/auth/*
-/api/admin/invitations
-/api/admin/backup/*
-/api/users
-/api/overview
-/api/servers
-/api/proxies
-/api/clients
-/api/relays
-```
-
-规则：
-
-- Handler 做权限 / DTO / 编排。
-- 业务状态修改尽量放现有 `server` / `proxy` / `relay` service。
-- 不为一个简单 handler 引入多层 UseCase / Repository。
-- API 需要区分的错误才定义 typed error。
-- 删除 / 禁用通常必须保持可用，即使当前 Agent 不在线或能力不足。
-
----
-
-# 28. 测试与验证
-
-## 28.1 Go
-
-涉及 Go 代码时至少运行与任务相关的测试。
-
-完整验证推荐：
+Go（从仓库根目录进入 `panel`；第一条格式化实际改动文件）：
 
 ```bash
 cd panel
-gofmt -w .
+gofmt -w path/to/changed.go
 go test ./...
-go test -count=1 ./...
 go vet ./...
-go build ./cmd/panel
-go build ./cmd/agent
+go build ./...
 ```
 
-如果 `gofmt -w .` 不符合本地使用方式，可对实际修改的 `.go` 文件执行 gofmt，但不得跳过格式化。
+`path/to/changed.go` 是待替换的路径，不是仓库内固定文件。
+若只验证局部改动，可将 `go test ./...` 换为实际受影响的 package，并覆盖调用方的关键行为。
 
-## 28.2 Frontend
-
-当前 `web/package.json` 只有：
-
-```text
-test
-build
-```
-
-其中 `build` 已包含：
-
-```text
-vue-tsc --noEmit
-+
-vite build
-```
-
-推荐：
+Frontend（从仓库根目录进入 `web`）：
 
 ```bash
 cd web
+npm ci
 npm test
 npm run build
 ```
 
-不要在提示词里要求不存在的：
+`npm run build` 包含 `vue-tsc --noEmit` 和 Vite 构建。项目没有 `npm run lint` 脚本。
+测试重点是权限、状态转换、解析、配置生成、流量边界、迁移和真实交互，不为简单 getter 堆覆盖率。
 
-```text
-npm run typecheck
-```
+纯文档修改检查 Markdown 渲染、相对链接、代码块、命令与真实行为的一致性，不必运行无关的昂贵业务测试。
+运行不了的验证需要注明环境原因，不能以“预计通过”替代实际结果。
 
-除非 package.json 后续真的增加该 script。
+## 20. 开发工作流
 
-## 28.3 Shell
+先从入口路由、领域 Service、schema 与对应页面找到真实行为，再搜索可复用实现。
+确认当前任务所需的最少文件，按现有结构修改，补齐受影响的关键验证。
 
-修改安装 / 升级脚本时：
+涉及协议或 capability 时同步 [Agent API v1](docs/agent-api-v1.md)；涉及用户安装、支持范围和可见功能时同步 README。
+架构变动更新本文，AI 的稳定执行约束维护在 AGENTS，开发历史留在 Git / Release。
 
-```bash
-bash -n <script>
-```
-
-并执行现有与布局 / 安装相关的测试脚本。
-
-## 28.4 测试重点
-
-优先测试：
-
-- auth / 权限 / IDOR
-- Token 生命周期
-- migration
-- Agent 注册 / rebind
-- WS 连接替换 / 断线
-- desired state
-- config rollback
-- Xray / Realm renderer
-- traffic baseline / reset
-- share URI
-- backup safety
-- diagnostics bounds
-
-不为了覆盖率给简单 getter 写大量无价值测试。
-
----
-
-# 29. Codex 任务规则
-
-每次任务：
-
-1. 先读根目录 `AGENTS.md`。
-2. 阅读与当前任务直接相关的现有代码。
-3. 阅读本文对应章节。
-4. 明确最少修改哪些文件。
-5. 搜索是否已有 helper / model / validation 可复用。
-6. 完成当前任务。
-7. 测试。
-8. 停止。
-
-禁止：
-
-- 顺手做下一阶段
-- 顺手重构无关模块
-- 顺手换前端框架
-- 顺手换数据库
-- 为未来建大量空目录 / interface
-- 为“统一”改所有 API
-- 为“扩展性”建 Plugin Manager
-
-完成报告只需要：
-
-```text
-### 完成
-### 修改文件
-### Migration（如有）
-### API / 行为变化（如有）
-### 验证
-### 明确未实现
-```
-
----
-
-# 30. 当前实现状态表
-
-| 能力 | 状态 | 当前说明 |
-| --- | --- | --- |
-| admin / vip | 已实现 | 唯一初始 admin + 邀请 vip |
-| Server public/private | 已实现 | admin 不绕过 private |
-| Server decommission / force remove / rebind | 已实现 | 清理成功后归档；force remove 不保证远端清理；Enrollment 可覆盖已有 Agent 配置 |
-| Agent WS / heartbeat | 已实现 | 10s 心跳，自动重连 |
-| system_info | 已实现 | 静态信息 + public IPv4 |
-| metrics | 已实现 | CPU/RAM/Disk/Uptime/NIC |
-| Server 月流量 | 已实现 | single / bidirectional / reset / adjustment |
-| desired state | 已实现 | REST + `config_changed` |
-| Xray | 已实现 | v26.3.27 |
-| VLESS TLS | 已实现 | ACME + manual |
-| VLESS REALITY | 已实现 | XTLS Vision |
-| Shadowsocks 2022 | 已实现 | 128/256 method，多 Client |
-| Client traffic/quota/expiry | 已实现 | 周期、预警、耗尽、恢复 |
-| Realm / Relay | 已实现 | v2.9.4，TCP/UDP |
-| Relay target Client | 已实现 | 分享元数据，不是 L4 独占认证 |
-| 外部节点（内部 Landing） | 已实现 | 原始 URI 按需查看/复制/二维码、public/private、Relay 目标与中转 URI |
-| QR | 已实现 | 浏览器本地生成 |
-| 共享订阅 | 已实现 | 订阅用户 + Plan + Published Node + subscriber client，支持 Base64 / Mihomo |
-| 个人订阅 | 已实现 | admin / vip owner 隔离，Proxy / Relay / Landing 可重复实例、逐实例入口覆盖、独立 token 与 Auto / Base64 / Mihomo |
-| 分流方案 | 已实现 | 通用策略组（稳定 key，不含节点 ID）+ 结构化 Rule Providers + Rules；具体有序节点 binding 归个人订阅或共享订阅所有 |
-| Shadowrocket / sing-box 订阅 | 未实现 | 不提供假 renderer 或空路由 |
-| outbound preference | 已实现 | auto / IPv4 / IPv6 |
-| 禁止中国 IP 入站 | 已实现 | APNIC CN prefix + nftables set，仅受管 Proxy / Relay listener |
-| ZIP backup / restore | 已实现 | admin-only，同域名校验 |
-| 一键诊断 | 已实现 | `diagnostics_v1` |
-| Panel URL 自动迁移 | 未实现 | 仍需同域名迁移或人工改 Agent |
-| Agent API v1 identity | 已实现 | implementation / version / api_version / capabilities |
-| 第三方 Agent capability enforcement | 已实现 | Proxy / Relay / 出站偏好 / diagnostics UI；Legacy 兼容 |
-| 历史指标 | 未实现 | 不阻塞主链路 |
-| 通知系统 | 未实现 | 不阻塞主链路 |
-| 分组 / 标签 | 暂缓 | 不阻塞主链路 |
-
----
-
-# 31. 建议的下一步开发顺序
-
-以下记录当前完成状态和后续规划。
-
-## 31.1 Agent API v1 身份元数据（已实现）
-
-目标：
-
-- 区分官方 Agent 与第三方 Agent
-- Agent 上报真实自身版本
-- 独立声明 `api_version`
-- capability 持久化
-- 防止官方 updater 覆盖第三方 Agent
-
-当前已完成 identity metadata、capability 持久化及官方 updater 安全边界。
-
-## 31.2 capability-aware 操作限制（已实现）
-
-当前已完成：
-
-- 创建 / 启用 Proxy 前校验能力
-- 创建 / 启用 Relay 前校验 `relay.realm`
-- outbound preference 按能力提示
-- 删除 / 禁用始终允许
-- legacy Agent 保持兼容
-
-## 31.3 Subscription（已实现当前范围）
-
-已完成共享订阅与个人订阅两条独立链路。共享订阅继续使用 Published Node；个人订阅直接使用 Proxy / Relay / Landing 节点实例，复用 Proxy / Client canonical share、Relay endpoint、Landing URI 和本地 QR。当前输出只有 Base64 与 Mihomo。
-
-未来真正增加第三种 renderer 时，应直接使用 `ResolvedSubscriptionNode` 和结构化 `RoutingPreset`；在此之前不增加 renderer interface、协议 DSL 或新 Credential 模型。
-
-## 31.4 Panel URL 迁移
-
-设计专用：
-
-```text
-panel_url_changed / update_panel_url
-```
-
-Agent：
-
-- 校验 URL
-- 原子更新 `/etc/vps-panel-agent/config.json`
-- reconnect
-- 保留失败回滚
-
-不要使用 shell。
-
-## 31.5 后续可选
-
-真正有需要时再做：
-
-- Server 分组 / 标签
-- Metrics 历史图
-- 事件通知 / Webhook / Telegram / Email
-- Proxy / Relay 批量操作
-- 配置历史 / rollback UI
-- 拓扑图
-
----
-
-# 32. 新任务模板
-
-后续给 Codex 的任务可以直接使用：
-
-```text
-请修改 renaissance0721/vps-panel。
-
-开始前：
-1. 阅读根目录 AGENTS.md。
-2. 阅读 DEV.md 中与本任务相关章节。
-3. 阅读当前 main 中直接相关代码。
-4. 使用完成需求所需的最小 diff。
-
-当前行为：
-- ...
-
-本任务目标：
-- ...
-
-后端：
-- ...
-
-数据库：
-- ...
-
-Agent：
-- ...
-
-前端：
-- 保持现有 Sidebar / 主内容 / 列表 / Modal 产品骨架。
-- 不引入 Vue Router / Pinia / 新 UI Framework。
-- ...
-
-安全：
-- ...
-
-明确不做：
-- ...
-
-测试：
-- 相关 Go tests
-- go vet / build（如相关）
-- npm test / npm run build（如改前端）
-- bash -n（如改脚本）
-
-完成后只报告：
-完成 / 修改文件 / migration / API 行为 / 验证 / 未实现。
-
-不要 tag。
-不要 Release。
-不要 version bump，除非本任务明确要求。
-```
-
----
-
-# 33. 最终架构图
-
-```text
-Browser
-   │
-   ▼
-Panel
-├── Auth
-│   ├── admin
-│   └── vip
-├── Server
-│   ├── access
-│   ├── traffic
-│   ├── ordering
-│   └── diagnostics
-├── Agent Control
-│   ├── enrollment
-│   ├── registration
-│   ├── WebSocket
-│   ├── desired state
-│   └── upgrade
-├── Proxy
-│   ├── VLESS TLS / REALITY
-│   ├── Shadowsocks 2022
-│   └── Client
-├── Landing
-├── Relay
-├── Subscription
-│   ├── 共享订阅 / subscriber reconcile
-│   ├── 个人订阅 / resolved nodes
-│   ├── RoutingPreset
-│   └── Base64 / Mihomo renderer
-├── Share / QR
-└── Backup / Restore
-       │
-       ├── REST: config / result / traffic
-       └── WebSocket: heartbeat / metrics / notifications / diagnostics
-                    │
-                    ▼
-                Server Agent
-                ├── System Info
-                ├── Metrics
-                ├── Xray
-                ├── ACME
-                ├── Realm
-                ├── China Inbound Firewall
-                └── Diagnostics
-                    │
-                    ▼
-                  Linux
-```
-
-业务关系：
-
-```text
-Server
-├── Agent
-├── Proxy
-│   └── Client
-└── Relay
-    ├── target = Proxy | Landing | host:port
-    └── target_client_id = 分享元数据（可空）
-```
-
----
-
-# 34. 不可随意改变的固定决策
-
-- [x] 一台 Server 一个统一 Agent。
-- [x] Panel 不通过 SSH / 任意 Shell 管理 VPS。
-- [x] 配置以 desired state 同步。
-- [x] WebSocket 负责实时状态与轻量通知，REST 负责完整配置与结果。
-- [x] SQLite 单体。
-- [x] 管理角色 admin / vip + 受限角色 user / subscriber，不做自定义 RBAC。
-- [x] admin 不绕过 private Server。
-- [x] Server / Proxy / Client / Landing / Relay 是当前核心模型。
-- [x] VLESS 固定 TCP + XTLS Vision，TLS / REALITY 二选一。
-- [x] `client_udp443` 是 Client 分享选项，不是服务端 flow。
-- [x] Shadowsocks 使用同一个 Xray / Proxy / Client 模型。
-- [x] Realm 是 Relay 的本地实现，不额外创建 Realm 业务资源表。
-- [x] Relay 选择 Client 只影响分享，不提供独占认证。
-- [x] Proxy / Relay 分享 URI 由后端 canonical generator 生成。
-- [x] 共享订阅与个人订阅是独立链路，个人订阅不创建 subscriber client / usage。
-- [x] 个人订阅来源固定为 Proxy / Relay / Landing；Published Node 只服务共享订阅。
-- [x] 个人订阅使用实时精确 Client 匹配和 owner 隔离，不保存匹配结果 client_id；同一来源可保存多个独立入口实例。
-- [x] 分流方案是结构化通用业务数据；Mihomo 模板只是客户端基础配置。
-- [x] RoutingPreset 不拥有具体节点；Personal / Plan 各自通过稳定策略组 key 保存有序 routing bindings。
-- [x] 二维码在浏览器本地生成。
-- [x] 备份是完整 SQLite 快照，属于高敏感文件。
-- [x] Panel / Agent / Xray / Realm / ACME 使用分离的受管目录。
-- [x] 前端资源详情默认使用 Modal；诊断 Drawer 是明确例外。
-- [x] 当前不引入 Router / Pinia / 插件系统 / 通用 Task Runner。
-- [x] 第三方项目只能参考行为和高层思路，不能复制实现。
-
----
-
-# 35. 更新本文的规则
-
-每次发生以下变化，应同步修改 `DEV.md`：
-
-- 核心数据模型变化
-- 新 Agent API 行为
-- Xray / Realm 受管目录变化
-- 认证 / 权限语义变化
-- 备份格式变化
-- 支持协议变化
-- 前端主导航 / 页面骨架变化
-- 新增真正长期固定的安全规则
-
-普通 bugfix、文案、局部样式调整无需记录为“架构变化”。
-
-不要继续维护两份互相引用、容易漂移的“总 Guide + Frontend Guide”。以后只维护：
-
-```text
-AGENTS.md
-→ 开发行为约束
-
-DEV.md
-→ 产品 / 架构 / UI / 协议统一开发指南
-
-README.md
-→ 面向用户的安装、使用、当前功能说明
-```
+提交前检查 diff 范围、凭据泄露、未使用代码及文档链接，报告实际完成内容、主要文件、验证和已知限制。
+具体执行要求以 [AGENTS.md](AGENTS.md) 为准。

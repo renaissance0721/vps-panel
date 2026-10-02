@@ -1,238 +1,192 @@
 # VPS Panel
 
-多 VPS 管理面板。目前已完成 **Phase 7A、Phase 8A、Phase 8B、Phase 9A、Phase 9B、Phase 10、Phase 11 和 Phase 11.6**，Phase 7B 服务器分组、标签与筛选暂缓且不阻塞代理主链路。项目提供 admin / vip / user 三级邀请制账号认证、Server 安全移除与 Agent 重新绑定、一次性 Agent 注册、Agent 原地升级、带 Heartbeat 和自动重连的认证 WebSocket 长连接、静态系统信息与动态指标上报、Server 到期日期、月流量统计与校准、Panel ↔ Agent desired-state 配置同步，以及 Panel Agent 的 Xray、Realm 安全托管与 Proxy、Relay 管理。
+VPS Panel 是一个轻量的多 VPS 管理面板，集服务器管理、代理节点、中转、订阅和轻量探针于一体。
 
-当前 Server 管理能力包括在线/离线状态、Heartbeat、`last_seen`、静态系统信息、到期日期，以及 CPU、RAM、根分区磁盘、Uptime 和累计网卡流量。Agent 约每 5 秒通过现有 WebSocket 上报动态指标；Server 详情展示当前月周期流量，支持单向/双向统计、额度与重置时间配置、90%/100% 预警，以及不修改原始网卡计数的本周期流量手动校准。尚未实现历史指标和到期副作用。
+Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、Xray / Realm 配置、流量和网络探测。
 
-管理员可在「探针 → 通知设置」配置第一版 Telegram 通知：离线、恢复在线、服务器周期流量阈值及测试消息。先向 Bot 发送消息，或将 Bot 加入目标群组并授予发送权限，再填写 Bot Token 和数字 Chat ID（支持 `-100…` 群组 ID）。测试使用当前表单内容，成功后再保存。Token 仅存于 Panel SQLite，设置接口只返回是否已配置；留空保留旧 Token，清除需单独打开清除开关，不会下发给 Agent。
+## ✨ 功能
 
-在线 watcher 每 30 秒读取当前 Agent WebSocket 连接表，默认持续离线 3 分钟才提醒；Panel 重启后从首次观察到断线重新计算完整宽限，忽略待注册、从未连接、已归档和删除中的服务器。只有实际发送成功的离线消息才配对恢复提醒。同轮离线、恢复和流量分别合并发送，每条最多展示 20 台，其余显示数量。时间采用 Asia/Shanghai（UTC+8）。
+| 功能 | 当前支持 |
+| --- | --- |
+| 服务器 | 系统信息、在线状态、分组、访问权限、到期与续期信息 |
+| 轻量探针 | CPU / RAM / Disk、网络速度、周期流量；TCPing / ICMP Ping 与 1h / 6h / 24h 延迟历史 |
+| Telegram | Server 离线、恢复和流量阈值通知 |
+| 代理节点 | 受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
+| 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
+| 外部节点 | 导入 VLESS / Shadowsocks 分享链接，管理 Landing 节点 |
+| Client 与流量 | 独立凭据、流量配额、到期控制、分享链接与二维码；Server / Client 流量统计 |
+| 订阅 | 个人订阅、订阅套餐与专用用户入口、Mihomo 配置、路由配置与绑定 |
+| Agent | 一次性注册、自动重连、配置同步、诊断和官方 Agent 自升级 |
+| 管理 | 四种用户角色、列表拖拽排序、备份导入导出、审计日志 |
 
-流量 watcher 每 60 秒复用现有 `Server.TrafficUsedBytes()`（单向 TX / 双向 RX+TX，含手动校准），默认 80% 起、每增加 10% 提醒并在 100% 提醒用尽。一次跨过多个档位只发最高档，100% 后不再递增；周期改变或校准低于起点后重新计数。通知采用容量 64 的非阻塞内存队列和单个后台发送器，HTTP 超时 15 秒、禁止重定向；网络错误、超时、429、5xx 最多尝试 3 次，间隔至少 10 秒并遵守 Telegram `retry_after`。事件生成状态先持久化，队列满或最终失败只记录日志，不在下一轮重复生成；进程退出时队列不补发。迁移版本 16 新增 `notification_settings` 和 `server_notification_state`，没有新增第三方依赖。
+## 🚀 快速开始
 
-Phase 8A 已完成带版本的完整 desired state 拉取、`config_changed` WebSocket 通知、同步结果持久化和约 30 秒 REST 兜底。Phase 8B 已完成 Agent 侧固定官方 Xray `v26.3.27` 的 SHA256 校验安装、独立受管路径、基础配置校验与原子替换、服务启停、健康检查和失败回滚。
+原生安装使用 systemd，推荐 Debian / Ubuntu。以下命令在目标 Linux VPS 执行，需要 root 权限。
 
-Phase 9A 已支持 VLESS + TCP + TLS / REALITY + XTLS Vision。Phase 9B 在同一套 Proxy / Client 模型上增加 Shadowsocks 2022，支持 `2022-blake3-aes-128-gcm` 和 `2022-blake3-aes-256-gcm`，固定 TCP + UDP，并为每个 Client 生成可直接导入的 SIP002 URI。Proxy 或 Client 配置保存后会递增对应 Server 的 desired-state 版本并通知 Agent，Agent 继续复用 Phase 8B 的候选配置校验、原子替换、健康检查和失败回滚。
+### IP 安装
 
-### 自动 TLS 证书
+```bash
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- --domain :80
+```
 
-创建 VLESS + TCP + TLS 节点时，证书来源默认是“自动申请”。填写目标 Server、名称、端口和 SNI 域名即可；原有“手动证书”模式仍可使用 PEM，已有手动 TLS 节点无需迁移。自动模式要求 SNI 为公网域名（不能是 IP 或 localhost）、域名 A/AAAA 正确解析到目标 VPS，且公网 TCP 80 可达；云厂商安全组如有拦截，需手动放行。若目标机的 80 端口被其他服务占用，HTTP-01 standalone 申请也会失败。
+安装后访问 `http://服务器IP:8080`，首次打开页面创建管理员账号。
+此处 `:80` 是脚本的无域名标记；原生安装的访问端口仍为 **8080**，请放行该端口。
 
-Agent 使用独立、校验过的官方 acme.sh 申请 Let's Encrypt ECC P-256 证书，并在签发或续期期间临时开放本机 TCP 80。Agent 启动后每 12 小时检查当前 ACME 域名，到期前 30 天尝试续期，不安装 acme.sh 的系统 cron。第一版只支持 Let's Encrypt + HTTP-01 standalone；DNS-01、通配符和自定义 CA 尚不支持。
+### 域名 + HTTPS
 
-acme.sh 状态保存在 `/var/lib/vps-panel/acme/`，受管脚本保存在 `/opt/vps-panel/acme/`；Xray 读取 `/etc/vps-panel/xray/certs/<域名>/fullchain.pem` 和 `private.key`。证书目录权限为 `0700`，私钥文件权限为 `0600`。自动模式的私钥不进入 Panel 数据库、管理 API 或 Panel → Agent desired state。删除 Proxy 不会删除证书，以免影响同域名的其他节点。签发失败时不会替换现有 Xray 配置或已安装的证书。
+先将域名解析到 Panel 所在 VPS，并确保 TCP 80 / 443 可从公网访问：
 
-Phase 10 已完成。Xray 使用稳定的非敏感 Client 统计标识维护累计上行/下行计数，Agent 约每 15 秒通过独立认证 HTTP 接口上报，Panel 持久化 baseline、本周期累计和最近活动时间。Client 支持 G/T 流量额度、never / daily / weekly / monthly 上海时区周期、下次重置时间、本周期手动重置和到期时间。实际可用状态实时按 `effective_enabled = enabled && !expired && !quota_exhausted` 派生；达到 90% 显示预警，到期或额度耗尽时从 Xray desired state 失效，周期重置、手动重置或调整配置解除阻塞后自动恢复，同时保留原 Client 凭据和分享 URI。
+```bash
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- --domain panel.example.com
+```
 
-Phase 11 已完成。Panel 提供 Relay CRUD，可将中转目标绑定到现有 Proxy 或手动 Host/IP 与端口，并支持 TCP、UDP、TCP+UDP。Agent 固定使用 Realm 官方 `v2.9.4`，按 amd64 / arm64 和 glibc / musl 选择并校验 Release，安装在独立受管路径；完整 Relay desired state 会确定性生成单进程多 endpoint 配置，经真实 Realm candidate 校验、原子替换、服务重启、TCP/UDP listener 检查和独立防火墙同步后生效，失败时恢复 previous 配置与规则。Realm 与 Xray 的配置、服务、回滚和防火墙所有权相互独立。下一阶段为 Phase 12：分享与订阅，当前未开始。
+将 `panel.example.com` 替换为自己的域名。脚本配置 Caddy 和 HTTPS，完成后访问 `https://panel.example.com`。
+公网部署推荐此方式；Caddy 的自动安装适配 Debian / Ubuntu。
 
-Phase 11.6 已完成账号级 Server 访问控制。Server 默认为所有已登录账号可见的 `public`，也可设为授权一个或多个 admin / vip 的 `private`；Proxy、Client、Relay 和分享链接继承 Server 可见范围，Relay 同时要求源 Server 与目标 Proxy 所属 Server 均可访问。admin 不自动绕过私有范围，角色权限与资源访问权限必须同时满足。该可见范围只约束 Panel 用户 API 和 UI，不影响 Agent、Xray、Realm 或 desired state。
+### 系统与架构
 
-账号角色分为 `admin`、`vip` 和 `user`。`admin` 拥有完整管理能力，`vip` 保持原有资源管理行为；`user` 是由管理员通过 user 邀请创建的普通消费账号，登录后只进入独立用户门户。普通用户只能查看管理员明确分配给自己的 Client 节点、真实周期流量、到期时间和付款周期，并按需获取自己的分享链接或二维码；还可使用管理员在 Server 上开放的中转池，创建“公网 IP + 端口”的 TCP Realm 中转、删除自己的中转，以及提交密码修改申请供管理员审核。
+| 组件 | 安装环境 | Release 架构 |
+| --- | --- | --- |
+| Panel 原生安装 | Linux + systemd，推荐 Debian / Ubuntu | amd64、arm64 |
+| Agent | Linux + systemd；或 Alpine Linux + OpenRC | amd64、arm64 |
+| Panel Docker | 可运行 Docker Compose 的 Linux 主机 | 构建方式见下文 |
 
-普通用户不能管理 Server、Proxy、其他 Client、Landing 或管理员 Relay，不能查看其他用户信息，也不能自行修改资源授权。Client assignment 与现有 Server access 是两套独立权限：前者只决定普通用户门户里的节点归属，后者继续服务于 admin / vip 的管理资源可见性。普通用户中转固定复用现有 Relay service、Realm desired state、Agent 通知与防火墙同步，不存在第二套 Realm runtime；目标只接受公网 IP 字面量，内网、回环、链路本地、共享地址和 metadata 地址均会被后端拒绝，每个普通用户最多创建 10 条。
+Agent 安装器按服务管理器选择 systemd 或 OpenRC；OpenRC 环境需要 `supervise-daemon`。
 
-概览显示已注册账号的用户名与等级，以及当前账号可访问的未归档服务器数、代理节点数。Server（含已移除列表）、Proxy、Relay 主列表支持账号级 ↑ ↓ 顺序调整；偏好持久化到 SQLite，不改变 Agent 配置或资源业务状态。
+## 🖥️ Agent
 
-Realm 受管路径：
+1. 在 Panel 的服务器页面创建 Server。
+2. 由管理员生成一次性 Agent 安装命令。
+3. 在目标 VPS 以 root 执行页面提供的命令。
+4. Agent 注册成功后连接 Panel，服务器状态与指标会自动更新。
+
+使用页面生成的完整命令，避免手动拼接安装令牌。Agent 支持自动重连、Metrics、Probe 和受管 Xray / Realm 配置同步。
+管理员可升级符合条件的官方 Agent；第三方 Agent 的可用功能取决于其声明的能力。
+
+正常移除 Server 会请求兼容 Agent 清理受管服务并自卸载，成功后归档服务器。
+离线或不兼容 Agent 可由管理员强制移除 Panel 记录，但目标 VPS 上的残留需要自行清理。
+
+实现第三方 Agent 请阅读 [Agent API v1](docs/agent-api-v1.md)。
+
+### 自动 TLS
+
+VLESS TLS 支持手动证书，也支持通过 Let's Encrypt HTTP-01 申请证书。
+自动申请时，节点域名应正确解析到对应 Agent VPS，并保持该 VPS 的 TCP 80 可访问；Agent 负责自动续期。
+
+Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
+
+### 探针与通知
+
+在探针页面查看资源状态和网络延迟。管理员可配置 TCPing / ICMP Ping 任务及目标服务器。
+延迟图支持 1h / 6h / 24h；CPU、内存和磁盘目前展示最新指标，暂未提供资源历史曲线。
+
+管理员在探针页面配置 Telegram Bot Token 和 Chat ID，并可发送测试通知。
+支持离线宽限、恢复提醒、流量首次阈值、后续提醒步进和用尽提醒。
+
+## 🔐 用户与权限
+
+| 角色 | 用途 |
+| --- | --- |
+| `admin` | 系统管理、账号与邀请、探测任务、通知、订阅分发，以及有权访问的服务器资源 |
+| `vip` | 管理有权访问的服务器、代理和中转，维护自己的个人订阅 |
+| `user` | 使用分配给自己的节点，并在授权范围内管理个人中转 |
+| `subscriber` | 使用订阅套餐和专用订阅入口，查看自己的节点、流量及到期信息 |
+
+首次初始化创建管理员，后续账号通过管理员管理或邀请加入。
+用户名区分大小写。服务器访问权限由后端校验；完整权限边界见 [开发指南](DEV.md)。
+
+## 项目结构
+
+Panel、Agent 和 Web 位于同一个 monorepo：
 
 ```text
-/opt/vps-panel/realm/realm
-/opt/vps-panel/realm/.managed-by-vps-panel
-/etc/vps-panel/realm/config.toml
-/etc/vps-panel/realm/config.previous.toml
-/etc/systemd/system/vps-panel-realm.service   # Debian / Ubuntu
-/etc/init.d/vps-panel-realm                   # Alpine Linux
+vps-panel/
+├── panel/     # Go 模块，包含 Panel 与 Agent
+├── web/       # Vue 管理界面
+├── docs/      # Agent 协议规范
+├── scripts/   # Panel 安装及 vp 管理命令
+└── deploy/    # 可选 Docker Compose / Caddy 配置
 ```
 
-如果检测到第三方 `realm.service`，或上述 Panel 专用路径在没有受管标记时已被占用，Agent 会拒绝接管。禁用最后一条 Relay 时会停止服务、清理当前配置和 Realm 自有防火墙规则，但保留受管二进制、标记和 unit 供再次启用。
+## 管理命令
 
-## VPS 部署
+原生安装完成后，可执行 `sudo vp` 打开管理菜单，也可直接使用：
 
-默认部署不依赖 Docker，也不需要在 VPS 安装 Go、Node.js 或 npm。GitHub Release 提供已经编译完成的 `linux-amd64` 和 `linux-arm64` 压缩包。
+| 命令 | 用途 |
+| --- | --- |
+| `sudo vp update` | 更新到最新 Release |
+| `sudo vp domain` | 修改 Panel 域名或切换为 IP 访问 |
+| `sudo vp status` | 查看 Panel 服务状态 |
+| `sudo vp logs` | 查看 Panel 日志 |
+| `sudo vp restart` | 重启 Panel |
+| `sudo vp uninstall` | 卸载 Panel，交互选择是否删除数据 |
+| `vp help` | 查看命令帮助 |
 
-要求：
+修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。
+更新会保留业务数据；跨服务器迁移可使用管理员的备份导出 / 导入功能，并保持 Panel 访问域名一致。
 
-- 使用 systemd 的 Debian 或 Ubuntu VPS
-- CPU 架构为 amd64 或 arm64
-- 使用 IP 直连时放行 TCP 8080
-- 使用域名时，A/AAAA 记录已指向 VPS，并放行 TCP 80、TCP/UDP 443
+## 🛠️ 本地开发
 
-### 一键安装
+准备 Go 1.26 或更新版本，以及 Node.js 22 的最新维护版本和 npm。
+具体依赖以 [go.mod](panel/go.mod)、[package.json](web/package.json) 和锁文件为准。
 
-使用 VPS IP，通过 HTTP 访问：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash
-```
-
-交互式终端会询问域名。直接按回车时，Panel 会监听 `0.0.0.0:8080`，安装完成后访问：
-
-```text
-http://VPS_IP:8080
-```
-
-使用域名并自动配置 HTTPS：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- \
-  --domain panel.example.com
-```
-
-域名模式下，Panel 只监听 `127.0.0.1:8080`。安装脚本会在需要时通过 Caddy 官方 Debian/Ubuntu 软件源安装原生 Caddy，配置反向代理，并自动申请、保存和续期 HTTPS 证书。
-
-安装脚本会自动检测 CPU 架构，从最新 GitHub Release 下载对应文件：
-
-```text
-vps-panel-linux-amd64.tar.gz
-vps-panel-linux-arm64.tar.gz
-```
-
-不会安装 Docker，也不会在 VPS 上运行 Go 或 npm 构建。
-
-> 安装前必须至少发布一个包含上述文件的 GitHub Release。推送 `v*` tag 会触发 Release 工作流并生成文件。
-
-### 安装位置
-
-```text
-/opt/vps-panel/
-├── panel/
-│   ├── vps-panel
-│   ├── web/
-│   └── .vps-panel-install
-├── agent/             # 同机安装 Agent 时保留
-├── xray/              # Agent 受管程序
-├── realm/             # Agent 受管程序
-└── acme/              # Agent 受管程序
-
-/var/lib/vps-panel/panel/        SQLite 数据与待恢复备份
-/var/lib/vps-panel/acme/         Agent ACME 状态
-/etc/vps-panel/panel/environment Panel 运行配置
-/etc/systemd/system/vps-panel.service
-```
-
-服务安装后通过 systemd 自动启动：
-
-```bash
-systemctl status vps-panel
-```
-
-首次打开会进入初始化页面，用于创建唯一的 admin。创建成功后初始化入口永久关闭；后续账号只能通过 admin 生成的 24 小时一次性邀请链接注册，邀请可指定为 vip 或 user，不支持通过邀请创建 admin。
-
-## Agent 安装
-
-在 Panel 的“服务器”页面创建 Server，复制仅显示一次的 Agent 安装命令，并在目标 VPS 上以 root 执行。安装程序会自动检测 amd64 或 arm64、下载同一份静态 Agent 二进制、完成一次性注册并启用系统对应的 Agent 服务。正式 Release 生成的命令会固定下载与当前 Panel 相同版本的 Agent；开发版本未指定版本时才回退到最新 Release。
-
-支持的 Agent 系统：
-
-- Debian / Ubuntu + systemd
-- Alpine Linux + OpenRC
-- amd64 / arm64
-
-Panel 本体仍只支持 Debian / Ubuntu + systemd，不支持安装到 Alpine。Alpine Agent 会使用 OpenRC `supervise-daemon` 保持服务运行，Realm 自动选择官方 musl binary；页面生成的一次性安装命令可直接使用，无需手工拼接 Token。若 Alpine 缺少下载依赖，安装脚本只安装最小的 `curl` 和 `ca-certificates`；仅在系统没有 `install` 命令时补装 `coreutils`。
-
-Agent 安装位置：
-
-```text
-/opt/vps-panel/agent/vps-panel-agent
-/etc/vps-panel-agent/config.json
-/etc/systemd/system/vps-panel-agent.service   # Debian / Ubuntu
-/etc/init.d/vps-panel-agent                   # Alpine Linux
-```
-
-注册成功后 Server 状态为 `offline`；Agent WebSocket 连接期间状态为 `online`，连接断开或 Panel 重启后恢复为 `offline`。Agent 每次连接成功后上报一次静态系统信息，每约 10 秒发送一次最小 Heartbeat，并按 1、2、4、8、16、30 秒的上限退避自动重连；异常退出时 systemd 或 OpenRC `supervise-daemon` 会在 3 秒后兜底重启。服务器详情会显示最后通信时间和最近一次静态系统信息，并约每 5 秒刷新状态和动态指标。
-
-普通“移除”只归档 Server、撤销当前 Agent 凭据并关闭在线连接，不会删除 Server 档案。admin 可以在正常或已移除 Server 的详情弹窗中统一使用“重新生成 Agent 安装令牌”；新建 Server 自动生成的首个令牌为 `initial`，管理员主动重新生成的令牌为 `rebind`。两者只要有效，均可在已有 Agent 的 VPS 上执行安装命令；注册成功后才原子替换旧配置。只有单独的“彻底删除”操作会永久删除归档 Server 及其关联数据。
-
-生成新令牌会立即使旧的未使用令牌失效；曾注册过 Agent 的 Server 还会撤销旧 Agent 凭据并关闭在线连接，但 Server ID、档案和历史数据保持不变。首次安装和重新绑定使用相同的安装命令，无需额外覆盖参数。
-
-正式版 Panel 可在在线 Server 详情中将 Agent 原地升级到与 Panel 相同的版本。升级通过现有 WebSocket 发送专用指令，下载固定 tag 的对应架构二进制，校验 `SHA256SUMS` 和 `version` 后才原子替换并重启。整个过程保留 `config.json`、`server_id`、`agent_id` 和 `agent_token`，不需要 Enrollment Token 或重新注册。
-
-首次迁移不识别升级指令的旧 Agent 时，可在 Agent VPS 上执行：
-
-```bash
-curl -fsSL https://PANEL_HOST/upgrade-agent.sh | sudo sh
-```
-
-该 bootstrap 脚本只升级二进制和当前系统的 systemd unit / OpenRC init script，不调用注册接口，并保留原凭据。
-
-### `vp` 管理命令
-
-安装完成后输入 `vp` 可打开交互菜单，也可以直接运行：
-
-```bash
-vp status
-vp logs
-vp restart
-vp update
-vp uninstall
-```
-
-域名变更仍可使用：
-
-```bash
-vp domain
-```
-
-`vp update` 会下载最新 Release，只替换 `/opt/vps-panel/panel/` 并重启服务，保留 `/var/lib/vps-panel/panel/` 数据。健康检查失败时，安装脚本会尽可能恢复上一版程序。
-
-从旧原生版本首次执行 `vp update` 时，安装器只迁移根目录中的旧 Panel 程序、SQLite 与配置文件到各自的 `panel/` 子目录。Agent、Xray、Realm 与 ACME 目录保持不变。
-
-从旧 Docker Compose 版本首次执行 `vp update` 时，脚本会停止旧容器，并将 `vps-panel_panel-data` 卷中的 SQLite 数据迁移到 `/var/lib/vps-panel/panel/`。旧 Docker 数据卷不会自动删除。
-
-`vp uninstall` 默认保留 SQLite 数据；只有在二次确认时才会删除 `/var/lib/vps-panel/panel/`。卸载只删除 Panel 自己的程序与配置子目录，不会删除共享父目录或 Agent 文件，也不会自动移除 Caddy 软件包。
-
-## GitHub Release 构建
-
-[Release 工作流](.github/workflows/release.yml)支持手动验证构建。推送以 `v` 开头的 tag 时，会构建 Vue、交叉编译两个 Linux 架构，并创建或更新对应 GitHub Release：
-
-```bash
-git tag v0.4.0
-git push origin v0.4.0
-```
-
-每个压缩包的根目录只包含：
-
-```text
-vps-panel
-web/
-```
-
-Release 同时直接提供：
-
-```text
-vps-panel-agent-linux-amd64
-vps-panel-agent-linux-arm64
-SHA256SUMS
-```
-
-## 可选 Docker 部署
-
-`Dockerfile` 和 `deploy/docker-compose.yml` 暂时保留用于开发或兼容，但不再是默认安装路径。
-
-```bash
-git clone https://github.com/renaissance0721/vps-panel.git
-cd vps-panel/deploy
-PANEL_DOMAIN=panel.example.com docker compose up -d --build
-```
-
-直接使用 HTTP 时可将 `PANEL_DOMAIN` 设置为 `:80`。
-
-## 本地开发
-
-后端需要 Go 1.26 或更高版本：
-
-```bash
-cd panel
-go run ./cmd/panel
-```
-
-前端需要 Node.js 22 或更高版本：
+在仓库根目录构建前端并启动 Panel：
 
 ```bash
 cd web
-npm install
+npm ci
+npm run build
+cd ../panel
+go run ./cmd/panel
+```
+
+默认访问 `http://127.0.0.1:8080`。需要前端热更新时，另开终端，在仓库根目录执行：
+
+```bash
+cd web
 npm run dev
 ```
 
-Vite 开发服务器会把 `/api` 请求代理到 `http://127.0.0.1:8080`。
+Vite 开发服务器将 `/api` 转发给本地 Panel；订阅链接使用 Panel 地址访问。
+开发配置、测试和 Agent 边界见 [DEV.md](DEV.md)。
+
+## Release
+
+推送 `v*` tag 会触发 [Release workflow](.github/workflows/release.yml)，产出：
+
+- `vps-panel-linux-amd64.tar.gz` / `vps-panel-linux-arm64.tar.gz`：Panel 与构建后的 Web。
+- `vps-panel-agent-linux-amd64` / `vps-panel-agent-linux-arm64`：Agent 二进制。
+- `SHA256SUMS`：Agent 二进制的 SHA-256 校验值。
+
+正式版本以 [GitHub Releases](https://github.com/renaissance0721/vps-panel/releases) 为准。
+
+## Docker（可选）
+
+仓库保留从源码构建 Panel 的 Compose 方式。在仓库根目录执行：
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+默认由 Caddy 提供 `http://服务器IP`，使用端口 80。
+如需域名 HTTPS，可在同一命令前设置环境变量（Linux shell）：
+
+```bash
+PANEL_DOMAIN=panel.example.com docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+Compose 使用持久化卷保存 Panel 与 Caddy 数据，不包含 Agent；Agent 仍安装在各目标 VPS 上。
+
+## 📚 文档
+
+- [DEV.md](DEV.md)：当前架构、模块边界和开发验证。
+- [AGENTS.md](AGENTS.md)：Codex / AI Coding Agent 的执行规则。
+- [Agent API v1](docs/agent-api-v1.md)：Agent 实现者的正式协议规范。
+
+## Roadmap
+
+持续完善探针、通知、订阅和管理体验。
+
+## License
+
+[MIT](LICENSE)

@@ -6,6 +6,7 @@ const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'ut
 const portalSource = await readFile(new URL('../src/views/SubscriberPortalView.vue', import.meta.url), 'utf8')
 const managementSource = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
 const groupEditorSource = await readFile(new URL('../src/components/subscription/RoutingGroupEditor.vue', import.meta.url), 'utf8')
+const bindingEditorSource = await readFile(new URL('../src/components/subscription/RoutingBindingEditor.vue', import.meta.url), 'utf8')
 const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const clientSource = await readFile(new URL('../src/components/proxy/ClientList.vue', import.meta.url), 'utf8')
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
@@ -195,19 +196,40 @@ test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => 
 
 test('分流方案使用策略组、结构化规则源和逐行规则编辑器', () => {
   assert.doesNotMatch(managementSource, /Groups JSON|Rules JSON|routingGroupsJSON|routingRulesJSON|published_node_id/)
-  for (const label of ['包含订阅全部节点', '指定 Published Node', '添加 DIRECT', '添加 REJECT', '添加分组引用', '上移', '下移']) {
+  for (const label of ['包含订阅全部节点', '添加 DIRECT', '添加 REJECT', '添加分组引用']) {
     assert.match(groupEditorSource, new RegExp(label))
   }
-  assert.match(groupEditorSource, /node.name/)
-  assert.match(groupEditorSource, /node_ids/)
+  assert.doesNotMatch(groupEditorSource, /Published Node|node_ids|toggleNode|PublishedNodeOption/)
+  assert.match(groupEditorSource, /key: string/)
+  assert.match(groupEditorSource, /startGroupDrag[\s\S]*beginDragPreview[\s\S]*function dropGroup[\s\S]*values\.splice\(index, 0, group\)/)
+  assert.doesNotMatch(groupEditorSource, /function moveGroup/)
+  assert.match(groupEditorSource, /group\.proxies = group\.proxies\.map\(\(proxy\) => proxy === oldName \? name : proxy\)/)
+  assert.match(groupEditorSource, /parts\[policyIndex\] === oldName[\s\S]*parts\[policyIndex\] = name/)
+  assert.match(groupEditorSource, /仍被 \$\{references\.join\('、'\)\} 引用，请先解除引用/)
   assert.match(managementSource, /const routingProviders = ref<RoutingRuleProvider\[]>\(\[]\)/)
   assert.match(managementSource, /rule_providers: routingProviders\.value/)
   for (const field of ['provider.name', 'provider.url', 'provider.type', 'provider.behavior', 'provider.format', 'provider.interval']) {
     assert.match(managementSource, new RegExp(field.replace('.', '\\.')))
   }
   assert.doesNotMatch(managementSource, /routingProvidersYAML|Rule Providers YAML|rule_providers_yaml/)
+  assert.match(managementSource, /function setRoutingProviderName[\s\S]*parts\[0\] === 'RULE-SET'[\s\S]*parts\[1\] = name/)
+  assert.match(managementSource, /规则源“\$\{provider\.name\}”仍被第 \$\{referencedAt \+ 1\} 条 Rule 使用/)
   assert.match(managementSource, /Rules（一行一条 Mihomo rule）/)
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
+})
+
+test('个人和共享订阅分别编辑自身节点 binding 并用拖拽排序', () => {
+  assert.match(managementSource, /const personalRoutingBindings = ref<RoutingBindings>\(\{\}\)/)
+  assert.match(managementSource, /const planRoutingBindings = ref<RoutingBindings>\(\{\}\)/)
+  assert.match(managementSource, /\/api\/personal-subscriptions\/\$\{id\}\/routing-bindings/)
+  assert.match(managementSource, /\/api\/admin\/subscription\/plans\/\$\{id\}\/routing-bindings/)
+  assert.match(managementSource, /:nodes="personalNodes\.map\(\(node\) => \(\{ id: node\.id, name: node\.display_name \}\)\)"/)
+  assert.match(managementSource, /:nodes="nodes\.filter\(\(node\) => planNodeIDs\.includes\(node\.id\)\)\.map/)
+  assert.match(bindingEditorSource, /策略组节点绑定/)
+  assert.match(bindingEditorSource, /function startDrag[\s\S]*beginDragPreview[\s\S]*function drop[\s\S]*ids\.splice\(newIndex, 0, value\)/)
+  assert.doesNotMatch(bindingEditorSource, />上移<|>下移</)
+  assert.match(styleSource, /\.routing-binding-selected-row\.routing-binding-dragging\s*\{[^}]*opacity:\s*0\.38/s)
+  assert.match(styleSource, /\.routing-binding-selected-row\.routing-binding-drop-target\s*\{[^}]*border-color:\s*var\(--color-primary\)[^}]*transform:/s)
 })
 
 test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编辑', () => {

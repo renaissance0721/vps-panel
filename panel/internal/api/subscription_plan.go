@@ -39,10 +39,28 @@ type subscriptionPlanResponse struct {
 	Enabled           bool                                `json:"enabled"`
 	TrafficLimitBytes *int64                              `json:"traffic_limit_bytes"`
 	RoutingPresetID   *int64                              `json:"routing_preset_id"`
+	RoutingBindings   subscriptionstore.RoutingBindings   `json:"routing_bindings"`
 	TemplateID        *int64                              `json:"template_id"`
 	Nodes             []subscriptionPublishedNodeResponse `json:"nodes"`
 	CreatedAt         time.Time                           `json:"created_at"`
 	UpdatedAt         time.Time                           `json:"updated_at"`
+}
+
+func (s *server) setSubscriptionPlanRoutingBindings(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "共享订阅 ID 无效")
+	if !ok {
+		return
+	}
+	var request setRoutingBindingsRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	value, err := s.subscriptions.SetPlanRoutingBindings(r.Context(), id, request.RoutingBindings)
+	if err != nil {
+		writeSubscriptionPlanError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plan": toSubscriptionPlanResponse(value)})
 }
 
 func (s *server) listSubscriptionPlans(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -173,8 +191,9 @@ func toSubscriptionPlanResponse(value subscriptionstore.Plan) subscriptionPlanRe
 	return subscriptionPlanResponse{
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
 		TrafficLimitBytes: value.TrafficLimitBytes,
-		RoutingPresetID:   value.RoutingPresetID, TemplateID: value.TemplateID,
-		Nodes: nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		RoutingPresetID:   value.RoutingPresetID, RoutingBindings: value.RoutingBindings,
+		TemplateID: value.TemplateID,
+		Nodes:      nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -214,6 +233,8 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "流量额度不能小于 0")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanNodes):
 		writeError(w, http.StatusBadRequest, "共享订阅节点列表无效；同一共享订阅不能包含多个指向同一 Proxy 的发布节点")
+	case errors.Is(err, subscriptionstore.ErrInvalidRoutingBindings):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, subscriptionstore.ErrServerNotDistributable):
 		writeError(w, http.StatusBadRequest, "共享订阅只能包含管理员创建服务器上的发布节点")
 	case errors.Is(err, subscriptionstore.ErrPlanReferenced):

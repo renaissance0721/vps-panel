@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -249,6 +250,84 @@ func TestMigrationNineCreatesNodeInstancesAndMigratesPublishedSources(t *testing
 		(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, created_at, updated_at)
 		VALUES (40, 'proxy', 10, 'Second Proxy Instance', 1, 4, '2001:db8::1', 8443, 1, 1)`); err != nil {
 		t.Fatalf("duplicate source instance insert: %v", err)
+	}
+	if err := applyMigration(context.Background(), db, migrations[9]); err != nil {
+		t.Fatal(err)
+	}
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
+}
+
+func TestMigrationTenMovesPresetNodeIDsToPlanBindings(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, item := range migrations[:9] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statements := []string{
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		 VALUES (100, 'owner', 'hash', 'admin', 1, 1)`,
+		`INSERT INTO servers (id, name, created_by_role, status, created_at, updated_at)
+		 VALUES (1, 'Server', 'admin', 'online', 1, 1)`,
+		`INSERT INTO proxies (id, server_id, name, protocol, listen_port, config_json, created_at, updated_at)
+		 VALUES (10, 1, 'Proxy', 'vless', 443, '{}', 1, 1)`,
+		`INSERT INTO subscription_published_nodes
+		 (id, name, mode, target_proxy_id, entry_host_mode, entry_host, entry_port_mode,
+		  traffic_multiplier_bp, enabled, created_at, updated_at)
+		 VALUES (3, 'Three', 'direct', 10, 'inherit', '', 'inherit', 100, 1, 1, 1),
+		        (4, 'Four', 'direct', 10, 'inherit', '', 'inherit', 100, 1, 1, 1),
+		        (7, 'Seven', 'direct', 10, 'inherit', '', 'inherit', 100, 1, 1, 1),
+		        (9, 'Nine', 'direct', 10, 'inherit', '', 'inherit', 100, 1, 1, 1)`,
+		`INSERT INTO subscription_routing_presets
+		 (id, name, enabled, groups_json, rules_json, rule_providers_yaml, is_default, created_at, updated_at)
+		 VALUES (100, 'Legacy bindings', 1,
+		 '[{"name":"UK","type":"select","proxies":["DIRECT"],"node_ids":[3,4,7]}]',
+		 '["MATCH,UK"]', '{}', 0, 1, 1)`,
+		`INSERT INTO subscription_plans
+		 (id, name, enabled, routing_preset_id, created_at, updated_at)
+		 VALUES (200, 'Plan', 1, 100, 1, 1)`,
+		`INSERT INTO subscription_plan_nodes (plan_id, published_node_id, position)
+		 VALUES (200, 3, 1), (200, 7, 2), (200, 9, 3)`,
+		`INSERT INTO personal_subscription_groups
+		 (id, owner_user_id, name, subscription_title, token, enabled, client_name,
+		  routing_preset_id, created_at, updated_at)
+		 VALUES (300, 100, 'Personal', '', 'token', 1, 'owner', 100, 1, 1)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := applyMigration(context.Background(), db, migrations[9]); err != nil {
+		t.Fatal(err)
+	}
+	var groupsJSON, bindingsJSON, personalBindings string
+	if err := db.QueryRow(`SELECT groups_json FROM subscription_routing_presets WHERE id = 100`).Scan(&groupsJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT routing_bindings_json FROM subscription_plans WHERE id = 200`).Scan(&bindingsJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT routing_bindings_json FROM personal_subscription_groups WHERE id = 300`).Scan(&personalBindings); err != nil {
+		t.Fatal(err)
+	}
+	var groups []migratedRoutingGroup
+	var bindings map[string][]int64
+	if err := json.Unmarshal([]byte(groupsJSON), &groups); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(bindingsJSON), &bindings); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Key == "" || len(groups[0].NodeIDs) != 0 ||
+		!slices.Equal(bindings[groups[0].Key], []int64{3, 7}) || personalBindings != "{}" ||
+		strings.Contains(groupsJSON, "node_ids") {
+		t.Fatalf("migration 10 groups/bindings = %s / %s / %s", groupsJSON, bindingsJSON, personalBindings)
 	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)

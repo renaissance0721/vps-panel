@@ -346,21 +346,120 @@ func TestPersonalSubscriptionSkipsUnavailableNodesAndErrorsWhenEmpty(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+	stored, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
 		{SourceType: PersonalSourceProxy, SourceID: missingProxy.ID, DisplayName: "Missing", Enabled: true},
 		{SourceType: PersonalSourceProxy, SourceID: readyProxy.ID, DisplayName: "Ready", Enabled: true},
-	}); err != nil {
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset, err := service.GetRoutingPreset(t.Context(), stored.RoutingPresetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupKey := preset.Groups[0].Key
+	stored, err = service.SetPersonalSubscriptionRoutingBindings(t.Context(), actor, group.ID,
+		RoutingBindings{groupKey: {stored.Nodes[0].ID, stored.Nodes[1].ID}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	data, err := service.GeneratePersonalSubscriptionDataForOwner(t.Context(), actor, group.ID)
 	if err != nil || len(data.Nodes) != 1 || data.Nodes[0].Name != "Ready" {
 		t.Fatalf("partially available data = %+v, %v", data.Nodes, err)
 	}
+	if len(data.NodeNames) != 1 || data.NodeNames[stored.Nodes[1].ID] != "Ready" ||
+		len(data.RoutingBindings[groupKey]) != 2 {
+		t.Fatalf("unavailable binding was not retained: names=%+v bindings=%+v", data.NodeNames, data.RoutingBindings)
+	}
+	mihomo, err := RenderPersonalMihomoSubscription(data)
+	if err != nil || strings.Contains(string(mihomo), "- Missing\n") || !strings.Contains(string(mihomo), "- Ready\n") {
+		t.Fatalf("unavailable personal binding render = %v\n%s", err, mihomo)
+	}
 	if _, err := db.Exec(`UPDATE clients SET name = 'removed' WHERE id = ?`, client.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.GeneratePersonalSubscriptionDataForOwner(t.Context(), actor, group.ID); !errors.Is(err, ErrPersonalSubscriptionEmpty) {
 		t.Fatalf("empty personal subscription error = %v", err)
+	}
+}
+
+func TestPersonalNodeIDsStayStableAndBindingsAreScopedAndPruned(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertPersonalTestUser(t, db, 100, "admin", "admin")
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+	landings := landingstore.NewService(db)
+	firstSource, err := landings.Create(t.Context(), actor.UserID, landingstore.CreateInput{
+		Name: "First", Visibility: landingstore.VisibilityPrivate,
+		URI: "ss://aes-256-gcm:first@first.example.com:8388#First",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSource, err := landings.Create(t.Context(), actor.UserID, landingstore.CreateInput{
+		Name: "Second", Visibility: landingstore.VisibilityPrivate,
+		URI: "ss://aes-256-gcm:second@second.example.com:8388#Second",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Bound", Enabled: true,
+		Groups: []RoutingGroup{{Name: "Selected", Type: "select"}},
+		Rules:  []string{"MATCH,Selected"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGroup, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{
+		Name: "First", ClientName: "admin", Enabled: true, RoutingPresetID: &preset.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondGroup, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{
+		Name: "Second", ClientName: "admin", Enabled: true, RoutingPresetID: &preset.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstGroup, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, firstGroup.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceLanding, SourceID: firstSource.ID, DisplayName: "A", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: secondSource.ID, DisplayName: "B", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondGroup, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, secondGroup.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceLanding, SourceID: secondSource.ID, DisplayName: "Other", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := preset.Groups[0].Key
+	if _, err := service.SetPersonalSubscriptionRoutingBindings(t.Context(), actor, firstGroup.ID,
+		RoutingBindings{key: {secondGroup.Nodes[0].ID}}); !errors.Is(err, ErrInvalidRoutingBindings) {
+		t.Fatalf("other personal subscription binding error = %v", err)
+	}
+	firstGroup, err = service.SetPersonalSubscriptionRoutingBindings(t.Context(), actor, firstGroup.ID,
+		RoutingBindings{key: {firstGroup.Nodes[0].ID, firstGroup.Nodes[1].ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stableID := firstGroup.Nodes[0].ID
+	removedID := firstGroup.Nodes[1].ID
+	firstGroup, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, firstGroup.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceLanding, SourceID: secondSource.ID, DisplayName: "New", Enabled: true},
+		{ID: &stableID, SourceType: PersonalSourceLanding, SourceID: firstSource.ID, DisplayName: "A renamed", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstGroup.Nodes) != 2 || firstGroup.Nodes[1].ID != stableID || firstGroup.Nodes[0].ID == stableID ||
+		firstGroup.Nodes[0].ID == removedID || firstGroup.Nodes[1].DisplayName != "A renamed" {
+		t.Fatalf("stable/new personal node IDs = %+v", firstGroup.Nodes)
+	}
+	if got := firstGroup.RoutingBindings[key]; len(got) != 1 || got[0] != stableID {
+		t.Fatalf("personal bindings after node deletion = %+v", firstGroup.RoutingBindings)
 	}
 }
 

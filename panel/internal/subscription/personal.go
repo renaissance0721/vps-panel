@@ -187,13 +187,26 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	if err != nil {
 		return PersonalSubscription{}, err
 	}
-	existing := make(map[string]struct{}, len(group.Nodes))
+	existing := make(map[int64]PersonalSubscriptionNode, len(group.Nodes))
 	for _, node := range group.Nodes {
-		existing[personalSourceKey(node.SourceType, node.SourceID)] = struct{}{}
+		existing[node.ID] = node
 	}
 	normalized := make([]SetPersonalSubscriptionNodeInput, 0, len(inputs))
 	seenNames := make(map[string]struct{}, len(inputs))
+	seenIDs := make(map[int64]struct{}, len(inputs))
 	for _, input := range inputs {
+		if input.ID != nil {
+			if *input.ID <= 0 {
+				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			}
+			if _, exists := existing[*input.ID]; !exists {
+				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			}
+			if _, duplicate := seenIDs[*input.ID]; duplicate {
+				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			}
+			seenIDs[*input.ID] = struct{}{}
+		}
 		input.SourceType = strings.ToLower(strings.TrimSpace(input.SourceType))
 		input.DisplayName = strings.TrimSpace(input.DisplayName)
 		if !validPersonalSourceType(input.SourceType) || input.SourceID <= 0 || input.DisplayName == "" ||
@@ -207,14 +220,13 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		if err != nil {
 			return PersonalSubscription{}, err
 		}
-		key := personalSourceKey(input.SourceType, input.SourceID)
 		state, err := s.inspectPersonalSource(ctx, actor, input.SourceType, input.SourceID, group.ClientName,
 			input.DisplayName, input.EntryHost, input.EntryPort, false)
 		if err != nil {
 			return PersonalSubscription{}, err
 		}
 		if !state.accessible {
-			if _, wasConfigured := existing[key]; !wasConfigured {
+			if input.ID == nil {
 				return PersonalSubscription{}, ErrPersonalSourceNotFound
 			}
 		}
@@ -227,39 +239,100 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		return PersonalSubscription{}, fmt.Errorf("begin personal subscription node update: %w", err)
 	}
 	defer tx.Rollback()
-	if result, err := tx.ExecContext(ctx,
-		`DELETE FROM personal_subscription_nodes WHERE group_id = ? AND EXISTS (
-			SELECT 1 FROM personal_subscription_groups WHERE id = ? AND owner_user_id = ?)`, id, id, actor.UserID,
-	); err != nil {
-		return PersonalSubscription{}, fmt.Errorf("clear personal subscription nodes: %w", err)
-	} else if count, err := result.RowsAffected(); err != nil {
-		return PersonalSubscription{}, fmt.Errorf("read personal subscription node clearing: %w", err)
-	} else if count == 0 {
-		var exists int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT 1 FROM personal_subscription_groups WHERE id = ? AND owner_user_id = ?`, id, actor.UserID,
-		).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-			return PersonalSubscription{}, ErrPersonalSubscriptionNotFound
-		} else if err != nil {
-			return PersonalSubscription{}, err
-		}
+	positionOffset := len(group.Nodes) + len(normalized) + 1000
+	if _, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes
+		SET position = position + ?, display_name = '__vps_panel_tmp_' || id WHERE group_id = ?`,
+		positionOffset, id); err != nil {
+		return PersonalSubscription{}, fmt.Errorf("prepare personal subscription node update: %w", err)
 	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
+	keptIDs := make(map[int64]struct{}, len(normalized))
 	for index, input := range normalized {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO personal_subscription_nodes
+		if input.ID != nil {
+			result, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes SET
+				source_type = ?, source_id = ?, display_name = ?, enabled = ?, position = ?,
+				entry_host = ?, entry_port = ?, updated_at = ? WHERE id = ? AND group_id = ?`,
+				input.SourceType, input.SourceID, input.DisplayName, input.Enabled, index+1,
+				nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, *input.ID, id)
+			if err != nil {
+				return PersonalSubscription{}, fmt.Errorf("update personal subscription node: %w", err)
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			}
+			keptIDs[*input.ID] = struct{}{}
+			continue
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO personal_subscription_nodes
 			(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
-			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, now); err != nil {
+			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, now)
+		if err != nil {
 			return PersonalSubscription{}, fmt.Errorf("create personal subscription node: %w", err)
 		}
+		createdID, err := result.LastInsertId()
+		if err != nil {
+			return PersonalSubscription{}, fmt.Errorf("read personal subscription node id: %w", err)
+		}
+		keptIDs[createdID] = struct{}{}
+	}
+	for existingID := range existing {
+		if _, keep := keptIDs[existingID]; keep {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM personal_subscription_nodes WHERE id = ? AND group_id = ?`, existingID, id); err != nil {
+			return PersonalSubscription{}, fmt.Errorf("delete personal subscription node: %w", err)
+		}
+	}
+	bindings := pruneRoutingBindings(group.RoutingBindings, keptIDs)
+	bindingsJSON, err := encodeRoutingBindings(bindings)
+	if err != nil {
+		return PersonalSubscription{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE personal_subscription_groups SET updated_at = ? WHERE id = ? AND owner_user_id = ?`, now, id, actor.UserID,
+		`UPDATE personal_subscription_groups SET routing_bindings_json = ?, updated_at = ?
+		 WHERE id = ? AND owner_user_id = ?`, bindingsJSON, now, id, actor.UserID,
 	); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("touch personal subscription: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("commit personal subscription node update: %w", err)
+	}
+	return s.GetPersonalSubscription(ctx, actor, id)
+}
+
+func (s *Service) SetPersonalSubscriptionRoutingBindings(ctx context.Context, actor PersonalSubscriptionActor,
+	id int64, bindings RoutingBindings,
+) (PersonalSubscription, error) {
+	group, err := s.GetPersonalSubscription(ctx, actor, id)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	preset, err := s.GetRoutingPreset(ctx, group.RoutingPresetID)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	allowed := make(map[int64]struct{}, len(group.Nodes))
+	for _, node := range group.Nodes {
+		allowed[node.ID] = struct{}{}
+	}
+	normalized, err := normalizeRoutingBindings(bindings, preset.Groups, allowed)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	encoded, err := encodeRoutingBindings(normalized)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE personal_subscription_groups
+		SET routing_bindings_json = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
+		encoded, s.now().UTC().Truncate(time.Second).Unix(), id, actor.UserID)
+	if err != nil {
+		return PersonalSubscription{}, fmt.Errorf("update personal subscription routing bindings: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return PersonalSubscription{}, ErrPersonalSubscriptionNotFound
 	}
 	return s.GetPersonalSubscription(ctx, actor, id)
 }
@@ -368,7 +441,8 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 		return PersonalSubscriptionData{}, err
 	}
 	result := PersonalSubscriptionData{
-		Title: group.SubscriptionTitle, PublishedNodeNames: make(map[int64]string), RoutingPreset: &routing,
+		Title: group.SubscriptionTitle, NodeNames: make(map[int64]string),
+		RoutingBindings: group.RoutingBindings, RoutingPreset: &routing,
 	}
 	if result.Title == "" {
 		result.Title = group.Name
@@ -395,6 +469,7 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 			continue
 		}
 		result.Nodes = append(result.Nodes, *state.resolved)
+		result.NodeNames[node.ID] = state.resolved.Name
 	}
 	if len(result.Nodes) == 0 {
 		return PersonalSubscriptionData{}, ErrPersonalSubscriptionEmpty
@@ -849,7 +924,8 @@ func personalSourceKey(sourceType string, sourceID int64) string {
 
 const personalSubscriptionSelect = `SELECT groups.id, groups.owner_user_id, groups.name,
 	groups.subscription_title, groups.token, groups.enabled, groups.client_name,
-	groups.routing_preset_id, routing.name, groups.mihomo_template_id, COALESCE(templates.name, ''),
+	groups.routing_preset_id, routing.name, groups.routing_bindings_json,
+	groups.mihomo_template_id, COALESCE(templates.name, ''),
 	groups.created_at, groups.updated_at
 	FROM personal_subscription_groups AS groups
 	JOIN subscription_routing_presets AS routing ON routing.id = groups.routing_preset_id
@@ -859,12 +935,18 @@ func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 	var value PersonalSubscription
 	var enabled int
 	var templateID sql.NullInt64
+	var routingBindingsJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.SubscriptionTitle, &value.Token,
 		&enabled, &value.ClientName, &value.RoutingPresetID, &value.RoutingPresetName,
-		&templateID, &value.MihomoTemplateName, &createdAt, &updatedAt); err != nil {
+		&routingBindingsJSON, &templateID, &value.MihomoTemplateName, &createdAt, &updatedAt); err != nil {
 		return PersonalSubscription{}, err
 	}
+	bindings, err := decodeRoutingBindings(routingBindingsJSON)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	value.RoutingBindings = bindings
 	if templateID.Valid {
 		id := templateID.Int64
 		value.MihomoTemplateID = &id

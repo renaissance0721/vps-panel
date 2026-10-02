@@ -14,7 +14,7 @@ import (
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription plans: %w", err)
@@ -46,7 +46,7 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
 	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
@@ -102,7 +102,7 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	}
 	defer tx.Rollback()
 	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
@@ -187,8 +187,8 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 		return Plan{}, nil, fmt.Errorf("begin subscription plan node update: %w", err)
 	}
 	defer tx.Rollback()
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM subscription_plans WHERE id = ?`, planID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var bindingsJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT routing_bindings_json FROM subscription_plans WHERE id = ?`, planID).Scan(&bindingsJSON); errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
 	} else if err != nil {
 		return Plan{}, nil, fmt.Errorf("find subscription plan: %w", err)
@@ -248,8 +248,18 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 			return Plan{}, nil, fmt.Errorf("add subscription plan node: %w", err)
 		}
 	}
+	bindings, err := decodeRoutingBindings(bindingsJSON)
+	if err != nil {
+		return Plan{}, nil, err
+	}
+	bindings = pruneRoutingBindings(bindings, seen)
+	encodedBindings, err := encodeRoutingBindings(bindings)
+	if err != nil {
+		return Plan{}, nil, err
+	}
 	now := s.now().UTC().Truncate(time.Second)
-	if _, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET updated_at = ? WHERE id = ?`, now.Unix(), planID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET routing_bindings_json = ?, updated_at = ? WHERE id = ?`,
+		encodedBindings, now.Unix(), planID); err != nil {
 		return Plan{}, nil, fmt.Errorf("touch subscription plan: %w", err)
 	}
 	affected := make(map[int64]struct{})
@@ -265,6 +275,42 @@ func (s *Service) SetPlanNodes(ctx context.Context, planID int64, nodeIDs []int6
 	}
 	updated, err := s.GetPlan(ctx, planID)
 	return updated, mutations, err
+}
+
+func (s *Service) SetPlanRoutingBindings(ctx context.Context, planID int64, bindings RoutingBindings) (Plan, error) {
+	plan, err := s.GetPlan(ctx, planID)
+	if err != nil {
+		return Plan{}, err
+	}
+	if plan.RoutingPresetID == nil {
+		return Plan{}, ErrRoutingPresetNotFound
+	}
+	preset, err := s.GetRoutingPreset(ctx, *plan.RoutingPresetID)
+	if err != nil {
+		return Plan{}, err
+	}
+	allowed := make(map[int64]struct{}, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		allowed[node.ID] = struct{}{}
+	}
+	normalized, err := normalizeRoutingBindings(bindings, preset.Groups, allowed)
+	if err != nil {
+		return Plan{}, err
+	}
+	encoded, err := encodeRoutingBindings(normalized)
+	if err != nil {
+		return Plan{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE subscription_plans
+		SET routing_bindings_json = ?, updated_at = ? WHERE id = ?`,
+		encoded, s.now().UTC().Truncate(time.Second).Unix(), planID)
+	if err != nil {
+		return Plan{}, fmt.Errorf("update subscription plan routing bindings: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return Plan{}, ErrPlanNotFound
+	}
+	return s.GetPlan(ctx, planID)
 }
 
 func (s *Service) DeletePlan(ctx context.Context, id int64) error {
@@ -415,10 +461,11 @@ func scanPlan(row rowScanner) (Plan, error) {
 	var trafficLimit sql.NullInt64
 	var subscriptionTitle sql.NullString
 	var routingPresetID, templateID sql.NullInt64
+	var routingBindingsJSON string
 	var enabled int
 	var createdAt, updatedAt int64
 	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit,
-		&routingPresetID, &templateID, &createdAt, &updatedAt)
+		&routingPresetID, &routingBindingsJSON, &templateID, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -431,6 +478,10 @@ func scanPlan(row rowScanner) (Plan, error) {
 	if routingPresetID.Valid {
 		id := routingPresetID.Int64
 		value.RoutingPresetID = &id
+	}
+	value.RoutingBindings, err = decodeRoutingBindings(routingBindingsJSON)
+	if err != nil {
+		return Plan{}, err
 	}
 	if templateID.Valid {
 		id := templateID.Int64

@@ -88,7 +88,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		response.Header().Get("Subscription-Userinfo") != "upload=0; download=0; total=1024; expire=0" ||
 		response.Header().Get("Profile-Title") != "base64:"+base64.StdEncoding.EncodeToString([]byte("我的机场")) ||
 		response.Header().Get("Profile-Update-Interval") != "24" ||
-		response.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA.txt" {
+		response.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA" {
 		t.Fatalf("public subscription response = status %d headers %v body %q", response.Code, response.Header(), response.Body.String())
 	}
 	decoded, err := base64.StdEncoding.DecodeString(response.Body.String())
@@ -99,7 +99,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 	mihomo := httptest.NewRecorder()
 	handler.ServeHTTP(mihomo, httptest.NewRequest(http.MethodGet, "/sub/public-token/mihomo", nil))
 	if mihomo.Code != http.StatusOK || mihomo.Header().Get("Content-Type") != "text/yaml; charset=utf-8" ||
-		mihomo.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA.yaml" ||
+		mihomo.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''%E6%88%91%E7%9A%84%E6%9C%BA%E5%9C%BA" ||
 		mihomo.Header().Get("Subscription-Userinfo") != response.Header().Get("Subscription-Userinfo") ||
 		mihomo.Header().Get("Profile-Title") != response.Header().Get("Profile-Title") ||
 		mihomo.Header().Get("Profile-Update-Interval") != "24" {
@@ -129,7 +129,8 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		config.Proxies[0].ClientFingerprint != proxystore.Fingerprint ||
 		config.Proxies[0].RealityOptions.PublicKey == "" || config.Proxies[0].RealityOptions.ShortID == "" ||
 		len(config.ProxyGroups) != 8 || config.ProxyGroups[0].Name != "🚀 默认代理" ||
-		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != config.Proxies[0].Name ||
+		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != "DIRECT" ||
+		config.ProxyGroups[0].Proxies[1] != config.Proxies[0].Name ||
 		len(config.Rules) != 12 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
 	}

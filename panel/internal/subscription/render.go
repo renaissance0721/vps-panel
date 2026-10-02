@@ -65,15 +65,15 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	for _, node := range data.Nodes {
 		nodes = append(nodes, resolvedNodeFromClientShare(node))
 	}
-	return renderMihomoResolvedSubscription(nodes, data.PublishedNodeNames, data.RoutingPreset, data.Template)
+	return renderMihomoResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.Template)
 }
 
 func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, error) {
-	return renderMihomoResolvedSubscription(data.Nodes, data.PublishedNodeNames, data.RoutingPreset, data.Template)
+	return renderMihomoResolvedSubscription(data.Nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.Template)
 }
 
-func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, publishedNodeNames map[int64]string,
-	routingPreset *RoutingPreset, template *SubscriptionTemplate,
+func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
+	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate,
 ) ([]byte, error) {
 	proxies := make([]mihomoProxy, 0, len(nodes))
 	proxyNames := make([]string, 0, len(nodes))
@@ -102,7 +102,10 @@ func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, publishe
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
-	resolvedGroups := resolveRoutingGroups(routing.Groups, publishedNodeNames, proxyNames, routing.IsDefault)
+	resolvedGroups, err := resolveRoutingGroups(routing.Groups, routingBindings, nodeNames, proxyNames)
+	if err != nil {
+		return nil, err
+	}
 	groupsNode, err := encodeYAMLValue(resolvedGroups)
 	if err != nil {
 		return nil, fmt.Errorf("encode Mihomo routing groups: %w", err)
@@ -207,29 +210,28 @@ func encodeYAMLValue(value any) (*yaml.Node, error) {
 	return document.Content[0], nil
 }
 
-func resolveRoutingGroups(groups []RoutingGroup, names map[int64]string, allNames []string, isDefault bool) []mihomoProxyGroup {
+func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
+	allNames []string,
+) ([]mihomoProxyGroup, error) {
 	values := make([]mihomoProxyGroup, 0, len(groups))
-	for index, group := range groups {
-		members := make([]string, 0, len(group.Proxies)+len(group.NodeIDs)+len(allNames))
-		if group.IncludeAll && isDefault && index == 0 {
-			members = append(members, allNames...)
-		}
+	for _, group := range groups {
+		members := make([]string, 0, len(group.Proxies)+len(bindings[group.Key])+len(allNames))
 		members = append(members, group.Proxies...)
-		for _, nodeID := range group.NodeIDs {
+		for _, nodeID := range bindings[group.Key] {
 			if name, exists := names[nodeID]; exists {
 				members = append(members, name)
 			}
 		}
-		if group.IncludeAll && !(isDefault && index == 0) {
+		if group.IncludeAll {
 			members = append(members, allNames...)
 		}
 		members = uniqueStrings(members)
 		if len(members) == 0 {
-			members = []string{"DIRECT"}
+			return nil, fmt.Errorf("策略组 %q 没有任何可用成员: %w", group.Name, ErrRoutingGroupEmpty)
 		}
 		values = append(values, mihomoProxyGroup{Name: group.Name, Type: group.Type, Proxies: members})
 	}
-	return values
+	return values, nil
 }
 
 func validateRenderedMihomo(root *yaml.Node, proxyNames []string) error {

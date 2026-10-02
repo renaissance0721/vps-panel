@@ -78,7 +78,7 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 		name    string
 		proxies []string
 	}{
-		{name: "🚀 默认代理", proxies: []string{data.Nodes[0].DisplayName, data.Nodes[1].DisplayName, "DIRECT"}},
+		{name: "🚀 默认代理", proxies: []string{"DIRECT", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
 		{name: "🤖 AI", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
 		{name: "▶️ YouTube", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
 		{name: "🎬 Netflix", proxies: []string{"🚀 默认代理", data.Nodes[0].DisplayName, data.Nodes[1].DisplayName}},
@@ -222,7 +222,7 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 	dns := raw["dns"].(map[string]any)
 	if raw["mixed-port"] != 7890 || dns["enable"] != false || len(parsed.ProxyGroups) != 8 ||
 		parsed.ProxyGroups[0].Name != "🚀 默认代理" ||
-		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"Custom", "DIRECT"}) ||
+		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"DIRECT", "Custom"}) ||
 		!slices.Equal(parsed.Rules, []string{
 			"RULE-SET,OpenAI,🤖 AI", "RULE-SET,Claude,🤖 AI", "RULE-SET,Gemini,🤖 AI",
 			"RULE-SET,YouTube,▶️ YouTube", "RULE-SET,Netflix,🎬 Netflix", "RULE-SET,Telegram,✈️ Telegram",
@@ -243,15 +243,14 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 	routing := &RoutingPreset{
 		Name: "Plan", Enabled: true,
 		Groups: []RoutingGroup{
-			{Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
-			{Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, NodeIDs: []int64{7, 999}, IncludeAll: true},
-			{Name: "Empty", Type: "select"},
+			{Key: "grp_other", Name: "Other", Type: "select", Proxies: []string{"DIRECT"}},
+			{Key: "grp_plan", Name: "Plan", Type: "select", Proxies: []string{"Other", "DIRECT"}, IncludeAll: true},
 		},
 		Rules: []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"},
 	}
 	body, err := RenderMihomoSubscription(SubscriptionData{
-		Nodes: []proxystore.ClientShare{node}, PublishedNodeNames: map[int64]string{7: "Node A"}, Template: custom,
-		RoutingPreset: routing,
+		Nodes: []proxystore.ClientShare{node}, NodeNames: map[int64]string{7: "Node A"},
+		RoutingBindings: RoutingBindings{"grp_plan": {7, 999}}, Template: custom, RoutingPreset: routing,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -260,11 +259,19 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 	if err := yaml.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Mode != "rule" || len(parsed.ProxyGroups) != 3 ||
+	if parsed.Mode != "rule" || len(parsed.ProxyGroups) != 2 ||
 		!slices.Equal(parsed.ProxyGroups[1].Proxies, []string{"Other", "DIRECT", "Node A"}) ||
-		!slices.Equal(parsed.ProxyGroups[2].Proxies, []string{"DIRECT"}) ||
 		!slices.Equal(parsed.Rules, []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"}) {
 		t.Fatalf("plan routing override = %+v\n%s", parsed, body)
+	}
+}
+
+func TestRenderMihomoRejectsEmptyRoutingGroup(t *testing.T) {
+	routing := &RoutingPreset{Name: "Empty", Enabled: true,
+		Groups: []RoutingGroup{{Key: "grp_empty", Name: "UK", Type: "select"}},
+		Rules:  []string{"MATCH,UK"}}
+	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); !errors.Is(err, ErrRoutingGroupEmpty) || !strings.Contains(err.Error(), "UK") {
+		t.Fatalf("empty routing group error = %v", err)
 	}
 }
 

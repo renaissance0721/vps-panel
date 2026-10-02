@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 9
+const LatestSchemaVersion = 10
 
 type migration struct {
 	version int
@@ -31,6 +31,160 @@ var migrations = []migration{
 	{version: 7, name: "routing_presets_as_runtime_profiles", up: migrateRoutingPresetsAsRuntimeProfiles},
 	{version: 8, name: "personal_subscriptions", up: createPersonalSubscriptions},
 	{version: 9, name: "personal_subscription_node_instances", up: migratePersonalSubscriptionNodeInstances},
+	{version: 10, name: "routing_bindings", up: migrateRoutingBindings},
+}
+
+func migrateRoutingBindings(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE subscription_plans ADD COLUMN routing_bindings_json TEXT NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE personal_subscription_groups ADD COLUMN routing_bindings_json TEXT NOT NULL DEFAULT '{}'`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add subscription routing bindings: %w", err)
+		}
+	}
+
+	type migratedPreset struct {
+		id       int64
+		groups   string
+		bindings map[string][]int64
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, groups_json FROM subscription_routing_presets ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list routing presets for binding migration: %w", err)
+	}
+	presets := make([]migratedPreset, 0)
+	for rows.Next() {
+		var id int64
+		var groupsJSON string
+		if err := rows.Scan(&id, &groupsJSON); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan routing preset for binding migration: %w", err)
+		}
+		var groups []migratedRoutingGroup
+		if err := decodeMigrationJSON(groupsJSON, &groups); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode routing preset %d groups for binding migration: %w", id, err)
+		}
+		seenKeys := make(map[string]struct{}, len(groups))
+		bindings := make(map[string][]int64)
+		for index := range groups {
+			key := strings.TrimSpace(groups[index].Key)
+			if _, duplicate := seenKeys[key]; key == "" || duplicate {
+				key = migrationRoutingGroupKey(id, index+1, seenKeys)
+			}
+			groups[index].Key = key
+			seenKeys[key] = struct{}{}
+			if len(groups[index].NodeIDs) != 0 {
+				bindings[key] = append([]int64(nil), groups[index].NodeIDs...)
+			}
+			groups[index].NodeIDs = nil
+		}
+		encoded, err := json.Marshal(groups)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("encode routing preset %d groups for binding migration: %w", id, err)
+		}
+		presets = append(presets, migratedPreset{id: id, groups: string(encoded), bindings: bindings})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate routing presets for binding migration: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close routing presets for binding migration: %w", err)
+	}
+	for _, preset := range presets {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_routing_presets SET groups_json = ? WHERE id = ?`,
+			preset.groups, preset.id); err != nil {
+			return fmt.Errorf("store routing preset %d groups for binding migration: %w", preset.id, err)
+		}
+	}
+
+	presetBindings := make(map[int64]map[string][]int64, len(presets))
+	for _, preset := range presets {
+		presetBindings[preset.id] = preset.bindings
+	}
+	planRows, err := tx.QueryContext(ctx, `SELECT id, routing_preset_id FROM subscription_plans
+		WHERE routing_preset_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list plans for routing binding migration: %w", err)
+	}
+	type migratedPlan struct{ id, presetID int64 }
+	plans := make([]migratedPlan, 0)
+	for planRows.Next() {
+		var value migratedPlan
+		if err := planRows.Scan(&value.id, &value.presetID); err != nil {
+			planRows.Close()
+			return fmt.Errorf("scan plan for routing binding migration: %w", err)
+		}
+		plans = append(plans, value)
+	}
+	if err := planRows.Err(); err != nil {
+		planRows.Close()
+		return fmt.Errorf("iterate plans for routing binding migration: %w", err)
+	}
+	if err := planRows.Close(); err != nil {
+		return fmt.Errorf("close plans for routing binding migration: %w", err)
+	}
+	for _, plan := range plans {
+		legacy := presetBindings[plan.presetID]
+		if len(legacy) == 0 {
+			continue
+		}
+		allowed := make(map[int64]struct{})
+		nodeRows, err := tx.QueryContext(ctx,
+			`SELECT published_node_id FROM subscription_plan_nodes WHERE plan_id = ?`, plan.id)
+		if err != nil {
+			return fmt.Errorf("list plan %d nodes for routing binding migration: %w", plan.id, err)
+		}
+		for nodeRows.Next() {
+			var nodeID int64
+			if err := nodeRows.Scan(&nodeID); err != nil {
+				nodeRows.Close()
+				return fmt.Errorf("scan plan %d node for routing binding migration: %w", plan.id, err)
+			}
+			allowed[nodeID] = struct{}{}
+		}
+		if err := nodeRows.Err(); err != nil {
+			nodeRows.Close()
+			return fmt.Errorf("iterate plan %d nodes for routing binding migration: %w", plan.id, err)
+		}
+		if err := nodeRows.Close(); err != nil {
+			return fmt.Errorf("close plan %d nodes for routing binding migration: %w", plan.id, err)
+		}
+		bindings := make(map[string][]int64)
+		for key, nodeIDs := range legacy {
+			for _, nodeID := range nodeIDs {
+				if _, exists := allowed[nodeID]; exists {
+					bindings[key] = append(bindings[key], nodeID)
+				}
+			}
+			if len(bindings[key]) == 0 {
+				delete(bindings, key)
+			}
+		}
+		encoded, err := json.Marshal(bindings)
+		if err != nil {
+			return fmt.Errorf("encode plan %d routing bindings: %w", plan.id, err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE subscription_plans SET routing_bindings_json = ? WHERE id = ?`, encoded, plan.id); err != nil {
+			return fmt.Errorf("store plan %d routing bindings: %w", plan.id, err)
+		}
+	}
+	return nil
+}
+
+func migrationRoutingGroupKey(presetID int64, position int, existing map[string]struct{}) string {
+	base := fmt.Sprintf("grp_%d_%d", presetID, position)
+	value := base
+	for suffix := 2; ; suffix++ {
+		if _, exists := existing[value]; !exists {
+			return value
+		}
+		value = fmt.Sprintf("%s_%d", base, suffix)
+	}
 }
 
 func migratePersonalSubscriptionNodeInstances(ctx context.Context, tx *sql.Tx) error {
@@ -589,6 +743,7 @@ type legacyRoutingRule struct {
 }
 
 type migratedRoutingGroup struct {
+	Key        string   `json:"key,omitempty"`
 	Name       string   `json:"name"`
 	Type       string   `json:"type"`
 	Proxies    []string `json:"proxies"`

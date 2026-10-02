@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
+import RoutingBindingEditor, { type RoutingBindings } from '../components/subscription/RoutingBindingEditor.vue'
 import RoutingGroupEditor, { type RoutingGroup } from '../components/subscription/RoutingGroupEditor.vue'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { beginDragPreview, endDragPreview } from '../drag'
@@ -43,6 +44,7 @@ type Plan = {
   routing_preset_id: number
   template_id: number | null
   nodes: PublishedNode[]
+  routing_bindings: RoutingBindings
 }
 type RoutingPreset = {
   id: number
@@ -116,6 +118,7 @@ type PersonalSubscription = {
   mihomo_template_id: number | null
   mihomo_template_name: string
   nodes: PersonalNode[]
+  routing_bindings: RoutingBindings
   subscription_base64_url: string
   subscription_mihomo_url: string
   subscription_auto_url: string
@@ -169,6 +172,7 @@ const planSubscriptionTitle = ref('')
 const planEnabled = ref(true)
 const planTrafficGiB = ref('')
 const planNodeIDs = ref<number[]>([])
+const planRoutingBindings = ref<RoutingBindings>({})
 const planRoutingPresetID = ref(0)
 const planTemplateID = ref(0)
 const planFormError = ref('')
@@ -220,6 +224,7 @@ const personalClientName = ref('')
 const personalRoutingPresetID = ref(0)
 const personalMihomoTemplateID = ref(0)
 const personalNodes = ref<PersonalNode[]>([])
+const personalRoutingBindings = ref<RoutingBindings>({})
 const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
@@ -254,6 +259,12 @@ const selectablePersonalRoutingPresets = computed(() => routingPresets.value.fil
 const selectablePersonalTemplates = computed(() => templates.value.filter((value) =>
   value.enabled || value.id === editingPersonal.value?.mihomo_template_id,
 ))
+const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
+const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
+const routingRuleLines = computed({
+  get: () => routingLines(routingRulesText.value),
+  set: (value: string[]) => { routingRulesText.value = value.join('\n') },
+})
 const orderedPlanNodes = computed(() => {
   const byID = new Map(nodes.value.map((node) => [node.id, node]))
   const selected = planNodeIDs.value.flatMap((id) => {
@@ -349,6 +360,22 @@ function clonePersonalNodes(values: PersonalNode[]) {
   return values.map((value) => ({ ...value }))
 }
 
+function cloneRoutingBindings(value: RoutingBindings) {
+  return Object.fromEntries(Object.entries(value ?? {}).map(([key, ids]) => [key, [...ids]]))
+}
+
+function normalizeRoutingBindings(groups: RoutingGroup[], bindings: RoutingBindings, allowedIDs: number[]) {
+  const allowed = new Set(allowedIDs)
+  return Object.fromEntries(groups.filter((group) => group.key).map((group) => [
+    group.key,
+    (bindings[group.key] ?? []).filter((id, index, ids) => allowed.has(id) && ids.indexOf(id) === index),
+  ]))
+}
+
+function pruneRoutingBindingNode(bindings: RoutingBindings, nodeID: number) {
+  return Object.fromEntries(Object.entries(bindings).map(([key, ids]) => [key, ids.filter((id) => id !== nodeID)]))
+}
+
 function openCreatePersonal() {
   editingPersonal.value = null
   personalName.value = ''
@@ -358,6 +385,7 @@ function openCreatePersonal() {
   personalRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
   personalMihomoTemplateID.value = 0
   personalNodes.value = []
+  personalRoutingBindings.value = {}
   personalSources.value = []
   expandedPersonalNodeIDs.value = new Set()
   personalFormError.value = ''
@@ -376,6 +404,7 @@ async function openEditPersonal(value: PersonalSubscription) {
     personalRoutingPresetID.value = current.routing_preset_id
     personalMihomoTemplateID.value = current.mihomo_template_id ?? 0
     personalNodes.value = clonePersonalNodes(current.nodes)
+    personalRoutingBindings.value = cloneRoutingBindings(current.routing_bindings)
     expandedPersonalNodeIDs.value = new Set()
     personalFormError.value = ''
     personalModalOpen.value = true
@@ -434,6 +463,7 @@ function removePersonalNode(index: number) {
   personalNodes.value.splice(index, 1)
   personalNodes.value.forEach((node, position) => { node.position = position + 1 })
   if (id !== undefined) {
+    personalRoutingBindings.value = pruneRoutingBindingNode(personalRoutingBindings.value, id)
     const expanded = new Set(expandedPersonalNodeIDs.value)
     expanded.delete(id)
     expandedPersonalNodeIDs.value = expanded
@@ -504,6 +534,7 @@ async function savePersonal() {
   const creating = id === undefined
   let groupSaved = false
   let nodesSaved = false
+  let bindingsSaved = false
   try {
     const body = {
       name: personalName.value.trim(), subscription_title: personalTitle.value.trim(),
@@ -520,10 +551,12 @@ async function savePersonal() {
       id = response.personal_subscription.id
     }
     groupSaved = true
-    await api(`/api/personal-subscriptions/${id}/nodes`, {
+    const submittedNodes = [...personalNodes.value]
+    const savedNodes = await api<{ personal_subscription: PersonalSubscription }>(`/api/personal-subscriptions/${id}/nodes`, {
       method: 'PUT',
       body: JSON.stringify({
-        nodes: personalNodes.value.map((node) => ({
+        nodes: submittedNodes.map((node) => ({
+          id: node.id > 0 ? node.id : null,
           source_type: node.source_type, source_id: node.source_id,
           display_name: node.display_name.trim(), enabled: node.enabled,
           entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
@@ -531,6 +564,24 @@ async function savePersonal() {
       }),
     })
     nodesSaved = true
+    const savedIDs = savedNodes.personal_subscription.nodes.map((node) => node.id)
+    const idMap = new Map(submittedNodes.map((node, index) => [node.id, savedIDs[index]]))
+    const translatedBindings = Object.fromEntries(Object.entries(personalRoutingBindings.value).map(([key, ids]) => [
+      key,
+      ids.flatMap((nodeID) => {
+        const savedID = idMap.get(nodeID)
+        return savedID === undefined ? [] : [savedID]
+      }),
+    ]))
+    personalNodes.value = clonePersonalNodes(savedNodes.personal_subscription.nodes)
+    personalRoutingBindings.value = translatedBindings
+    await api(`/api/personal-subscriptions/${id}/routing-bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        routing_bindings: normalizeRoutingBindings(selectedPersonalRoutingGroups.value, translatedBindings, savedIDs),
+      }),
+    })
+    bindingsSaved = true
     await loadAll()
     personalModalOpen.value = false
   } catch (reason) {
@@ -546,6 +597,8 @@ async function savePersonal() {
         const refreshMessage = refreshReason instanceof Error ? refreshReason.message : '未知错误'
         personalFormError.value += `；刷新服务端状态失败：${refreshMessage}`
       }
+    } else if (nodesSaved && !bindingsSaved) {
+      personalFormError.value = `个人订阅和节点列表已保存，但策略组节点绑定保存失败：${message}`
     } else if (groupSaved) {
       personalFormError.value = `个人订阅已保存，但刷新列表失败：${message}`
     } else {
@@ -721,6 +774,7 @@ function openCreatePlan() {
   planEnabled.value = true
   planTrafficGiB.value = ''
   planNodeIDs.value = []
+  planRoutingBindings.value = {}
   planRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
   planTemplateID.value = 0
   planModalOpen.value = true
@@ -733,6 +787,7 @@ function populatePlanForm(value: Plan) {
   planEnabled.value = value.enabled
   planTrafficGiB.value = value.traffic_limit_bytes === null ? '' : String(value.traffic_limit_bytes / 1024 ** 3)
   planNodeIDs.value = value.nodes.map((node) => node.id)
+  planRoutingBindings.value = cloneRoutingBindings(value.routing_bindings)
   planRoutingPresetID.value = value.routing_preset_id
   planTemplateID.value = value.template_id ?? 0
 }
@@ -745,7 +800,10 @@ function openEditPlan(value: Plan) {
 
 function togglePlanNode(id: number, checked: boolean) {
   if (checked && !planNodeIDs.value.includes(id)) planNodeIDs.value.push(id)
-  if (!checked) planNodeIDs.value = planNodeIDs.value.filter((value) => value !== id)
+  if (!checked) {
+    planNodeIDs.value = planNodeIDs.value.filter((value) => value !== id)
+    planRoutingBindings.value = pruneRoutingBindingNode(planRoutingBindings.value, id)
+  }
 }
 
 function movePlanNode(index: number, direction: -1 | 1) {
@@ -761,7 +819,7 @@ function routingLines(value: string) {
 }
 
 function cloneRoutingGroups(values: RoutingGroup[]) {
-  return values.map((group) => ({ ...group, proxies: [...group.proxies], node_ids: [...(group.node_ids ?? [])] }))
+  return values.map((group) => ({ ...group, proxies: [...group.proxies] }))
 }
 
 function cloneRoutingProviders(values: RoutingRuleProvider[]) {
@@ -841,6 +899,7 @@ async function savePlan() {
   const creating = id === undefined
   let planSaved = false
   let nodesSaved = false
+  let bindingsSaved = false
   try {
     if (id !== undefined) {
       await api(`/api/admin/subscription/plans/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
@@ -853,6 +912,13 @@ async function savePlan() {
       method: 'PUT', body: JSON.stringify({ node_ids: planNodeIDs.value }),
     })
     nodesSaved = true
+    await api(`/api/admin/subscription/plans/${id}/routing-bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        routing_bindings: normalizeRoutingBindings(selectedPlanRoutingGroups.value, planRoutingBindings.value, planNodeIDs.value),
+      }),
+    })
+    bindingsSaved = true
     await loadAll()
     planModalOpen.value = false
   } catch (reason) {
@@ -869,6 +935,8 @@ async function savePlan() {
         const refreshMessage = refreshReason instanceof Error ? refreshReason.message : '未知错误'
         planFormError.value += `；刷新服务端状态失败：${refreshMessage}`
       }
+    } else if (nodesSaved && !bindingsSaved) {
+      planFormError.value = `共享订阅和节点列表已保存，但策略组节点绑定保存失败：${message}`
     } else if (planSaved) {
       planFormError.value = `共享订阅已保存，但刷新列表失败：${message}`
     } else {
@@ -936,8 +1004,34 @@ function addRoutingProvider() {
   })
 }
 
+function ruleUsesProvider(rule: string, name: string) {
+  const parts = rule.split(',').map((part) => part.trim())
+  return parts[0] === 'RULE-SET' && parts[1] === name
+}
+
+function setRoutingProviderName(index: number, name: string) {
+  const oldName = routingProviders.value[index]?.name
+  if (oldName === undefined || oldName === name) return
+  routingProviders.value[index].name = name
+  routingRulesText.value = routingLines(routingRulesText.value).map((rule) => {
+    const parts = rule.split(',').map((part) => part.trim())
+    if (parts[0] === 'RULE-SET' && parts[1] === oldName) parts[1] = name
+    return parts.join(',')
+  }).join('\n')
+  routingFormError.value = ''
+}
+
 function removeRoutingProvider(index: number) {
+  const provider = routingProviders.value[index]
+  const referencedAt = provider
+    ? routingLines(routingRulesText.value).findIndex((rule) => ruleUsesProvider(rule, provider.name))
+    : -1
+  if (provider && referencedAt >= 0) {
+    routingFormError.value = `规则源“${provider.name}”仍被第 ${referencedAt + 1} 条 Rule 使用，请先解除引用`
+    return
+  }
   routingProviders.value.splice(index, 1)
+  routingFormError.value = ''
 }
 
 async function deleteRoutingPreset(value: RoutingPreset) {
@@ -1259,6 +1353,11 @@ onMounted(async () => {
         </div>
       </TransitionGroup>
     </fieldset>
+    <RoutingBindingEditor
+      v-model="personalRoutingBindings"
+      :groups="selectedPersonalRoutingGroups"
+      :nodes="personalNodes.map((node) => ({ id: node.id, name: node.display_name }))"
+    />
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
@@ -1284,7 +1383,7 @@ onMounted(async () => {
   <n-modal v-model:show="routingPreviewOpen"><n-card class="client-form-card subscription-form-card" :title="routingPreviewTitle" closable @close="routingPreviewOpen = false">
     <p class="form-help">{{ routingPreviewHelp }}</p>
     <h3>策略组</h3>
-    <RoutingGroupEditor :model-value="routingPreviewGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" readonly />
+    <RoutingGroupEditor :model-value="routingPreviewGroups" readonly />
     <h3>规则源（Rule Providers）</h3>
     <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
     <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
@@ -1304,11 +1403,11 @@ onMounted(async () => {
     <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" /></label>
     <div class="switch-row"><span>启用方案</span><n-switch v-model:value="routingEnabled" :disabled="Boolean(editingRoutingPreset?.is_default)" /></div>
     <p class="form-help">策略组顺序决定生成到客户端后的策略组排列顺序。</p>
-    <RoutingGroupEditor v-model="routingGroups" :nodes="nodes.map((node) => ({ id: node.id, name: nodeDisplayName(node) }))" />
+    <RoutingGroupEditor v-model="routingGroups" v-model:rules="routingRuleLines" @validation-error="routingFormError = $event" />
     <fieldset class="subscription-node-picker"><legend>规则源（Rule Providers）</legend>
       <p class="form-help">规则源决定匹配数据从哪里获取。规则源本身没有匹配优先级。</p>
       <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
-        <label><span>名称</span><n-input v-model:value="provider.name" placeholder="Google" /></label>
+        <label><span>名称</span><n-input :value="provider.name" placeholder="Google" @update:value="setRoutingProviderName(index, $event)" /></label>
         <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
         <label><span>类型</span><select v-model="provider.type" class="settings-input"><option value="http">http</option></select></label>
         <label><span>Behavior</span><n-input v-model:value="provider.behavior" placeholder="classical" /></label>
@@ -1373,6 +1472,11 @@ onMounted(async () => {
     <fieldset class="subscription-node-picker"><legend>包含节点（上下调整订阅顺序）</legend>
       <label v-for="node in orderedPlanNodes" :key="node.id" class="subscription-node-option"><input type="checkbox" :checked="planNodeIDs.includes(node.id)" @change="togglePlanNode(node.id, ($event.target as HTMLInputElement).checked)" /><span>{{ nodeDisplayName(node) }}</span><template v-if="planNodeIDs.includes(node.id)"><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), -1)">上移</n-button><n-button size="tiny" secondary attr-type="button" @click.prevent="movePlanNode(planNodeIDs.indexOf(node.id), 1)">下移</n-button></template></label>
     </fieldset>
+    <RoutingBindingEditor
+      v-model="planRoutingBindings"
+      :groups="selectedPlanRoutingGroups"
+      :nodes="nodes.filter((node) => planNodeIDs.includes(node.id)).map((node) => ({ id: node.id, name: nodeDisplayName(node) }))"
+    />
     <div class="modal-actions subscription-form-actions"><n-button @click="planModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 

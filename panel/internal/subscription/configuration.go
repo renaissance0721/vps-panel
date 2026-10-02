@@ -2,7 +2,9 @@ package subscription
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,13 +63,13 @@ func (s *Service) GetRoutingPreset(ctx context.Context, id int64) (RoutingPreset
 
 func (s *Service) CreateRoutingPreset(ctx context.Context, input CreateRoutingPresetInput) (RoutingPreset, error) {
 	value := RoutingPreset{
-		Name: input.Name, Enabled: input.Enabled, Groups: input.Groups,
+		Name: input.Name, Enabled: input.Enabled, Groups: append([]RoutingGroup(nil), input.Groups...),
 		RuleProviders: input.RuleProviders, Rules: input.Rules,
 	}
-	if err := normalizeRoutingPreset(&value); err != nil {
-		return RoutingPreset{}, err
+	for index := range value.Groups {
+		value.Groups[index].Key = ""
 	}
-	if err := validateRoutingNodeRefs(ctx, s.db, value.Groups); err != nil {
+	if err := normalizeRoutingPreset(&value); err != nil {
 		return RoutingPreset{}, err
 	}
 	groups, _ := json.Marshal(value.Groups)
@@ -106,6 +108,17 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 		value.Enabled = *input.Enabled
 	}
 	if input.Groups != nil {
+		existingKeys := make(map[string]struct{}, len(value.Groups))
+		for _, group := range value.Groups {
+			existingKeys[group.Key] = struct{}{}
+		}
+		for _, group := range *input.Groups {
+			if group.Key != "" {
+				if _, exists := existingKeys[group.Key]; !exists {
+					return RoutingPreset{}, fmt.Errorf("策略组 Key %q 不能修改: %w", group.Key, ErrRoutingGroupKeyInvalid)
+				}
+			}
+		}
 		value.Groups = *input.Groups
 	}
 	if input.RuleProviders != nil {
@@ -115,9 +128,6 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 		value.Rules = *input.Rules
 	}
 	if err := normalizeRoutingPreset(&value); err != nil {
-		return RoutingPreset{}, err
-	}
-	if err := validateRoutingNodeRefs(ctx, s.db, value.Groups); err != nil {
 		return RoutingPreset{}, err
 	}
 	groups, _ := json.Marshal(value.Groups)
@@ -171,7 +181,7 @@ func normalizeRoutingPreset(value *RoutingPreset) error {
 	}
 	providers, providerNames, err := normalizeRoutingRuleProviders(value.RuleProviders)
 	if err != nil {
-		return ErrInvalidRoutingPreset
+		return err
 	}
 	value.RuleProviders = providers
 	value.Groups, value.Rules, err = normalizeRoutingConfiguration(
@@ -189,7 +199,23 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 	}
 	normalizedGroups := make([]RoutingGroup, 0, len(groups))
 	groupsByName := make(map[string]RoutingGroup, len(groups))
+	groupKeys := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
+		group.Key = strings.TrimSpace(group.Key)
+		if group.Key == "" {
+			var err error
+			group.Key, err = newRoutingGroupKey(groupKeys)
+			if err != nil {
+				return nil, nil, fmt.Errorf("生成策略组 Key: %w", err)
+			}
+		}
+		if !validRoutingGroupKey(group.Key) {
+			return nil, nil, fmt.Errorf("策略组 Key %q 无效: %w", group.Key, ErrRoutingGroupKeyInvalid)
+		}
+		if _, exists := groupKeys[group.Key]; exists {
+			return nil, nil, fmt.Errorf("策略组 Key %q 重复: %w", group.Key, ErrRoutingGroupKeyInvalid)
+		}
+		groupKeys[group.Key] = struct{}{}
 		group.Name = strings.TrimSpace(group.Name)
 		group.Type = strings.TrimSpace(group.Type)
 		if group.Name == "" || utf8.RuneCountInString(group.Name) > maxNameRunes || group.Type != "select" ||
@@ -197,7 +223,7 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 			return nil, nil, invalid
 		}
 		if _, exists := groupsByName[group.Name]; exists {
-			return nil, nil, invalid
+			return nil, nil, fmt.Errorf("策略组名称 %q 重复: %w", group.Name, ErrRoutingGroupNameDuplicate)
 		}
 		proxies := make([]string, 0, len(group.Proxies))
 		seenProxies := make(map[string]struct{}, len(group.Proxies))
@@ -211,19 +237,7 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 				seenProxies[proxy] = struct{}{}
 			}
 		}
-		nodeIDs := make([]int64, 0, len(group.NodeIDs))
-		seenNodeIDs := make(map[int64]struct{}, len(group.NodeIDs))
-		for _, nodeID := range group.NodeIDs {
-			if nodeID <= 0 {
-				return nil, nil, invalid
-			}
-			if _, exists := seenNodeIDs[nodeID]; !exists {
-				nodeIDs = append(nodeIDs, nodeID)
-				seenNodeIDs[nodeID] = struct{}{}
-			}
-		}
 		group.Proxies = proxies
-		group.NodeIDs = nodeIDs
 		normalizedGroups = append(normalizedGroups, group)
 		groupsByName[group.Name] = group
 	}
@@ -234,28 +248,34 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 			}
 			if proxy != "DIRECT" && proxy != "REJECT" {
 				if _, exists := groupsByName[proxy]; !exists {
-					return nil, nil, invalid
+					return nil, nil, fmt.Errorf("策略组 %q 引用了不存在的策略组 %q: %w",
+						group.Name, proxy, ErrRoutingGroupReferenceMissing)
 				}
 			}
 		}
 	}
 	if routingGroupsCyclic(groupsByName) {
-		return nil, nil, invalid
+		return nil, nil, fmt.Errorf("策略组存在循环引用: %w", ErrRoutingGroupCycle)
 	}
 	groupNames := make(map[string]struct{}, len(groupsByName))
 	for name := range groupsByName {
 		groupNames[name] = struct{}{}
 	}
 	normalizedRules := make([]string, 0, len(rules))
-	for _, rule := range rules {
+	for index, rule := range rules {
 		rule = strings.TrimSpace(rule)
 		policy, provider, err := parseRoutingRule(rule)
-		if err != nil || !validRoutingPolicy(policy, groupNames) {
+		if err != nil {
 			return nil, nil, invalid
+		}
+		if !validRoutingPolicy(policy, groupNames) {
+			return nil, nil, fmt.Errorf("第 %d 条 Rule 引用了不存在的策略组 %q: %w",
+				index+1, policy, ErrRoutingRuleGroupMissing)
 		}
 		if provider != "" {
 			if _, exists := providerNames[provider]; !exists {
-				return nil, nil, invalid
+				return nil, nil, fmt.Errorf("第 %d 条 RULE-SET 引用了不存在的 Provider %q: %w",
+					index+1, provider, ErrRoutingRuleProviderMissing)
 			}
 		}
 		normalizedRules = append(normalizedRules, rule)
@@ -328,12 +348,16 @@ func normalizeRoutingRuleProviders(values []RoutingRuleProvider) ([]RoutingRuleP
 		value.Format = strings.TrimSpace(value.Format)
 		parsedURL, err := url.Parse(value.URL)
 		if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes || value.Type != "http" ||
-			value.Behavior == "" || value.Format == "" || value.Interval <= 0 || err != nil || parsedURL.Host == "" ||
-			(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || strings.ContainsAny(value.Behavior+value.Format, "\r\n") {
+			value.Behavior == "" || value.Format == "" || value.Interval <= 0 ||
+			strings.ContainsAny(value.Behavior+value.Format, "\r\n") {
 			return nil, nil, ErrInvalidRoutingPreset
 		}
+		if err != nil || parsedURL.Host == "" ||
+			(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			return nil, nil, fmt.Errorf("Provider %q 的 URL 无效: %w", value.Name, ErrRoutingProviderURLInvalid)
+		}
 		if _, exists := names[value.Name]; exists {
-			return nil, nil, ErrInvalidRoutingPreset
+			return nil, nil, fmt.Errorf("Provider 名称 %q 重复: %w", value.Name, ErrRoutingProviderNameDuplicate)
 		}
 		names[value.Name] = struct{}{}
 		providers = append(providers, value)
@@ -385,23 +409,6 @@ func validateRoutingConfigurationSize(groups []RoutingGroup, providers []Routing
 	return nil
 }
 
-func validateRoutingNodeRefs(ctx context.Context, query interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, groups []RoutingGroup) error {
-	for _, group := range groups {
-		for _, nodeID := range group.NodeIDs {
-			var exists int
-			if err := query.QueryRowContext(ctx,
-				`SELECT 1 FROM subscription_published_nodes WHERE id = ?`, nodeID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-				return ErrPublishedNodeNotFound
-			} else if err != nil {
-				return fmt.Errorf("validate routing preset node: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
 func parseRoutingRule(rule string) (string, string, error) {
 	if rule == "" || strings.ContainsAny(rule, "\r\n") || utf8.RuneCountInString(rule) > maxRoutingRuleRunes {
 		return "", "", ErrInvalidPlanRouting
@@ -437,6 +444,33 @@ func parseRoutingRule(rule string) (string, string, error) {
 		}
 		return parts[policyIndex], "", nil
 	}
+}
+
+func newRoutingGroupKey(existing map[string]struct{}) (string, error) {
+	for {
+		var raw [8]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", err
+		}
+		value := "grp_" + hex.EncodeToString(raw[:])
+		if _, exists := existing[value]; !exists {
+			return value, nil
+		}
+	}
+}
+
+func validRoutingGroupKey(value string) bool {
+	if !strings.HasPrefix(value, "grp_") || len(value) < 7 || len(value) > 64 {
+		return false
+	}
+	for _, current := range value[4:] {
+		if current >= 'a' && current <= 'z' || current >= 'A' && current <= 'Z' ||
+			current >= '0' && current <= '9' || current == '_' || current == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validRoutingPolicy(policy string, groupNames map[string]struct{}) bool {

@@ -35,12 +35,17 @@ type setPersonalSubscriptionNodesRequest struct {
 }
 
 type personalSubscriptionNodeRequest struct {
+	ID          *int64  `json:"id"`
 	SourceType  string  `json:"source_type"`
 	SourceID    int64   `json:"source_id"`
 	DisplayName string  `json:"display_name"`
 	Enabled     bool    `json:"enabled"`
 	EntryHost   *string `json:"entry_host"`
 	EntryPort   *int    `json:"entry_port"`
+}
+
+type setRoutingBindingsRequest struct {
+	RoutingBindings subscriptionstore.RoutingBindings `json:"routing_bindings"`
 }
 
 type personalSubscriptionNodeResponse struct {
@@ -69,6 +74,7 @@ type personalSubscriptionResponse struct {
 	ClientName            string                             `json:"client_name"`
 	RoutingPresetID       int64                              `json:"routing_preset_id"`
 	RoutingPresetName     string                             `json:"routing_preset_name"`
+	RoutingBindings       subscriptionstore.RoutingBindings  `json:"routing_bindings"`
 	MihomoTemplateID      *int64                             `json:"mihomo_template_id"`
 	MihomoTemplateName    string                             `json:"mihomo_template_name"`
 	Nodes                 []personalSubscriptionNodeResponse `json:"nodes"`
@@ -212,11 +218,34 @@ func (s *server) setPersonalSubscriptionNodes(w http.ResponseWriter, r *http.Req
 	inputs := make([]subscriptionstore.SetPersonalSubscriptionNodeInput, 0, len(request.Nodes))
 	for _, node := range request.Nodes {
 		inputs = append(inputs, subscriptionstore.SetPersonalSubscriptionNodeInput{
-			SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: node.DisplayName, Enabled: node.Enabled,
+			ID: node.ID, SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: node.DisplayName, Enabled: node.Enabled,
 			EntryHost: node.EntryHost, EntryPort: node.EntryPort,
 		})
 	}
 	value, err := s.subscriptions.SetPersonalSubscriptionNodes(r.Context(), personalActor(user), id, inputs)
+	if err != nil {
+		writePersonalSubscriptionError(w, err)
+		return
+	}
+	baseURL, ok := s.panelBaseURL(r)
+	if !ok {
+		writeInternalError(w, errPanelBaseURL)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"personal_subscription": toPersonalSubscriptionResponse(value, baseURL)})
+}
+
+func (s *server) setPersonalSubscriptionRoutingBindings(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "个人订阅 ID 无效")
+	if !ok {
+		return
+	}
+	var request setRoutingBindingsRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	value, err := s.subscriptions.SetPersonalSubscriptionRoutingBindings(
+		r.Context(), personalActor(user), id, request.RoutingBindings)
 	if err != nil {
 		writePersonalSubscriptionError(w, err)
 		return
@@ -259,6 +288,10 @@ func (s *server) previewPersonalSubscriptionMihomo(w http.ResponseWriter, r *htt
 	}
 	value, err := subscriptionstore.RenderPersonalMihomoSubscription(data)
 	if err != nil {
+		if errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty) {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -302,7 +335,8 @@ func toPersonalSubscriptionResponse(value subscriptionstore.PersonalSubscription
 	return personalSubscriptionResponse{
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
 		ClientName: value.ClientName, RoutingPresetID: value.RoutingPresetID,
-		RoutingPresetName: value.RoutingPresetName, MihomoTemplateID: value.MihomoTemplateID,
+		RoutingPresetName: value.RoutingPresetName, RoutingBindings: value.RoutingBindings,
+		MihomoTemplateID:   value.MihomoTemplateID,
 		MihomoTemplateName: value.MihomoTemplateName, Nodes: nodes,
 		SubscriptionBase64URL: urls.Base64, SubscriptionMihomoURL: urls.Mihomo, SubscriptionAutoURL: urls.Auto,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
@@ -326,6 +360,8 @@ func writePersonalSubscriptionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "节点来源不存在或当前用户无权访问")
 	case errors.Is(err, subscriptionstore.ErrPersonalSubscriptionEmpty):
 		writeError(w, http.StatusBadRequest, "个人订阅当前没有任何可用节点")
+	case errors.Is(err, subscriptionstore.ErrInvalidRoutingBindings):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, subscriptionstore.ErrRoutingPresetNotFound):
 		writeError(w, http.StatusBadRequest, "分流方案不存在")
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanRouting):

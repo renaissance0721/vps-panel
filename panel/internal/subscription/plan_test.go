@@ -132,6 +132,67 @@ func TestDifferentPlansMayUseDifferentNodesForSameTargetProxy(t *testing.T) {
 	}
 }
 
+func TestPlanRoutingBindingsAreScopedAndPrunedWithNodes(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertSubscriptionTestServer(t, db, 1, "SG", "203.0.113.10")
+	for id, name := range map[int64]string{10: "SG", 11: "JP", 12: "US"} {
+		insertSubscriptionTestProxy(t, db, id, 1, name, 400+int(id), relay.EntryHostAuto, "")
+	}
+	createdNodes := make([]PublishedNode, 0, 3)
+	for id, name := range []string{"SG", "JP", "US"} {
+		node, _, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+			Name: name, Mode: NodeModeDirect, TargetProxyID: int64(10 + id), Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		createdNodes = append(createdNodes, node)
+	}
+	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Countries", Enabled: true,
+		Groups: []RoutingGroup{{Name: "Selected", Type: "select"}},
+		Rules:  []string{"MATCH,Selected"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Main", Enabled: true, RoutingPresetID: &preset.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Other", Enabled: true, RoutingPresetID: &preset.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{createdNodes[0].ID, createdNodes[1].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SetPlanNodes(t.Context(), other.ID, []int64{createdNodes[2].ID}); err != nil {
+		t.Fatal(err)
+	}
+	key := preset.Groups[0].Key
+	if _, err := service.SetPlanRoutingBindings(t.Context(), plan.ID,
+		RoutingBindings{key: {createdNodes[2].ID}}); !errors.Is(err, ErrInvalidRoutingBindings) {
+		t.Fatalf("other plan node binding error = %v", err)
+	}
+	plan, err = service.SetPlanRoutingBindings(t.Context(), plan.ID,
+		RoutingBindings{key: {createdNodes[0].ID, createdNodes[1].ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.RoutingBindings[key]; len(got) != 2 || got[0] != createdNodes[0].ID || got[1] != createdNodes[1].ID {
+		t.Fatalf("plan bindings = %+v", plan.RoutingBindings)
+	}
+	plan, _, err = service.SetPlanNodes(t.Context(), plan.ID, []int64{createdNodes[1].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.RoutingBindings[key]; len(got) != 1 || got[0] != createdNodes[1].ID {
+		t.Fatalf("plan bindings after node removal = %+v", plan.RoutingBindings)
+	}
+}
+
 func TestPlanDefaultsToDefaultRoutingPresetAndCanSwitch(t *testing.T) {
 	_, service := newSubscriptionTestService(t)
 	created, err := service.CreatePlan(t.Context(), CreatePlanInput{Name: "Default", Enabled: true})

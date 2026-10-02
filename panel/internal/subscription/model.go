@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -60,6 +61,16 @@ var (
 	ErrTemplateNotFound             = errors.New("subscription template not found")
 	ErrInvalidRoutingPreset         = errors.New("subscription routing preset is invalid")
 	ErrInvalidPlanRouting           = errors.New("subscription plan routing is invalid")
+	ErrRoutingGroupKeyInvalid       = fmt.Errorf("routing group key is invalid: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupNameDuplicate    = fmt.Errorf("routing group name is duplicated: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupReferenceMissing = fmt.Errorf("routing group reference is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupCycle            = fmt.Errorf("routing groups contain a cycle: %w", ErrInvalidRoutingPreset)
+	ErrRoutingRuleGroupMissing      = fmt.Errorf("routing rule group is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingRuleProviderMissing   = fmt.Errorf("routing rule provider is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingProviderNameDuplicate = fmt.Errorf("routing provider name is duplicated: %w", ErrInvalidRoutingPreset)
+	ErrRoutingProviderURLInvalid    = fmt.Errorf("routing provider URL is invalid: %w", ErrInvalidRoutingPreset)
+	ErrInvalidRoutingBindings       = errors.New("subscription routing bindings are invalid")
+	ErrRoutingGroupEmpty            = errors.New("routing group has no usable members")
 	ErrInvalidTemplate              = errors.New("subscription template is invalid")
 	ErrTemplateReferenced           = errors.New("subscription template is referenced by a plan")
 	ErrPersonalSubscriptionNotFound = errors.New("personal subscription not found")
@@ -125,6 +136,7 @@ type Plan struct {
 	Enabled           bool
 	TrafficLimitBytes *int64
 	RoutingPresetID   *int64
+	RoutingBindings   RoutingBindings
 	TemplateID        *int64
 	Nodes             []PlanNode
 	CreatedAt         time.Time
@@ -206,15 +218,16 @@ type GeneratedSubscription struct {
 }
 
 type SubscriptionData struct {
-	Title              string
-	Nodes              []proxystore.ClientShare
-	Upload             int64
-	Download           int64
-	Total              int64
-	Expire             int64
-	PublishedNodeNames map[int64]string
-	RoutingPreset      *RoutingPreset
-	Template           *SubscriptionTemplate
+	Title           string
+	Nodes           []proxystore.ClientShare
+	Upload          int64
+	Download        int64
+	Total           int64
+	Expire          int64
+	NodeNames       map[int64]string
+	RoutingBindings RoutingBindings
+	RoutingPreset   *RoutingPreset
+	Template        *SubscriptionTemplate
 }
 
 type RoutingPreset struct {
@@ -230,12 +243,14 @@ type RoutingPreset struct {
 }
 
 type RoutingGroup struct {
+	Key        string   `json:"key"`
 	Name       string   `json:"name"`
 	Type       string   `json:"type"`
 	Proxies    []string `json:"proxies"`
-	NodeIDs    []int64  `json:"node_ids,omitempty"`
 	IncludeAll bool     `json:"include_all,omitempty"`
 }
+
+type RoutingBindings map[string][]int64
 
 type RoutingRuleProvider struct {
 	Name     string `json:"name"`
@@ -323,6 +338,7 @@ type PersonalSubscription struct {
 	ClientName         string
 	RoutingPresetID    int64
 	RoutingPresetName  string
+	RoutingBindings    RoutingBindings
 	MihomoTemplateID   *int64
 	MihomoTemplateName string
 	Nodes              []PersonalSubscriptionNode
@@ -380,6 +396,7 @@ type UpdatePersonalSubscriptionInput struct {
 }
 
 type SetPersonalSubscriptionNodeInput struct {
+	ID          *int64
 	SourceType  string
 	SourceID    int64
 	DisplayName string
@@ -408,9 +425,10 @@ type ResolvedSubscriptionNode struct {
 }
 
 type PersonalSubscriptionData struct {
-	Title              string
-	Nodes              []ResolvedSubscriptionNode
-	PublishedNodeNames map[int64]string
-	RoutingPreset      *RoutingPreset
-	Template           *SubscriptionTemplate
+	Title           string
+	Nodes           []ResolvedSubscriptionNode
+	NodeNames       map[int64]string
+	RoutingBindings RoutingBindings
+	RoutingPreset   *RoutingPreset
+	Template        *SubscriptionTemplate
 }

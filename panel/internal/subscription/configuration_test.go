@@ -82,6 +82,34 @@ func TestRoutingPresetIsLiveReferencedByPlan(t *testing.T) {
 	}
 }
 
+func TestRoutingGroupKeysAreGeneratedAndStable(t *testing.T) {
+	_, service := newSubscriptionTestService(t)
+	preset, err := service.CreateRoutingPreset(t.Context(), CreateRoutingPresetInput{
+		Name: "Keys", Enabled: true,
+		Groups: []RoutingGroup{{Key: "client-supplied", Name: "Old", Type: "select", Proxies: []string{"DIRECT"}}},
+		Rules:  []string{"MATCH,Old"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preset.Groups) != 1 || preset.Groups[0].Key == "" || preset.Groups[0].Key == "client-supplied" {
+		t.Fatalf("generated routing group key = %+v", preset.Groups)
+	}
+	stableKey := preset.Groups[0].Key
+	groups := []RoutingGroup{
+		{Key: stableKey, Name: "Renamed", Type: "select", Proxies: []string{"DIRECT"}},
+		{Name: "New", Type: "select", Proxies: []string{"Renamed"}},
+	}
+	rules := []string{"MATCH,Renamed"}
+	preset, err = service.UpdateRoutingPreset(t.Context(), preset.ID, UpdateRoutingPresetInput{Groups: &groups, Rules: &rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preset.Groups[0].Key != stableKey || preset.Groups[1].Key == "" || preset.Groups[1].Key == stableKey {
+		t.Fatalf("updated routing group keys = %+v", preset.Groups)
+	}
+}
+
 func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T) {
 	_, service := newSubscriptionTestService(t)
 	for _, config := range []string{

@@ -256,8 +256,17 @@ func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "分流方案不存在")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
 		writeError(w, http.StatusNotFound, "订阅模板不存在")
-	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset), errors.Is(err, subscriptionstore.ErrPublishedNodeNotFound):
-		writeError(w, http.StatusBadRequest, "分流方案无效，请检查分组、节点引用、Rule Providers 和规则")
+	case errors.Is(err, subscriptionstore.ErrRoutingGroupKeyInvalid),
+		errors.Is(err, subscriptionstore.ErrRoutingGroupNameDuplicate),
+		errors.Is(err, subscriptionstore.ErrRoutingGroupReferenceMissing),
+		errors.Is(err, subscriptionstore.ErrRoutingGroupCycle),
+		errors.Is(err, subscriptionstore.ErrRoutingRuleGroupMissing),
+		errors.Is(err, subscriptionstore.ErrRoutingRuleProviderMissing),
+		errors.Is(err, subscriptionstore.ErrRoutingProviderNameDuplicate),
+		errors.Is(err, subscriptionstore.ErrRoutingProviderURLInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
+		writeError(w, http.StatusBadRequest, "分流方案格式无效，请检查策略组、Rule Providers 和 Rules")
 	case errors.Is(err, subscriptionstore.ErrInvalidTemplate):
 		writeError(w, http.StatusBadRequest, "Mihomo 模板必须是安全有效的基础配置 YAML，不能包含 proxies、proxy-groups、rule-providers 或 rules")
 	case errors.Is(err, subscriptionstore.ErrDefaultRoutingPreset):

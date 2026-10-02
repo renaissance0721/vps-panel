@@ -199,6 +199,10 @@ func (s *server) previewSubscriptionUserMihomo(w http.ResponseWriter, r *http.Re
 	s.notifyProxyMutations(mutations)
 	value, err := subscriptionstore.RenderMihomoSubscription(data)
 	if err != nil {
+		if errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty) {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}

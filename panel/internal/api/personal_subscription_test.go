@@ -81,6 +81,9 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 		!strings.Contains(string(decoded), "backup.example.com:8443") {
 		t.Fatalf("public personal Base64 = %d %q, decoded %q, %v", base64Response.Code, base64Response.Body.String(), decoded, decodeErr)
 	}
+	if got := base64Response.Header().Get("Content-Disposition"); got != "inline; filename*=UTF-8''My%20Daily" {
+		t.Fatalf("personal Base64 Content-Disposition = %q", got)
+	}
 	if value := base64Response.Header().Get("Subscription-Userinfo"); value != "" {
 		t.Fatalf("personal subscription must not advertise a subscription-level quota: %q", value)
 	}
@@ -100,6 +103,15 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 		autoYAML.Proxies[1].Name != "🇬🇧 英国 | 备用入口" || autoYAML.Proxies[1].Server != "backup.example.com" ||
 		autoYAML.Proxies[1].Port != 8443 {
 		t.Fatalf("public personal Auto = %d %s", autoRequest.Code, autoRequest.Body.String())
+	}
+	if got := autoRequest.Header().Get("Content-Disposition"); got != "inline; filename*=UTF-8''My%20Daily" {
+		t.Fatalf("personal Auto Content-Disposition = %q", got)
+	}
+	mihomoResponse := performRequest(t, handler, http.MethodGet,
+		personalPath(payload.Personal.SubscriptionMihomoURL), nil, nil)
+	if mihomoResponse.Code != http.StatusOK ||
+		mihomoResponse.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''My%20Daily" {
+		t.Fatalf("personal Mihomo headers = %d %v", mihomoResponse.Code, mihomoResponse.Header())
 	}
 	preview := performRequest(t, handler, http.MethodGet,
 		"/api/personal-subscriptions/"+strconv.FormatInt(id, 10)+"/mihomo-preview", nil, adminCookie)

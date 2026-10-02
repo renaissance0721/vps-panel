@@ -587,6 +587,9 @@ func syncPublishedNodePlansTx(
 
 	changedPlanIDs := make([]int64, 0, len(changed))
 	for planID := range changed {
+		if err := prunePlanRoutingBindingsTx(ctx, tx, planID); err != nil {
+			return nil, err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE subscription_plans SET updated_at = ? WHERE id = ?`, now.Unix(), planID,
 		); err != nil {
@@ -596,6 +599,48 @@ func syncPublishedNodePlansTx(
 	}
 	sort.Slice(changedPlanIDs, func(i, j int) bool { return changedPlanIDs[i] < changedPlanIDs[j] })
 	return changedPlanIDs, nil
+}
+
+func prunePlanRoutingBindingsTx(ctx context.Context, tx *sql.Tx, planID int64) error {
+	var raw string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT routing_bindings_json FROM subscription_plans WHERE id = ?`, planID).Scan(&raw); err != nil {
+		return fmt.Errorf("read subscription plan routing bindings: %w", err)
+	}
+	bindings, err := decodeRoutingBindings(raw)
+	if err != nil {
+		return err
+	}
+	allowed := make(map[int64]struct{})
+	rows, err := tx.QueryContext(ctx,
+		`SELECT published_node_id FROM subscription_plan_nodes WHERE plan_id = ?`, planID)
+	if err != nil {
+		return fmt.Errorf("list subscription plan binding nodes: %w", err)
+	}
+	for rows.Next() {
+		var nodeID int64
+		if err := rows.Scan(&nodeID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan subscription plan binding node: %w", err)
+		}
+		allowed[nodeID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate subscription plan binding nodes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close subscription plan binding nodes: %w", err)
+	}
+	encoded, err := encodeRoutingBindings(pruneRoutingBindings(bindings, allowed))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE subscription_plans SET routing_bindings_json = ? WHERE id = ?`, encoded, planID); err != nil {
+		return fmt.Errorf("prune subscription plan routing bindings: %w", err)
+	}
+	return nil
 }
 
 func validatePublishedNodePlanIDs(planIDs []int64) error {

@@ -52,10 +52,11 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
 	var routingPresetID, templateID sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_preset_id, plans.template_id
+	var routingBindingsJSON string
+	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_preset_id, plans.routing_bindings_json, plans.template_id
 		FROM subscriber_profiles AS profiles
 		JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
-		WHERE profiles.user_id = ?`, userID).Scan(&routingPresetID, &templateID); errors.Is(err, sql.ErrNoRows) {
+		WHERE profiles.user_id = ?`, userID).Scan(&routingPresetID, &routingBindingsJSON, &templateID); errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	} else if err != nil {
 		return SubscriptionData{}, mutations, fmt.Errorf("read subscription plan routing: %w", err)
@@ -64,6 +65,10 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
 	routingPreset, err := s.GetRoutingPreset(ctx, routingPresetID.Int64)
+	if err != nil {
+		return SubscriptionData{}, mutations, err
+	}
+	routingBindings, err := decodeRoutingBindings(routingBindingsJSON)
 	if err != nil {
 		return SubscriptionData{}, mutations, err
 	}
@@ -120,7 +125,7 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	}
 
 	shares := make([]proxystore.ClientShare, 0, len(nodes))
-	publishedNodeNames := make(map[int64]string, len(nodes))
+	nodeNames := make(map[int64]string, len(nodes))
 	for _, node := range nodes {
 		options := proxystore.ShareOptions{DisplayName: FormatNodeDisplayName(node.name, node.multiplierBP)}
 		var share proxystore.ClientShare
@@ -137,7 +142,7 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 			return SubscriptionData{}, mutations, fmt.Errorf("build subscription node share: %w", err)
 		}
 		shares = append(shares, share)
-		publishedNodeNames[node.id] = share.DisplayName
+		nodeNames[node.id] = share.DisplayName
 	}
 	upload, download, err := s.subscriberUsageBreakdown(ctx, userID)
 	if err != nil {
@@ -145,7 +150,7 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	}
 	result := SubscriptionData{
 		Title: subscriber.SubscriptionTitle, Nodes: shares, Upload: upload, Download: download,
-		PublishedNodeNames: publishedNodeNames, RoutingPreset: &routingPreset,
+		NodeNames: nodeNames, RoutingBindings: routingBindings, RoutingPreset: &routingPreset,
 	}
 	if templateID.Valid {
 		template, err := s.GetTemplate(ctx, templateID.Int64)

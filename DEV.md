@@ -489,6 +489,7 @@ user_relay_order
 - 不依赖 Plan，不创建 `subscriber_clients` / `subscriber_usage`，不拥有独立流量额度或到期时间。
 - 节点来源是当前用户可访问的 Proxy、Relay 或 Landing，保存明确选择而不自动追加新节点；Published Node 只属于共享订阅链路。
 - `personal_subscription_nodes` 的每一行是独立订阅节点实例。同一 `source_type + source_id` 可以重复，每个实例独立保存 `display_name`、`entry_host`、`entry_port`、`enabled` 和 `position`；显示名称在同一组内仍须唯一。
+- 保存个人订阅节点时按节点 `id` 执行 UPDATE / INSERT / DELETE，已有实例的 ID 保持稳定；删除实例会同步清理该个人订阅的分流绑定。
 - Proxy 每次按 `client_name` 实时精确匹配非订阅托管 Client，不持久化 `client_id`。Admin 只能匹配未分配或分配给自己的 Client；VIP 只能匹配分配给自己的 Client。
 - Relay 默认使用自身入口。目标为 Proxy 时，按个人订阅的 `client_name` 匹配目标 Proxy Client；目标为 Landing 时使用 Landing 自带凭据；手动目标 Relay 不作为个人订阅候选来源。
 - Landing 继续使用自身 URI 凭据，并遵守现有 owner / public 可见性。
@@ -503,6 +504,8 @@ user_relay_order
 RoutingPreset = 策略组 + []RoutingRuleProvider + []string Rules
 SubscriptionTemplate = Mihomo 客户端基础配置
 ```
+
+`RoutingPreset` 的策略组使用创建后不变的 `key` 作为内部标识，只保存 `name / type / proxies / include_all`，不保存任何具体节点 ID。个人订阅和共享订阅分别在自己的 `routing_bindings_json` 中以策略组 key 保存有序节点 ID；个人订阅只能绑定自己的 `personal_subscription_nodes`，共享订阅只能绑定 Plan 已拥有的 Published Node。
 
 `RoutingRuleProvider` 的业务字段为 `name / url / type / behavior / format / interval`。SQLite 继续使用 `rule_providers_yaml` 内部序列化，Service 负责与结构化 API 互转；不支持的 YAML 字段必须明确报错，不得静默丢失。
 
@@ -1037,9 +1040,12 @@ Base64 和 Mihomo 均复用后端 canonical share 语义。实例的自定义名
 Mihomo Template
 + 动态 proxies
 + RoutingPreset proxy-groups
++ 当前订阅的 routing bindings
 + RoutingPreset rule-providers
 + RoutingPreset rules
 ```
+
+策略组成员顺序固定为 `group.proxies`、显式 routing binding、`include_all` 剩余可用节点，并在保持首次出现顺序的前提下去重。个人节点本次不可用时只从输出跳过，不删除 binding；策略组最终没有可用成员时返回明确错误，不能回退为 `DIRECT`。公开订阅响应的 `Content-Disposition` filename 只使用订阅标题，不追加 `.yaml` 或 `.txt`。
 
 当前未实现 Shadowrocket / sing-box 专用 renderer，也不支持 Trojan / Hysteria / TUIC 订阅节点。
 
@@ -1442,7 +1448,7 @@ user_relay_order
 
 ## 18.1 Migration 原则
 
-当前版本化 schema 的 `LatestSchemaVersion` 为 9。v9 重建 `personal_subscription_nodes` 以移除来源唯一约束、将个人来源从 `published` 迁移为 `proxy` / `relay`，并加入可空的逐实例 `entry_host` / `entry_port`；共享订阅的 Published Node 表与链路保持不变。
+当前版本化 schema 的 `LatestSchemaVersion` 为 10。v9 重建 `personal_subscription_nodes` 以移除来源唯一约束、将个人来源从 `published` 迁移为 `proxy` / `relay`，并加入可空的逐实例 `entry_host` / `entry_port`。v10 为 RoutingPreset 策略组补稳定 key、移除旧 `node_ids`，并给 `subscription_plans`、`personal_subscription_groups` 增加 `routing_bindings_json`；旧 Plan binding 只迁移其实际拥有的 Published Node，个人订阅不猜测旧 Published Node 对应关系。
 
 每次 schema 变更：
 
@@ -1766,7 +1772,7 @@ Relay 详情  → Modal
 
 当前使用 HTML5 Drag & Drop，并复用已有 reorder API。
 
-服务器、代理节点和个人订阅已选节点都从左侧把手开始拖动。共享的拖拽预览会克隆完整行 / 节点项并交给浏览器 `setDragImage`，源项立即降低透明度，目标项显示插入提示；结束时统一清理预览和拖拽状态。个人订阅节点在本地重排后重新计算 `position`，保存时整体提交。
+服务器、代理节点、个人订阅已选节点、分流策略组和订阅内策略组节点 binding 都从左侧把手开始拖动。共享的拖拽预览会克隆完整行 / 节点项并交给浏览器 `setDragImage`，源项立即降低透明度，目标项显示插入提示；结束时统一清理预览和拖拽状态。个人订阅节点在本地重排后重新计算 `position`，保存时整体提交；策略组与 binding 直接按数组顺序保存。
 
 原则：
 
@@ -2228,7 +2234,7 @@ bash -n <script>
 | QR | 已实现 | 浏览器本地生成 |
 | 共享订阅 | 已实现 | 订阅用户 + Plan + Published Node + subscriber client，支持 Base64 / Mihomo |
 | 个人订阅 | 已实现 | admin / vip owner 隔离，Proxy / Relay / Landing 可重复实例、逐实例入口覆盖、独立 token 与 Auto / Base64 / Mihomo |
-| 分流方案 | 已实现 | 策略组 + 结构化 Rule Providers + Rules，SQLite 内部保留 YAML 序列化 |
+| 分流方案 | 已实现 | 通用策略组（稳定 key，不含节点 ID）+ 结构化 Rule Providers + Rules；具体有序节点 binding 归个人订阅或共享订阅所有 |
 | Shadowrocket / sing-box 订阅 | 未实现 | 不提供假 renderer 或空路由 |
 | outbound preference | 已实现 | auto / IPv4 / IPv6 |
 | 禁止中国 IP 入站 | 已实现 | APNIC CN prefix + nftables set，仅受管 Proxy / Relay listener |
@@ -2446,6 +2452,7 @@ Server
 - [x] 个人订阅来源固定为 Proxy / Relay / Landing；Published Node 只服务共享订阅。
 - [x] 个人订阅使用实时精确 Client 匹配和 owner 隔离，不保存匹配结果 client_id；同一来源可保存多个独立入口实例。
 - [x] 分流方案是结构化通用业务数据；Mihomo 模板只是客户端基础配置。
+- [x] RoutingPreset 不拥有具体节点；Personal / Plan 各自通过稳定策略组 key 保存有序 routing bindings。
 - [x] 二维码在浏览器本地生成。
 - [x] 备份是完整 SQLite 快照，属于高敏感文件。
 - [x] Panel / Agent / Xray / Realm / ACME 使用分离的受管目录。

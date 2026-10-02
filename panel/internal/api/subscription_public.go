@@ -102,7 +102,7 @@ func (s *server) servePublicSubscription(w http.ResponseWriter, r *http.Request,
 		body = []byte(subscriptionstore.RenderBase64Subscription(value))
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writePublicSubscriptionRenderError(w, err)
 		return
 	}
 	writeSubscriptionHeaders(w, value, format)
@@ -125,12 +125,20 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 		body = []byte(subscriptionstore.RenderResolvedBase64Subscription(value.Nodes))
 	}
 	if err != nil {
-		writeInternalError(w, err)
+		writePublicSubscriptionRenderError(w, err)
 		return
 	}
 	writeSubscriptionProfileHeaders(w, value.Title, format)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func writePublicSubscriptionRenderError(w http.ResponseWriter, err error) {
+	if errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty) {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeInternalError(w, err)
 }
 
 func writePublicPersonalSubscriptionError(w http.ResponseWriter, err error) {
@@ -166,16 +174,14 @@ func writeSubscriptionHeaders(w http.ResponseWriter, value subscriptionstore.Sub
 }
 
 func writeSubscriptionProfileHeaders(w http.ResponseWriter, title string, format subscriptionFormat) {
-	extension := ".txt"
 	contentType := "text/plain; charset=utf-8"
 	if format == subscriptionFormatMihomo {
-		extension = ".yaml"
 		contentType = "text/yaml; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(title)))
 	w.Header().Set("Profile-Update-Interval", "24")
-	w.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+encodeRFC5987(title)+extension)
+	w.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+encodeRFC5987(title))
 }
 
 func detectSubscriptionFormat(userAgent string) subscriptionFormat {

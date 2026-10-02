@@ -154,26 +154,45 @@ test('详情默认请求并高亮 1 小时，切换和刷新使用当前范围�
   } finally { app.unmount() }
 })
 
-test('摘要在图表上方，TCP 失败率与 ICMP 丢包率随响应范围和值变化', async () => {
+test('摘要在图表上方，以延迟和简短比率同排展示，数值随范围更新但不重复范围文案', async () => {
   globalThis.fetch = async () => response(history())
   for (const [hours, rate] of [[1, 0], [6, 50], [24, 75]]) {
-    const tasks = [task({ name: '上海电信', failure_rate: rate }), task({ id: 2, name: 'Cloudflare', type: 'icmp', port: null, latest_latency_ms: 20, failure_rate: rate })]
+    const tasks = [task({ name: '上海电信', latest_latency_ms: 33.2, failure_rate: rate }), task({ id: 2, name: 'Cloudflare', type: 'icmp', port: null, latest_latency_ms: 42, failure_rate: rate })]
     const samples = tasks.map(t => ({ task_id: t.id, timestamp: '2026-10-02T00:01:00Z', outcome: 'success', latency_ms: t.latest_latency_ms }))
     const { html } = await render(Detail, { server: server(), show: true }, b => { b.reset(); b.hours.value = hours; b.history.value = history(tasks, samples, hours) })
-    assert.match(html, new RegExp(`${hours}小时失败率 ${rate.toFixed(1)}%`))
-    assert.match(html, new RegExp(`${hours}小时丢包率 ${rate.toFixed(1)}%`))
-    assert.doesNotMatch(html, /24h/)
-    assert.match(html, /最近 42.0 ms/)
-    assert.match(html, /最近 20.0 ms/)
+    const summaryHTML = html.match(/<ul class="monitor-probe-summaries">([\s\S]*?)<\/ul>/)[1]
+    assert.doesNotMatch(summaryHTML, /最近|小时|失败率|丢包率|24h/)
+    assert.ok(summaryHTML.includes(`<span class="monitor-probe-rate">${rate.toFixed(1)}%失败</span>`))
+    assert.ok(summaryHTML.includes(`<span class="monitor-probe-rate">${rate.toFixed(1)}%丢包</span>`))
+    assert.match(summaryHTML, /<div class="monitor-probe-metrics"><span class="monitor-probe-latest"[^>]*>33\.2 ms<\/span><span class="monitor-probe-rate">[^<]+<\/span><\/div>/)
+    assert.match(summaryHTML, /<div class="monitor-probe-metrics"><span class="monitor-probe-latest"[^>]*>42\.0 ms<\/span><span class="monitor-probe-rate">[^<]+<\/span><\/div>/)
+    assert.match(html, new RegExp(`aria-pressed="true"[^>]*>${hours} 小时`))
     assert.ok(html.indexOf('aria-label="探测摘要"') < html.indexOf('aria-label="延迟图表"'))
     assert.ok(html.indexOf('上海电信 TCP') < html.indexOf('网络延迟历史折线图'))
     assert.deepEqual(latencySeries(history(tasks, samples)).map(s => s.name), ['上海电信 TCP', 'Cloudflare ICMP'])
   }
   const empty = await render(Detail, { server: server(), show: true }, b => { b.reset(); b.history.value = history([task({ latest_latency_ms: null, latest_outcome: '', failure_rate: null })]) })
   assert.match(empty.html, /暂无数据/)
-  assert.match(empty.html, /1小时失败率 —/)
+  assert.match(empty.html, /—失败/)
   assert.match(empty.html, /该时间范围内暂无延迟数据/)
   assert.doesNotMatch(empty.html, /0\.0 ms|0\.0%|网络延迟历史折线图/)
+})
+
+test('超时及失败摘要保持中文状态与对应比率同排，灰色小字不换行', async () => {
+  globalThis.fetch = async () => response(history())
+  for (const [outcome, label] of [['timeout', '超时'], ['dns_error', 'DNS 解析失败'], ['connect_error', '连接失败']]) {
+    const tasks = [
+      task({ name: '上海联通', latest_latency_ms: null, latest_outcome: outcome, failure_rate: 20 }),
+      task({ id: 2, name: 'ICMP 节点', type: 'icmp', latest_latency_ms: null, latest_outcome: outcome, failure_rate: 3.2 }),
+    ]
+    const { html } = await render(Detail, { server: server(), show: true }, b => { b.reset(); b.history.value = history(tasks) })
+    assert.match(html, new RegExp(`<div class="monitor-probe-metrics"><span class="monitor-probe-latest"[^>]*>${label}</span><span class="monitor-probe-rate">20.0%失败</span></div>`))
+    assert.match(html, new RegExp(`<div class="monitor-probe-metrics"><span class="monitor-probe-latest"[^>]*>${label}</span><span class="monitor-probe-rate">3.2%丢包</span></div>`))
+    assert.doesNotMatch(html, /最近|(?:1|6|24)小时(?:失败率|丢包率)/)
+  }
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+  const metricsCSS = css.match(/\.monitor-probe-metrics\s*\{([^}]+)\}/)[1]
+  for (const rule of ['display: flex', 'flex-wrap: nowrap', 'gap: 10px', 'color: var(--color-text-secondary)', 'font-size: 12px', 'font-weight: 400', 'white-space: nowrap']) assert.ok(metricsCSS.includes(rule), rule)
 })
 
 test('多 series 保留零延迟，timeout、无数据和离线缺口均断线', () => {

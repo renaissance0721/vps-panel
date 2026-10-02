@@ -13,6 +13,15 @@ const hours = ref<LatencyHours>(1)
 const rangeOptions: LatencyHours[] = [1, 6, 24]
 const supported = computed(() => supportsProbe(props.server, 'tcp') || supportsProbe(props.server, 'icmp'))
 const { history, loading, error, load, reset } = useProbeHistory()
+const summaries = computed(() => {
+  const tasks = history.value?.tasks ?? []
+  return tasks.map(task => ({
+    id: task.id,
+    title: probeLabel(task, tasks),
+    primary: task.latest_latency_ms === null ? probeOutcomeLabel(task.latest_outcome) : `${task.latest_latency_ms.toFixed(1)} ms`,
+    secondary: `${task.failure_rate === null ? '—' : `${task.failure_rate.toFixed(1)}%`}${task.type === 'icmp' ? '丢包' : '失败'}`,
+  }))
+})
 const fields = computed(() => {
   const info = props.server.system_info
   const metrics = props.server.metrics
@@ -53,10 +62,12 @@ watch([() => props.server.id, () => props.show, hours, supported, () => props.se
         <template v-else-if="history">
           <div class="monitor-probe-overview" aria-label="探测摘要">
             <n-empty v-if="!history.tasks.length" description="尚未分配延迟探测任务" />
-            <ul v-else class="monitor-probe-summaries"><li v-for="(task, index) in history.tasks" :key="task.id" :style="{ '--probe-color': probeColors[index % probeColors.length] }">
-              <strong>{{ probeLabel(task, history.tasks) }}</strong>
-              <span class="monitor-probe-latest">{{ task.latest_outcome ? '最近 ' : '' }}{{ task.latest_latency_ms === null ? probeOutcomeLabel(task.latest_outcome) : `${task.latest_latency_ms.toFixed(1)} ms` }}</span>
-              <span class="monitor-probe-rate">{{ history.range_hours }}小时{{ task.type === 'icmp' ? '丢包率' : '失败率' }} {{ task.failure_rate === null ? '—' : `${task.failure_rate.toFixed(1)}%` }}</span>
+            <ul v-else class="monitor-probe-summaries"><li v-for="(summary, index) in summaries" :key="summary.id" :style="{ '--probe-color': probeColors[index % probeColors.length] }">
+              <strong :title="summary.title">{{ summary.title }}</strong>
+              <div class="monitor-probe-metrics">
+                <span class="monitor-probe-latest" :title="summary.primary">{{ summary.primary }}</span>
+                <span class="monitor-probe-rate">{{ summary.secondary }}</span>
+              </div>
             </li></ul>
           </div>
           <div class="monitor-chart-panel" aria-label="延迟图表">

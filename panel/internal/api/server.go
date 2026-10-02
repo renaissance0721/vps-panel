@@ -11,6 +11,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
@@ -52,7 +53,10 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 		writeInternalError(w, errPanelBaseURL)
 		return
 	}
+	// Keep inheritance ordered with probe PATCH's read/replace of assignments.
+	s.probeMu.Lock()
 	created, err := s.servers.CreateForUser(r.Context(), request.Name, request.Visibility, request.UserIDs, user.ID)
+	s.probeMu.Unlock()
 	if err != nil {
 		writeServerError(w, err)
 		return
@@ -406,6 +410,8 @@ func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request,
 
 func writeServerError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, monitor.ErrTaskLimit):
+		writeMonitorError(w, err)
 	case errors.Is(err, serverstore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, serverstore.ErrInvalidVisibility):

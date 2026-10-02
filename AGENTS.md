@@ -107,7 +107,9 @@
 - Monitor 复用已有 `ServerRecord` / API 和共享轮询。
 - Probe 与 Server 管理职责分离，不把管理详情重新塞进 Monitor。
 - CPU / RAM / Disk 最新指标与 Probe 延迟历史分开描述和处理。
-- TCP / ICMP 按各自 capability 判断，不按 Agent 名称猜测。
+- Probe 当前分配以 `monitor_probe_servers` 为准；`default_on` 只负责以后新建 Server 自动继承，不得重新引入全局运行时匹配。
+- 创建 Server 时在同一事务中继承默认任务；关闭默认开关不得删除既有分配，默认任务数和每台 Server 分配数分别校验 64 上限。
+- TCP / ICMP 按各自 capability 决定下发，不按 Agent 名称猜测；未知或缺少能力时保留 assignment。
 - 保留失败、无权限、无样本的区别，不把未知数据当作正常零值。
 - Server 和 Client 流量保持原有口径；通知复用正式流量计算，不另算一套。
 - 通知复用现有 Panel watcher、持久化状态和异步发送路径，不阻塞 Agent 消息处理。

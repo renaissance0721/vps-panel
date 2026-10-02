@@ -128,3 +128,59 @@ func TestMonitorDefaultOnMigrationPreservesExistingAssignments(t *testing.T) {
 		db.Close()
 	}
 }
+
+func TestMaterializeDefaultProbeAssignmentsMigration(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:17] {
+		if err := applyMigration(t.Context(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, stmt := range []string{
+		`INSERT INTO servers (id,name,status,archived_at,decommission_status,created_at,updated_at) VALUES
+   (1,'online','online',NULL,'',1,1),(2,'pending','pending',NULL,'',1,1),(3,'archived','offline',1,'',1,1),(4,'removing','offline',NULL,'pending',1,1),(5,'offline','offline',NULL,'',1,1)`,
+		`INSERT INTO monitor_probe_tasks (id,name,type,target,port,interval_seconds,enabled,default_on,created_at,updated_at) VALUES
+   (1,'default','tcp','example.com',443,60,1,1,1,1),(2,'disabled default','icmp','example.com',NULL,60,0,1,1,1),(3,'manual','tcp','example.com',80,60,1,0,1,1)`,
+		`INSERT INTO monitor_probe_servers VALUES (1,1),(3,2)`,
+		`INSERT INTO monitor_probe_records VALUES (1,1,123,'success',42),(4,1,124,'timeout',NULL)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for pass := 0; pass < 2; pass++ {
+		db, err = Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var assignments string
+		if err := db.QueryRow(`SELECT group_concat(pair) FROM (SELECT task_id || ':' || server_id AS pair FROM monitor_probe_servers ORDER BY task_id,server_id)`).Scan(&assignments); err != nil || assignments != "1:1,1:2,1:5,2:1,2:2,2:5,3:2" {
+			t.Fatalf("assignments = %s %v", assignments, err)
+		}
+		var defaults, records int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_tasks WHERE default_on = 1`).Scan(&defaults); err != nil || defaults != 2 {
+			t.Fatalf("defaults = %d %v", defaults, err)
+		}
+		if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE (server_id = 1 AND task_id = 1 AND ts = 123 AND latency_ms = 42) OR (server_id = 4 AND task_id = 1 AND ts = 124 AND outcome = 'timeout')`).Scan(&records); err != nil || records != 2 {
+			t.Fatalf("history = %d %v", records, err)
+		}
+		assertLatestMigrationHistory(t, db)
+		assertForeignKeysValid(t, db)
+		if pass == 0 {
+			// A later startup must not rerun the one-time materialization.
+			if _, err := db.Exec(`INSERT INTO servers (id,name,status,created_at,updated_at) VALUES (6,'later','pending',2,2)`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

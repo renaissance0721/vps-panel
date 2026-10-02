@@ -21,7 +21,6 @@ const (
 var (
 	ErrInvalid       = errors.New("invalid probe")
 	ErrNotFound      = errors.New("probe task not found")
-	ErrUnsupported   = errors.New("Agent 未声明支持此探测类型")
 	ErrTaskLimit     = errors.New("each server supports at most 64 probe tasks")
 	ErrInvalidResult = errors.New("invalid probe result")
 )

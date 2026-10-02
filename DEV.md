@@ -90,7 +90,7 @@ Agent 清理受管资源并准备自卸载后回报成功，Panel 才归档记�
 API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 Legacy 的兼容规则，和探测、受管清理等要求显式声明的能力，并不完全相同。
 调用现有 capability 判断函数，遵循协议为具体功能定义的规则，避免自行扩大 Legacy 兜底。
 
-在线诊断、探测下发和结果接收使用当前连接的能力；离线任务分配及历史展示可使用最后声明的能力。
+在线诊断、探测下发和结果接收使用当前连接的能力；探测历史展示可使用最后声明的能力，任务分配不依赖 capability。
 官方自升级对已标识 API v1 Agent 要求官方 implementation 和 `self_upgrade`；第三方实现不能仅凭版本号进入官方升级流程。
 升级成功由目标版本 Agent 重新连接确认，失败通过专用 HTTP 结果接口回报。
 
@@ -122,7 +122,11 @@ Panel 保存最新指标与更新时间；Server 在线状态与当前 Agent 连
 [MonitorView](web/src/views/MonitorView.vue) 复用 App 中现有 `ServerRecord` 列表及轮询。
 [useMonitor](web/src/composables/useMonitor.ts) 计算资源比例和网络速度；详情使用独立的 `MonitorServerDetail`，不嵌回服务器管理详情。
 
-管理员管理 Probe Task，可设为默认应用到兼容服务器，也可手动选择服务器。
+管理员管理 Probe Task，手动选择当前服务器，并可设置为以后新增 Server 自动继承。
+`monitor_probe_servers` 是当前分配关系的唯一来源；`default_on` 不参与 Desired / Ingest / History 的运行时匹配，也不会自动作用于当前未分配的服务器。
+Server 创建事务在 pending 阶段写入所有默认任务的分配；关闭默认开关保留已有分配。默认任务总数与每台 Server 的实际分配数分别最多 64，均包含停用任务。
+升级迁移会一次性把旧默认任务对未归档、未处于 decommission 状态的服务器的关系写入关联表，保留手动分配及历史记录。
+Agent capability 只决定已分配任务能否下发，不决定 assignment 是否存在。
 TCP 与 ICMP 分别由 `probe.tcp` / `probe.icmp` 声明；不能因 Agent 名称或版本推断支持。
 任务通过现有 WebSocket 下发独立的完整 desired task list，不进入 Xray / Realm desired state。
 

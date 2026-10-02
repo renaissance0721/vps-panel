@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 17
+const LatestSchemaVersion = 18
 
 type migration struct {
 	version            int
@@ -40,6 +40,16 @@ var migrations = []migration{
 	{version: 15, name: "user_account_order", up: createUserAccountOrder},
 	{version: 16, name: "telegram_notifications", up: createNotifications},
 	{version: 17, name: "server_access_management_users", up: cleanupServerAccessUsers},
+	{version: 18, name: "materialize_default_probe_assignments", up: materializeDefaultProbeAssignments},
+}
+
+func materializeDefaultProbeAssignments(ctx context.Context, tx *sql.Tx) error {
+	// Preserve the former global scope, including pending servers and disabled
+	// tasks. Capability filtering remains a runtime concern.
+	_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO monitor_probe_servers (task_id, server_id)
+		SELECT t.id, s.id FROM monitor_probe_tasks t CROSS JOIN servers s
+		WHERE t.default_on = 1 AND s.archived_at IS NULL AND s.decommission_status = ''`)
+	return err
 }
 
 func cleanupServerAccessUsers(ctx context.Context, tx *sql.Tx) error {

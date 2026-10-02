@@ -9,18 +9,6 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 )
 
-// WithProbeCapabilities serializes assignment validation with connection replacement.
-// The callback must not call back into connection management.
-func (s *Service) WithProbeCapabilities(save func(map[int64]map[string]bool) error) error {
-	s.connectionsMu.Lock()
-	defer s.connectionsMu.Unlock()
-	capabilities := make(map[int64]map[string]bool, len(s.connections))
-	for id, connection := range s.connections {
-		capabilities[id] = connection.Capabilities
-	}
-	return save(capabilities)
-}
-
 func (s *Service) ProbeConnectionIDs() []int64 {
 	s.connectionsMu.Lock()
 	defer s.connectionsMu.Unlock()

@@ -235,8 +235,8 @@ test('任务管理 CRUD 请求使用 endpoint，不发送独立端口', async ()
   const { html, bindings } = await render(Manager, { show: true, servers: [server(), server({ id: 2, name: 'Legacy', agent_capabilities: [] })] }, b => { b.edit(); b.tasks.value = [task()] })
   for (const text of ['新建任务', '名称', '类型', '目标', '周期', '执行节点数', '状态', '编辑', '删除', '保存']) assert.ok(html.includes(text), text)
   assert.equal(bindings.form.value.interval_seconds, 60)
-  assert.equal(bindings.serverOptions.value[1].disabled, true)
-  assert.match(bindings.serverOptions.value[1].label, /Agent 不支持 TCPing/)
+  assert.equal(bindings.serverOptions.value[1].disabled, false)
+  assert.match(bindings.serverOptions.value[1].label, /等待 Agent 支持 TCPing/)
   bindings.edit(task())
   assert.equal(bindings.form.value.target, 'example.com:443')
   await bindings.submit()
@@ -269,7 +269,7 @@ test('TCP endpoint 显示与编辑包含 IPv6 方括号，表单没有独立端�
   assert.equal('port' in bindings.form.value, false)
 })
 
-test('全选与清空仅作用于当前兼容节点，离线能力与连接状态分离', async () => {
+test('全选与清空作用于可用节点，能力仅提示等待下发', async () => {
   const servers = [
     server(), server({ id: 2, status: 'offline' }),
     server({ id: 3, archived_at: '2026-10-02T00:00:00Z' }),
@@ -280,32 +280,37 @@ test('全选与清空仅作用于当前兼容节点，离线能力与连接状�
   const { bindings, html } = await render(Manager, { show: true, servers }, b => { b.edit(); b.form.value.default_on = false })
   assert.match(html, /全选/); assert.match(html, /清空/)
   bindings.selectAll()
-  assert.deepEqual(bindings.form.value.server_ids, [1, 2])
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2, 5, 6])
   assert.equal(bindings.selectionUnavailable.value, false)
   assert.match(bindings.serverOptions.value[1].label, /当前离线/)
   assert.doesNotMatch(bindings.serverOptions.value[1].label, /不支持/)
   assert.equal(bindings.serverOptions.value[1].disabled, false)
-  assert.match(bindings.serverOptions.value[5].label, /不支持 TCPing.*当前离线/)
+  assert.match(bindings.serverOptions.value[5].label, /等待 Agent 支持 TCPing.*当前离线/)
   bindings.clearSelection()
   assert.deepEqual(bindings.form.value.server_ids, [])
   bindings.form.value.type = 'icmp'
   bindings.selectAll()
-  assert.deepEqual(bindings.form.value.server_ids, [5])
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2, 5, 6])
   bindings.form.value.type = 'tcp'
+  assert.equal(bindings.selectionUnavailable.value, false)
+  bindings.form.value.server_ids = [3]
   assert.equal(bindings.selectionUnavailable.value, true)
 })
 
-test('新任务默认应用到全部兼容节点；两个开关使用横向行，规则不提交节点快照', async () => {
+test('默认开关仅控制未来继承，当前选择始终可编辑并原样提交', async () => {
   const { bindings, html } = await render(Manager, { show: true, servers: [server(), server({ id: 2, status: 'offline' })] }, b => {
     b.edit(); b.tasks.value = [task({ default_on: true, server_ids: [] }), task({ id: 2 })]
   })
   assert.equal(bindings.form.value.default_on, true)
   assert.equal(bindings.form.value.enabled, true)
-  assert.match(html, /全部兼容节点/)
+  assert.match(html, /0 台 · 新服务器自动加入/)
+  assert.doesNotMatch(html, /全部兼容节点/)
+  assert.deepEqual(bindings.form.value.server_ids, [])
   assert.match(html, /1 台/)
-  assert.match(html, /自动应用于当前及后续新增的兼容服务器。/)
-  assert.match(html, /<select[^>]*disabled[^>]*aria-label="执行服务器"/)
-  for (const name of ['默认应用到新服务器', '启用']) {
+  assert.match(html, /开启后，未来新增的服务器会自动加入此探测任务；当前已有服务器仍以以上选择为准。/)
+  assert.doesNotMatch(html, /<select[^>]*disabled[^>]*aria-label="执行服务器"/)
+  assert.match(html, /全选/); assert.match(html, /清空/)
+  for (const name of ['默认应用到以后新增的服务器', '启用']) {
     assert.ok(html.includes(`<div class="monitor-probe-switch-row"><span>${name}</span>`))
   }
   const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
@@ -317,7 +322,28 @@ test('新任务默认应用到全部兼容节点；两个开关使用横向行�
   bindings.form.value.server_ids = [1]
   await bindings.submit()
   assert.equal(input.default_on, true)
-  assert.deepEqual(input.server_ids, [])
+  assert.deepEqual(input.server_ids, [1])
+  bindings.form.value.default_on = false
+  assert.deepEqual(bindings.form.value.server_ids, [1])
+  bindings.form.value.default_on = true
+  assert.deepEqual(bindings.form.value.server_ids, [1])
+  bindings.selectAll()
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2])
+  bindings.clearSelection()
+  assert.deepEqual(bindings.form.value.server_ids, [])
   bindings.edit(task({ default_on: false }))
   assert.equal(bindings.form.value.default_on, false)
+})
+
+test('编辑默认任务保留未声明能力的继承节点并显示真实分配数', async () => {
+  const { bindings, html } = await render(Manager, { show: true, servers: [server(), server({ id: 2, status: 'pending', agent_capabilities: [] })] }, b => {
+    const value = task({ default_on: true, server_ids: [1, 2] })
+    b.tasks.value = [value]; b.edit(value)
+  })
+  assert.match(html, /2 台 · 新服务器自动加入/)
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2])
+  assert.equal(bindings.selectionUnavailable.value, false)
+  assert.equal(bindings.serverOptions.value[1].disabled, false)
+  bindings.form.value.default_on = false
+  assert.deepEqual(bindings.form.value.server_ids, [1, 2])
 })

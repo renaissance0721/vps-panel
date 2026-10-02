@@ -11,7 +11,6 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
-	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
 func (s *server) listProbes(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -98,29 +97,7 @@ func (s *server) saveProbe(w http.ResponseWriter, r *http.Request, user auth.Use
 	if request.ServerIDs != nil {
 		value.ServerIDs = *request.ServerIDs
 	}
-	err = s.agents.WithProbeCapabilities(func(capabilities map[int64]map[string]bool) error {
-		if !value.DefaultOn {
-			for _, serverID := range value.ServerIDs {
-				if _, connected := capabilities[serverID]; connected {
-					continue
-				}
-				stored, err := s.servers.Get(r.Context(), serverID)
-				if err != nil {
-					if errors.Is(err, serverstore.ErrNotFound) {
-						return monitor.ErrInvalid
-					}
-					return err
-				}
-				capabilities[serverID] = make(map[string]bool)
-				for _, capability := range stored.AgentCapabilities {
-					capabilities[serverID][capability] = true
-				}
-			}
-		}
-		var err error
-		value, err = s.monitor.Save(r.Context(), id, value, capabilities)
-		return err
-	})
+	value, err = s.monitor.Save(r.Context(), id, value)
 	if err != nil {
 		writeMonitorError(w, err)
 		return
@@ -202,7 +179,7 @@ func writeMonitorError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, monitor.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "探测任务不存在"})
-	case errors.Is(err, monitor.ErrInvalid), errors.Is(err, monitor.ErrUnsupported), errors.Is(err, monitor.ErrTaskLimit):
+	case errors.Is(err, monitor.ErrInvalid), errors.Is(err, monitor.ErrTaskLimit):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
 		writeInternalError(w, err)

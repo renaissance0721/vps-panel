@@ -18,13 +18,13 @@ const serverOptions = computed(() => props.servers.map(server => {
   const supported = supportsProbe(server, form.value.type)
   const unavailable = !!server.archived_at || !!server.decommission_status
   const status = server.archived_at ? '已归档' : server.decommission_status ? '删除中' : server.status !== 'online' ? '当前离线' : ''
-  const capability = !supported ? `Agent 不支持 ${form.value.type === 'tcp' ? 'TCPing' : 'ICMP'}` : ''
+  const capability = !supported ? `等待 Agent 支持 ${form.value.type === 'tcp' ? 'TCPing' : 'ICMP'}` : ''
   const labels = [capability, status].filter(Boolean)
-  return { value: server.id, label: `${server.name}${labels.length ? `（${labels.join('，')}）` : ''}`, disabled: !supported || unavailable }
+  return { value: server.id, label: `${server.name}${labels.length ? `（${labels.join('，')}）` : ''}`, disabled: unavailable }
 }))
-const compatibleServerIDs = computed(() => serverOptions.value.filter(option => !option.disabled).map(option => option.value))
-const selectionUnavailable = computed(() => !form.value.default_on && form.value.server_ids.some(id => !compatibleServerIDs.value.includes(id)))
-function selectAll() { form.value.server_ids = [...compatibleServerIDs.value] }
+const availableServerIDs = computed(() => serverOptions.value.filter(option => !option.disabled).map(option => option.value))
+const selectionUnavailable = computed(() => form.value.server_ids.some(id => !availableServerIDs.value.includes(id)))
+function selectAll() { form.value.server_ids = [...availableServerIDs.value] }
 function clearSelection() { form.value.server_ids = [] }
 function newForm(): ProbeInput { return { name: '', type: 'tcp', target: '', interval_seconds: 60, enabled: true, default_on: true, server_ids: [] } }
 function edit(task?: ProbeTask) {
@@ -34,7 +34,7 @@ function edit(task?: ProbeTask) {
   editing.value = true
 }
 async function submit() {
-  const input = { ...form.value, server_ids: form.value.default_on ? [] : form.value.server_ids }
+  const input = { ...form.value, server_ids: [...form.value.server_ids] }
   if (await save(editID.value, input)) editing.value = false
 }
 async function confirmDelete() { if (deleting.value !== null && await remove(deleting.value)) deleting.value = null }
@@ -52,7 +52,7 @@ onMounted(load)
         <thead><tr><th>名称</th><th>类型</th><th>目标</th><th>周期</th><th>执行节点数</th><th>状态</th><th>操作</th></tr></thead>
         <tbody><tr v-for="task in tasks" :key="task.id">
           <td>{{ task.name }}</td><td>{{ task.type.toUpperCase() }}</td><td>{{ probeTarget(task) }}</td><td>{{ task.interval_seconds }} 秒</td>
-          <td>{{ task.default_on ? '全部兼容节点' : `${task.server_ids.length} 台` }}</td><td>{{ task.enabled ? '启用' : '停用' }}</td>
+          <td>{{ task.server_ids.length }} 台{{ task.default_on ? ' · 新服务器自动加入' : '' }}</td><td>{{ task.enabled ? '启用' : '停用' }}</td>
           <td><n-button size="small" :disabled="saving" @click="edit(task)">编辑</n-button> <n-button size="small" :disabled="saving" @click="deleting = task.id">删除</n-button></td>
         </tr></tbody>
       </table></div>
@@ -66,12 +66,13 @@ onMounted(load)
         <label>目标<n-input v-model:value="form.target" :placeholder="form.type === 'tcp' ? 'example.com:443 / 1.1.1.1:80 / [IPv6]:443' : 'example.com / 1.1.1.1 / 2400:3200::1'" aria-label="探测目标" /></label>
         <label>探测周期<n-input-number v-model:value="form.interval_seconds" :min="5" :max="86400" :precision="0" aria-label="探测周期（秒）" /><n-select v-model:value="form.interval_seconds" :options="intervalOptions" aria-label="常用探测周期" /></label>
         <div class="monitor-probe-server-field">
-          <div class="monitor-probe-server-heading"><span>执行服务器</span><span v-if="!form.default_on"><n-button text size="small" @click="selectAll">全选</n-button><n-button text size="small" @click="clearSelection">清空</n-button></span></div>
-          <n-select :value="form.default_on ? compatibleServerIDs : form.server_ids" @update:value="form.server_ids = $event" :options="serverOptions" :disabled="form.default_on" multiple filterable :placeholder="form.default_on ? '暂无兼容服务器，后续自动匹配' : '选择执行服务器'" aria-label="执行服务器" />
+          <div class="monitor-probe-server-heading"><span>执行服务器</span><span><n-button text size="small" @click="selectAll">全选</n-button><n-button text size="small" @click="clearSelection">清空</n-button></span></div>
+          <n-select v-model:value="form.server_ids" :options="serverOptions" multiple filterable placeholder="选择执行服务器" aria-label="执行服务器" />
         </div>
-        <n-alert v-if="selectionUnavailable" type="warning">部分已选节点已归档、正在删除或 Agent 不支持当前探测类型，请调整选择。</n-alert>
-        <div class="monitor-probe-switch-row"><span>默认应用到新服务器</span><n-switch v-model:value="form.default_on" aria-label="默认应用到新服务器" /></div>
-        <p v-if="form.default_on" class="monitor-probe-help">自动应用于当前及后续新增的兼容服务器。</p>
+        <p class="monitor-probe-help">尚未声明探测能力的服务器保留分配，Agent 支持后自动下发。</p>
+        <n-alert v-if="selectionUnavailable" type="warning">部分已选节点已归档、正在删除或已不可用，请调整选择。</n-alert>
+        <div class="monitor-probe-switch-row"><span>默认应用到以后新增的服务器</span><n-switch v-model:value="form.default_on" aria-label="默认应用到以后新增的服务器" /></div>
+        <p v-if="form.default_on" class="monitor-probe-help">开启后，未来新增的服务器会自动加入此探测任务；当前已有服务器仍以以上选择为准。</p>
         <div class="monitor-probe-switch-row"><span>启用</span><n-switch v-model:value="form.enabled" aria-label="启用探测" /></div>
         <div class="modal-actions"><n-button :disabled="saving" @click="editing = false">取消</n-button><n-button attr-type="submit" type="primary" :loading="saving" :disabled="selectionUnavailable">保存</n-button></div>
       </form>

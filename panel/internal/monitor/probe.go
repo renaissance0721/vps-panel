@@ -11,7 +11,7 @@ func (s *Service) Desired(ctx context.Context, serverID int64, capabilities map[
 	rows, err := s.db.QueryContext(ctx, `SELECT t.id, t.name, t.type, t.target, t.port, t.interval_seconds
 		FROM monitor_probe_tasks t JOIN servers s ON s.id = ?
 		WHERE t.enabled = 1 AND s.archived_at IS NULL AND s.decommission_status = ''
-		AND (t.default_on = 1 OR EXISTS (SELECT 1 FROM monitor_probe_servers a WHERE a.task_id = t.id AND a.server_id = s.id)) ORDER BY t.id`, serverID)
+		AND EXISTS (SELECT 1 FROM monitor_probe_servers a WHERE a.task_id = t.id AND a.server_id = s.id) ORDER BY t.id`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (s *Service) Ingest(ctx context.Context, serverID int64, capabilities map[s
 	err = tx.QueryRowContext(ctx, `SELECT t.type FROM monitor_probe_tasks t
 		JOIN servers s ON s.id = ?
 		WHERE t.id = ? AND t.enabled = 1 AND s.archived_at IS NULL AND s.decommission_status = ''
-		AND (t.default_on = 1 OR EXISTS (SELECT 1 FROM monitor_probe_servers a WHERE a.task_id = t.id AND a.server_id = s.id))`, serverID, result.TaskID).Scan(&kind)
+		AND EXISTS (SELECT 1 FROM monitor_probe_servers a WHERE a.task_id = t.id AND a.server_id = s.id)`, serverID, result.TaskID).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInvalidResult
 	}

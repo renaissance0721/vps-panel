@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 )
 
 func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error) {
@@ -96,6 +97,20 @@ func (s *Service) CreateForUser(
 	}
 	if err := enrollment.Insert(ctx, tx, serverID, agentcontrol.PurposeInitial); err != nil {
 		return CreatedServer{}, fmt.Errorf("create agent enrollment: %w", err)
+	}
+	// Inherit defaults while the server is still pending. The Agent's eventual
+	// capabilities filter dispatch, not these persistent assignments.
+	assigned, err := tx.ExecContext(ctx, `INSERT INTO monitor_probe_servers (task_id, server_id)
+		SELECT id, ? FROM monitor_probe_tasks WHERE default_on = 1`, serverID)
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("inherit default probes: %w", err)
+	}
+	count, err := assigned.RowsAffected()
+	if err != nil {
+		return CreatedServer{}, fmt.Errorf("count inherited probes: %w", err)
+	}
+	if count > monitor.MaxProbeTasks {
+		return CreatedServer{}, monitor.ErrTaskLimit
 	}
 	if err := tx.Commit(); err != nil {
 		return CreatedServer{}, fmt.Errorf("commit server creation: %w", err)

@@ -101,8 +101,11 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 	}
 	input["type"] = "icmp"
 	input["target"] = "example.com"
-	if response := performRequest(t, handler, "POST", "/api/monitor/probes", input, cookie); response.Code != 400 {
-		t.Fatalf("unsupported create = %d", response.Code)
+	if response := performRequest(t, handler, "POST", "/api/monitor/probes", input, cookie); response.Code != 201 {
+		t.Fatalf("assignment awaiting capability = %d", response.Code)
+	}
+	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Type != "tcp" || list.Version != 3 {
+		t.Fatalf("unsupported task dispatched = %+v", list)
 	}
 	// A supplied server_id is ignored; task IDs must belong to the authenticated server.
 	other, err := servers.Create(t.Context(), "other")
@@ -110,7 +113,7 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	port := 443
-	otherTask, err := monitor.NewService(db).Save(t.Context(), 0, monitor.Task{ProbeTask: monitor.ProbeTask{Name: "other task", Type: "tcp", Target: "example.com", Port: &port, IntervalSeconds: 60}, Enabled: true, ServerIDs: []int64{other.ID}}, map[int64]map[string]bool{other.ID: {monitor.CapabilityTCP: true}})
+	otherTask, err := monitor.NewService(db).Save(t.Context(), 0, monitor.Task{ProbeTask: monitor.ProbeTask{Name: "other task", Type: "tcp", Target: "example.com", Port: &port, IntervalSeconds: 60}, Enabled: true, ServerIDs: []int64{other.ID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +156,7 @@ func TestProbeAPIWebSocketDesiredListsAndIngestion(t *testing.T) {
 	if response := performRequest(t, handler, "PATCH", path, map[string]any{"name": "renamed"}, cookie); response.Code != 200 {
 		t.Fatalf("patch = %s", response.Body.String())
 	}
-	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Name != "renamed" || list.Version != 3 {
+	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Name != "renamed" || list.Version != 4 {
 		t.Fatalf("updated = %+v", list)
 	}
 	conn.CloseNow()
@@ -271,7 +274,7 @@ func TestDefaultProbeNewConnectionAndCapabilityUpgrade(t *testing.T) {
 		t.Cleanup(func() { conn.CloseNow() })
 		return conn
 	}
-	// The task predates the server. Its first capable connection gets it without any assignment.
+	// The task predates the server, which inherits assignments before registration.
 	conn := connect("probe.icmp")
 	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Type != "icmp" {
 		t.Fatalf("initial = %+v", list)
@@ -284,7 +287,7 @@ func TestDefaultProbeNewConnectionAndCapabilityUpgrade(t *testing.T) {
 		t.Fatalf("upgraded = %+v", list)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_servers`).Scan(&count); err != nil || count != 0 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_servers`).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("materialized assignments = %d, %v", count, err)
 	}
 	response := performRequest(t, handler, "PATCH", "/api/monitor/probes/1", map[string]any{"enabled": false}, cookie)
@@ -298,8 +301,8 @@ func TestDefaultProbeNewConnectionAndCapabilityUpgrade(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatal(response.Body.String())
 	}
-	if list := readProbeList(t, conn); len(list.Tasks) != 0 {
-		t.Fatalf("manual with no assignments = %+v", list)
+	if list := readProbeList(t, conn); len(list.Tasks) != 1 || list.Tasks[0].Type != "icmp" {
+		t.Fatalf("turning off inheritance removed assignment = %+v", list)
 	}
 }
 
@@ -356,7 +359,7 @@ func TestMonitorLatencyAPISummaryFollowsHours(t *testing.T) {
 		if kind == "tcp" {
 			target += ":443"
 		}
-		response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": kind, "type": kind, "target": target}, cookie)
+		response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": kind, "type": kind, "target": target, "server_ids": []int64{1}}, cookie)
 		if response.Code != 201 {
 			t.Fatal(response.Body.String())
 		}
@@ -406,7 +409,7 @@ func TestOldProbeConnectionCannotWrite(t *testing.T) {
 	old, current := &agentcontrol.Connection{Capabilities: caps}, &agentcontrol.Connection{Capabilities: caps}
 	agents.TrackConnection(created.ID, old)
 	port := 443
-	task, err := probes.Save(t.Context(), 0, monitor.Task{ProbeTask: monitor.ProbeTask{Name: "probe", Type: "tcp", Target: "example.com", Port: &port, IntervalSeconds: 60}, Enabled: true, ServerIDs: []int64{created.ID}}, map[int64]map[string]bool{created.ID: caps})
+	task, err := probes.Save(t.Context(), 0, monitor.Task{ProbeTask: monitor.ProbeTask{Name: "probe", Type: "tcp", Target: "example.com", Port: &port, IntervalSeconds: 60}, Enabled: true, ServerIDs: []int64{created.ID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,5 +423,74 @@ func TestOldProbeConnectionCannotWrite(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("count = %d %v", count, err)
+	}
+}
+
+func TestProbeAPIDefaultInheritancePreservesExplicitSelection(t *testing.T) {
+	db, handler, cookie := monitorTestAPI(t)
+	servers := serverstore.NewService(db)
+	a, err := servers.Create(t.Context(), "A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := servers.Create(t.Context(), "B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := performRequest(t, handler, "POST", "/api/monitor/probes", map[string]any{"name": "default", "type": "tcp", "target": "example.com:443", "default_on": true, "server_ids": []int64{a.ID}}, cookie)
+	var saved struct {
+		Task monitor.Task `json:"task"`
+	}
+	if response.Code != 201 || json.Unmarshal(response.Body.Bytes(), &saved) != nil || !saved.Task.DefaultOn || len(saved.Task.ServerIDs) != 1 || saved.Task.ServerIDs[0] != a.ID {
+		t.Fatalf("create = %d %s", response.Code, response.Body.String())
+	}
+	probes := monitor.NewService(db)
+	caps := map[string]bool{monitor.CapabilityTCP: true}
+	if tasks, err := probes.Desired(t.Context(), b.ID, caps); err != nil || len(tasks) != 0 {
+		t.Fatalf("existing unselected = %+v %v", tasks, err)
+	}
+	response = performRequest(t, handler, "POST", "/api/servers", map[string]any{"name": "C", "visibility": "public"}, cookie)
+	if response.Code != 201 {
+		t.Fatalf("new server = %d %s", response.Code, response.Body.String())
+	}
+	path := "/api/monitor/probes/" + strconv.FormatInt(saved.Task.ID, 10)
+	// PATCH omitting server_ids must retain both manual and automatically inherited rows.
+	response = performRequest(t, handler, "PATCH", path, map[string]any{"default_on": false}, cookie)
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &saved) != nil || saved.Task.DefaultOn || len(saved.Task.ServerIDs) != 2 || saved.Task.ServerIDs[0] != a.ID {
+		t.Fatalf("disable default = %d %s", response.Code, response.Body.String())
+	}
+	cID := saved.Task.ServerIDs[1]
+	if cID == b.ID {
+		t.Fatal("default applied to unselected existing server")
+	}
+	d, err := servers.Create(t.Context(), "D")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tasks, err := probes.Desired(t.Context(), d.ID, caps); err != nil || len(tasks) != 0 {
+		t.Fatalf("disabled inheritance = %+v %v", tasks, err)
+	}
+	response = performRequest(t, handler, "PATCH", path, map[string]any{"server_ids": []int64{cID}, "default_on": true}, cookie)
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &saved) != nil || !saved.Task.DefaultOn || len(saved.Task.ServerIDs) != 1 || saved.Task.ServerIDs[0] != cID {
+		t.Fatalf("edit assignments = %d %s", response.Code, response.Body.String())
+	}
+	for _, id := range []int64{a.ID, b.ID, d.ID} {
+		if tasks, err := probes.Desired(t.Context(), id, caps); err != nil || len(tasks) != 0 {
+			t.Fatalf("unselected %d = %+v %v", id, tasks, err)
+		}
+	}
+	e, err := servers.Create(t.Context(), "E")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tasks, err := probes.Desired(t.Context(), e.ID, caps); err != nil || len(tasks) != 1 {
+		t.Fatalf("future inheritance = %+v %v", tasks, err)
+	}
+	response = performRequest(t, handler, "GET", "/api/monitor/probes", nil, cookie)
+	var list struct {
+		Tasks []monitor.Task `json:"tasks"`
+	}
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &list) != nil || len(list.Tasks) != 1 || len(list.Tasks[0].ServerIDs) != 2 {
+		t.Fatalf("list = %d %s", response.Code, response.Body.String())
 	}
 }

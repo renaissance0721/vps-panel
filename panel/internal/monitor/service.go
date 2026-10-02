@@ -59,16 +59,13 @@ func (s *Service) List(ctx context.Context) ([]Task, error) {
 	return values, assignments.Err()
 }
 
-// Save replaces a task and its assignments atomically. Capabilities must be explicitly
-// reported by the current connection, or last reported by the Agent while offline.
-func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities map[int64]map[string]bool) (Task, error) {
+// Save replaces a task and its assignments atomically. Capabilities only control
+// dispatch and ingestion; assignments can exist before an Agent connects.
+func (s *Service) Save(ctx context.Context, id int64, value Task) (Task, error) {
 	value.ID = id
 	value.Name, value.Target = strings.TrimSpace(value.Name), strings.TrimSpace(value.Target)
 	if err := ValidateTask(value.ProbeTask); err != nil {
 		return Task{}, err
-	}
-	if value.DefaultOn {
-		value.ServerIDs = nil // A rule, never a materialized copy of the current server list.
 	}
 	seen := map[int64]bool{}
 	for _, serverID := range value.ServerIDs {
@@ -76,9 +73,6 @@ func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities m
 			return Task{}, fmt.Errorf("%w: invalid server assignment", ErrInvalid)
 		}
 		seen[serverID] = true
-		if !Supports(capabilities[serverID], value.Type) {
-			return Task{}, fmt.Errorf("%w: server %d", ErrUnsupported, serverID)
-		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -132,20 +126,17 @@ func (s *Service) Save(ctx context.Context, id int64, value Task, capabilities m
 			return Task{}, err
 		}
 	}
-	// Reserve capacity for defaults even before servers connect or gain capabilities.
-	// Count configured tasks (including disabled ones), as manual assignments do.
-	var count int
+	// Defaults bound inheritance for future servers independently of current
+	// assignments. Both limits include disabled tasks and unknown capabilities.
+	var defaults, assigned int
 	if err := tx.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM monitor_probe_tasks WHERE default_on = 1) +
+		(SELECT COUNT(*) FROM monitor_probe_tasks WHERE default_on = 1),
 		COALESCE((SELECT MAX(n) FROM (
 			SELECT COUNT(*) AS n FROM monitor_probe_servers a
-			JOIN monitor_probe_tasks t ON t.id = a.task_id
-			JOIN servers s ON s.id = a.server_id
-			WHERE t.default_on = 0 AND s.archived_at IS NULL AND s.decommission_status = ''
-			GROUP BY a.server_id)), 0)`).Scan(&count); err != nil {
+			GROUP BY a.server_id)), 0)`).Scan(&defaults, &assigned); err != nil {
 		return Task{}, err
 	}
-	if count > MaxProbeTasks {
+	if defaults > MaxProbeTasks || assigned > MaxProbeTasks {
 		return Task{}, ErrTaskLimit
 	}
 	return value, tx.Commit()

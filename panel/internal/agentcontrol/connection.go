@@ -19,6 +19,7 @@ type Connection struct {
 	APIVersion         int
 	Capabilities       map[string]bool
 	writeMu            sync.Mutex
+	probeVersion       int64
 	diagnosticsMu      sync.Mutex
 	pendingDiagnostics map[string]chan diagnosticResponse
 }

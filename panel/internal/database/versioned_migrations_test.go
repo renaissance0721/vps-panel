@@ -251,8 +251,10 @@ func TestMigrationNineCreatesNodeInstancesAndMigratesPublishedSources(t *testing
 		VALUES (40, 'proxy', 10, 'Second Proxy Instance', 1, 4, '2001:db8::1', 8443, 1, 1)`); err != nil {
 		t.Fatalf("duplicate source instance insert: %v", err)
 	}
-	if err := applyMigration(context.Background(), db, migrations[9]); err != nil {
-		t.Fatal(err)
+	for _, item := range migrations[9:] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
 	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)
@@ -328,6 +330,11 @@ func TestMigrationTenMovesPresetNodeIDsToPlanBindings(t *testing.T) {
 		!slices.Equal(bindings[groups[0].Key], []int64{3, 7}) || personalBindings != "{}" ||
 		strings.Contains(groupsJSON, "node_ids") {
 		t.Fatalf("migration 10 groups/bindings = %s / %s / %s", groupsJSON, bindingsJSON, personalBindings)
+	}
+	for _, item := range migrations[10:] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
 	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)

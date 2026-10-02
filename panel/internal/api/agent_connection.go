@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -61,6 +62,9 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 		previous.Socket.CloseNow()
 	}
 	log.Printf("agent %d connected to server %d", agent.ID, agent.ServerID)
+	if err := s.agents.NotifyProbeTasks(agent.ServerID, s.monitor); err != nil {
+		log.Printf("send initial probe tasks for server %d: %v", agent.ServerID, err)
+	}
 
 	for {
 		messageType, message, readErr := connection.Read(r.Context())
@@ -163,6 +167,22 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 				_ = connection.Close(websocket.StatusPolicyViolation, "invalid metrics")
 				validMessage = false
+			}
+		case "probe_result":
+			var result monitor.ProbeResult
+			if json.Unmarshal(message, &result) != nil {
+				_ = connection.Close(websocket.StatusPolicyViolation, "invalid probe result")
+				validMessage = false
+				break
+			}
+			current, reportErr := s.reportCurrentProbe(agent.ServerID, currentConnection, result)
+			if !current {
+				return
+			}
+			// A result already in flight may follow a task's deletion/disablement.
+			// Reject it without disrupting otherwise valid metrics and heartbeats.
+			if reportErr != nil && !errors.Is(reportErr, monitor.ErrInvalidResult) {
+				log.Printf("save probe result for server %d: %v", agent.ServerID, reportErr)
 			}
 		case "diagnostic_result":
 			var result diagnostic.Result

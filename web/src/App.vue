@@ -535,7 +535,7 @@ onUnmounted(stopServerPolling)
                 <n-alert v-if="error" class="page-alert" type="error">{{ error }}</n-alert>
 
                 <OverviewView v-if="currentPage === 'overview'" :model="overviewView" />
-                <MonitorView v-if="currentPage === 'monitor'" :servers="servers" @view-server="serverState.viewServer" />
+                <MonitorView v-if="currentPage === 'monitor'" :servers="servers" :role="state.user?.role" />
                 <ProxiesView v-if="currentPage === 'proxies'" :servers="servers" :users="users" :role="state.user?.role" />
                 <RelaysView v-if="currentPage === 'relays'" :servers="servers" />
                 <SubscriptionManagementView

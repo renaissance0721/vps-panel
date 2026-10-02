@@ -10,6 +10,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
@@ -28,6 +29,8 @@ type server struct {
 	webRoot              string
 	panelVersion         string
 	agents               *agentcontrol.Service
+	monitor              *monitor.Service
+	probeMu              sync.Mutex
 	backup               BackupConfig
 	backupMu             sync.Mutex
 	loginLimiter         *loginLimiter
@@ -64,6 +67,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		webRoot:              webRoot,
 		panelVersion:         panelVersion,
 		agents:               agentcontrol.NewService(db, time.Now),
+		monitor:              monitor.NewService(db),
 		backup:               backupConfig,
 		loginLimiter:         newLoginLimiter(),
 		passwordResetLimiter: newLoginLimiter(),
@@ -157,6 +161,11 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("DELETE /api/me/relays/{id}", s.requireUser(s.deleteMyRelay))
 	mux.HandleFunc("GET /api/users", s.requireManager(s.listUsers))
 	mux.HandleFunc("GET /api/overview", s.requireManager(s.overview))
+	mux.HandleFunc("GET /api/monitor/probes", s.requireAdmin(s.listProbes))
+	mux.HandleFunc("POST /api/monitor/probes", s.requireAdmin(s.saveProbe))
+	mux.HandleFunc("PATCH /api/monitor/probes/{id}", s.requireAdmin(s.saveProbe))
+	mux.HandleFunc("DELETE /api/monitor/probes/{id}", s.requireAdmin(s.deleteProbe))
+	mux.HandleFunc("GET /api/monitor/servers/{server_id}/latency", s.requireManager(s.getMonitorLatency))
 	mux.HandleFunc("GET /api/servers", s.requireManager(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireManager(s.createServer))
 	mux.HandleFunc("POST /api/servers/{id}/reorder", s.requireManager(s.reorderServer))

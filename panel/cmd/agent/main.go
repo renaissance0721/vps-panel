@@ -21,6 +21,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 )
 
 const defaultConfigPath = "/etc/vps-panel-agent/config.json"
@@ -49,6 +50,8 @@ const (
 )
 
 var agentCapabilities = []string{
+	monitor.CapabilityTCP,
+	monitor.CapabilityICMP,
 	agentcontrol.CapabilityProxyVLESSACME,
 	agentcontrol.CapabilityProxyVLESSManual,
 	agentcontrol.CapabilityProxyVLESSReality,
@@ -416,7 +419,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 		return false, false
 	}
 	defer connection.CloseNow()
-	connection.SetReadLimit(8 << 10)
+	connection.SetReadLimit(64 << 10)
 
 	log.Printf("vps-panel-agent %s connected for server %d", agentVersion, value.ServerID)
 	message := collectSystemInfo()
@@ -433,6 +436,9 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	trafficReporter := newClientTrafficReporter(value, &http.Client{Timeout: 10 * time.Second})
 	connectionContext, cancelConnection := context.WithCancel(ctx)
 	defer cancelConnection()
+	probes := newProbeManager(connectionContext)
+	defer probes.close()
+	probeTasks := make(chan monitor.DesiredTasks, 1)
 	configChanged := make(chan struct{}, 1)
 	upgradeRequested := make(chan string, 1)
 	diagnosticRequested := make(chan string, 1)
@@ -446,7 +452,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	chinaRefreshInProgress := false
 	disconnected := make(chan error, 1)
 	go func() {
-		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested, diagnosticRequested)
+		disconnected <- readPanelMessages(connectionContext, connection, configChanged, upgradeRequested, diagnosticRequested, probeTasks)
 	}()
 	configSyncFinished := make(chan struct{}, 1)
 	configSyncInProgress := false
@@ -484,6 +490,25 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			return true, false
 		case <-disconnected:
 			return true, false
+		case tasks := <-probeTasks:
+			if err := probes.apply(tasks); err != nil {
+				log.Printf("reject probe task list: %v", err)
+				return true, false
+			}
+		case completed := <-probes.results:
+			if !probes.current(completed) {
+				continue
+			}
+			payload, err := json.Marshal(completed.result)
+			if err != nil {
+				return true, false
+			}
+			writeContext, cancel := context.WithTimeout(connectionContext, 5*time.Second)
+			err = connection.Write(writeContext, websocket.MessageText, payload)
+			cancel()
+			if err != nil {
+				return true, false
+			}
 		case <-configChanged:
 			startConfigSync()
 		case <-configSyncFinished:
@@ -621,6 +646,7 @@ func readPanelMessages(
 	configChanged chan<- struct{},
 	upgradeRequested chan<- string,
 	diagnosticRequested chan<- string,
+	probeTasks chan<- monitor.DesiredTasks,
 ) error {
 	for {
 		messageType, message, err := connection.Read(ctx)
@@ -635,6 +661,16 @@ func readPanelMessages(
 			return errors.New("Panel sent an invalid WebSocket message")
 		}
 		switch notification.Type {
+		case "probe_tasks":
+			var tasks monitor.DesiredTasks
+			if json.Unmarshal(message, &tasks) != nil {
+				return errors.New("Panel sent an invalid probe list")
+			}
+			select {
+			case probeTasks <- tasks:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		case "config_changed":
 			var version int64
 			if json.Unmarshal(notification.Version, &version) != nil || version <= 0 {

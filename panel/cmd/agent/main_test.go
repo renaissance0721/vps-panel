@@ -583,7 +583,7 @@ func TestAgentRejectsMalformedKnownDiagnosticRequest(t *testing.T) {
 	}
 	defer connection.CloseNow()
 	err = readPanelMessages(
-		t.Context(), connection, make(chan struct{}, 1), make(chan string, 1), make(chan string, 1),
+		t.Context(), connection, make(chan struct{}, 1), make(chan string, 1), make(chan string, 1), nil,
 	)
 	if err == nil {
 		t.Fatal("Agent accepted malformed diagnostic_request")

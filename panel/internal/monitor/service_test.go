@@ -1,0 +1,237 @@
+package monitor
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"math"
+	"testing"
+	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/database"
+)
+
+func probeTestService(t *testing.T) (*Service, *sql.DB, map[int64]map[string]bool) {
+	t.Helper()
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, id := range []int64{1, 2} {
+		if _, err := db.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (?, 'server', 'online', 1, 1)`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewService(db)
+	s.now = func() time.Time { return time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC) }
+	return s, db, map[int64]map[string]bool{1: {CapabilityTCP: true, CapabilityICMP: true}, 2: {CapabilityTCP: true}}
+}
+
+func probeInput() Task {
+	port := 443
+	return Task{ProbeTask: ProbeTask{Name: "test", Type: "tcp", Target: "example.com", Port: &port, IntervalSeconds: 60}, Enabled: true, ServerIDs: []int64{1}}
+}
+
+func TestProbeCRUDValidationAssignmentsAndCapabilities(t *testing.T) {
+	s, _, caps := probeTestService(t)
+	ctx := t.Context()
+	for _, mutate := range []func(*Task){
+		func(v *Task) { v.Type = "http" }, func(v *Task) { v.Name = " " },
+		func(v *Task) { v.Target = "https://example.com" }, func(v *Task) { v.Target = "example.com:443" },
+		func(v *Task) { v.Target = "[::1]" }, func(v *Task) { v.Target = "bad host" },
+		func(v *Task) { v.Port = nil }, func(v *Task) { port := 0; v.Port = &port },
+		func(v *Task) { port := 65536; v.Port = &port }, func(v *Task) { v.Type = "icmp" },
+		func(v *Task) { v.IntervalSeconds = 4 }, func(v *Task) { v.IntervalSeconds = 86401 },
+		func(v *Task) { v.ServerIDs = []int64{1, 1} },
+	} {
+		value := probeInput()
+		mutate(&value)
+		if _, err := s.Save(ctx, 0, value, caps); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid input %+v: %v", value, err)
+		}
+	}
+	value := probeInput()
+	if _, err := s.Save(ctx, 0, value, nil); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("offline/legacy accepted: %v", err)
+	}
+	value.Type = "icmp"
+	value.Port = nil
+	value.ServerIDs = []int64{2}
+	if _, err := s.Save(ctx, 0, value, caps); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("TCP-only accepted ICMP: %v", err)
+	}
+	value = probeInput()
+	value.ServerIDs = []int64{1, 2}
+	value.Target = "2001:db8::1"
+	created, err := s.Save(ctx, 0, value, caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List(ctx)
+	if err != nil || len(list) != 1 || len(list[0].ServerIDs) != 2 {
+		t.Fatalf("list: %+v, %v", list, err)
+	}
+	created.Name = "updated"
+	created.ServerIDs = []int64{1}
+	updated, err := s.Save(ctx, created.ID, created, caps)
+	if err != nil || updated.ID != created.ID {
+		t.Fatalf("update: %+v %v", updated, err)
+	}
+	for _, tc := range []struct {
+		server int64
+		caps   map[string]bool
+		count  int
+	}{{1, caps[1], 1}, {2, caps[2], 0}, {1, nil, 0}, {1, map[string]bool{CapabilityICMP: true}, 0}} {
+		tasks, err := s.Desired(ctx, tc.server, tc.caps)
+		if err != nil || len(tasks) != tc.count {
+			t.Fatalf("desired = %+v %v", tasks, err)
+		}
+	}
+	updated.Enabled = false
+	if _, err := s.Save(ctx, updated.ID, updated, caps); err != nil {
+		t.Fatal(err)
+	}
+	if tasks, err := s.Desired(ctx, 1, caps[1]); err != nil || len(tasks) != 0 {
+		t.Fatalf("disabled desired = %v %v", tasks, err)
+	}
+	if err := s.Delete(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete missing: %v", err)
+	}
+	if _, err := s.Save(ctx, created.ID, created, caps); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("update missing: %v", err)
+	}
+}
+
+func TestProbeTaskLimitAndResultValidation(t *testing.T) {
+	s, _, caps := probeTestService(t)
+	var task Task
+	for range MaxProbeTasks {
+		var err error
+		task, err = s.Save(t.Context(), 0, probeInput(), caps)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Save(t.Context(), 0, probeInput(), caps); !errors.Is(err, ErrTaskLimit) {
+		t.Fatalf("limit: %v", err)
+	}
+	if _, err := s.Save(t.Context(), task.ID, task, caps); err != nil {
+		t.Fatalf("edit at limit: %v", err)
+	}
+	latency := 12.5
+	result := ProbeResult{TaskID: task.ID, Outcome: "success", LatencyMS: &latency}
+	if err := s.Ingest(t.Context(), 1, caps[1], result); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		server       int64
+		capabilities map[string]bool
+		result       ProbeResult
+	}{
+		{2, caps[2], result}, {1, nil, result}, {1, caps[1], ProbeResult{TaskID: 999, Outcome: "timeout"}},
+		{1, caps[1], ProbeResult{TaskID: task.ID, Outcome: "bogus"}},
+		{1, caps[1], ProbeResult{TaskID: task.ID, Outcome: "success"}},
+	} {
+		if err := s.Ingest(t.Context(), tc.server, tc.capabilities, tc.result); !errors.Is(err, ErrInvalidResult) {
+			t.Fatalf("bad result accepted: %+v %v", tc, err)
+		}
+	}
+	for _, number := range []float64{-1, math.NaN(), math.Inf(1)} {
+		result.LatencyMS = &number
+		if err := s.Ingest(t.Context(), 1, caps[1], result); !errors.Is(err, ErrInvalidResult) {
+			t.Fatalf("invalid latency %v: %v", number, err)
+		}
+	}
+	// Failure latency is ignored, never stored as zero or a negative sentinel.
+	result.Outcome = "timeout"
+	if err := s.Ingest(t.Context(), 1, caps[1], result); err != nil {
+		t.Fatal(err)
+	}
+	task.Enabled = false
+	if _, err := s.Save(t.Context(), task.ID, task, caps); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(t.Context(), 1, caps[1], result); !errors.Is(err, ErrInvalidResult) {
+		t.Fatal("disabled result accepted")
+	}
+	if err := s.Delete(t.Context(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest(t.Context(), 1, caps[1], result); !errors.Is(err, ErrInvalidResult) {
+		t.Fatal("deleted result accepted")
+	}
+}
+
+func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
+	s, db, caps := probeTestService(t)
+	ctx := context.Background()
+	for _, kind := range []string{"tcp", "icmp"} {
+		input := probeInput()
+		input.Type = kind
+		if kind == "icmp" {
+			input.Port = nil
+		}
+		task, err := s.Save(ctx, 0, input, caps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sample := range []struct {
+			age     time.Duration
+			outcome string
+			latency any
+		}{
+			{8 * 24 * time.Hour, "success", 5}, {7 * 24 * time.Hour, "success", 5}, {25 * time.Hour, "success", 5},
+			{23 * time.Hour, "success", 10}, {5 * time.Hour, "timeout", nil}, {30 * time.Minute, "dns_error", nil},
+			{20 * time.Minute, "success", 40}, {10 * time.Minute, "permission_error", nil}, {5 * time.Minute, "cancelled", nil},
+		} {
+			if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, ?, ?)`, task.ID, s.now().Add(-sample.age).UnixMilli(), sample.outcome, sample.latency); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tc := range []struct{ hours, count int }{{1, 8}, {6, 10}, {24, 12}} {
+		h, err := s.History(ctx, 1, tc.hours, caps[1])
+		if err != nil || len(h.Samples) != tc.count || len(h.Tasks) != 2 {
+			t.Fatalf("history %d = %+v %v", tc.hours, h, err)
+		}
+		if h.Tasks[0].FailureRate == nil || *h.Tasks[0].FailureRate != 50 {
+			t.Fatalf("TCP failure rate = %+v", h.Tasks[0])
+		}
+		if h.Tasks[1].FailureRate == nil || math.Abs(*h.Tasks[1].FailureRate-100.0/3) > .001 {
+			t.Fatalf("ICMP loss includes permission/DNS: %+v", h.Tasks[1])
+		}
+		if h.Tasks[0].LatestLatencyMS != nil || h.Tasks[0].LatestOutcome != "cancelled" {
+			t.Fatal("latest failure hidden by older success")
+		}
+	}
+	for _, hours := range []int{0, -1, 7, 168} {
+		if _, err := s.History(ctx, 1, hours, caps[1]); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("invalid range accepted: %d", hours)
+		}
+	}
+	if h, err := s.History(ctx, 1, 6, caps[2]); err != nil || len(h.Tasks) != 1 {
+		t.Fatalf("unsupported history: %+v %v", h, err)
+	}
+	if err := s.Cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var old, boundary int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts < ?`, s.now().Add(-7*24*time.Hour).UnixMilli()).Scan(&old); err != nil || old != 0 {
+		t.Fatalf("old records = %d %v", old, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts = ?`, s.now().Add(-7*24*time.Hour).UnixMilli()).Scan(&boundary); err != nil || boundary != 2 {
+		t.Fatalf("boundary records = %d %v", boundary, err)
+	}
+	latency := 42.5
+	if err := s.Ingest(ctx, 1, caps[1], ProbeResult{TaskID: 1, Outcome: "success", LatencyMS: &latency}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := s.History(ctx, 1, 1, caps[1])
+	if err != nil || h.Tasks[0].LatestLatencyMS == nil || *h.Tasks[0].LatestLatencyMS != latency {
+		t.Fatalf("latest success: %+v %v", h, err)
+	}
+}

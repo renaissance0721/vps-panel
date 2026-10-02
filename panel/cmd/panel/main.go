@@ -18,6 +18,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/api"
 	"github.com/renaissance0721/vps-panel/panel/internal/backup"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -79,6 +80,26 @@ func run() error {
 	}
 
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	probeCleanupDone := make(chan struct{})
+	go func() {
+		defer close(probeCleanupDone)
+		probes := monitor.NewService(db)
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			cleanupContext, cancel := context.WithTimeout(shutdownContext, time.Minute)
+			if err := probes.Cleanup(cleanupContext); err != nil && shutdownContext.Err() == nil {
+				log.Printf("clean up probe history: %v", err)
+			}
+			cancel()
+			select {
+			case <-shutdownContext.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	defer func() { stop(); <-probeCleanupDone }()
 	var renewalWG sync.WaitGroup
 	renewals := serverstore.NewService(db)
 	if err := renewals.ApplyAutomaticRenewals(shutdownContext); err != nil {

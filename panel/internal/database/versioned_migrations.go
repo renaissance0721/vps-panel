@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 10
+const LatestSchemaVersion = 11
 
 type migration struct {
 	version int
@@ -32,6 +32,54 @@ var migrations = []migration{
 	{version: 8, name: "personal_subscriptions", up: createPersonalSubscriptions},
 	{version: 9, name: "personal_subscription_node_instances", up: migratePersonalSubscriptionNodeInstances},
 	{version: 10, name: "routing_bindings", up: migrateRoutingBindings},
+	{version: 11, name: "monitor_probes", up: createMonitorProbes},
+}
+
+func createMonitorProbes(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE monitor_probe_tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL CHECK (type IN ('tcp', 'icmp')),
+			target TEXT NOT NULL,
+			port INTEGER,
+			interval_seconds INTEGER NOT NULL CHECK (interval_seconds BETWEEN 5 AND 86400),
+			enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			CHECK ((type = 'tcp' AND port IS NOT NULL AND port BETWEEN 1 AND 65535)
+			    OR (type = 'icmp' AND port IS NULL))
+		)`,
+		`CREATE TABLE monitor_probe_servers (
+			task_id INTEGER NOT NULL REFERENCES monitor_probe_tasks(id) ON DELETE CASCADE,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			PRIMARY KEY (task_id, server_id)
+		)`,
+		`CREATE INDEX idx_monitor_probe_servers_server ON monitor_probe_servers(server_id)`,
+		`CREATE TABLE monitor_probe_records (
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			task_id INTEGER NOT NULL REFERENCES monitor_probe_tasks(id) ON DELETE CASCADE,
+			ts INTEGER NOT NULL,
+			outcome TEXT NOT NULL CHECK (outcome IN ('success', 'timeout', 'dns_error', 'connect_error', 'permission_error', 'cancelled')),
+			latency_ms REAL,
+			CHECK ((outcome = 'success' AND latency_ms IS NOT NULL AND latency_ms >= 0)
+			    OR (outcome != 'success' AND latency_ms IS NULL))
+		)`,
+		`CREATE INDEX idx_monitor_probe_records_history ON monitor_probe_records(server_id, task_id, ts)`,
+		`CREATE INDEX idx_monitor_probe_records_ts ON monitor_probe_records(ts)`,
+		`CREATE INDEX idx_monitor_probe_records_task ON monitor_probe_records(task_id)`,
+		`CREATE TRIGGER monitor_probe_server_archived AFTER UPDATE OF archived_at ON servers
+		 WHEN NEW.archived_at IS NOT NULL
+		 BEGIN
+			DELETE FROM monitor_probe_servers WHERE server_id = NEW.id;
+			DELETE FROM monitor_probe_records WHERE server_id = NEW.id;
+		 END`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create monitor probes: %w", err)
+		}
+	}
+	return nil
 }
 
 func migrateRoutingBindings(ctx context.Context, tx *sql.Tx) error {

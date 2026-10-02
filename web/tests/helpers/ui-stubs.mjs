@@ -32,6 +32,7 @@ export const NInput = defineComponent({
   props: ['value'],
   setup: (props, { attrs }) => () => h('input', { ...attrs, value: props.value }),
 })
+export const NInputNumber = NInput
 export const NSelect = defineComponent({
   props: ['value', 'options'],
   setup: (props, { attrs }) => () => h('select', attrs,

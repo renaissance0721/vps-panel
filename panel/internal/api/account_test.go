@@ -71,7 +71,8 @@ func TestAccountRenameAndAdminPasswordChange(t *testing.T) {
 	}{
 		{"wrong password", map[string]string{"username": "renamed-admin", "current_password": "wrong-password"}, http.StatusUnauthorized},
 		{"empty username", map[string]string{"username": "", "current_password": "strong-password"}, http.StatusBadRequest},
-		{"duplicate username", map[string]string{"username": "EXISTING-USER", "current_password": "strong-password"}, http.StatusConflict},
+		{"duplicate username", map[string]string{"username": "existing-user", "current_password": "strong-password"}, http.StatusConflict},
+		{"distinct capitalization", map[string]string{"username": "EXISTING-USER", "current_password": "strong-password"}, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := performRequest(t, handler, http.MethodPatch, "/api/account/username", test.body, adminCookie)

@@ -155,8 +155,9 @@ function stopServerPolling() {
 }
 
 function validatePasswords(): boolean {
-  if (password.value.length < 10) {
-    error.value = '密码至少需要 10 个字符'
+  const passwordBytes = new TextEncoder().encode(password.value).length
+  if (passwordBytes < 6 || passwordBytes > 72) {
+    error.value = '密码长度需为 6–72 字节'
     return false
   }
   if (password.value !== confirmPassword.value) {
@@ -200,8 +201,8 @@ function openPasswordReset() {
 
 async function requestPasswordReset() {
   const passwordBytes = new TextEncoder().encode(passwordResetPassword.value).length
-  if (passwordBytes < 10 || passwordBytes > 72) {
-    passwordResetError.value = '新密码长度需为 10–72 字节'
+  if (passwordBytes < 6 || passwordBytes > 72) {
+    passwordResetError.value = '新密码长度需为 6–72 字节'
     return
   }
   if (passwordResetPassword.value !== passwordResetConfirm.value) {
@@ -352,7 +353,7 @@ onUnmounted(stopServerPolling)
               type="password"
               show-password-on="click"
               :input-props="{ autocomplete: 'new-password' }"
-              placeholder="至少 10 个字符"
+              placeholder="6–72 字节"
             />
           </label>
           <label>
@@ -391,7 +392,7 @@ onUnmounted(stopServerPolling)
               type="password"
               show-password-on="click"
               :input-props="{ autocomplete: 'new-password' }"
-              placeholder="至少 10 个字符"
+              placeholder="6–72 字节"
             />
           </label>
           <label>

@@ -73,8 +73,8 @@ async function renameAccount() {
 
 async function changePassword() {
   const passwordBytes = new TextEncoder().encode(newPassword.value).length
-  if (passwordBytes < 10 || passwordBytes > 72) {
-    formError.value = '新密码长度需为 10–72 字节'
+  if (passwordBytes < 6 || passwordBytes > 72) {
+    formError.value = '新密码长度需为 6–72 字节'
     return
   }
   if (newPassword.value !== confirmPassword.value) {
@@ -113,8 +113,8 @@ function openPasswordReset() {
 
 async function requestPasswordReset() {
   const passwordBytes = new TextEncoder().encode(resetPassword.value).length
-  if (passwordBytes < 10 || passwordBytes > 72) {
-    formError.value = '新密码长度需为 10–72 字节'
+  if (passwordBytes < 6 || passwordBytes > 72) {
+    formError.value = '新密码长度需为 6–72 字节'
     return
   }
   if (resetPassword.value !== resetConfirmPassword.value) {

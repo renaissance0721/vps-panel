@@ -316,7 +316,7 @@ func prepareCredentials(username, password string) (string, string, error) {
 }
 
 func validatePassword(password string) error {
-	if len(password) < 10 || len(password) > 72 {
+	if len(password) < 6 || len(password) > 72 {
 		return ErrInvalidPassword
 	}
 	return nil

@@ -117,7 +117,7 @@ func writePasswordRequestError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "当前密码错误")
 	case errors.Is(err, auth.ErrInvalidPassword):
-		writeError(w, http.StatusBadRequest, "新密码长度需为 10–72 字节")
+		writeError(w, http.StatusBadRequest, "新密码长度需为 6–72 字节")
 	case errors.Is(err, auth.ErrPasswordUnchanged):
 		writeError(w, http.StatusBadRequest, "新密码不能与当前密码相同")
 	case errors.Is(err, auth.ErrPasswordRequestPending):

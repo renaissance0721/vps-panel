@@ -15,6 +15,7 @@ const (
 	Proxies  Kind = "proxies"
 	Relays   Kind = "relays"
 	Landings Kind = "landings"
+	Users    Kind = "users"
 )
 
 var (
@@ -36,6 +37,8 @@ func tableAndColumn(kind Kind) (string, string) {
 		return "user_relay_order", "relay_id"
 	case Landings:
 		return "user_landing_order", "landing_id"
+	case Users:
+		return "user_account_order", "account_user_id"
 	default:
 		panic("unknown list order kind")
 	}
@@ -59,7 +62,7 @@ func readPositions(rows *sql.Rows) (map[int64]int64, []int64, error) {
 	return positions, stored, nil
 }
 
-// sortVisible keeps the existing newest-first list until a user changes it.
+// sortVisible keeps the existing default list until a user changes it.
 // New resources without an order row appear above previously ordered resources.
 func sortVisible(defaultIDs []int64, positions map[int64]int64) []int64 {
 	ordered := append([]int64(nil), defaultIDs...)
@@ -90,6 +93,8 @@ func (s *Store) Sort(ctx context.Context, userID int64, kind Kind, defaultIDs []
 
 func visibleQuery(kind Kind, archived bool) string {
 	switch kind {
+	case Users:
+		return `SELECT id FROM users ORDER BY username, id`
 	case Landings:
 		return `SELECT id FROM landing_nodes WHERE owner_user_id = ? OR visibility = 'public'
 			ORDER BY created_at DESC, id DESC`
@@ -142,6 +147,9 @@ func (s *Store) Move(ctx context.Context, userID int64, kind Kind, archived bool
 	defer tx.Rollback()
 	query := visibleQuery(kind, archived)
 	arguments := []any{userID}
+	if kind == Users {
+		arguments = nil
+	}
 	if kind == Relays {
 		arguments = append(arguments, userID)
 	}

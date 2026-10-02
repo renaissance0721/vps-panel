@@ -118,7 +118,7 @@ test('服务器和代理拖拽使用完整行预览、源行淡化与目标占�
     assert.match(view, /<TransitionGroup tag="tbody" name="table-row-order">/)
   }
   assert.match(style, /\.drag-source,[\s\S]*opacity:\s*0\.38 !important/)
-  assert.match(style, /\.server-table tr\.row-drop-target\s*{[^}]*background:\s*var\(--color-primary-soft\)/)
+  assert.match(style, /\.server-table tr\.row-drop-target,\s*\.account-row\.row-drop-target\s*{[^}]*background:\s*var\(--color-primary-soft\)/)
   assert.match(style, /\.drag-preview\s*{[^}]*box-shadow:/s)
   assert.match(style, /\.table-row-order-move,[\s\S]*transition:\s*transform/)
 })

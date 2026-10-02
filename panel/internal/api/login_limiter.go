@@ -113,7 +113,7 @@ func remainingLoginWindow(failure loginFailure, now time.Time) time.Duration {
 }
 
 func normalizeLoginUsername(username string) string {
-	return strings.ToLower(strings.TrimSpace(username))
+	return strings.TrimSpace(username)
 }
 
 func clientIP(r *http.Request) string {

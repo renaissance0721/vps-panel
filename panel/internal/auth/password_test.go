@@ -66,7 +66,7 @@ func TestPasswordResetRequestStoresOnlyHashAndHidesAccountState(t *testing.T) {
 	if err := service.RequestPasswordResetByUsername(t.Context(), "missing", "replacement-password"); err != nil {
 		t.Fatalf("missing user reset error = %v", err)
 	}
-	if err := service.RequestPasswordResetByUsername(t.Context(), " ALICE ", "replacement-password"); err != nil {
+	if err := service.RequestPasswordResetByUsername(t.Context(), " alice ", "replacement-password"); err != nil {
 		t.Fatalf("existing user reset error = %v", err)
 	}
 	if err := service.RequestPasswordResetByUsername(t.Context(), "alice", "another-password"); err != nil {

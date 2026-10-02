@@ -22,7 +22,7 @@ var (
 	ErrInvitationNotFound        = errors.New("invitation not found")
 	ErrInvalidInvitationRole     = errors.New("invitation role must be vip, user, or subscriber")
 	ErrInvalidUsername           = errors.New("username must be 3-64 characters using letters, numbers, dot, underscore, or hyphen")
-	ErrInvalidPassword           = errors.New("password must be 10-72 bytes")
+	ErrInvalidPassword           = errors.New("password must be 6-72 bytes")
 	ErrUsernameTaken             = errors.New("username is already in use")
 	ErrUserNotFound              = errors.New("user not found")
 	ErrCannotDeleteAdmin         = errors.New("admin users cannot be deleted")

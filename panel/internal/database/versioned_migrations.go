@@ -13,12 +13,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 13
+const LatestSchemaVersion = 15
 
 type migration struct {
-	version int
-	name    string
-	up      func(context.Context, *sql.Tx) error
+	version            int
+	name               string
+	up                 func(context.Context, *sql.Tx) error
+	disableForeignKeys bool
 }
 
 var migrations = []migration{
@@ -35,6 +36,52 @@ var migrations = []migration{
 	{version: 11, name: "monitor_probes", up: createMonitorProbes},
 	{version: 12, name: "monitor_probe_default_on", up: addMonitorProbeDefaultOn},
 	{version: 13, name: "user_landing_order", up: createUserLandingOrder},
+	{version: 14, name: "case_sensitive_usernames", up: migrateCaseSensitiveUsernames, disableForeignKeys: true},
+	{version: 15, name: "user_account_order", up: createUserAccountOrder},
+}
+
+const userAccountOrderStatement = `CREATE TABLE IF NOT EXISTS user_account_order (
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	account_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	position INTEGER NOT NULL,
+	PRIMARY KEY (user_id, account_user_id),
+	UNIQUE (user_id, position)
+)`
+
+func createUserAccountOrder(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, userAccountOrderStatement)
+	return err
+}
+
+func migrateCaseSensitiveUsernames(ctx context.Context, tx *sql.Tx) error {
+	// Keep the AUTOINCREMENT high-water mark, including previously deleted IDs.
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'users'), 0)`).Scan(&sequence); err != nil {
+		return err
+	}
+	// users has no application-defined indexes or triggers. Its UNIQUE index
+	// is recreated by the new table, now using SQLite's default BINARY collation.
+	// Copy first and rename last so child foreign keys continue to name users.
+	for _, statement := range []string{
+		`CREATE TABLE users_v14 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO users_v14 (id, username, password_hash, role, created_at, updated_at)
+		 SELECT id, username, password_hash, role, created_at, updated_at FROM users`,
+		`DROP TABLE users`,
+		`ALTER TABLE users_v14 RENAME TO users`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild users with case-sensitive usernames: %w", err)
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'users'`, sequence)
+	return err
 }
 
 func createUserLandingOrder(ctx context.Context, tx *sql.Tx) error {
@@ -437,8 +484,25 @@ func createBaselineSchema(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, item migration) error {
-	tx, err := db.BeginTx(ctx, nil)
+func applyMigration(ctx context.Context, db *sql.DB, item migration) (resultErr error) {
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open schema migration connection: %w", err)
+	}
+	defer connection.Close()
+	if item.disableForeignKeys {
+		// SQLite requires this before BEGIN, on the same connection as the
+		// rebuild. Otherwise DROP TABLE can cascade-delete child records.
+		if _, err := connection.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+			return fmt.Errorf("disable migration foreign keys: %w", err)
+		}
+		defer func() {
+			if _, err := connection.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("restore migration foreign keys: %w", err))
+			}
+		}()
+	}
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin schema migration %d (%s): %w", item.version, item.name, err)
 	}

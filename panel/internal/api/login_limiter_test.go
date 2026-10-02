@@ -15,7 +15,7 @@ func TestLoginLimiterPairIPWindowAndMemoryBounds(t *testing.T) {
 	now := time.Date(2026, time.September, 26, 10, 0, 0, 0, time.UTC)
 	limiter := newLoginLimiter()
 	for index := 0; index < loginPairFailureLimit; index++ {
-		username := "Admin"
+		username := "admin"
 		if index%2 == 1 {
 			username = " admin "
 		}
@@ -24,11 +24,11 @@ func TestLoginLimiterPairIPWindowAndMemoryBounds(t *testing.T) {
 		}
 		limiter.RecordFailure("198.51.100.10", username, now)
 	}
-	if allowed, retryAfter := limiter.Allow("198.51.100.10", "ADMIN", now); allowed || retryAfter != loginFailureWindow {
-		t.Fatalf("normalized pair limit = (%t, %v)", allowed, retryAfter)
+	if allowed, retryAfter := limiter.Allow("198.51.100.10", "admin", now); allowed || retryAfter != loginFailureWindow {
+		t.Fatalf("trimmed pair limit = (%t, %v)", allowed, retryAfter)
 	}
 	limiter.Reset("198.51.100.10", "admin")
-	if allowed, _ := limiter.Allow("198.51.100.10", "ADMIN", now); !allowed {
+	if allowed, _ := limiter.Allow("198.51.100.10", "admin", now); !allowed {
 		t.Fatal("successful login reset did not clear pair failures")
 	}
 
@@ -62,7 +62,7 @@ func TestLoginLimiterPairIPWindowAndMemoryBounds(t *testing.T) {
 }
 
 func TestLoginAPIEnforcesPairAndIPFailureLimits(t *testing.T) {
-	t.Run("normalized pair and reset", func(t *testing.T) {
+	t.Run("trimmed pair and reset", func(t *testing.T) {
 		db, err := database.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -76,12 +76,12 @@ func TestLoginAPIEnforcesPairAndIPFailureLimits(t *testing.T) {
 			t.Fatalf("initialize = %d, %s", initialized.Code, initialized.Body.String())
 		}
 		for index := 0; index < loginPairFailureLimit-1; index++ {
-			response := performLoginRequest(t, handler, "Admin", "wrong-password", "198.51.100.10:1234")
+			response := performLoginRequest(t, handler, "admin", "wrong-password", "198.51.100.10:1234")
 			if response.Code != http.StatusUnauthorized {
 				t.Fatalf("initial failure %d = %d", index+1, response.Code)
 			}
 		}
-		if response := performLoginRequest(t, handler, "ADMIN", "strong-password", "198.51.100.10:1234"); response.Code != http.StatusOK {
+		if response := performLoginRequest(t, handler, "admin", "strong-password", "198.51.100.10:1234"); response.Code != http.StatusOK {
 			t.Fatalf("successful login = %d, %s", response.Code, response.Body.String())
 		}
 		for index := 0; index < loginPairFailureLimit; index++ {
@@ -90,7 +90,7 @@ func TestLoginAPIEnforcesPairAndIPFailureLimits(t *testing.T) {
 				t.Fatalf("failure after reset %d = %d", index+1, response.Code)
 			}
 		}
-		limited := performLoginRequest(t, handler, "ADMIN", "wrong-password", "198.51.100.10:1234")
+		limited := performLoginRequest(t, handler, "admin", "wrong-password", "198.51.100.10:1234")
 		if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
 			t.Fatalf("pair limit = %d, Retry-After %q, body %s", limited.Code, limited.Header().Get("Retry-After"), limited.Body.String())
 		}
@@ -145,6 +145,55 @@ func TestLoginAPIEnforcesPairAndIPFailureLimits(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLoginLimiterSeparatesCaseAndKeepsIPLimit(t *testing.T) {
+	now := time.Now()
+	limiter := newLoginLimiter()
+	for range loginPairFailureLimit {
+		limiter.RecordFailure("client", " refrain ", now)
+	}
+	if allowed, _ := limiter.Allow("client", "Refrain", now); !allowed {
+		t.Fatal("distinct uppercase account was blocked")
+	}
+	limiter.Reset("client", "Refrain")
+	if allowed, _ := limiter.Allow("client", "refrain", now); allowed {
+		t.Fatal("uppercase account reset another account's failures")
+	}
+	// Random case variants cannot authenticate the lowercase account, and
+	// still accumulate against the shared IP limit.
+	for index := loginPairFailureLimit; index < loginIPFailureLimit; index++ {
+		limiter.RecordFailure("client", fmt.Sprintf("ReFrain-%d", index), now)
+	}
+	limiter.Reset("client", "refrain")
+	if allowed, _ := limiter.Allow("client", "REFRAIN", now); allowed {
+		t.Fatal("changing case or resetting a pair bypassed the IP limit")
+	}
+}
+
+func TestLoginAPICaseVariantsCannotAuthenticateOrResetOtherAccount(t *testing.T) {
+	db, handler, adminCookie, _ := setupAccountTest(t)
+	defer db.Close()
+	registerAccount(t, db, handler, adminCookie, "vip", "Admin")
+	const remote = "198.51.100.50:1234"
+	for range loginPairFailureLimit {
+		response := performLoginRequest(t, handler, "admin", "wrong-password", remote)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("failure = %d", response.Code)
+		}
+	}
+	if response := performLoginRequest(t, handler, "Admin", "strong-password", remote); response.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-account password = %d", response.Code)
+	}
+	if response := performLoginRequest(t, handler, "ADMIN", "strong-password", remote); response.Code != http.StatusUnauthorized {
+		t.Fatalf("nonexistent variant = %d", response.Code)
+	}
+	if response := performLoginRequest(t, handler, "Admin", "current-password", remote); response.Code != http.StatusOK {
+		t.Fatalf("independent account login = %d", response.Code)
+	}
+	if response := performLoginRequest(t, handler, "admin", "strong-password", remote); response.Code != http.StatusTooManyRequests {
+		t.Fatalf("other account cleared lowercase limit = %d", response.Code)
+	}
 }
 
 func TestClientIPTrustsForwardingHeadersOnlyFromLoopback(t *testing.T) {

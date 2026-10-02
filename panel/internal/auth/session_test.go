@@ -19,7 +19,7 @@ func TestLoginSessionAndLogout(t *testing.T) {
 	if _, err := service.Login(ctx, "admin", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("Login() wrong password error = %v, want ErrInvalidCredentials", err)
 	}
-	loggedIn, err := service.Login(ctx, "ADMIN", testPassword)
+	loggedIn, err := service.Login(ctx, " admin ", testPassword)
 	if err != nil || loggedIn.ID != user.ID || loggedIn.Role != RoleAdmin {
 		t.Fatalf("Login() = (%+v, %v), want user %d", loggedIn, err, user.ID)
 	}

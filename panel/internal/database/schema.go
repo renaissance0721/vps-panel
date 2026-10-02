@@ -5,12 +5,13 @@ func schemaStatements() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+			username TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL,
 			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		userAccountOrderStatement,
 		`CREATE TABLE IF NOT EXISTS admin_invitations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			token_hash TEXT NOT NULL UNIQUE,

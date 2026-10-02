@@ -252,12 +252,10 @@ test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编�
     '/api/personal-subscriptions',
     '/api/personal-subscriptions/sources?client_name=',
     '/nodes',
-    '/token/regenerate',
-    '/mihomo-preview',
   ]) {
     assert.ok(managementSource.includes(endpoint))
   }
-  for (const label of ['新增个人订阅', '同名 Client', '本地 Proxy', '中转 Relay', '外部节点 Landing', '添加全部可用节点', '自定义显示名称', '入口地址', '入口端口', '复制链接', '二维码', '预览', 'Mihomo 模板']) {
+  for (const label of ['新增个人订阅', '同名 Client', '本地 Proxy', '中转 Relay', '外部节点 Landing', '添加全部可用节点', '自定义显示名称', '入口地址', '入口端口', '复制链接', '二维码', 'Mihomo 模板']) {
     assert.match(managementSource, new RegExp(label))
   }
   assert.match(managementSource, /source_type: 'proxy' \| 'relay' \| 'landing'/)

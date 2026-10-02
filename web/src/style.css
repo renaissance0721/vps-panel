@@ -911,8 +911,10 @@ h1 {
 .drag-handle:active { cursor: grabbing; }
 .drag-handle--disabled { opacity: 0.35; cursor: not-allowed; }
 .drag-source,
-.server-table tr.row-dragging { opacity: 0.38 !important; }
-.server-table tr.row-drop-target {
+.server-table tr.row-dragging,
+.account-row.row-dragging { opacity: 0.38 !important; }
+.server-table tr.row-drop-target,
+.account-row.row-drop-target {
   background: var(--color-primary-soft);
   box-shadow: inset 0 3px 0 var(--color-primary);
   transform: translateY(1px);

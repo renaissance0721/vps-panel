@@ -160,6 +160,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("PATCH /api/me/relays/{id}", s.requireUser(s.updateMyRelay))
 	mux.HandleFunc("DELETE /api/me/relays/{id}", s.requireUser(s.deleteMyRelay))
 	mux.HandleFunc("GET /api/users", s.requireManager(s.listUsers))
+	mux.HandleFunc("POST /api/users/{id}/reorder", s.requireAdmin(s.reorderUser))
 	mux.HandleFunc("GET /api/overview", s.requireManager(s.overview))
 	mux.HandleFunc("GET /api/monitor/probes", s.requireAdmin(s.listProbes))
 	mux.HandleFunc("POST /api/monitor/probes", s.requireAdmin(s.saveProbe))

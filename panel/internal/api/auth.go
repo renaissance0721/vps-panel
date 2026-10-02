@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 )
 
 const sessionCookieName = "vps_panel_session"
@@ -171,12 +173,22 @@ func (s *server) revokeInvitation(w http.ResponseWriter, r *http.Request, _ auth
 	writeNoContent(w)
 }
 
-func (s *server) listUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listUsers(w http.ResponseWriter, r *http.Request, viewer auth.User) {
 	users, err := s.authService.ListUsers(r.Context())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	ids := make([]int64, 0, len(users))
+	for _, user := range users {
+		ids = append(ids, user.ID)
+	}
+	ranks, err := s.orderRanks(r.Context(), viewer.ID, listorder.Users, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	sort.SliceStable(users, func(i, j int) bool { return ranks[users[i].ID] < ranks[users[j].ID] })
 	response := make([]accessUserResponse, 0, len(users))
 	for _, user := range users {
 		response = append(response, accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role})
@@ -308,7 +320,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvalidUsername):
 		writeError(w, http.StatusBadRequest, "用户名需为 3–64 位字母、数字、点、下划线或连字符")
 	case errors.Is(err, auth.ErrInvalidPassword):
-		writeError(w, http.StatusBadRequest, "密码长度需为 10–72 字节")
+		writeError(w, http.StatusBadRequest, "密码长度需为 6–72 字节")
 	case errors.Is(err, auth.ErrUsernameTaken):
 		writeError(w, http.StatusConflict, "用户名已存在")
 	default:

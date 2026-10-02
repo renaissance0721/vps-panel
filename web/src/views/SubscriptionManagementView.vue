@@ -232,8 +232,6 @@ const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
 const personalCopiedID = ref<number | null>(null)
-const personalPreviewOpen = ref(false)
-const personalPreviewYAML = ref('')
 const personalQR = ref<PersonalSubscription | null>(null)
 const personalQROpen = ref(false)
 const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
@@ -643,14 +641,6 @@ async function deletePersonal(value: PersonalSubscription) {
   })
 }
 
-async function regeneratePersonalToken(value: PersonalSubscription) {
-  if (!window.confirm('重新生成后，旧订阅链接会立即失效。确定继续吗？')) return
-  await run(async () => {
-    await api(`/api/personal-subscriptions/${value.id}/token/regenerate`, { method: 'POST' })
-    await loadAll()
-  })
-}
-
 async function copyPersonalURL(value: PersonalSubscription) {
   await navigator.clipboard.writeText(value.subscription_auto_url)
   personalCopiedID.value = value.id
@@ -659,14 +649,6 @@ async function copyPersonalURL(value: PersonalSubscription) {
 function showPersonalQR(value: PersonalSubscription) {
   personalQR.value = value
   personalQROpen.value = true
-}
-
-async function previewPersonal(value: PersonalSubscription) {
-  await run(async () => {
-    const response = await api<{ yaml: string }>(`/api/personal-subscriptions/${value.id}/mihomo-preview`)
-    personalPreviewYAML.value = response.yaml
-    personalPreviewOpen.value = true
-  })
 }
 
 function personalSourceLabel(value: string) {
@@ -1260,9 +1242,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
         <div class="modal-actions">
           <n-button secondary @click="copyPersonalURL(value)">{{ personalCopiedID === value.id ? '已复制' : '复制链接' }}</n-button>
           <n-button secondary @click="showPersonalQR(value)">二维码</n-button>
-          <n-button secondary @click="previewPersonal(value)">预览</n-button>
           <n-button secondary @click="openEditPersonal(value)">编辑</n-button>
-          <n-button secondary @click="regeneratePersonalToken(value)">重置链接</n-button>
           <n-button type="error" secondary @click="deletePersonal(value)">删除</n-button>
         </div>
       </n-card>
@@ -1407,11 +1387,6 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     />
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
-
-  <n-modal v-model:show="personalPreviewOpen"><n-card class="client-form-card subscription-form-card" title="个人订阅 Mihomo Preview" closable @close="personalPreviewOpen = false">
-    <n-input :value="personalPreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
-    <div class="modal-actions"><n-button @click="personalPreviewOpen = false">关闭</n-button></div>
-  </n-card></n-modal>
 
   <QRCodeModal
     v-if="personalQR"

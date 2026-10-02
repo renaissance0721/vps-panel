@@ -9,6 +9,17 @@ const userPortalSource = await readFile(new URL('../src/views/UserPortalView.vue
 const subscriberPortalSource = await readFile(new URL('../src/views/SubscriberPortalView.vue', import.meta.url), 'utf8')
 const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8')
 
+test('初始化、邀请注册、修改密码和重置密码使用 6–72 UTF-8 字节提示与校验', () => {
+  for (const source of [appSource, accountSource]) {
+    assert.doesNotMatch(source, /10[–-]72|至少\s*10|password\.value\.length|minlength="10"/)
+    assert.equal((source.match(/passwordBytes < 6 \|\| passwordBytes > 72/g) ?? []).length, 2)
+    assert.equal((source.match(/new TextEncoder\(\)\.encode\(/g) ?? []).length, 2)
+    assert.match(source, /密码长度需为 6–72 字节/)
+  }
+  assert.match(appSource, /async function initialize\(\) \{\s*if \(!validatePasswords\(\)\) return/)
+  assert.match(appSource, /async function register\(\) \{\s*if \(!validatePasswords\(\)\) return/)
+})
+
 test('管理端、用户门户和订阅门户共用右上角账户菜单', () => {
   assert.match(appSource, /import AccountMenu from '.\/components\/AccountMenu\.vue'/)
   assert.match(appSource, /<AccountMenu v-if="state\.user" :user="state\.user" @updated="updateCurrentUser" @logout="logout"/)

@@ -90,3 +90,17 @@ type CreatedServer struct {
 	EnrollmentToken     string
 	EnrollmentExpiresAt time.Time
 }
+
+type CreateServerInput struct {
+	Name                     string
+	Visibility               string
+	UserIDs                  []int64
+	CreatorID                int64
+	ExpiresAt                *time.Time
+	RenewalPeriodMonths      *int
+	AutoRenew                bool
+	MonthlyTrafficLimitBytes *int64
+	TrafficCountMode         string
+	TrafficResetDay          int
+	TrafficResetTime         string
+}

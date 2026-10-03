@@ -63,7 +63,9 @@ const {
             </n-button>
           </div>
 
-          <ServerForm :model="model" /><ServerList :model="model" /></template>
+      <ServerList :model="model" />
+      <ServerForm :model="model" />
+    </template>
 <ServerDetail :model="model" />
 <ServerBasicInfoForm :model="model" />
 <ServerTrafficForm :model="model" />

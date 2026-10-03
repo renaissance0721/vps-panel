@@ -7,8 +7,8 @@ const proxySource = await readFile(new URL('../src/composables/useProxies.ts', i
 const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 
 test('服务器创建和详情支持公开/私有访问范围与账号选择', () => {
-  assert.match(appSource, /visibility:\s*serverVisibility\.value/)
-  assert.match(appSource, /user_ids:\s*serverVisibility\.value === 'private'/)
+  assert.match(appSource, /visibility:\s*createServerVisibility\.value/)
+  assert.match(appSource, /user_ids:\s*createServerVisibility\.value === 'private'/)
   assert.match(appSource, /公开（所有管理账号）/)
   assert.doesNotMatch(appSource, /公开（所有已登录账号）/)
   assert.match(appSource, /私有（仅指定账号）/)

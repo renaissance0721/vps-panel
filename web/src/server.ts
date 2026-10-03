@@ -1,6 +1,17 @@
 import type {
+  RenewalPeriodMonths,
   ServerRecord,
 } from './types/server'
+
+export const renewalPeriodOptions: Array<{ label: string; value: RenewalPeriodMonths | 0 }> = [
+  { label: '不设置', value: 0 },
+  { label: '月付', value: 1 },
+  { label: '季付', value: 3 },
+  { label: '半年付', value: 6 },
+  { label: '年付', value: 12 },
+  { label: '两年付', value: 24 },
+  { label: '三年付', value: 36 },
+]
 
 type AgentMetadata = Pick<ServerRecord, 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'>
 

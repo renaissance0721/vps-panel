@@ -53,9 +53,51 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 		writeInternalError(w, errPanelBaseURL)
 		return
 	}
+	expiresAt, err := parseServerExpiration(request.ExpiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
+		return
+	}
+	renewalPeriod, err := parseOptionalInt(request.RenewalPeriodMonths)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "续费周期无效")
+		return
+	}
+	monthlyLimit, err := parseOptionalInt64(request.MonthlyTrafficLimitBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "月流量额度格式无效")
+		return
+	}
+	traffic := serverstore.DefaultTrafficConfig()
+	if request.TrafficCountMode != nil {
+		if *request.TrafficCountMode == "" {
+			writeServerError(w, serverstore.ErrInvalidTrafficConfig)
+			return
+		}
+		traffic.CountMode = *request.TrafficCountMode
+	}
+	if request.TrafficResetDay != nil {
+		if *request.TrafficResetDay < 1 || *request.TrafficResetDay > 31 {
+			writeServerError(w, serverstore.ErrInvalidTrafficConfig)
+			return
+		}
+		traffic.ResetDay = *request.TrafficResetDay
+	}
+	if request.TrafficResetTime != nil {
+		if *request.TrafficResetTime == "" {
+			writeServerError(w, serverstore.ErrInvalidTrafficConfig)
+			return
+		}
+		traffic.ResetTime = *request.TrafficResetTime
+	}
 	// Keep inheritance ordered with probe PATCH's read/replace of assignments.
 	s.probeMu.Lock()
-	created, err := s.servers.CreateForUser(r.Context(), request.Name, request.Visibility, request.UserIDs, user.ID)
+	created, err := s.servers.CreateWithSettings(r.Context(), serverstore.CreateServerInput{
+		Name: request.Name, Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
+		ExpiresAt: expiresAt, RenewalPeriodMonths: renewalPeriod, AutoRenew: request.AutoRenew,
+		MonthlyTrafficLimitBytes: monthlyLimit, TrafficCountMode: traffic.CountMode,
+		TrafficResetDay: traffic.ResetDay, TrafficResetTime: traffic.ResetTime,
+	})
 	s.probeMu.Unlock()
 	if err != nil {
 		writeServerError(w, err)
@@ -63,6 +105,44 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	}
 	s.recordAudit(r, user, "server.create", "server", created.ID, "创建服务器 "+created.Name)
 	writeJSON(w, http.StatusCreated, s.toCreatedServerResponse(created, baseURL))
+}
+
+func parseServerExpiration(raw json.RawMessage) (*time.Time, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid server expiration")
+	}
+	parsed, err := time.ParseInLocation(expirationDateLayout, value, shanghaiLocation)
+	if err != nil {
+		return nil, err
+	}
+	parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, shanghaiLocation).UTC()
+	return &parsed, nil
+}
+
+func parseOptionalInt(raw json.RawMessage) (*int, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var value int
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid integer")
+	}
+	return &value, nil
+}
+
+func parseOptionalInt64(raw json.RawMessage) (*int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var value int64
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid integer")
+	}
+	return &value, nil
 }
 
 func (s *server) getServer(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -263,26 +343,20 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		update.AutoRenew = *request.AutoRenew
 	}
 	if hasExpiration && string(request.ExpiresAt) != "null" {
-		var value string
-		if json.Unmarshal(request.ExpiresAt, &value) != nil {
-			writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
-			return
-		}
-		parsed, err := time.ParseInLocation(expirationDateLayout, value, shanghaiLocation)
+		parsed, err := parseServerExpiration(request.ExpiresAt)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "到期日期格式无效，请使用 YYYY-MM-DD")
 			return
 		}
-		parsed = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 23, 59, 59, 0, shanghaiLocation).UTC()
-		update.ExpiresAt = &parsed
+		update.ExpiresAt = parsed
 	}
 	if hasRenewalPeriod && string(request.RenewalPeriodMonths) != "null" {
-		var value int
-		if json.Unmarshal(request.RenewalPeriodMonths, &value) != nil {
+		value, err := parseOptionalInt(request.RenewalPeriodMonths)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "续费周期无效")
 			return
 		}
-		update.RenewalPeriodMonths = &value
+		update.RenewalPeriodMonths = value
 	}
 	updated, err := s.servers.UpdateRenewalSettings(r.Context(), id, update)
 	if err != nil {

@@ -361,10 +361,6 @@ h1 {
   font-size: 13px;
 }
 
-.server-create {
-  margin-bottom: 20px;
-}
-
 .relay-toolbar {
   display: grid;
   grid-template-columns: minmax(240px, 420px) auto;
@@ -388,13 +384,15 @@ h1 {
   color: #65717e;
 }
 
-.server-access-form,
-.server-access-form label {
+.server-create-form,
+.server-create-section,
+.server-create-section > label {
   display: grid;
   gap: 8px;
 }
 
-.server-access-form > label > span,
+.server-create-section > label > span,
+.server-create-section > legend,
 .server-access-users legend {
   color: #47525d;
   font-size: 14px;
@@ -468,6 +466,34 @@ h1 {
   width: min(620px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
   overflow-y: auto;
+}
+
+.server-create-modal-card {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.server-create-form {
+  gap: 16px;
+}
+
+.server-create-section {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+.server-create-section > legend {
+  padding: 0 6px;
+}
+
+.server-create-section > .server-access-users,
+.server-create-section > .switch-help,
+.server-create-section > .form-help {
+  grid-column: 1 / -1;
 }
 
 .expiration-form,
@@ -2061,6 +2087,10 @@ h1 {
 }
 
 @media (max-width: 640px) {
+  .server-create-section {
+    grid-template-columns: 1fr;
+  }
+
   .personal-node-summary {
     grid-template-columns: auto minmax(0, 1fr) auto auto;
   }

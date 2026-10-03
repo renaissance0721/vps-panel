@@ -57,6 +57,81 @@ func TestCreateRejectsInvalidName(t *testing.T) {
 	}
 }
 
+func TestCreateWithSettingsPersistsRenewalTrafficAccessAndEnrollment(t *testing.T) {
+	service, db := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		VALUES (1, 'alice', 'hash', 'admin', 1, 1), (2, 'bob', 'hash', 'vip', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Date(2027, 4, 3, 15, 59, 59, 0, time.UTC)
+	period := 12
+	limit := int64(500 << 30)
+	created, err := service.CreateWithSettings(t.Context(), CreateServerInput{
+		Name: "  DMIT LAX  ", Visibility: VisibilityPrivate, UserIDs: []int64{2}, CreatorID: 1,
+		ExpiresAt: &expiresAt, RenewalPeriodMonths: &period, AutoRenew: true,
+		MonthlyTrafficLimitBytes: &limit, TrafficCountMode: TrafficBidirectional,
+		TrafficResetDay: 31, TrafficResetTime: "08:30",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != "DMIT LAX" || created.ExpiresAt == nil || !created.ExpiresAt.Equal(expiresAt) ||
+		created.RenewalPeriodMonths == nil || *created.RenewalPeriodMonths != period || !created.AutoRenew ||
+		created.MonthlyTrafficLimitBytes == nil || *created.MonthlyTrafficLimitBytes != limit ||
+		created.TrafficCountMode != TrafficBidirectional || created.TrafficResetDay != 31 || created.TrafficResetTime != "08:30" ||
+		!equalInt64s(created.AccessUserIDs, []int64{1, 2}) {
+		t.Fatalf("created settings = %+v", created.Server)
+	}
+	var anchorDay, accessCount, enrollmentCount int
+	if err := db.QueryRow(`SELECT renewal_anchor_day FROM servers WHERE id = ?`, created.ID).Scan(&anchorDay); err != nil || anchorDay != 3 {
+		t.Fatalf("renewal anchor = %d, %v", anchorDay, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM server_access WHERE server_id = ?`, created.ID).Scan(&accessCount); err != nil || accessCount != 2 {
+		t.Fatalf("access rows = %d, %v", accessCount, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_enrollments WHERE server_id = ?`, created.ID).Scan(&enrollmentCount); err != nil || enrollmentCount != 1 {
+		t.Fatalf("enrollment rows = %d, %v", enrollmentCount, err)
+	}
+}
+
+func TestCreateWithSettingsValidationIsAtomic(t *testing.T) {
+	expiration := time.Date(2027, 4, 3, 15, 59, 59, 0, time.UTC)
+	validPeriod, invalidPeriod := 12, 2
+	negativeLimit := int64(-1)
+	for _, check := range []struct {
+		name  string
+		input CreateServerInput
+		want  error
+	}{
+		{"auto renew without expiration", CreateServerInput{Name: "Invalid", AutoRenew: true, RenewalPeriodMonths: &validPeriod}, ErrAutoRenewRequirements},
+		{"auto renew without period", CreateServerInput{Name: "Invalid", AutoRenew: true, ExpiresAt: &expiration}, ErrAutoRenewRequirements},
+		{"invalid renewal period", CreateServerInput{Name: "Invalid", ExpiresAt: &expiration, RenewalPeriodMonths: &invalidPeriod}, ErrInvalidRenewalPeriod},
+		{"negative traffic limit", CreateServerInput{Name: "Invalid", MonthlyTrafficLimitBytes: &negativeLimit}, ErrInvalidTrafficConfig},
+		{"invalid count mode", CreateServerInput{Name: "Invalid", TrafficCountMode: "both"}, ErrInvalidTrafficConfig},
+		{"invalid reset day", CreateServerInput{Name: "Invalid", TrafficResetDay: 32}, ErrInvalidTrafficConfig},
+		{"invalid reset time", CreateServerInput{Name: "Invalid", TrafficResetTime: "24:00"}, ErrInvalidTrafficConfig},
+		{"invalid access user", CreateServerInput{Name: "Invalid", Visibility: VisibilityPrivate, UserIDs: []int64{999}}, ErrInvalidServerAccess},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			service, db := newTestService(t)
+			if _, err := db.Exec(`INSERT INTO monitor_probe_tasks
+				(name, type, target, interval_seconds, enabled, default_on, created_at, updated_at)
+				VALUES ('Default', 'icmp', 'example.com', 60, 1, 1, 1, 1)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.CreateWithSettings(t.Context(), check.input); !errors.Is(err, check.want) {
+				t.Fatalf("CreateWithSettings() error = %v, want %v", err, check.want)
+			}
+			for _, table := range []string{"servers", "server_access", "agent_enrollments", "monitor_probe_servers"} {
+				var count int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("validation left %d rows in %s: %v", count, table, err)
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateName(t *testing.T) {
 	service, _ := newTestService(t)
 	created, err := service.Create(context.Background(), "Original")

@@ -14,9 +14,16 @@ const expirationDateLayout = "2006-01-02"
 var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type createServerRequest struct {
-	Name       string  `json:"name"`
-	Visibility string  `json:"visibility"`
-	UserIDs    []int64 `json:"user_ids"`
+	Name                     string          `json:"name"`
+	Visibility               string          `json:"visibility"`
+	UserIDs                  []int64         `json:"user_ids"`
+	ExpiresAt                json.RawMessage `json:"expires_at"`
+	RenewalPeriodMonths      json.RawMessage `json:"renewal_period_months"`
+	AutoRenew                bool            `json:"auto_renew"`
+	MonthlyTrafficLimitBytes json.RawMessage `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode         *string         `json:"traffic_count_mode"`
+	TrafficResetDay          *int            `json:"traffic_reset_day"`
+	TrafficResetTime         *string         `json:"traffic_reset_time"`
 }
 
 type updateServerAccessRequest struct {

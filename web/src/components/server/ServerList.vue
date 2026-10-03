@@ -19,6 +19,7 @@ const props = defineProps<{
     | 'serverListMode'
     | 'servers'
     | 'serverReorderingID'
+    | 'openCreateServerModal'
     | 'reorderServer'
     | 'visibilityLabel'
     | 'statusType'
@@ -38,6 +39,7 @@ const {
   serverListMode,
   servers,
   serverReorderingID,
+  openCreateServerModal,
   reorderServer,
   visibilityLabel,
   statusType,
@@ -87,7 +89,11 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
 <template>
-<n-card v-if="serverListMode === 'active'" title="正常服务器" :bordered="true">
+<n-card v-if="serverListMode === 'active'" :bordered="true">
+      <template #header>正常服务器</template>
+      <template #header-extra>
+        <n-button type="primary" size="small" :disabled="submitting" @click="openCreateServerModal">新增服务器</n-button>
+      </template>
             <n-empty v-if="servers.length === 0" description="当前没有服务器" />
             <div v-else class="server-table-wrap">
               <table class="server-table">

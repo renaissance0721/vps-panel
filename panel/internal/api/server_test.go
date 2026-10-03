@@ -415,6 +415,69 @@ func TestServerAPILifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateServerWithManagementSettingsAndAtomicValidation(t *testing.T) {
+	db, handler, accounts := setupAccessTest(t)
+	defer db.Close()
+	response := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]any{
+		"name": "DMIT LAX", "visibility": "private", "user_ids": []int64{accounts.memberID},
+		"expires_at": "2027-04-03", "renewal_period_months": 12, "auto_renew": true,
+		"monthly_traffic_limit_bytes": int64(500 << 30), "traffic_count_mode": "bidirectional",
+		"traffic_reset_day": 31, "traffic_reset_time": "08:30",
+	}, accounts.adminCookie)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create configured server = %d, %s", response.Code, response.Body.String())
+	}
+	var created createdServerResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	expectedExpiration := time.Date(2027, 4, 3, 15, 59, 59, 0, time.UTC)
+	if created.Server.ExpiresAt == nil || !created.Server.ExpiresAt.Equal(expectedExpiration) ||
+		created.Server.RenewalPeriodMonths == nil || *created.Server.RenewalPeriodMonths != 12 || !created.Server.AutoRenew ||
+		created.Server.MonthlyTrafficLimitBytes == nil || *created.Server.MonthlyTrafficLimitBytes != int64(500<<30) ||
+		created.Server.TrafficCountMode != "bidirectional" || created.Server.TrafficResetDay != 31 || created.Server.TrafficResetTime != "08:30" ||
+		len(created.Server.AccessUserIDs) != 2 || created.EnrollmentToken == "" || created.AgentInstallationCommand == "" {
+		t.Fatalf("configured server = %+v", created)
+	}
+	var anchorDay int
+	if err := db.QueryRow(`SELECT renewal_anchor_day FROM servers WHERE id = ?`, created.Server.ID).Scan(&anchorDay); err != nil || anchorDay != 3 {
+		t.Fatalf("renewal anchor = %d, %v", anchorDay, err)
+	}
+
+	invalidPayloads := []map[string]any{
+		{"name": "Missing expiration", "renewal_period_months": 12, "auto_renew": true},
+		{"name": "Missing period", "expires_at": "2027-04-03", "auto_renew": true},
+		{"name": "Bad period", "expires_at": "2027-04-03", "renewal_period_months": 2},
+		{"name": "Bad limit", "monthly_traffic_limit_bytes": -1},
+		{"name": "Bad mode", "traffic_count_mode": "both"},
+		{"name": "Bad day low", "traffic_reset_day": 0},
+		{"name": "Bad day high", "traffic_reset_day": 32},
+		{"name": "Bad time", "traffic_reset_time": "24:00"},
+		{"name": "Bad date", "expires_at": "2027-02-30"},
+		{"name": "Bad access", "visibility": "private", "user_ids": []int64{999999}},
+	}
+	for _, payload := range invalidPayloads {
+		before := map[string]int{}
+		for _, table := range []string{"servers", "server_access", "agent_enrollments", "monitor_probe_servers"} {
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			before[table] = count
+		}
+		invalid := performRequest(t, handler, http.MethodPost, "/api/servers", payload, accounts.adminCookie)
+		if invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid create %v = %d, %s", payload, invalid.Code, invalid.Body.String())
+		}
+		for table, want := range before {
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != want {
+				t.Fatalf("invalid create left rows in %s: got %d want %d, %v", table, count, want, err)
+			}
+		}
+	}
+}
+
 func TestServerRenamePatchContract(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

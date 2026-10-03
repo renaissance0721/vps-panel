@@ -3,6 +3,7 @@ import {
   getCurrentScope,
   onScopeDispose,
   ref,
+  watch,
   type Ref,
   type UnwrapNestedRefs,
 } from 'vue'
@@ -20,6 +21,7 @@ import type {
 import type {
   ServerRecord,
   CreatedServer,
+  CreateServerPayload,
   DiagnosticReport,
   RenewalPeriodMonths,
 } from '../types/server'
@@ -54,6 +56,7 @@ import {
   trafficWarningLevel,
   useTrafficForm,
   type TrafficLimitUnit,
+  type TrafficCountMode,
 } from '../traffic'
 
 const bulkAgentUpgradeConcurrency = 3
@@ -89,12 +92,24 @@ function isBulkAgentUpgradeActive(item: BulkAgentUpgradeItem): boolean {
   return item.status === 'starting' || item.status === 'upgrading'
 }
 
+function validDateInput(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
 export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]>, health: Ref<Health | null>, submitting: Ref<boolean>, error: Ref<string>, submit: (action: () => Promise<void>) => Promise<void>) {
   const servers = ref<ServerRecord[]>([])
   const archivedServers = ref<ServerRecord[]>([])
   const selectedServer = ref<ServerRecord | null>(null)
   const createdServer = ref<CreatedServer | null>(null)
   const serverModalOpen = ref(false)
+  const createServerModalOpen = ref(false)
+  const createServerFormError = ref('')
   const basicInfoModalOpen = ref(false)
   const basicInfoFormError = ref('')
   const trafficAdjustmentModalOpen = ref(false)
@@ -102,9 +117,17 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const diagnosticLoading = ref(false)
   const diagnosticReport = ref<DiagnosticReport | null>(null)
   const diagnosticError = ref('')
-  const serverName = ref('')
-  const serverVisibility = ref<ServerRecord['visibility']>('public')
-  const serverAccessUserIDs = ref<number[]>([])
+  const createServerName = ref('')
+  const createServerVisibility = ref<ServerRecord['visibility']>('public')
+  const createServerAccessUserIDs = ref<number[]>([])
+  const createServerExpiration = ref('')
+  const createServerRenewalPeriod = ref<RenewalPeriodMonths | 0>(0)
+  const createServerAutoRenew = ref(false)
+  const createServerTrafficLimit = ref<string | number>('')
+  const createServerTrafficUnit = ref<TrafficLimitUnit>('G')
+  const createServerTrafficCountMode = ref<TrafficCountMode>('single')
+  const createServerTrafficResetDay = ref(1)
+  const createServerTrafficResetTime = ref('00:00')
   const accessVisibility = ref<ServerRecord['visibility']>('public')
   const accessUserIDs = ref<number[]>([])
   const orderedUsers = computed(() => adminFirst(users.value))
@@ -134,6 +157,14 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   let chinaInboundConfigPollDeadline = 0
 
   let serverLoadPromise: Promise<void> | null = null
+
+  watch([createServerExpiration, createServerRenewalPeriod], ([expiration, period]) => {
+    if (!expiration || period === 0) createServerAutoRenew.value = false
+  })
+
+  watch(serverListMode, (mode) => {
+    if (mode === 'archived' && !submitting.value) closeCreateServerModal()
+  })
 
   const {
     trafficModalOpen,
@@ -250,32 +281,95 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   async function createServerRecord() {
-    if (serverName.value.trim() === '') {
-      error.value = '请输入服务器名称'
+    if (submitting.value) return
+    const name = createServerName.value.trim()
+    if (!name || [...name].length > 100) {
+      createServerFormError.value = '服务器名称不能为空且不能超过 100 个字符'
       return
     }
-    await submit(async () => {
+    const expiration = createServerExpiration.value.trim()
+    if (expiration && !validDateInput(expiration)) {
+      createServerFormError.value = '请选择有效的到期日期'
+      return
+    }
+    const monthlyLimit = parseTrafficLimit(createServerTrafficLimit.value, createServerTrafficUnit.value)
+    if (monthlyLimit === undefined) {
+      createServerFormError.value = '月流量额度格式无效，请输入大于 0 的数值，或留空表示不限'
+      return
+    }
+    if (!Number.isInteger(createServerTrafficResetDay.value) || createServerTrafficResetDay.value < 1 || createServerTrafficResetDay.value > 31) {
+      createServerFormError.value = '流量重置日期必须在 1–31 之间'
+      return
+    }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(createServerTrafficResetTime.value)) {
+      createServerFormError.value = '流量重置时间格式无效'
+      return
+    }
+    const renewalPeriod = expiration ? (createServerRenewalPeriod.value || null) : null
+    const payload: CreateServerPayload = {
+      name,
+      visibility: createServerVisibility.value,
+      user_ids: createServerVisibility.value === 'private' ? withCurrentUser(createServerAccessUserIDs.value) : [],
+      expires_at: expiration || null,
+      renewal_period_months: renewalPeriod,
+      auto_renew: expiration !== '' && renewalPeriod !== null && createServerAutoRenew.value,
+      monthly_traffic_limit_bytes: monthlyLimit,
+      traffic_count_mode: createServerTrafficCountMode.value,
+      traffic_reset_day: createServerTrafficResetDay.value,
+      traffic_reset_time: createServerTrafficResetTime.value,
+    }
+    createServerFormError.value = ''
+    submitting.value = true
+    try {
       createdServer.value = await api<CreatedServer>('/api/servers', {
         method: 'POST',
-        body: JSON.stringify({
-          name: serverName.value,
-          visibility: serverVisibility.value,
-          user_ids: serverVisibility.value === 'private' ? withCurrentUser(serverAccessUserIDs.value) : [],
-        }),
+        body: JSON.stringify(payload),
       })
       selectedServer.value = createdServer.value.server
+      createServerModalOpen.value = false
+      resetCreateServerForm()
       serverModalOpen.value = true
-      serverName.value = ''
-      serverVisibility.value = 'public'
-      serverAccessUserIDs.value = []
       copiedCommand.value = false
       basicInfoModalOpen.value = false
       basicInfoFormError.value = ''
       ownerUserID.value = 0
       trafficModalOpen.value = false
       trafficAdjustmentModalOpen.value = false
-      await loadServers()
-    })
+      await loadServers().catch((reason) => {
+        error.value = reason instanceof Error ? reason.message : '服务器列表刷新失败'
+      })
+    } catch (reason) {
+      createServerFormError.value = reason instanceof Error ? reason.message : '新增服务器失败'
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  function resetCreateServerForm() {
+    createServerFormError.value = ''
+    createServerName.value = ''
+    createServerVisibility.value = 'public'
+    createServerAccessUserIDs.value = []
+    createServerExpiration.value = ''
+    createServerRenewalPeriod.value = 0
+    createServerAutoRenew.value = false
+    createServerTrafficLimit.value = ''
+    createServerTrafficUnit.value = 'G'
+    createServerTrafficCountMode.value = 'single'
+    createServerTrafficResetDay.value = 1
+    createServerTrafficResetTime.value = '00:00'
+  }
+
+  function openCreateServerModal() {
+    if (serverListMode.value !== 'active' || submitting.value) return
+    resetCreateServerForm()
+    createServerModalOpen.value = true
+  }
+
+  function closeCreateServerModal() {
+    if (submitting.value) return
+    createServerModalOpen.value = false
+    resetCreateServerForm()
   }
 
   function viewServer(value: ServerRecord) {
@@ -307,8 +401,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   }
 
   function ensureCreateCurrentUser() {
-    if (serverVisibility.value === 'private') {
-      serverAccessUserIDs.value = withCurrentUser(serverAccessUserIDs.value)
+    if (createServerVisibility.value === 'private') {
+      createServerAccessUserIDs.value = withCurrentUser(createServerAccessUserIDs.value)
     }
   }
 
@@ -953,6 +1047,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     selectedServer,
     createdServer,
     serverModalOpen,
+    createServerModalOpen,
+    createServerFormError,
     basicInfoModalOpen,
     basicInfoFormError,
     nameInput,
@@ -962,9 +1058,17 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticLoading,
     diagnosticReport,
     diagnosticError,
-    serverName,
-    serverVisibility,
-    serverAccessUserIDs,
+    createServerName,
+    createServerVisibility,
+    createServerAccessUserIDs,
+    createServerExpiration,
+    createServerRenewalPeriod,
+    createServerAutoRenew,
+    createServerTrafficLimit,
+    createServerTrafficUnit,
+    createServerTrafficCountMode,
+    createServerTrafficResetDay,
+    createServerTrafficResetTime,
     accessVisibility,
     accessUserIDs,
     serverListMode,
@@ -1002,6 +1106,9 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     bootstrapUpgradeCommand,
     loadServers,
     createServerRecord,
+    openCreateServerModal,
+    closeCreateServerModal,
+    resetCreateServerForm,
     viewServer,
     withCurrentUser,
     ensureCreateCurrentUser,

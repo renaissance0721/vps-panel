@@ -26,22 +26,69 @@ func (s *Service) CreateForUser(
 	userIDs []int64,
 	creatorID int64,
 ) (CreatedServer, error) {
+	return s.CreateWithSettings(ctx, CreateServerInput{
+		Name: name, Visibility: visibility, UserIDs: userIDs, CreatorID: creatorID,
+	})
+}
+
+func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInput) (CreatedServer, error) {
 	var err error
-	name, err = normalizeServerName(name)
+	input.Name, err = normalizeServerName(input.Name)
 	if err != nil {
 		return CreatedServer{}, err
 	}
-	visibility, err = normalizeVisibility(visibility)
+	input.Visibility, err = normalizeVisibility(input.Visibility)
 	if err != nil {
 		return CreatedServer{}, err
 	}
-	if visibility == VisibilityPrivate {
-		userIDs, err = normalizeAccessUserIDs(userIDs, creatorID)
+	if input.Visibility == VisibilityPrivate {
+		input.UserIDs, err = normalizeAccessUserIDs(input.UserIDs, input.CreatorID)
 		if err != nil {
 			return CreatedServer{}, err
 		}
 	} else {
-		userIDs = []int64{}
+		input.UserIDs = []int64{}
+	}
+	if input.RenewalPeriodMonths != nil && !validRenewalPeriod(*input.RenewalPeriodMonths) {
+		return CreatedServer{}, ErrInvalidRenewalPeriod
+	}
+	if input.AutoRenew && (input.ExpiresAt == nil || input.RenewalPeriodMonths == nil) {
+		return CreatedServer{}, ErrAutoRenewRequirements
+	}
+	var renewalAnchorDay any
+	if input.ExpiresAt == nil {
+		input.RenewalPeriodMonths = nil
+		input.AutoRenew = false
+	} else {
+		expiresAt := input.ExpiresAt.UTC().Truncate(time.Second)
+		input.ExpiresAt = &expiresAt
+		if input.RenewalPeriodMonths == nil {
+			input.AutoRenew = false
+		} else {
+			renewalAnchorDay = expiresAt.In(renewalLocation).Day()
+		}
+	}
+	if input.MonthlyTrafficLimitBytes != nil {
+		if *input.MonthlyTrafficLimitBytes < 0 {
+			return CreatedServer{}, ErrInvalidTrafficConfig
+		}
+		if *input.MonthlyTrafficLimitBytes == 0 {
+			input.MonthlyTrafficLimitBytes = nil
+		}
+	}
+	if input.TrafficCountMode == "" {
+		input.TrafficCountMode = TrafficSingle
+	}
+	if input.TrafficResetDay == 0 {
+		input.TrafficResetDay = defaultTrafficResetDay
+	}
+	if input.TrafficResetTime == "" {
+		input.TrafficResetTime = defaultTrafficResetTime
+	}
+	if (input.TrafficCountMode != TrafficSingle && input.TrafficCountMode != TrafficBidirectional) ||
+		input.TrafficResetDay < 1 || input.TrafficResetDay > 31 ||
+		!validTrafficResetTime(input.TrafficResetTime) {
+		return CreatedServer{}, ErrInvalidTrafficConfig
 	}
 
 	enrollment, err := agentcontrol.NewEnrollment(s.now)
@@ -60,8 +107,8 @@ func (s *Service) CreateForUser(
 	var ownerValue any
 	var creatorValue any
 	createdByRole := "unknown"
-	if creatorID > 0 {
-		if err := tx.QueryRowContext(ctx, `SELECT username, role FROM users WHERE id = ?`, creatorID).Scan(&ownerUsername, &createdByRole); errors.Is(err, sql.ErrNoRows) {
+	if input.CreatorID > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT username, role FROM users WHERE id = ?`, input.CreatorID).Scan(&ownerUsername, &createdByRole); errors.Is(err, sql.ErrNoRows) {
 			return CreatedServer{}, ErrInvalidServerAccess
 		} else if err != nil {
 			return CreatedServer{}, fmt.Errorf("read server owner: %w", err)
@@ -69,16 +116,32 @@ func (s *Service) CreateForUser(
 		if createdByRole != "admin" && createdByRole != "vip" {
 			return CreatedServer{}, ErrInvalidServerAccess
 		}
-		ownerUserID = &creatorID
-		ownerValue = creatorID
-		creatorValue = creatorID
+		ownerUserID = &input.CreatorID
+		ownerValue = input.CreatorID
+		creatorValue = input.CreatorID
+	}
+	var expiresAt, renewalPeriod, monthlyTrafficLimit any
+	if input.ExpiresAt != nil {
+		expiresAt = input.ExpiresAt.Unix()
+	}
+	if input.RenewalPeriodMonths != nil {
+		renewalPeriod = *input.RenewalPeriodMonths
+	}
+	if input.MonthlyTrafficLimitBytes != nil {
+		monthlyTrafficLimit = *input.MonthlyTrafficLimitBytes
 	}
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO servers
-		 (name, owner_user_id, created_by_user_id, created_by_role, status, visibility, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		name, ownerValue, creatorValue, createdByRole, StatusPending, visibility, now.Unix(), now.Unix(),
+		 (name, owner_user_id, created_by_user_id, created_by_role, status, visibility,
+		  expires_at, renewal_period_months, auto_renew, renewal_anchor_day,
+		  monthly_traffic_limit_bytes, traffic_count_mode, traffic_reset_day, traffic_reset_time,
+		  created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.Name, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
+		expiresAt, renewalPeriod, input.AutoRenew, renewalAnchorDay,
+		monthlyTrafficLimit, input.TrafficCountMode, input.TrafficResetDay, input.TrafficResetTime,
+		now.Unix(), now.Unix(),
 	)
 	if err != nil {
 		return CreatedServer{}, fmt.Errorf("create server: %w", err)
@@ -87,11 +150,11 @@ func (s *Service) CreateForUser(
 	if err != nil {
 		return CreatedServer{}, fmt.Errorf("read server id: %w", err)
 	}
-	if visibility == VisibilityPrivate {
-		if err := validateAccessUsers(ctx, tx, userIDs); err != nil {
+	if input.Visibility == VisibilityPrivate {
+		if err := validateAccessUsers(ctx, tx, input.UserIDs); err != nil {
 			return CreatedServer{}, err
 		}
-		if err := replaceServerAccess(ctx, tx, serverID, userIDs); err != nil {
+		if err := replaceServerAccess(ctx, tx, serverID, input.UserIDs); err != nil {
 			return CreatedServer{}, err
 		}
 	}
@@ -118,23 +181,27 @@ func (s *Service) CreateForUser(
 
 	return CreatedServer{
 		Server: Server{
-			ID:                  serverID,
-			Name:                name,
-			OwnerUserID:         ownerUserID,
-			OwnerUsername:       ownerUsername,
-			CreatedByUserID:     ownerUserID,
-			CreatedByUsername:   ownerUsername,
-			CreatedByRole:       createdByRole,
-			Status:              StatusPending,
-			Visibility:          visibility,
-			OutboundPreference:  OutboundAuto,
-			DesiredStateVersion: 1,
-			AccessUserIDs:       userIDs,
-			TrafficCountMode:    TrafficSingle,
-			TrafficResetDay:     defaultTrafficResetDay,
-			TrafficResetTime:    defaultTrafficResetTime,
-			CreatedAt:           now,
-			UpdatedAt:           now,
+			ID:                       serverID,
+			Name:                     input.Name,
+			OwnerUserID:              ownerUserID,
+			OwnerUsername:            ownerUsername,
+			CreatedByUserID:          ownerUserID,
+			CreatedByUsername:        ownerUsername,
+			CreatedByRole:            createdByRole,
+			Status:                   StatusPending,
+			Visibility:               input.Visibility,
+			OutboundPreference:       OutboundAuto,
+			DesiredStateVersion:      1,
+			AccessUserIDs:            input.UserIDs,
+			ExpiresAt:                input.ExpiresAt,
+			RenewalPeriodMonths:      input.RenewalPeriodMonths,
+			AutoRenew:                input.AutoRenew,
+			MonthlyTrafficLimitBytes: input.MonthlyTrafficLimitBytes,
+			TrafficCountMode:         input.TrafficCountMode,
+			TrafficResetDay:          input.TrafficResetDay,
+			TrafficResetTime:         input.TrafficResetTime,
+			CreatedAt:                now,
+			UpdatedAt:                now,
 		},
 		EnrollmentToken:     enrollment.Token,
 		EnrollmentExpiresAt: enrollment.ExpiresAt,

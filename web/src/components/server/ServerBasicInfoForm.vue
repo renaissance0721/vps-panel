@@ -3,6 +3,7 @@ import { toRefs, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { ServersViewState } from '../../composables/useServers'
 import { userRoleLabel } from '../../format'
+import { renewalPeriodOptions } from '../../server'
 
 const props = defineProps<{
   model: Pick<ServersViewState,
@@ -43,16 +44,6 @@ const {
   closeBasicInfoModal,
   saveBasicInfo,
 } = toRefs(props.model)
-
-const renewalPeriodOptions = [
-  { label: '不设置', value: 0 },
-  { label: '月付', value: 1 },
-  { label: '季付', value: 3 },
-  { label: '半年付', value: 6 },
-  { label: '年付', value: 12 },
-  { label: '两年付', value: 24 },
-  { label: '三年付', value: 36 },
-]
 
 watch(renewalPeriodInput, (value) => {
   if (value === 0) autoRenewInput.value = false

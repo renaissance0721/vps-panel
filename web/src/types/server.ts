@@ -81,6 +81,19 @@ export type CreatedServer = {
   agent_installation_command: string
 }
 
+export type CreateServerPayload = {
+  name: string
+  visibility: ServerRecord['visibility']
+  user_ids: number[]
+  expires_at: string | null
+  renewal_period_months: RenewalPeriodMonths | null
+  auto_renew: boolean
+  monthly_traffic_limit_bytes: number | null
+  traffic_count_mode: ServerRecord['traffic_count_mode']
+  traffic_reset_day: number
+  traffic_reset_time: string
+}
+
 export type DiagnosticStatus = 'pass' | 'warning' | 'fail' | 'skipped'
 
 export type DiagnosticCheck = {

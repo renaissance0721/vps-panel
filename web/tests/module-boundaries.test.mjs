@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, reactive, ref } from 'vue'
+import { createSSRApp, nextTick, reactive, ref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let loader
@@ -78,10 +78,11 @@ test('Server 私有访问仅渲染管理账号，保持当前账号及独立所�
   assert.deepEqual(model.serverAccessUsers.value.map(user => user.id), [1, 2])
   assert.deepEqual(model.orderedUsers.value.map(user => user.id), [1, 2, 3, 4])
   assert.deepEqual(users.value.map(user => user.id), [2, 3, 1, 4])
-  model.serverVisibility.value = 'private'
-  model.serverAccessUserIDs.value = [2]
+  model.openCreateServerModal()
+  model.createServerVisibility.value = 'private'
+  model.createServerAccessUserIDs.value = [2]
   model.ensureCreateCurrentUser()
-  assert.deepEqual(model.serverAccessUserIDs.value, [2, 1])
+  assert.deepEqual(model.createServerAccessUserIDs.value, [2, 1])
   model.viewServer(serverRecord({ visibility: 'private', access_user_ids: [1, 2] }))
   model.openBasicInfoModal()
   model.accessUserIDs.value = [2]
@@ -154,7 +155,7 @@ test('共享 HTTP 客户端保持 Cookie、no-store、JSON、204 和错误语义
   await assert.rejects(api('/api/servers/7'), e => e instanceof APIError && e.status === 404 && e.message === '无权访问')
 })
 
-test('Server 创建保留私有账号绑定，详情关闭后清除一次性命令', async t => {
+test('Server 创建一次提交管理字段，成功后打开安装命令并重置 Modal', async t => {
   const created = { server: serverRecord(), enrollment_token: 'test-only', enrollment_token_expires_at: '2026-09-18T00:00:00Z', agent_installation_command: 'sh install-agent.sh --token test-only' }
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -162,17 +163,70 @@ test('Server 创建保留私有账号绑定，详情关闭后清除一次性命�
     return init?.method === 'POST' ? json(created) : json({ servers: url.includes('?') ? [] : [created.server] })
   })
   const { model, submitting } = serverModel()
-  model.serverName.value = '测试服务器'
-  model.serverVisibility.value = 'private'
-  model.serverAccessUserIDs.value = [2]
+  model.openCreateServerModal()
+  model.createServerName.value = '测试服务器'
+  model.createServerVisibility.value = 'private'
+  model.createServerAccessUserIDs.value = [2]
+  model.createServerExpiration.value = '2027-04-03'
+  model.createServerRenewalPeriod.value = 12
+  model.createServerAutoRenew.value = true
+  model.createServerTrafficLimit.value = '500'
+  model.createServerTrafficUnit.value = 'G'
+  model.createServerTrafficCountMode.value = 'bidirectional'
+  model.createServerTrafficResetDay.value = 31
+  model.createServerTrafficResetTime.value = '08:30'
   await model.createServerRecord()
-  assert.deepEqual(JSON.parse(calls[0].init.body), { name: '测试服务器', visibility: 'private', user_ids: [2, 1] })
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    name: '测试服务器', visibility: 'private', user_ids: [2, 1],
+    expires_at: '2027-04-03', renewal_period_months: 12, auto_renew: true,
+    monthly_traffic_limit_bytes: 500 * 1024 ** 3, traffic_count_mode: 'bidirectional',
+    traffic_reset_day: 31, traffic_reset_time: '08:30',
+  })
+  assert.equal(model.createServerModalOpen.value, false)
   assert.equal(model.serverModalOpen.value, true)
   assert.equal(model.createdServer.value.agent_installation_command, created.agent_installation_command)
+  assert.equal(model.createServerName.value, '')
+  assert.equal(model.createServerTrafficLimit.value, '')
   assert.equal(submitting.value, false)
   model.closeServerDetails()
   assert.equal(model.createdServer.value, null)
   assert.equal(model.selectedServer.value, null)
+})
+
+test('Server 新增入口只在正常列表标题显示，Modal 字段完整且每次打开重置', async () => {
+  const { model } = serverModel(ref([
+    { id: 1, username: 'alice', role: 'admin' },
+    { id: 2, username: 'bob', role: 'vip' },
+  ]))
+  let page = await render('views/ServersView.vue', model, { active: true })
+  assert.equal((page.match(/新增服务器/g) ?? []).length, 1)
+  assert.doesNotMatch(page, /基本信息[\s\S]*访问控制[\s\S]*到期与续费/)
+  model.serverListMode.value = 'archived'
+  await nextTick()
+  page = await render('views/ServersView.vue', model, { active: true })
+  assert.doesNotMatch(page, /新增服务器/)
+
+  model.serverListMode.value = 'active'
+  model.openCreateServerModal()
+  assert.equal(model.createServerModalOpen.value, true)
+  page = await render('components/server/ServerForm.vue', model)
+  for (const label of ['名称', '访问范围', '到期日期', '续费周期', '自动续费', '月流量额度', '流量统计方式', '重置日期', '重置时间']) {
+    assert.match(page, new RegExp(label))
+  }
+  assert.match(page, /disabled[^>]*role="switch"|role="switch"[^>]*disabled/)
+  model.createServerName.value = '残留名称'
+  model.createServerExpiration.value = '2027-04-03'
+  model.createServerRenewalPeriod.value = 12
+  model.createServerAutoRenew.value = true
+  model.createServerExpiration.value = ''
+  await nextTick()
+  assert.equal(model.createServerAutoRenew.value, false)
+  model.closeCreateServerModal()
+  model.openCreateServerModal()
+  assert.equal(model.createServerName.value, '')
+  assert.equal(model.createServerVisibility.value, 'public')
+  assert.equal(model.createServerTrafficResetDay.value, 1)
+  assert.equal(model.createServerTrafficResetTime.value, '00:00')
 })
 
 test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令牌', async t => {

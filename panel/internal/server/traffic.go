@@ -52,6 +52,14 @@ type TrafficConfig struct {
 	ResetTime         string
 }
 
+func DefaultTrafficConfig() TrafficConfig {
+	return TrafficConfig{
+		CountMode: TrafficSingle,
+		ResetDay:  defaultTrafficResetDay,
+		ResetTime: defaultTrafficResetTime,
+	}
+}
+
 func (s *Service) UpdateTrafficConfig(ctx context.Context, id int64, config TrafficConfig) (Server, error) {
 	if config.MonthlyLimitBytes != nil && *config.MonthlyLimitBytes < 0 ||
 		(config.CountMode != TrafficSingle && config.CountMode != TrafficBidirectional) ||

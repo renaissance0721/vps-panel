@@ -108,16 +108,16 @@ test('dragover 只提示目标，失败后恢复持久化顺序并显示错误',
   assert.equal(state.reorderingID.value, null)
 })
 
-test('个人订阅卡片提供 Shadowrocket 链接与配置预览，既有操作保持可用', async () => {
+test('个人订阅卡片保留四个主要操作并移除独立 Shadowrocket 操作', async () => {
   const { html } = await render(Subscriptions, state => {
     state.loading.value = false
     state.personalSubscriptions.value = [{ id: 1, name: 'iPhone', enabled: true, client_name: 'refrain', nodes: [], routing_preset_name: '个人自用' }]
   }, { role: 'vip' })
-  for (const label of ['复制链接', '复制 Shadowrocket URL', '预览 Shadowrocket', '二维码', '编辑', '删除']) assert.match(html, new RegExp(`>${label}<`))
-  assert.doesNotMatch(html, />预览<|重置链接|个人订阅 Mihomo Preview/)
+  for (const label of ['复制链接', '二维码', '编辑', '删除']) assert.match(html, new RegExp(`>${label}<`))
+  assert.doesNotMatch(html, /复制 Shadowrocket URL|预览 Shadowrocket|>预览<|重置链接|个人订阅 Mihomo Preview/)
   const source = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /personalPreviewOpen|personalPreviewYAML|regeneratePersonalToken/)
-  assert.match(source, /\/api\/personal-subscriptions\/\$\{value.id\}\/shadowrocket-preview/)
+  assert.doesNotMatch(source, /shadowrocket-preview/)
   assert.match(source, /\/api\/admin\/subscription\/users\/\$\{value.user_id\}\/mihomo-preview/)
 })
 
@@ -159,22 +159,38 @@ test('切换模板类型提供对应初始内容，编辑模板保留类型和�
   assert.equal(state.templateEnabled.value, false)
 })
 
-test('Shadowrocket 预览读取 conf 并显示，接口错误保留可读原因', async () => {
+test('复制订阅弹窗默认 Auto，四种格式复制对应 URL，重新打开重置状态', async t => {
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const writeText = t.mock.fn(async () => {})
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText } } })
+  t.after(() => { if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor); else delete globalThis.navigator })
   const { state } = await render(Subscriptions, () => {}, { role: 'vip' })
-  const calls = []
-  globalThis.fetch = async (url) => {
-    calls.push(url)
-    return { ok: true, status: 200, json: async () => ({ conf: '[Rule]\nFINAL,DIRECT\n' }) }
+  const value = { id: 8, subscription_auto_url: 'https://panel.example/sub/one/auto',
+    subscription_mihomo_url: 'https://panel.example/sub/one/mihomo', subscription_shadowrocket_url: 'https://panel.example/sub/one/shadowrocket',
+    subscription_base64_url: 'https://panel.example/sub/one/base64' }
+  state.openPersonalLinkModal(value)
+  assert.equal(state.personalLinkModalOpen.value, true)
+  assert.equal(state.personalLinkFormat.value, 'auto')
+  assert.equal(state.personalLinkCopied.value, false)
+  assert.equal(writeText.mock.calls.length, 0)
+  for (const format of ['auto', 'mihomo', 'shadowrocket', 'base64']) {
+    state.personalLinkFormat.value = format
+    await state.copyPersonalLink()
+    assert.equal(writeText.mock.calls.at(-1).arguments[0], value[`subscription_${format}_url`])
+    assert.equal(state.personalLinkCopied.value, true)
   }
-  await state.previewPersonalShadowrocket({ id: 8 })
-  assert.deepEqual(calls, ['/api/personal-subscriptions/8/shadowrocket-preview'])
-  assert.equal(state.shadowrocketPreviewOpen.value, true)
-  assert.equal(state.shadowrocketPreviewConf.value, '[Rule]\nFINAL,DIRECT\n')
-  state.shadowrocketPreviewOpen.value = false
-  globalThis.fetch = async () => ({ ok: false, status: 422, json: async () => ({ error: '当前规则无法转换为 Shadowrocket 格式' }) })
-  await state.previewPersonalShadowrocket({ id: 8 })
-  assert.equal(state.shadowrocketPreviewOpen.value, false)
-  assert.equal(state.error.value, '当前规则无法转换为 Shadowrocket 格式')
+  state.personalLinkModalOpen.value = false
+  state.openPersonalLinkModal({ ...value, id: 9, subscription_auto_url: 'https://panel.example/sub/two/auto' })
+  assert.equal(state.personalLinkFormat.value, 'auto')
+  assert.equal(state.personalLinkCopied.value, false)
+  await state.copyPersonalLink()
+  assert.equal(writeText.mock.calls.at(-1).arguments[0], 'https://panel.example/sub/two/auto')
+  writeText.mock.mockImplementation(async () => { throw new Error('Permission denied') })
+  await state.copyPersonalLink()
+  assert.equal(state.personalLinkCopied.value, false)
+  assert.match(state.personalLinkError.value, /复制失败/)
+  state.openPersonalLinkModal(value)
+  assert.equal(state.personalLinkError.value, '')
 })
 
 test('模板编辑器只显示当前客户端的格式帮助', async () => {

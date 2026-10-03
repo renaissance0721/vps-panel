@@ -128,6 +128,7 @@ type PersonalSubscription = {
   subscription_shadowrocket_url: string
   subscription_auto_url: string
 }
+type PersonalSubscriptionFormat = 'auto' | 'mihomo' | 'shadowrocket' | 'base64'
 type PersonalSource = {
   source_type: 'proxy' | 'relay' | 'landing'
   source_id: number
@@ -226,10 +227,6 @@ const copiedUserURL = ref(false)
 const mihomoPreviewOpen = ref(false)
 const mihomoPreviewYAML = ref('')
 const copiedMihomoPreview = ref(false)
-const shadowrocketPreviewOpen = ref(false)
-const shadowrocketPreviewConf = ref('')
-const copiedShadowrocketPreview = ref(false)
-const personalShadowrocketCopiedID = ref<number | null>(null)
 
 const personalModalOpen = ref(false)
 const editingPersonal = ref<PersonalSubscription | null>(null)
@@ -245,7 +242,11 @@ const personalRoutingBindings = ref<RoutingBindings>({})
 const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
-const personalCopiedID = ref<number | null>(null)
+const personalLinkModalOpen = ref(false)
+const personalLinkTarget = ref<PersonalSubscription | null>(null)
+const personalLinkFormat = ref<PersonalSubscriptionFormat>('auto')
+const personalLinkCopied = ref(false)
+const personalLinkError = ref('')
 const personalQR = ref<PersonalSubscription | null>(null)
 const personalQROpen = ref(false)
 const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
@@ -669,32 +670,35 @@ async function deletePersonal(value: PersonalSubscription) {
   })
 }
 
-async function copyPersonalURL(value: PersonalSubscription) {
-  await navigator.clipboard.writeText(value.subscription_auto_url)
-  personalCopiedID.value = value.id
+function personalSubscriptionURL(value: PersonalSubscription, format: PersonalSubscriptionFormat) {
+  switch (format) {
+    case 'auto': return value.subscription_auto_url
+    case 'mihomo': return value.subscription_mihomo_url
+    case 'shadowrocket': return value.subscription_shadowrocket_url
+    case 'base64': return value.subscription_base64_url
+  }
 }
 
-async function copyPersonalShadowrocketURL(value: PersonalSubscription) {
-  await run(async () => {
-    await navigator.clipboard.writeText(value.subscription_shadowrocket_url)
-    personalShadowrocketCopiedID.value = value.id
-  })
+function openPersonalLinkModal(value: PersonalSubscription) {
+  personalLinkTarget.value = value
+  personalLinkFormat.value = 'auto'
+  personalLinkCopied.value = false
+  personalLinkError.value = ''
+  personalLinkModalOpen.value = true
 }
 
-async function previewPersonalShadowrocket(value: PersonalSubscription) {
-  await run(async () => {
-    const response = await api<{ conf: string }>(`/api/personal-subscriptions/${value.id}/shadowrocket-preview`)
-    shadowrocketPreviewConf.value = response.conf
-    copiedShadowrocketPreview.value = false
-    shadowrocketPreviewOpen.value = true
-  })
-}
-
-async function copyShadowrocketPreview() {
-  await run(async () => {
-    await navigator.clipboard.writeText(shadowrocketPreviewConf.value)
-    copiedShadowrocketPreview.value = true
-  })
+async function copyPersonalLink() {
+  const value = personalLinkTarget.value
+  const format = personalLinkFormat.value
+  if (!value) return
+  personalLinkCopied.value = false
+  personalLinkError.value = ''
+  try {
+    await navigator.clipboard.writeText(personalSubscriptionURL(value, format))
+    if (personalLinkTarget.value === value && personalLinkFormat.value === format) personalLinkCopied.value = true
+  } catch {
+    personalLinkError.value = '复制失败，请检查浏览器剪贴板权限后重试'
+  }
 }
 
 function showPersonalQR(value: PersonalSubscription) {
@@ -1319,9 +1323,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
         <p>{{ value.nodes.length }} 个节点 · {{ value.routing_preset_name }}</p>
         <p>Mihomo：{{ value.mihomo_template_name || '内置默认' }} · Shadowrocket：{{ value.shadowrocket_template_name || '内置默认' }}</p>
         <div class="modal-actions">
-          <n-button secondary @click="copyPersonalURL(value)">{{ personalCopiedID === value.id ? '已复制' : '复制链接' }}</n-button>
-          <n-button secondary @click="copyPersonalShadowrocketURL(value)">{{ personalShadowrocketCopiedID === value.id ? '已复制 Shadowrocket' : '复制 Shadowrocket URL' }}</n-button>
-          <n-button secondary @click="previewPersonalShadowrocket(value)">预览 Shadowrocket</n-button>
+          <n-button secondary @click="openPersonalLinkModal(value)">复制链接</n-button>
           <n-button secondary @click="showPersonalQR(value)">二维码</n-button>
           <n-button secondary @click="openEditPersonal(value)">编辑</n-button>
           <n-button type="error" secondary @click="deletePersonal(value)">删除</n-button>
@@ -1475,6 +1477,20 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
+  <n-modal v-model:show="personalLinkModalOpen"><n-card class="personal-link-modal-card" title="复制订阅链接" closable @close="personalLinkModalOpen = false">
+    <form class="auth-form" @submit.prevent="copyPersonalLink">
+      <n-alert v-if="personalLinkError" type="error">{{ personalLinkError }}</n-alert>
+      <span id="personal-link-format-label">订阅格式</span>
+      <n-radio-group v-model:value="personalLinkFormat" class="personal-link-formats" aria-labelledby="personal-link-format-label" @update:value="personalLinkCopied = false; personalLinkError = ''">
+        <n-radio value="auto">Auto</n-radio>
+        <n-radio value="mihomo">Mihomo</n-radio>
+        <n-radio value="shadowrocket">Shadowrocket</n-radio>
+        <n-radio value="base64">Base64</n-radio>
+      </n-radio-group>
+      <div class="modal-actions"><n-button attr-type="button" @click="personalLinkModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit">{{ personalLinkCopied ? '已复制' : '复制' }}</n-button></div>
+    </form>
+  </n-card></n-modal>
+
   <QRCodeModal
     v-if="personalQR"
     v-model:show="personalQROpen"
@@ -1485,6 +1501,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     :links="[
       { label: 'Auto', value: personalQR.subscription_auto_url },
       { label: 'Mihomo', value: personalQR.subscription_mihomo_url },
+      { label: 'Shadowrocket', value: personalQR.subscription_shadowrocket_url },
       { label: 'Base64', value: personalQR.subscription_base64_url },
     ]"
   />
@@ -1622,13 +1639,23 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <div class="modal-actions"><n-button @click="userModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="shadowrocketPreviewOpen"><n-card class="client-form-card subscription-form-card" title="Shadowrocket 最终配置" closable @close="shadowrocketPreviewOpen = false">
-    <n-input :value="shadowrocketPreviewConf" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
-    <div class="modal-actions"><n-button secondary @click="copyShadowrocketPreview">{{ copiedShadowrocketPreview ? '已复制' : '复制 .conf' }}</n-button><n-button @click="shadowrocketPreviewOpen = false">关闭</n-button></div>
-  </n-card></n-modal>
-
   <n-modal v-model:show="mihomoPreviewOpen"><n-card class="client-form-card subscription-form-card" title="Mihomo 最终配置" closable @close="mihomoPreviewOpen = false">
     <n-input :value="mihomoPreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
     <div class="modal-actions"><n-button secondary @click="copyMihomoPreview">{{ copiedMihomoPreview ? '已复制' : '复制 YAML' }}</n-button><n-button @click="mihomoPreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 </template>
+
+<style scoped>
+.personal-link-modal-card {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.personal-link-formats {
+  display: grid;
+  gap: 8px;
+}
+
+.personal-link-formats :deep(.n-radio) {
+  display: inline-flex;
+}
+</style>

@@ -86,6 +86,28 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
   assert.match(managementSource, /node_ids: planNodeIDs\.value/)
 })
 
+test('个人订阅卡片只保留四个操作，复制入口打开格式弹窗', () => {
+  const personalSection = managementSource.slice(managementSource.indexOf("currentTab === 'personal'"), managementSource.indexOf("currentTab === 'users'"))
+  const actions = personalSection.match(/<div class="modal-actions">([\s\S]*?)<\/div>/)?.[1] ?? ''
+  assert.deepEqual([...actions.matchAll(/<n-button[^>]*>([^<]+)<\/n-button>/g)].map(match => match[1]), ['复制链接', '二维码', '编辑', '删除'])
+  assert.match(actions, /@click="openPersonalLinkModal\(value\)"/)
+  assert.match(managementSource, /<n-modal v-model:show="personalLinkModalOpen">[\s\S]*title="复制订阅链接"/)
+  assert.match(managementSource, /@submit\.prevent="copyPersonalLink"/)
+  assert.match(managementSource, /navigator\.clipboard\.writeText\(personalSubscriptionURL\(value, format\)\)/)
+  for (const [format, label] of [['auto', 'Auto'], ['mihomo', 'Mihomo'], ['shadowrocket', 'Shadowrocket'], ['base64', 'Base64']]) {
+    assert.match(managementSource, new RegExp(`<n-radio value="${format}">${label}</n-radio>`))
+    assert.match(managementSource, new RegExp(`case '${format}': return value.subscription_${format}_url`))
+  }
+  assert.doesNotMatch(managementSource, /personalCopiedID|personalShadowrocketCopiedID|copyPersonalURL|copyPersonalShadowrocketURL|shadowrocketPreviewOpen|shadowrocketPreviewConf|copiedShadowrocketPreview|previewPersonalShadowrocket|copyShadowrocketPreview|Shadowrocket 最终配置|window\.prompt/)
+})
+
+test('个人订阅复用一个二维码弹窗并提供四种订阅 URL', () => {
+  assert.equal([...managementSource.matchAll(/<QRCodeModal\b/g)].length, 1)
+  for (const [label, format] of [['Auto', 'auto'], ['Mihomo', 'mihomo'], ['Shadowrocket', 'shadowrocket'], ['Base64', 'base64']]) {
+    assert.match(managementSource, new RegExp(`\\{ label: '${label}', value: personalQR\\.subscription_${format}_url \\}`))
+  }
+})
+
 test('套餐布尔状态使用 NSwitch 双向绑定并原样写入保存请求', () => {
   assert.match(managementSource, /import \{[^}]*NSwitch[^}]*\} from 'naive-ui'/)
   assert.match(managementSource, /<n-switch v-model:value="planEnabled"/)

@@ -55,9 +55,6 @@ const props = defineProps<{
     | 'bootstrapUpgradeCommand'
     | 'copyUpgradeCommand'
     | 'copiedUpgradeCommand'
-    | 'formatPercent'
-    | 'formatBytes'
-    | 'formatUptime'
     | 'setOutboundPreference'
     | 'setBlockChinaInbound'
     | 'archiveServer'
@@ -95,9 +92,6 @@ const {
   bootstrapUpgradeCommand,
   copyUpgradeCommand,
   copiedUpgradeCommand,
-  formatPercent,
-  formatBytes,
-  formatUptime,
   setOutboundPreference,
   setBlockChinaInbound,
   archiveServer,
@@ -257,6 +251,16 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
               </div>
             </dl>
+            <div class="server-detail-setting">
+              <span class="server-detail-setting-label">当前出站</span>
+              <span class="outbound-preference-buttons">
+                <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="serverReadOnly || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
+                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
+                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
+              </span>
+              <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
+              <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
+            </div>
               </section>
 
               <section class="server-detail-section">
@@ -291,15 +295,6 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               <div><dt>Agent 类型</dt><dd>{{ agentImplementationLabel(selectedServer.agent_implementation) }}</dd></div>
               <div><dt>Agent 版本</dt><dd>{{ selectedServer.agent_version || '—' }}</dd></div>
               <div><dt>Agent API</dt><dd>{{ agentAPILabel(selectedServer.agent_api_version) }}</dd></div>
-              <div>
-                <dt>能力</dt>
-                <dd class="agent-capabilities">
-                  <span v-if="(selectedServer.agent_capabilities?.length ?? 0) === 0">—</span>
-                  <n-tag v-for="capability in selectedServer.agent_capabilities ?? []" :key="capability" size="small">
-                    {{ capability }}
-                  </n-tag>
-                </dd>
-              </div>
               <div><dt>Panel 版本</dt><dd>{{ health?.version || 'dev' }}</dd></div>
               <div><dt>升级状态</dt><dd>{{ agentUpgradeStatus(selectedServer) }}</dd></div>
               <div v-if="selectedServer.agent_upgrade_status === 'failed'"><dt>失败原因</dt><dd>{{ selectedServer.agent_upgrade_error || '升级失败' }}</dd></div>
@@ -314,75 +309,6 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             </div>
               </section>
 
-              <section class="server-detail-section">
-            <h3 class="system-info-title">系统信息</h3>
-            <n-empty
-              v-if="!selectedServer.system_info"
-              size="small"
-              description="暂无系统信息"
-            />
-            <dl v-else class="server-details">
-              <div><dt>主机名</dt><dd>{{ selectedServer.system_info.hostname || '—' }}</dd></div>
-              <div><dt>系统</dt><dd>{{ selectedServer.system_info.os_name || '—' }}</dd></div>
-              <div><dt>系统版本</dt><dd>{{ selectedServer.system_info.os_version || '—' }}</dd></div>
-              <div><dt>内核</dt><dd>{{ selectedServer.system_info.kernel || '—' }}</dd></div>
-              <div><dt>架构</dt><dd>{{ selectedServer.system_info.arch || '—' }}</dd></div>
-              <div>
-                <dt>IPv4</dt>
-                <dd class="address-list">
-                  <span v-if="selectedServer.system_info.ipv4.length === 0">—</span>
-                  <span v-for="address in selectedServer.system_info.ipv4" :key="address">{{ address }}</span>
-                </dd>
-              </div>
-              <div>
-                <dt>IPv6</dt>
-                <dd class="address-list">
-                  <span v-if="selectedServer.system_info.ipv6.length === 0">—</span>
-                  <span v-for="address in selectedServer.system_info.ipv6" :key="address">{{ address }}</span>
-                </dd>
-              </div>
-              <div><dt>公网 IPv4</dt><dd>{{ selectedServer.system_info.public_ipv4 || '未检测' }}</dd></div>
-            </dl>
-              </section>
-
-              <section class="server-detail-section">
-            <h3 class="system-info-title">动态指标</h3>
-            <n-empty
-              v-if="!selectedServer.metrics"
-              size="small"
-              description="暂无动态指标"
-            />
-            <dl class="server-details">
-              <div v-if="selectedServer.metrics"><dt>CPU</dt><dd>{{ formatPercent(selectedServer.metrics.cpu_percent) }}</dd></div>
-              <div v-if="selectedServer.metrics">
-                <dt>内存</dt>
-                <dd>
-                  {{ formatBytes(selectedServer.metrics.memory_used_bytes) }} /
-                  {{ formatBytes(selectedServer.metrics.memory_total_bytes) }}
-                </dd>
-              </div>
-              <div v-if="selectedServer.metrics">
-                <dt>根分区磁盘</dt>
-                <dd>
-                  {{ formatBytes(selectedServer.metrics.disk_used_bytes) }} /
-                  {{ formatBytes(selectedServer.metrics.disk_total_bytes) }}
-                </dd>
-              </div>
-              <div v-if="selectedServer.metrics"><dt>运行时间</dt><dd>{{ formatUptime(selectedServer.metrics.uptime_seconds) }}</dd></div>
-              <div>
-                <dt>当前出站</dt>
-                <dd>
-                  <span class="outbound-preference-buttons">
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="serverReadOnly || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
-                    <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
-                  </span>
-                  <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
-                  <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
-                </dd>
-              </div>
-            </dl>
-              </section>
             </div>
 
             <section class="server-detail-section server-detail-section--wide">

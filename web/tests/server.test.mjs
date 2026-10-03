@@ -101,11 +101,16 @@ test('Agent 身份显示区分官方、BoardRay 和 Legacy', () => {
 })
 
 test('Agent 升级 UI 使用服务端安全判断并展示 metadata', async () => {
-  const source = (await Promise.all(["composables/useServers.ts", "components/server/ServerDetail.vue"].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))).join('\n')
+  const [composable, detail, types, helper] = await Promise.all([
+    'composables/useServers.ts', 'components/server/ServerDetail.vue', 'types/server.ts', 'server.ts',
+  ].map(path => readFile(new URL('../src/' + path, import.meta.url), 'utf8')))
+  const source = `${composable}\n${detail}`
   assert.match(source, /agent_can_self_upgrade/)
   assert.match(source, /Agent 类型/)
   assert.match(source, /Agent API/)
-  assert.match(source, /agent_capabilities/)
+  assert.match(types, /agent_capabilities: string\[\]/)
+  assert.match(helper, /server\.agent_capabilities/)
+  assert.doesNotMatch(source, /<dt>能力<\/dt>/)
   assert.doesNotMatch(source, /agent_implementation === 'vps-panel-agent'/)
 })
 

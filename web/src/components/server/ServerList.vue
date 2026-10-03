@@ -114,10 +114,13 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                       <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, false)" @dragend="endDrag"><span></span><span></span><span></span></span>
                     </td>
                     <td>
-                      {{ value.name }}
-                      <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
-                        {{ visibilityLabel(value.visibility) }}
-                      </n-tag>
+                      <div class="server-name-cell">
+                        <span class="server-name-text">{{ value.name }}</span>
+                        <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
+                          {{ visibilityLabel(value.visibility) }}
+                        </n-tag>
+                      </div>
+                      <small v-if="value.bound_domain" class="secondary-text server-bound-domain">{{ value.bound_domain }}</small>
                     </td>
                     <td>{{ value.owner_username || '—' }}</td>
                     <td>
@@ -215,10 +218,13 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                       <span class="drag-handle" :class="{ 'drag-handle--disabled': serverReorderingID !== null }" :draggable="serverReorderingID === null" title="拖动排序" @dragstart="startDrag($event, value.id, true)" @dragend="endDrag"><span></span><span></span><span></span></span>
                     </td>
                     <td>
-                      {{ value.name }}
-                      <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
-                        {{ visibilityLabel(value.visibility) }}
-                      </n-tag>
+                      <div class="server-name-cell">
+                        <span class="server-name-text">{{ value.name }}</span>
+                        <n-tag :type="value.visibility === 'private' ? 'warning' : 'default'" size="small">
+                          {{ visibilityLabel(value.visibility) }}
+                        </n-tag>
+                      </div>
+                      <small v-if="value.bound_domain" class="secondary-text server-bound-domain">{{ value.bound_domain }}</small>
                     </td>
                     <td>{{ value.owner_username || '—' }}</td>
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>

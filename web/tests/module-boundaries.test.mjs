@@ -247,13 +247,16 @@ test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令�
 test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Modal 内错误', async () => {
   const { model } = serverModel()
   model.servers.value = [
-    serverRecord({ expires_at: '2026-12-31T15:59:59Z', owner_username: 'refrain' }),
+    serverRecord({ bound_domain: 'core.example.com', expires_at: '2026-12-31T15:59:59Z', owner_username: 'refrain' }),
     serverRecord({ id: 8, owner_user_id: null, owner_username: '' }),
   ]
   const list = await render('components/server/ServerList.vue', model)
   assert.match(list, /到期时间/)
   assert.match(list, /所有者/)
   assert.match(list, /refrain/)
+  assert.match(list, /core\.example\.com/)
+  assert.equal((list.match(/server-bound-domain/g) ?? []).length, 1)
+  assert.doesNotMatch(list, /未设置/)
   assert.match(list, /2026-12-31/)
   assert.match(list, /不限/)
   assert.doesNotMatch(list, /服务器 ID/)
@@ -559,7 +562,8 @@ test('服务器统一基本信息保存名称后详情保持打开且列表使�
   assert.equal(model.basicInfoModalOpen.value, false)
   const detail = await render('components/server/ServerDetail.vue', model)
   assert.match(detail, /server-detail-grid/)
-  for (const title of ['基本信息', 'Agent', '系统信息', '动态指标', '月流量']) assert.match(detail, new RegExp(title))
+  for (const title of ['基本信息', 'Agent', '月流量']) assert.match(detail, new RegExp(title))
+  for (const title of ['系统信息', '动态指标']) assert.doesNotMatch(detail, new RegExp(title))
 })
 
 test('服务器统一基本信息表单可选择所有者或无所有者并立即刷新详情', async t => {

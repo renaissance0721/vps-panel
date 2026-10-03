@@ -16,9 +16,28 @@ test('服务器创建、编辑和详情都提供绑定域名字段且列表不�
   assert.match(createForm, /已绑定域名（可选）[\s\S]*createServerBoundDomain/)
   assert.match(editForm, /已绑定域名（可选）[\s\S]*boundDomainInput/)
   assert.match(detail, /<dt>已绑定域名<\/dt><dd>\{\{ selectedServer\.bound_domain \|\| '未设置' \}\}<\/dd>/)
-  assert.doesNotMatch(list, /<th>绑定域名<\/th>/)
+  assert.equal((list.match(/v-if="value\.bound_domain" class="secondary-text server-bound-domain">\{\{ value\.bound_domain \}\}/g) ?? []).length, 2)
+  assert.doesNotMatch(list, /<th>已?绑定域名<\/th>/)
+  assert.doesNotMatch(list, /未设置/)
   assert.match(composable, /body: JSON\.stringify\(\{ bound_domain: boundDomain \}\)/)
   assert.match(types, /bound_domain: string/)
+})
+
+test('服务器详情移除重复监控展示并保留设置与运维能力', async () => {
+  const detail = await source('components/server/ServerDetail.vue')
+  for (const title of ['基本信息', 'Agent', '中国 IP 入站限制']) {
+    assert.match(detail, new RegExp(`<h3[^>]*>${title}<\\/h3>`))
+  }
+  assert.match(detail, /<dt>已绑定域名<\/dt>/)
+  assert.match(detail, /<ServerTraffic :model="model"/)
+  for (const label of ['Agent 类型', 'Agent 版本', 'Agent API', 'Panel 版本', '升级状态', '一键诊断', '升级 Agent 到', '当前出站', '系统默认', '优先 IPv4', '优先 IPv6']) {
+    assert.match(detail, new RegExp(label))
+  }
+  assert.doesNotMatch(detail, /<h3[^>]*>系统信息<\/h3>/)
+  assert.doesNotMatch(detail, /<h3[^>]*>动态指标<\/h3>/)
+  assert.doesNotMatch(detail, /<dt>能力<\/dt>/)
+  assert.doesNotMatch(detail, /selectedServer\.(?:system_info|metrics)/)
+  assert.doesNotMatch(detail, /format(?:Percent|Bytes|Uptime)/)
 })
 
 test('Proxy 表单提供绑定域名、自动检测和手动输入三种 UI 选择', async () => {

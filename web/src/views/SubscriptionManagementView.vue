@@ -1555,7 +1555,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
       <div class="collapsible-section-header"><strong>规则（Rules）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingRulesExpanded" @click="routingRulesExpanded = !routingRulesExpanded">{{ routingRulesExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingRulesExpanded" class="routing-config-scroll routing-config-scroll-rules">
         <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
-        <label><span>Rules（一行一条逻辑规则）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
+        <label><span>Rules（一行一条逻辑规则）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,Lan,DIRECT&#10;RULE-SET,OpenAI,🤖 AI&#10;RULE-SET,ChinaDomain,DIRECT&#10;GEOIP,CN,DIRECT&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
       </div>
     </section>
     <div class="modal-actions subscription-form-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>

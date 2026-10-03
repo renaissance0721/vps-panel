@@ -13,8 +13,44 @@ export const renewalPeriodOptions: Array<{ label: string; value: RenewalPeriodMo
   { label: '三年付', value: 36 },
 ]
 
-export function serverHasUsableIPv6(server: Pick<ServerRecord, 'system_info'> | null | undefined): boolean {
-  return Boolean(server?.system_info?.public_ipv6)
+export type ServerIPv6State = 'unknown' | 'none' | 'stack' | 'public'
+
+export function serverIPv6State(server: Pick<ServerRecord, 'system_info'> | null | undefined): ServerIPv6State {
+  const info = server?.system_info
+  if (!info) return 'unknown'
+  if (info.public_ipv6) return 'public'
+  return (info.ipv6 ?? []).some((address) => address.trim() !== '') ? 'stack' : 'none'
+}
+
+export function serverHasIPv6Stack(server: Pick<ServerRecord, 'system_info'> | null | undefined): boolean {
+  const state = serverIPv6State(server)
+  return state === 'stack' || state === 'public'
+}
+
+export function serverSupportsIPv6Listener(server: Pick<ServerRecord, 'system_info'> | null | undefined): boolean {
+  return serverIPv6State(server) !== 'none'
+}
+
+export function serverHasAutoPublicIPv6(server: Pick<ServerRecord, 'system_info'> | null | undefined): boolean {
+  return serverIPv6State(server) === 'public'
+}
+
+export function serverIPv6StatusMessage(server: Pick<ServerRecord, 'system_info'> | null | undefined): string {
+  switch (serverIPv6State(server)) {
+    case 'unknown': return '尚未收到 Agent 网络信息，暂时无法确认 IPv6 状态。'
+    case 'none': return '当前服务器未检测到 IPv6 地址。'
+    case 'stack': return '已检测到 IPv6 网络，但无法自动检测公网 IPv6。仍可使用绑定域名或手动地址创建 IPv6 节点。'
+    case 'public': return `公网 IPv6：${server?.system_info?.public_ipv6}`
+  }
+}
+
+export function serverIPv6StatusLabel(server: Pick<ServerRecord, 'system_info'> | null | undefined): string {
+  switch (serverIPv6State(server)) {
+    case 'unknown': return '待 Agent 上报'
+    case 'none': return '未检测到 IPv6 地址'
+    case 'stack': return '已检测到 IPv6 网络 · 公网地址未自动检测'
+    case 'public': return `公网 ${server?.system_info?.public_ipv6}`
+  }
 }
 
 type AgentMetadata = Pick<ServerRecord, 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'>

@@ -3,7 +3,7 @@ import { toRefs, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { ServersViewState } from '../../composables/useServers'
 import { userRoleLabel } from '../../format'
-import { renewalPeriodOptions } from '../../server'
+import { renewalPeriodOptions, serverIPv6State, serverIPv6StatusMessage } from '../../server'
 
 const props = defineProps<{
   model: Pick<ServersViewState,
@@ -82,7 +82,9 @@ watch(expirationInput, (value) => {
 		<label>
 		  <span>IPv6 已绑定域名（可选）</span>
 		  <n-input v-model:value="boundDomainIPv6Input" maxlength="254" placeholder="例如：v6.jp.example.com" :disabled="submitting" />
-		  <n-alert v-if="model.selectedServer?.system_info !== null && !model.selectedServer?.system_info?.public_ipv6" type="warning">当前服务器未检测到可用公网 IPv6</n-alert>
+		  <n-alert :type="serverIPv6State(model.selectedServer) === 'none' ? 'warning' : 'info'">
+			{{ serverIPv6StatusMessage(model.selectedServer) }}
+		  </n-alert>
         </label>
 
         <label>

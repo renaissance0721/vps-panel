@@ -64,7 +64,36 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 		ServerID: 1, Name: "IPv6 unavailable", ListenAddress: "::", ListenPort: 9503,
 		TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP,
 	}); !errors.Is(err, ErrIPv6Unavailable) {
-		t.Fatalf("IPv6 Relay without public IPv6 error = %v", err)
+		t.Fatalf("IPv6 Relay without listener stack error = %v", err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET ipv6 = '["fd00::1"]' WHERE server_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	created, _, err = service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "IPv6 ULA manual", ListenAddress: "::", ListenPort: 9504,
+		EntryHostMode: EntryHostManual, EntryHost: "relay-v6.example.com",
+		TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP,
+	})
+	if err != nil || created.EntryAddress != "relay-v6.example.com" {
+		t.Fatalf("IPv6 Relay with ULA stack and manual address = (%+v, %v)", created, err)
+	}
+	if _, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "IPv6 ULA auto", ListenAddress: "::", ListenPort: 9505,
+		EntryHostMode: EntryHostAuto,
+		TargetType:    TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP,
+	}); !errors.Is(err, ErrEntryUnavailable) {
+		t.Fatalf("IPv6 Relay auto entry without public IPv6 error = %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO servers (id, name, status, created_at, updated_at) VALUES (2, 'Unknown', 'offline', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	created, _, err = service.Create(t.Context(), CreateInput{
+		ServerID: 2, Name: "IPv6 unknown manual", ListenAddress: "::", ListenPort: 9506,
+		EntryHostMode: EntryHostManual, EntryHost: "unknown-v6.example.com",
+		TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP,
+	})
+	if err != nil || created.ListenAddress != "::" {
+		t.Fatalf("IPv6 Relay with unknown system info = (%+v, %v)", created, err)
 	}
 }
 

@@ -152,8 +152,15 @@ func TestUpdateBoundDomains(t *testing.T) {
 		VALUES (?, '', '', '', '', '', '[]', '["fd00::1"]', '', '', '', 1)`, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer("new-v6.example.com")); !errors.Is(err, ErrIPv6Unavailable) {
-		t.Fatalf("IPv6 domain without public IPv6 error = %v", err)
+	updated, err = service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer("new-v6.example.com"))
+	if err != nil || updated.BoundDomainIPv6 != "new-v6.example.com" {
+		t.Fatalf("IPv6 domain with ULA stack = (%+v, %v)", updated, err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET ipv6 = '[]' WHERE server_id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer("other-v6.example.com")); !errors.Is(err, ErrIPv6Unavailable) {
+		t.Fatalf("IPv6 domain without IPv6 stack error = %v", err)
 	}
 	cleared, err = service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer(""))
 	if err != nil || cleared.BoundDomainIPv6 != "" {

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 22
+const LatestSchemaVersion = 23
 
 type migration struct {
 	version            int
@@ -45,6 +45,135 @@ var migrations = []migration{
 	{version: 20, name: "shared_text_rule_providers", up: migrateSharedTextRuleProviders},
 	{version: 21, name: "server_bound_domain", up: addServerBoundDomain},
 	{version: 22, name: "dual_stack_entry_addresses", up: migrateDualStackEntryAddresses},
+	{version: 23, name: "improve_default_cn_routing", up: improveDefaultCNRouting},
+}
+
+const (
+	defaultLanProviderYAML = `Lan:
+  type: http
+  behavior: classical
+  format: text
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Lan/Lan.list`
+	defaultChinaDomainProviderYAML = `ChinaDomain:
+  type: http
+  behavior: domain
+  format: text
+  interval: 86400
+  url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list`
+)
+
+func improveDefaultCNRouting(ctx context.Context, tx *sql.Tx) error {
+	var id int64
+	var groupsJSON, providersYAML, rulesJSON string
+	err := tx.QueryRowContext(ctx, `SELECT id, groups_json, rule_providers_yaml, rules_json
+		FROM subscription_routing_presets WHERE is_default = 1`).Scan(&id, &groupsJSON, &providersYAML, &rulesJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read default routing preset: %w", err)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(providersYAML), &document); err != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return errors.New("decode default routing providers")
+	}
+	root := document.Content[0]
+	for _, provider := range []struct{ name, source string }{
+		{"Lan", defaultLanProviderYAML},
+		{"ChinaDomain", defaultChinaDomainProviderYAML},
+	} {
+		if migrationYAMLMappingHasKey(root, provider.name) {
+			continue
+		}
+		var addition yaml.Node
+		if err := yaml.Unmarshal([]byte(provider.source), &addition); err != nil {
+			return fmt.Errorf("decode %s routing provider: %w", provider.name, err)
+		}
+		if len(addition.Content) != 1 || addition.Content[0].Kind != yaml.MappingNode {
+			return fmt.Errorf("decode %s routing provider", provider.name)
+		}
+		root.Content = append(root.Content, addition.Content[0].Content...)
+	}
+	encodedProviders, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("encode default routing providers: %w", err)
+	}
+
+	var rules []string
+	if err := decodeMigrationJSON(rulesJSON, &rules); err != nil {
+		return fmt.Errorf("decode default routing rules: %w", err)
+	}
+	rules = upgradeDefaultCNRoutingRules(rules)
+	encodedRules, err := json.Marshal(rules)
+	if err != nil {
+		return fmt.Errorf("encode default routing rules: %w", err)
+	}
+	if err := validateMigratedRouting(groupsJSON, string(encodedRules), string(encodedProviders)); err != nil {
+		return fmt.Errorf("validate improved default routing: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscription_routing_presets
+		SET rule_providers_yaml = ?, rules_json = ? WHERE id = ? AND is_default = 1`,
+		string(encodedProviders), string(encodedRules), id); err != nil {
+		return fmt.Errorf("store improved default routing: %w", err)
+	}
+	return nil
+}
+
+func migrationYAMLMappingHasKey(root *yaml.Node, name string) bool {
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		if root.Content[index].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
+func upgradeDefaultCNRoutingRules(rules []string) []string {
+	remaining := make([]string, 0, len(rules))
+	matchIndex := -1
+	for _, rule := range rules {
+		if migrationRuleMatches(rule, "RULE-SET", "Lan", "DIRECT") ||
+			migrationRuleMatches(rule, "RULE-SET", "ChinaDomain", "DIRECT") ||
+			migrationRuleMatches(rule, "GEOIP", "CN", "DIRECT") ||
+			migrationRuleMatches(rule, "GEOIP", "CN", "DIRECT", "no-resolve") {
+			continue
+		}
+		if matchIndex < 0 && migrationRuleType(rule) == "MATCH" {
+			matchIndex = len(remaining)
+		}
+		remaining = append(remaining, rule)
+	}
+	if matchIndex < 0 {
+		matchIndex = len(remaining)
+	}
+	result := make([]string, 0, len(remaining)+3)
+	result = append(result, "RULE-SET,Lan,DIRECT")
+	result = append(result, remaining[:matchIndex]...)
+	result = append(result, "RULE-SET,ChinaDomain,DIRECT", "GEOIP,CN,DIRECT")
+	result = append(result, remaining[matchIndex:]...)
+	return result
+}
+
+func migrationRuleMatches(rule string, expected ...string) bool {
+	parts := strings.Split(rule, ",")
+	if len(parts) != len(expected) {
+		return false
+	}
+	for index := range parts {
+		if strings.TrimSpace(parts[index]) != expected[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func migrationRuleType(rule string) string {
+	if index := strings.IndexByte(rule, ','); index >= 0 {
+		return strings.TrimSpace(rule[:index])
+	}
+	return strings.TrimSpace(rule)
 }
 
 func addServerBoundDomain(ctx context.Context, tx *sql.Tx) error {
@@ -1306,9 +1435,15 @@ func decodeMigrationJSON(raw string, value any) error {
 
 const defaultRoutingGroupsJSON = `[{"name":"🚀 默认代理","type":"select","proxies":["DIRECT"],"include_all":true},{"name":"🤖 AI","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"▶️ YouTube","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🎬 Netflix","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"✈️ Telegram","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🎵 TikTok","type":"select","proxies":["🚀 默认代理"],"include_all":true},{"name":"🍎 Apple","type":"select","proxies":["DIRECT","🚀 默认代理"],"include_all":true},{"name":"Ⓜ️ Microsoft","type":"select","proxies":["DIRECT","🚀 默认代理"],"include_all":true}]`
 
-const defaultRoutingRulesJSON = `["RULE-SET,OpenAI,🤖 AI","RULE-SET,Claude,🤖 AI","RULE-SET,Gemini,🤖 AI","RULE-SET,YouTube,▶️ YouTube","RULE-SET,Netflix,🎬 Netflix","RULE-SET,Telegram,✈️ Telegram","RULE-SET,TikTok,🎵 TikTok","RULE-SET,Apple,🍎 Apple","RULE-SET,Copilot,Ⓜ️ Microsoft","RULE-SET,Microsoft,Ⓜ️ Microsoft","GEOIP,CN,DIRECT,no-resolve","MATCH,🚀 默认代理"]`
+const defaultRoutingRulesJSON = `["RULE-SET,Lan,DIRECT","RULE-SET,OpenAI,🤖 AI","RULE-SET,Claude,🤖 AI","RULE-SET,Gemini,🤖 AI","RULE-SET,YouTube,▶️ YouTube","RULE-SET,Netflix,🎬 Netflix","RULE-SET,Telegram,✈️ Telegram","RULE-SET,TikTok,🎵 TikTok","RULE-SET,Apple,🍎 Apple","RULE-SET,Copilot,Ⓜ️ Microsoft","RULE-SET,Microsoft,Ⓜ️ Microsoft","RULE-SET,ChinaDomain,DIRECT","GEOIP,CN,DIRECT","MATCH,🚀 默认代理"]`
 
-const defaultRoutingProvidersYAML = `OpenAI:
+const defaultRoutingProvidersYAML = `Lan:
+  type: http
+  behavior: classical
+  format: text
+  interval: 86400
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Lan/Lan.list
+OpenAI:
   type: http
   behavior: classical
   format: text
@@ -1367,7 +1502,13 @@ Microsoft:
   behavior: classical
   format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Microsoft/Microsoft.list`
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Microsoft/Microsoft.list
+ChinaDomain:
+  type: http
+  behavior: domain
+  format: text
+  interval: 86400
+  url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list`
 
 func migrateRoutingPresetsAsRuntimeProfiles(ctx context.Context, tx *sql.Tx) error {
 	for _, statement := range []string{

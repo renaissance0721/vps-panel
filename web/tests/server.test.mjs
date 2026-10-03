@@ -14,7 +14,35 @@ import {
   chinaInboundSupported,
   formatServerExpiration,
   renewalPeriodLabel,
+  serverHasAutoPublicIPv6,
+  serverHasIPv6Stack,
+  serverIPv6State,
+  serverIPv6StatusLabel,
+  serverIPv6StatusMessage,
+  serverSupportsIPv6Listener,
 } from '../src/server.ts'
+
+test('Server IPv6 状态区分未知、无栈、ULA 栈和公网地址', () => {
+  const unknown = { system_info: null }
+  const none = { system_info: { ipv6: [], public_ipv6: '' } }
+  const ula = { system_info: { ipv6: ['fd00::1'], public_ipv6: '' } }
+  const publicIPv6 = { system_info: { ipv6: ['2606:4700:4700::1111'], public_ipv6: '2606:4700:4700::1111' } }
+
+  assert.equal(serverIPv6State(unknown), 'unknown')
+  assert.equal(serverIPv6State(none), 'none')
+  assert.equal(serverIPv6State(ula), 'stack')
+  assert.equal(serverIPv6State(publicIPv6), 'public')
+  assert.equal(serverSupportsIPv6Listener(unknown), true)
+  assert.equal(serverSupportsIPv6Listener(none), false)
+  assert.equal(serverHasIPv6Stack(ula), true)
+  assert.equal(serverHasAutoPublicIPv6(ula), false)
+  assert.equal(serverHasAutoPublicIPv6(publicIPv6), true)
+  assert.match(serverIPv6StatusMessage(unknown), /尚未收到/)
+  assert.match(serverIPv6StatusMessage(none), /未检测到 IPv6/)
+  assert.match(serverIPv6StatusMessage(ula), /无法自动检测公网 IPv6/)
+  assert.match(serverIPv6StatusMessage(publicIPv6), /2606:4700/)
+  assert.equal(serverIPv6StatusLabel(ula), '已检测到 IPv6 网络 · 公网地址未自动检测')
+})
 
 test('服务器列表到期时间只显示日期', () => {
   assert.equal(formatServerExpiration('2026-09-12T12:00:00Z'), '2026-09-12')

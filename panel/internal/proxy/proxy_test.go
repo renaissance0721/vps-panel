@@ -42,15 +42,39 @@ func TestProxyCreationRollsBackAndRejectsPortConflict(t *testing.T) {
 	}
 }
 
-func TestProxyIPv6RequiresUsableServerAddress(t *testing.T) {
-	_, service, serverID := newTestService(t)
-	_, _, err := service.Create(t.Context(), CreateInput{
+func TestProxyIPv6SeparatesListenerStackFromAutoAddress(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	input := CreateInput{
 		ServerID: serverID, Name: "IPv6", ListenFamily: ListenFamilyIPv6, ListenPort: 443,
-		EntryHostMode: EntryHostAuto, Enabled: true, Security: SecurityReality,
+		EntryHostMode: EntryHostManual, EntryHost: "v6.example.com", Enabled: true, Security: SecurityReality,
 		ServerName: "www.example.com", RealityTarget: "www.example.com:443", FirstClientName: "default",
-	})
-	if !errors.Is(err, ErrIPv6Unavailable) {
-		t.Fatalf("IPv6 Proxy without public IPv6 error = %v", err)
+	}
+	created, _, err := service.Create(t.Context(), input)
+	if err != nil || created.ListenFamily != ListenFamilyIPv6 || created.EntryAddress != "v6.example.com" {
+		t.Fatalf("IPv6 Proxy with unknown system info = (%+v, %v)", created, err)
+	}
+	if _, err := db.Exec(`INSERT INTO server_system_info
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '[]', '', '', '', 1)`, serverID); err != nil {
+		t.Fatal(err)
+	}
+	input.ListenPort = 444
+	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrIPv6Unavailable) {
+		t.Fatalf("IPv6 Proxy without listener stack error = %v", err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET ipv6 = '["fd00::1"]' WHERE server_id = ?`, serverID); err != nil {
+		t.Fatal(err)
+	}
+	input.ListenPort = 445
+	created, _, err = service.Create(t.Context(), input)
+	if err != nil || created.EntryAddress != "v6.example.com" {
+		t.Fatalf("IPv6 Proxy with ULA stack and manual address = (%+v, %v)", created, err)
+	}
+	input.ListenPort = 446
+	input.EntryHostMode = EntryHostAuto
+	input.EntryHost = ""
+	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrConnectionAddressUnavailable) {
+		t.Fatalf("IPv6 Proxy auto entry without public IPv6 error = %v", err)
 	}
 }
 

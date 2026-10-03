@@ -92,12 +92,15 @@ func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now tim
 		return 0, Mutation{}, err
 	}
 	if net.ParseIP(value.ListenAddress).To4() == nil {
-		publicIPv6, err := readServerPublicIPv6(ctx, tx, value.ServerID)
+		state, err := readServerIPv6State(ctx, tx, value.ServerID)
 		if err != nil {
 			return 0, Mutation{}, err
 		}
-		if publicIPv6 == "" {
+		if state.reported && !state.stack {
 			return 0, Mutation{}, ErrIPv6Unavailable
+		}
+		if value.EntryHostMode == EntryHostAuto && state.public == "" {
+			return 0, Mutation{}, ErrEntryUnavailable
 		}
 	}
 	if value.OwnerUserID != nil {
@@ -167,12 +170,15 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 		return Relay{}, Mutation{}, err
 	}
 	if net.ParseIP(value.ListenAddress).To4() == nil {
-		publicIPv6, err := readServerPublicIPv6(ctx, tx, value.ServerID)
+		state, err := readServerIPv6State(ctx, tx, value.ServerID)
 		if err != nil {
 			return Relay{}, Mutation{}, err
 		}
-		if publicIPv6 == "" {
+		if state.reported && !state.stack {
 			return Relay{}, Mutation{}, ErrIPv6Unavailable
+		}
+		if value.EntryHostMode == EntryHostAuto && state.public == "" {
+			return Relay{}, Mutation{}, ErrEntryUnavailable
 		}
 	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
@@ -339,24 +345,36 @@ func subscriptionManaged(ctx context.Context, query interface {
 	return managed, nil
 }
 
-func readServerPublicIPv6(ctx context.Context, query interface {
+type serverIPv6State struct {
+	reported bool
+	stack    bool
+	public   string
+}
+
+func readServerIPv6State(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, serverID int64) (string, error) {
+}, serverID int64) (serverIPv6State, error) {
+	var systemInfoID sql.NullInt64
 	var publicIPv6, ipv6JSON sql.NullString
 	err := query.QueryRowContext(ctx,
-		`SELECT system_info.public_ipv6, system_info.ipv6 FROM servers
+		`SELECT system_info.server_id, system_info.public_ipv6, system_info.ipv6 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 WHERE servers.id = ? AND servers.archived_at IS NULL`, serverID,
-	).Scan(&publicIPv6, &ipv6JSON)
+	).Scan(&systemInfoID, &publicIPv6, &ipv6JSON)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrServerNotFound
+		return serverIPv6State{}, ErrServerNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("read Relay server public IPv6: %w", err)
+		return serverIPv6State{}, fmt.Errorf("read Relay server IPv6 state: %w", err)
 	}
 	var addresses []string
 	_ = json.Unmarshal([]byte(ipv6JSON.String), &addresses)
-	return netutil.EffectivePublicIPv6(publicIPv6.String, addresses), nil
+	public := netutil.EffectivePublicIPv6(publicIPv6.String, addresses)
+	return serverIPv6State{
+		reported: systemInfoID.Valid,
+		stack:    netutil.HasIPv6Stack(addresses) || public != "",
+		public:   public,
+	}, nil
 }
 
 func list(ctx context.Context, query interface {

@@ -503,7 +503,7 @@ func writeServerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, serverstore.ErrInvalidBoundDomain):
 		writeError(w, http.StatusBadRequest, "服务器绑定域名格式无效")
 	case errors.Is(err, serverstore.ErrIPv6Unavailable):
-		writeError(w, http.StatusConflict, "当前服务器未检测到可用公网 IPv6")
+		writeError(w, http.StatusConflict, "当前服务器未检测到 IPv6 地址")
 	case errors.Is(err, serverstore.ErrInvalidVisibility):
 		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
 	case errors.Is(err, serverstore.ErrInvalidServerAccess):

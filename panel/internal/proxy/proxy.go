@@ -102,12 +102,15 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		return Proxy{}, Mutation{}, err
 	}
 	if prepared.listenFamily == ListenFamilyIPv6 {
-		publicIPv6, err := readServerPublicIPv6(ctx, tx, input.ServerID)
+		state, err := readServerIPv6State(ctx, tx, input.ServerID)
 		if err != nil {
 			return Proxy{}, Mutation{}, err
 		}
-		if publicIPv6 == "" {
+		if state.reported && !state.stack {
 			return Proxy{}, Mutation{}, ErrIPv6Unavailable
+		}
+		if prepared.entryHostMode == EntryHostAuto && state.public == "" {
+			return Proxy{}, Mutation{}, ErrConnectionAddressUnavailable
 		}
 	}
 	if err := relaystore.ProxyPortAvailable(ctx, tx, input.ServerID, input.ListenPort, prepared.protocol); err != nil {
@@ -294,8 +297,17 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	if err := validateEntryHostFamily(value.ListenFamily, value.EntryHost); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
-	if value.ListenFamily == ListenFamilyIPv6 && value.ServerPublicIPv6 == "" {
-		return Proxy{}, storedConfig{}, ErrIPv6Unavailable
+	if value.ListenFamily == ListenFamilyIPv6 {
+		state, stateErr := readServerIPv6State(ctx, query, value.ServerID)
+		if stateErr != nil {
+			return Proxy{}, storedConfig{}, stateErr
+		}
+		if state.reported && !state.stack {
+			return Proxy{}, storedConfig{}, ErrIPv6Unavailable
+		}
+		if value.EntryHostMode == EntryHostAuto && state.public == "" {
+			return Proxy{}, storedConfig{}, ErrConnectionAddressUnavailable
+		}
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
@@ -550,22 +562,34 @@ func ensureActiveServer(ctx context.Context, tx *sql.Tx, serverID int64) error {
 	return nil
 }
 
-func readServerPublicIPv6(ctx context.Context, query interface {
+type serverIPv6State struct {
+	reported bool
+	stack    bool
+	public   string
+}
+
+func readServerIPv6State(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, serverID int64) (string, error) {
+}, serverID int64) (serverIPv6State, error) {
+	var systemInfoID sql.NullInt64
 	var publicIPv6, ipv6JSON sql.NullString
 	err := query.QueryRowContext(ctx,
-		`SELECT system_info.public_ipv6, system_info.ipv6 FROM servers
+		`SELECT system_info.server_id, system_info.public_ipv6, system_info.ipv6 FROM servers
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 WHERE servers.id = ? AND servers.archived_at IS NULL`, serverID,
-	).Scan(&publicIPv6, &ipv6JSON)
+	).Scan(&systemInfoID, &publicIPv6, &ipv6JSON)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrServerNotFound
+		return serverIPv6State{}, ErrServerNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("read server public IPv6: %w", err)
+		return serverIPv6State{}, fmt.Errorf("read server IPv6 state: %w", err)
 	}
 	var addresses []string
 	_ = json.Unmarshal([]byte(ipv6JSON.String), &addresses)
-	return netutil.EffectivePublicIPv6(publicIPv6.String, addresses), nil
+	public := netutil.EffectivePublicIPv6(publicIPv6.String, addresses)
+	return serverIPv6State{
+		reported: systemInfoID.Valid,
+		stack:    netutil.HasIPv6Stack(addresses) || public != "",
+		public:   public,
+	}, nil
 }

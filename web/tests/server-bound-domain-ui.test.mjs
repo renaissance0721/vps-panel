@@ -48,7 +48,7 @@ test('Proxy 表单提供绑定域名、自动检测和手动输入三种 UI 选�
     source('composables/useProxyForm.ts'),
   ])
   assert.match(form, /value="bound">已绑定域名：\{\{ selectedServerBoundDomain \}\}/)
-  assert.match(form, /value="auto">自动检测/)
+  assert.match(form, /value="auto"[^>]*>自动检测/)
   assert.match(form, /value="manual">手动输入/)
   assert.match(form, /@change="onProxyServerChange"/)
   assert.match(composable, /value\.entry_host_mode === 'manual' && selectedServerBoundDomain\.value && value\.entry_host === selectedServerBoundDomain\.value/)

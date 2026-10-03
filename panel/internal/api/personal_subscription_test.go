@@ -180,7 +180,7 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 		if response.Code != http.StatusUnprocessableEntity || json.Unmarshal(response.Body.Bytes(), &problem) != nil {
 			t.Fatalf("preview error status %d", response.Code)
 		}
-		for _, want := range []string{"第 3 条规则", "RULE-SET,Gemini,🤖 AI", `规则源 "Gemini"`, reason} {
+		for _, want := range []string{"第 4 条规则", "RULE-SET,Gemini,🤖 AI", `规则源 "Gemini"`, reason} {
 			if !strings.Contains(problem["error"], want) {
 				t.Errorf("preview lost %q: %s", want, problem["error"])
 			}

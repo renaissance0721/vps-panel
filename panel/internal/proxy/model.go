@@ -48,7 +48,7 @@ var (
 	ErrInvalidShadowsocksCredential   = errors.New("invalid stored Shadowsocks credential")
 	ErrInvalidShadowsocksUpdate       = errors.New("TLS and REALITY fields are not supported for Shadowsocks")
 	ErrConnectionAddressUnavailable   = errors.New("connection address unavailable")
-	ErrIPv6Unavailable                = errors.New("server public IPv6 address unavailable")
+	ErrIPv6Unavailable                = errors.New("server IPv6 listener unavailable")
 	ErrInvalidClientTrafficConfig     = errors.New("invalid client traffic configuration")
 	ErrInvalidClientExpiration        = errors.New("invalid client expiration")
 	ErrAssignmentUserNotFound         = errors.New("assigned user not found")

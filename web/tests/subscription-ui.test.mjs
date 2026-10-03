@@ -237,6 +237,8 @@ test('分流方案使用策略组、结构化规则源和逐行规则编辑器',
   assert.match(managementSource, /function setRoutingProviderName[\s\S]*parts\[0\] === 'RULE-SET'[\s\S]*parts\[1\] = name/)
   assert.match(managementSource, /规则源“\$\{provider\.name\}”仍被第 \$\{referencedAt \+ 1\} 条 Rule 使用/)
   assert.match(managementSource, /Rules（一行一条逻辑规则）/)
+  assert.match(managementSource, /RULE-SET,Lan,DIRECT&#10;RULE-SET,OpenAI,🤖 AI&#10;RULE-SET,ChinaDomain,DIRECT&#10;GEOIP,CN,DIRECT&#10;MATCH,🚀 默认代理/)
+  assert.doesNotMatch(managementSource, /GEOIP,CN,DIRECT,no-resolve/)
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
 })
 

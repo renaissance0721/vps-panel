@@ -334,20 +334,45 @@ test('Server 绑定域名在基本信息中独立 PATCH 并立即刷新详情', 
   assert.equal(model.serverModalOpen.value, true)
 })
 
-test('已上报但无公网 IPv6 的 Server 拒绝新增 IPv6 绑定域名', async t => {
+test('已上报 ULA IPv6 的 Server 允许新增 IPv6 绑定域名', async t => {
   const current = serverRecord({
     system_info: { hostname: 'host', ipv4: [], ipv6: ['fd00::1'], public_ipv4: '198.51.100.7', public_ipv6: '' },
+  })
+  const updated = { ...current, bound_domain_ipv6: 'v6.example.com' }
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'PATCH') {
+      calls.push({ url, body: JSON.parse(init.body) })
+      return json({ server: updated })
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : [updated] })
+  })
+  const { model } = serverModel()
+  model.servers.value = [current]
+  model.viewServer(current)
+  model.openBasicInfoModal()
+  model.boundDomainIPv6Input.value = 'v6.example.com'
+  await model.saveBasicInfo()
+  assert.deepEqual(calls, [{
+    url: '/api/servers/7',
+    body: { bound_domain_ipv4: current.bound_domain_ipv4, bound_domain_ipv6: 'v6.example.com' },
+  }])
+  assert.equal(model.selectedServer.value.bound_domain_ipv6, 'v6.example.com')
+})
+
+test('已确认没有 IPv6 栈的 Server 拒绝新增 IPv6 绑定域名', async t => {
+  const current = serverRecord({
+    system_info: { hostname: 'host', ipv4: [], ipv6: [], public_ipv4: '198.51.100.7', public_ipv6: '' },
   })
   const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('不应发送请求') })
   const { model } = serverModel()
   model.servers.value = [current]
   model.viewServer(current)
   model.openBasicInfoModal()
-  model.nameInput.value = '不应提前修改'
   model.boundDomainIPv6Input.value = 'v6.example.com'
   await model.saveBasicInfo()
   assert.equal(fetch.mock.calls.length, 0)
-  assert.match(model.basicInfoFormError.value, /未检测到可用公网 IPv6/)
+  assert.match(model.basicInfoFormError.value, /未检测到 IPv6 地址/)
 })
 
 test('Server 详情基本信息只读且归档状态不显示统一修改入口', async () => {
@@ -869,8 +894,9 @@ test('Proxy Family 切换使用对应域名，无 IPv6 的服务器自动回退'
   const calls = []
   const error = ref('')
   const servers = [
-    { id: 7, name: 'A', bound_domain_ipv4: 'a4.example.com', bound_domain_ipv6: 'a6.example.com', system_info: { public_ipv4: '198.51.100.7', public_ipv6: '2606:4700:4700::1111' } },
-    { id: 8, name: 'B', bound_domain_ipv4: 'b4.example.com', bound_domain_ipv6: '', system_info: { public_ipv4: '198.51.100.8', public_ipv6: '' } },
+    { id: 7, name: 'A', bound_domain_ipv4: 'a4.example.com', bound_domain_ipv6: 'a6.example.com', system_info: { ipv6: ['2606:4700:4700::1111'], public_ipv4: '198.51.100.7', public_ipv6: '2606:4700:4700::1111' } },
+    { id: 8, name: 'B', bound_domain_ipv4: 'b4.example.com', bound_domain_ipv6: '', system_info: { ipv6: [], public_ipv4: '198.51.100.8', public_ipv6: '' } },
+    { id: 9, name: 'Azure', bound_domain_ipv4: '', bound_domain_ipv6: 'azure-v6.example.com', system_info: { ipv6: ['fd00::1'], public_ipv4: '198.51.100.9', public_ipv6: '' } },
   ]
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     calls.push({ url, body: JSON.parse(init.body) })
@@ -898,6 +924,20 @@ test('Proxy Family 切换使用对应域名，无 IPv6 的服务器自动回退'
   assert.equal(form.proxyEntryHostMode.value, 'bound')
   assert.equal(form.selectedServerBoundDomain.value, 'b4.example.com')
   assert.match(error.value, /已切换为 IPv4/)
+
+  form.openCreateProxy()
+  form.proxyServerID.value = 9
+  form.onProxyServerChange()
+  form.proxyListenFamily.value = 'ipv6'
+  form.onProxyFamilyChange()
+  assert.equal(form.proxyListenFamily.value, 'ipv6')
+  assert.equal(form.proxyEntryHostMode.value, 'bound')
+  assert.equal(form.selectedServerHasAutoPublicIPv6.value, false)
+  form.proxyName.value = 'Azure IPv6'
+  form.proxyServerName.value = 'sni.example.com'
+  await form.saveProxy()
+  assert.equal(calls[1].body.listen_family, 'ipv6')
+  assert.equal(calls[1].body.entry_host, 'azure-v6.example.com')
 })
 
 test('Client 表单拆分保持数值额度、周期、到期和协议专属 UDP/443', async t => {

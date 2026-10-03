@@ -131,7 +131,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		len(config.ProxyGroups) != 8 || config.ProxyGroups[0].Name != "🚀 默认代理" ||
 		len(config.ProxyGroups[0].Proxies) != 2 || config.ProxyGroups[0].Proxies[0] != "DIRECT" ||
 		config.ProxyGroups[0].Proxies[1] != config.Proxies[0].Name ||
-		len(config.Rules) != 12 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
+		len(config.Rules) != 14 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
 	}
 	shadowrocket := performRequest(t, handler, http.MethodGet, "/sub/public-token/shadowrocket", nil, nil)

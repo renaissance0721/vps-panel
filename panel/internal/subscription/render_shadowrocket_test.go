@@ -34,7 +34,8 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 	for _, expected := range []string{"[General]", "[Proxy]", "[Proxy Group]", "[Rule]",
 		"US1 = vless,203.0.113.1,443,", "password=test-uuid", "tls=true", "reality=true",
 		"pbk=public-test-key", "sid=abcd", "fp=chrome", "peer=example.com", "flow=xtls-rprx-vision", "udp-relay=true",
-		"FINAL,🚀 默认代理", "/Surge/OpenAI/OpenAI.list"} {
+		"FINAL,🚀 默认代理", "/Surge/OpenAI/OpenAI.list", "/Surge/Lan/Lan.list,DIRECT",
+		"DOMAIN-SET,https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list,DIRECT"} {
 		if !strings.Contains(string(body), expected) {
 			t.Errorf("missing %q", expected)
 		}
@@ -330,6 +331,14 @@ func TestShadowrocketRulesAndProviderCompatibility(t *testing.T) {
 	if got, err := renderShadowrocketRule("RULE-SET,OpenAI,AI,no-resolve", providers); err != nil || got != "RULE-SET,https://example.com/OpenAI.list,AI,no-resolve" {
 		t.Fatal(got, err)
 	}
+	domain := RoutingRuleProvider{Name: "ChinaDomain", Type: "http", Behavior: "domain", Format: "text", URL: "https://example.com/cn.list", Interval: 86400}
+	providers[domain.Name] = domain
+	if got, err := renderShadowrocketRule("RULE-SET,ChinaDomain,DIRECT", providers); err != nil || got != "DOMAIN-SET,https://example.com/cn.list,DIRECT" {
+		t.Fatal(got, err)
+	}
+	if _, err := renderShadowrocketRule("RULE-SET,ChinaDomain,DIRECT,no-resolve", providers); !errors.Is(err, ErrUnsupportedShadowrocketRule) {
+		t.Fatalf("domain provider accepted no-resolve: %v", err)
+	}
 	for _, rule := range []string{"GEOSITE,cn,DIRECT", "PROCESS-NAME,app,DIRECT", "DOMAIN,example.com,DIRECT,no-resolve", "RULE-SET,missing,AI", "MATCH,DIRECT,extra", "IP-CIDR,a,b,DIRECT"} {
 		if _, err := renderShadowrocketRule(rule, providers); !errors.Is(err, ErrUnsupportedShadowrocketRule) {
 			t.Errorf("unsupported rule %q: %v", rule, err)
@@ -337,9 +346,16 @@ func TestShadowrocketRulesAndProviderCompatibility(t *testing.T) {
 	}
 	for _, provider := range defaultRoutingPresetForTest(t).RuleProviders {
 		got, err := shadowrocketProviderURL(provider)
-		want := "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/" + provider.Name + "/" + provider.Name + ".list"
-		if err != nil || got != want {
+		if err != nil || got != provider.URL {
 			t.Errorf("built-in provider %s: %v", provider.Name, err)
+		}
+		kind, err := shadowrocketProviderRuleType(provider)
+		wantKind := "RULE-SET"
+		if provider.Behavior == "domain" {
+			wantKind = "DOMAIN-SET"
+		}
+		if err != nil || kind != wantKind {
+			t.Errorf("built-in provider %s kind = %q, %v", provider.Name, kind, err)
 		}
 	}
 }
@@ -392,7 +408,7 @@ func TestShadowrocketProviderErrorsIncludeRuleAndReason(t *testing.T) {
 		{"format", "yaml", `format="yaml"`},
 		{"legacy", "", `format="yaml"`},
 		{"format", "mrs", `format="mrs"`},
-		{"behavior", "domain", `behavior="domain"`},
+		{"behavior", "ipcidr", `behavior="ipcidr"`},
 		{"url", "ftp://example.com/rules.list", "URL 无效"},
 		{"url", "https:///rules.list", "URL 无效"},
 		{"url", "https://example.com/%zz", "URL 无效"},

@@ -105,7 +105,7 @@ rules:
 	}
 	if defaultName != "默认分流" || defaultEnabled != 1 ||
 		defaultGroups != defaultRoutingGroupsJSON || defaultProviders != defaultRoutingProvidersYAML ||
-		defaultRules != defaultRoutingRulesJSON || len(groups) != 8 || len(providers) != 10 || len(rules) != 12 ||
+		defaultRules != defaultRoutingRulesJSON || len(groups) != 8 || len(providers) != 12 || len(rules) != 14 ||
 		groups[0].Name != "🚀 默认代理" || rules[len(rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("default routing = name %q, enabled %d, groups %v, providers %v, rules %v",
 			defaultName, defaultEnabled, groups, providers, rules)

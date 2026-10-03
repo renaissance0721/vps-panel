@@ -49,7 +49,7 @@ import {
   renewalPeriodLabel,
   canBulkUpgradeAgent,
   chinaInboundConfigNeedsPolling,
-  serverHasUsableIPv6,
+  serverHasIPv6Stack,
 } from '../server'
 import {
   formatTrafficLimitInput,
@@ -738,8 +738,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
       return
     }
     if (boundDomainIPv6 && boundDomainIPv6 !== (selectedServer.value.bound_domain_ipv6 ?? '') &&
-      selectedServer.value.system_info !== null && !serverHasUsableIPv6(selectedServer.value)) {
-      basicInfoFormError.value = '当前服务器未检测到可用公网 IPv6'
+      selectedServer.value.system_info !== null && !serverHasIPv6Stack(selectedServer.value)) {
+	  basicInfoFormError.value = '当前服务器未检测到 IPv6 地址'
       return
     }
     const expiration = expirationInput.value.trim()

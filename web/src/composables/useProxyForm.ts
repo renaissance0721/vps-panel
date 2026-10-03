@@ -18,7 +18,10 @@ import {
 import {
   agentCapabilities,
   agentSupportsCapability,
-  serverHasUsableIPv6,
+  serverHasAutoPublicIPv6,
+  serverIPv6State,
+  serverIPv6StatusMessage,
+  serverSupportsIPv6Listener,
 } from '../server'
 import type {
   Ref,
@@ -46,18 +49,19 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const firstClientName = ref('默认客户端')
   const firstClientUDP443 = ref(false)
 
-  const selectedServerPublicIPv4 = computed(() =>
-    props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
-  )
+  const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
+  const selectedServerPublicIPv4 = computed(() => selectedServer.value?.system_info?.public_ipv4 ?? '')
 	const selectedServerPublicIPv6 = computed(() => selectedServer.value?.system_info?.public_ipv6 ?? '')
 	const selectedServerPublicAddress = computed(() => proxyListenFamily.value === 'ipv6'
 	  ? selectedServerPublicIPv6.value
 	  : selectedServerPublicIPv4.value)
-  const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
 	const selectedServerBoundDomain = computed(() => proxyListenFamily.value === 'ipv6'
 	  ? selectedServer.value?.bound_domain_ipv6 ?? ''
 	  : selectedServer.value?.bound_domain_ipv4 ?? '')
-	const selectedServerHasUsableIPv6 = computed(() => serverHasUsableIPv6(selectedServer.value))
+	const selectedServerSupportsIPv6Listener = computed(() => serverSupportsIPv6Listener(selectedServer.value))
+	const selectedServerHasAutoPublicIPv6 = computed(() => serverHasAutoPublicIPv6(selectedServer.value))
+	const selectedServerIPv6State = computed(() => serverIPv6State(selectedServer.value))
+	const selectedServerIPv6Status = computed(() => serverIPv6StatusMessage(selectedServer.value))
   const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
   const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
   const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
@@ -87,25 +91,35 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
 
   function syncCreateProxyEntryHost() {
     if (proxyFormMode.value !== 'create') return
-    proxyEntryHostMode.value = selectedServerBoundDomain.value ? 'bound' : 'auto'
+	proxyEntryHostMode.value = selectedServerBoundDomain.value
+	  ? 'bound'
+	  : proxyListenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value
+	    ? 'manual'
+	    : 'auto'
     proxyEntryHost.value = ''
   }
 
   function onProxyServerChange() {
-	  if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  if (proxyListenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
 	    proxyListenFamily.value = 'ipv4'
-	    error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	    error.value = '当前服务器未检测到 IPv6 地址，已切换为 IPv4'
 	  }
     syncCreateProxyEntryHost()
   }
 
 	function onProxyFamilyChange() {
-	  if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  if (proxyListenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
 	    proxyListenFamily.value = 'ipv4'
-	    error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	    error.value = '当前服务器未检测到 IPv6 地址，已切换为 IPv4'
+	  }
+	  if (proxyFormMode.value === 'create') {
+	    syncCreateProxyEntryHost()
+	    return
 	  }
 	  if (proxyEntryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
-	    proxyEntryHostMode.value = 'auto'
+	    proxyEntryHostMode.value = proxyListenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value ? 'manual' : 'auto'
+	  } else if (proxyEntryHostMode.value === 'auto' && proxyListenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value) {
+	    proxyEntryHostMode.value = 'manual'
 	  }
 	}
 
@@ -169,8 +183,12 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       error.value = '请选择服务器'
       return
     }
-	if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
-	  error.value = '当前服务器未检测到可用公网 IPv6'
+	if (proxyListenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
+	  error.value = '当前服务器未检测到 IPv6 地址'
+	  return
+	}
+	if (proxyListenFamily.value === 'ipv6' && proxyEntryHostMode.value === 'auto' && !selectedServerHasAutoPublicIPv6.value) {
+	  error.value = '无法自动检测公网 IPv6，请使用绑定域名或手动填写'
 	  return
 	}
     if (proxyEntryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
@@ -265,7 +283,10 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
 	selectedServerPublicIPv6,
 	selectedServerPublicAddress,
     selectedServerBoundDomain,
-	selectedServerHasUsableIPv6,
+	selectedServerSupportsIPv6Listener,
+	selectedServerHasAutoPublicIPv6,
+	selectedServerIPv6State,
+	selectedServerIPv6Status,
     proxyVLESSSupported,
     proxyVLESSRealitySupported,
     proxyTLSSupported,

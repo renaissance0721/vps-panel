@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -28,13 +29,41 @@ func TestSharedTextProvidersMigrationPreservesRoutingAndReferences(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			legacy := strings.NewReplacer("format: text", "format: yaml", "/rule/Surge/", "/rule/Clash/", ".list", ".yaml").Replace(defaultRoutingProvidersYAML)
+			var historicalProviders map[string]map[string]any
+			if err := yaml.Unmarshal([]byte(defaultRoutingProvidersYAML), &historicalProviders); err != nil {
+				t.Fatal(err)
+			}
+			delete(historicalProviders, "Lan")
+			delete(historicalProviders, "ChinaDomain")
+			historicalYAML, err := yaml.Marshal(historicalProviders)
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy := strings.NewReplacer("format: text", "format: yaml", "/rule/Surge/", "/rule/Clash/", ".list", ".yaml").Replace(string(historicalYAML))
 			legacy = strings.NewReplacer("Netflix/Netflix.yaml", "Netflix/Netflix_Classical.yaml", "Apple/Apple.yaml", "Apple/Apple_Classical.yaml").Replace(legacy)
 			const custom = "Custom:\n  type: http\n  behavior: classical\n  format: yaml\n  interval: 86400\n  url: https://example.com/custom.yaml\n"
 			if editedDefault {
 				legacy = strings.Replace(legacy, "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml", "https://example.com/edited.yaml", 1) + "\n" + custom
 			}
-			if _, err := db.Exec(`UPDATE subscription_routing_presets SET rule_providers_yaml = ? WHERE is_default = 1`, legacy); err != nil {
+			var historicalRules []string
+			if err := json.Unmarshal([]byte(defaultRoutingRulesJSON), &historicalRules); err != nil {
+				t.Fatal(err)
+			}
+			filteredRules := historicalRules[:0]
+			for _, rule := range historicalRules {
+				if rule == "RULE-SET,Lan,DIRECT" || rule == "RULE-SET,ChinaDomain,DIRECT" {
+					continue
+				}
+				if rule == "GEOIP,CN,DIRECT" {
+					rule = "GEOIP,CN,DIRECT,no-resolve"
+				}
+				filteredRules = append(filteredRules, rule)
+			}
+			historicalRulesJSON, err := json.Marshal(filteredRules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE subscription_routing_presets SET rule_providers_yaml = ?, rules_json = ? WHERE is_default = 1`, legacy, string(historicalRulesJSON)); err != nil {
 				t.Fatal(err)
 			}
 			// A custom preset even containing old built-in URLs must remain byte-for-byte intact.
@@ -61,7 +90,7 @@ func TestSharedTextProvidersMigrationPreservesRoutingAndReferences(t *testing.T)
 			personal := snapshotUserMigrationTable(t, db, "personal_subscription_groups")
 			var id int64
 			var unchanged string
-			const unchangedQuery = `SELECT json_array(id,name,enabled,is_default,groups_json,rules_json,created_at,updated_at) FROM subscription_routing_presets WHERE is_default = 1`
+			const unchangedQuery = `SELECT json_array(id,name,enabled,is_default,groups_json,created_at,updated_at) FROM subscription_routing_presets WHERE is_default = 1`
 			if err := db.QueryRow(unchangedQuery).Scan(&unchanged); err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +186,7 @@ func TestFreshDatabaseUsesSharedTextProviders(t *testing.T) {
 		providers[provider.Name] = provider
 	}
 	names := []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"}
-	if len(providers) != len(names) {
+	if len(providers) != len(names)+2 {
 		t.Fatal("unexpected providers")
 	}
 	for _, name := range names {
@@ -166,5 +195,13 @@ func TestFreshDatabaseUsesSharedTextProviders(t *testing.T) {
 			provider.URL != "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/"+name+"/"+name+".list" {
 			t.Errorf("wrong fresh default %s: %+v", name, provider)
 		}
+	}
+	lan := providers["Lan"]
+	if lan.Type != "http" || lan.Behavior != "classical" || lan.Format != "text" || lan.URL != "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Lan/Lan.list" {
+		t.Fatalf("wrong Lan provider: %+v", lan)
+	}
+	china := providers["ChinaDomain"]
+	if china.Type != "http" || china.Behavior != "domain" || china.Format != "text" || china.URL != "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list" {
+		t.Fatalf("wrong ChinaDomain provider: %+v", china)
 	}
 }

@@ -43,7 +43,10 @@ import {
 import {
   agentCapabilities,
   agentSupportsCapability,
-  serverHasUsableIPv6,
+  serverHasAutoPublicIPv6,
+  serverIPv6State,
+  serverIPv6StatusMessage,
+  serverSupportsIPv6Listener,
 } from '../server'
 import type { ServerRecord } from '../types/server'
 
@@ -176,7 +179,10 @@ const selectedServerPublicIPv4 = computed(() =>
 const selectedServer = computed(() => props.servers.find((server) => server.id === serverID.value) ?? null)
 const selectedServerPublicIPv6 = computed(() => selectedServer.value?.system_info?.public_ipv6 ?? '')
 const selectedServerPublicAddress = computed(() => listenFamily.value === 'ipv6' ? selectedServerPublicIPv6.value : selectedServerPublicIPv4.value)
-const selectedServerHasUsableIPv6 = computed(() => serverHasUsableIPv6(selectedServer.value))
+const selectedServerSupportsIPv6Listener = computed(() => serverSupportsIPv6Listener(selectedServer.value))
+const selectedServerHasAutoPublicIPv6 = computed(() => serverHasAutoPublicIPv6(selectedServer.value))
+const selectedServerIPv6State = computed(() => serverIPv6State(selectedServer.value))
+const selectedServerIPv6Status = computed(() => serverIPv6StatusMessage(selectedServer.value))
 const selectedServerBoundDomain = computed(() => listenFamily.value === 'ipv6'
   ? selectedServer.value?.bound_domain_ipv6 ?? ''
   : selectedServer.value?.bound_domain_ipv4 ?? '')
@@ -339,24 +345,36 @@ function syncCreateListenPortToTarget() {
 
 function syncCreateEntryHostToServer() {
   if (formMode.value !== 'create') return
-  entryHostMode.value = selectedServerBoundDomain.value ? 'bound' : 'auto'
+  entryHostMode.value = selectedServerBoundDomain.value
+    ? 'bound'
+    : listenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value
+      ? 'manual'
+      : 'auto'
   entryHost.value = ''
 }
 
 function onSourceServerChange() {
-	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	if (listenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
 	  listenFamily.value = 'ipv4'
-	  error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	  error.value = '当前服务器未检测到 IPv6 地址，已切换为 IPv4'
 	}
   syncCreateEntryHostToServer()
 }
 
 function onListenFamilyChange() {
-	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	if (listenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
 	  listenFamily.value = 'ipv4'
-	  error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	  error.value = '当前服务器未检测到 IPv6 地址，已切换为 IPv4'
 	}
-	if (entryHostMode.value === 'bound' && !selectedServerBoundDomain.value) entryHostMode.value = 'auto'
+	if (formMode.value === 'create') {
+	  syncCreateEntryHostToServer()
+	  return
+	}
+	if (entryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
+	  entryHostMode.value = listenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value ? 'manual' : 'auto'
+	} else if (entryHostMode.value === 'auto' && listenFamily.value === 'ipv6' && !selectedServerHasAutoPublicIPv6.value) {
+	  entryHostMode.value = 'manual'
+	}
 }
 
 function relayListenFamily(address: string): RelayListenFamily {
@@ -433,8 +451,12 @@ async function saveRelay() {
     error.value = '当前源服务器未设置绑定域名'
     return
   }
-	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
-	  error.value = '当前服务器未检测到可用公网 IPv6'
+	if (listenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
+	  error.value = '当前服务器未检测到 IPv6 地址'
+	  return
+	}
+	if (listenFamily.value === 'ipv6' && entryHostMode.value === 'auto' && !selectedServerHasAutoPublicIPv6.value) {
+	  error.value = '无法自动检测公网 IPv6，请使用绑定域名或手动填写'
 	  return
 	}
 	if (entryHostMode.value === 'manual' && !manualEntryHostMatchesFamily(entryHost.value, listenFamily.value)) {
@@ -703,19 +725,20 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <label>
           <span>监听地址族</span>
 		  <select v-model="listenFamily" class="settings-input" @change="onListenFamilyChange">
-			<option value="ipv4">IPv4</option><option value="ipv6" :disabled="!selectedServerHasUsableIPv6">IPv6</option>
+			<option value="ipv4">IPv4</option><option value="ipv6" :disabled="!selectedServerSupportsIPv6Listener">IPv6</option>
           </select>
         </label>
-		<n-alert v-if="!selectedServerHasUsableIPv6" type="info">当前服务器未检测到可用公网 IPv6</n-alert>
+		<n-alert v-if="listenFamily === 'ipv6'" :type="selectedServerIPv6State === 'none' ? 'warning' : 'info'">{{ selectedServerIPv6Status }}</n-alert>
         <p>实际监听地址：{{ selectedListenAddress() }}</p>
         <label><span>监听端口</span><input v-model.number="listenPort" class="settings-input" type="number" min="1" max="65535" /></label>
         <label>
           <span>客户端入口</span>
           <select v-model="entryHostMode" class="settings-input">
             <option v-if="selectedServerBoundDomain" value="bound">已绑定域名：{{ selectedServerBoundDomain }}</option>
-			<option value="auto">自动检测公网 {{ listenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}</option><option value="manual">手动填写</option>
+			<option value="auto" :disabled="listenFamily === 'ipv6' && !selectedServerHasAutoPublicIPv6">自动检测公网 {{ listenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}</option><option value="manual">手动填写</option>
           </select>
         </label>
+		<n-alert v-if="listenFamily === 'ipv6' && !selectedServerHasAutoPublicIPv6" type="warning">无法自动检测公网 IPv6，请使用绑定域名或手动填写。</n-alert>
         <label v-if="entryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="entryHost" placeholder="例如：1.2.3.4、2001:db8::1 或 relay.example.com" /></label>
         <p v-else-if="entryHostMode === 'bound'">使用源服务器绑定域名：{{ selectedServerBoundDomain }}</p>
 		<p v-else>自动使用源服务器公网 {{ listenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}。当前地址：{{ selectedServerPublicAddress || '未检测到' }}</p>

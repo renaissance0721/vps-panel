@@ -95,6 +95,7 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 		}
 	}
 	wantRules := []string{
+		"RULE-SET,Lan,DIRECT",
 		"RULE-SET,OpenAI,🤖 AI",
 		"RULE-SET,Claude,🤖 AI",
 		"RULE-SET,Gemini,🤖 AI",
@@ -105,7 +106,8 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 		"RULE-SET,Apple,🍎 Apple",
 		"RULE-SET,Copilot,Ⓜ️ Microsoft",
 		"RULE-SET,Microsoft,Ⓜ️ Microsoft",
-		"GEOIP,CN,DIRECT,no-resolve",
+		"RULE-SET,ChinaDomain,DIRECT",
+		"GEOIP,CN,DIRECT",
 		"MATCH,🚀 默认代理",
 	}
 	if !slices.Equal(parsed.Rules, wantRules) || strings.Contains(string(body), "{{all}}") {
@@ -145,14 +147,15 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 			} `yaml:"sniff"`
 		} `yaml:"sniffer"`
 		DNS struct {
-			Enable                bool     `yaml:"enable"`
-			IPv6                  bool     `yaml:"ipv6"`
-			EnhancedMode          string   `yaml:"enhanced-mode"`
-			FakeIPRange           string   `yaml:"fake-ip-range"`
-			FakeIPFilter          []string `yaml:"fake-ip-filter"`
-			DefaultNameserver     []string `yaml:"default-nameserver"`
-			Nameserver            []string `yaml:"nameserver"`
-			ProxyServerNameserver []string `yaml:"proxy-server-nameserver"`
+			Enable                bool                `yaml:"enable"`
+			IPv6                  bool                `yaml:"ipv6"`
+			EnhancedMode          string              `yaml:"enhanced-mode"`
+			FakeIPRange           string              `yaml:"fake-ip-range"`
+			FakeIPFilter          []string            `yaml:"fake-ip-filter"`
+			DefaultNameserver     []string            `yaml:"default-nameserver"`
+			Nameserver            []string            `yaml:"nameserver"`
+			NameserverPolicy      map[string][]string `yaml:"nameserver-policy"`
+			ProxyServerNameserver []string            `yaml:"proxy-server-nameserver"`
 		} `yaml:"dns"`
 	}
 	if err := yaml.Unmarshal(body, &settings); err != nil {
@@ -168,7 +171,8 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 		!slices.Equal(settings.DNS.FakeIPFilter, []string{"*.lan", "*.local", "geosite:cn", "geosite:private"}) ||
 		!slices.Equal(settings.DNS.DefaultNameserver, []string{"223.5.5.5", "119.29.29.29"}) ||
 		!slices.Equal(settings.DNS.Nameserver, []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}) ||
-		!slices.Equal(settings.DNS.ProxyServerNameserver, []string{"https://223.5.5.5/dns-query"}) {
+		!slices.Equal(settings.DNS.NameserverPolicy["geosite:cn"], []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}) ||
+		!slices.Equal(settings.DNS.ProxyServerNameserver, []string{"https://223.5.5.5/dns-query", "https://doh.pub/dns-query"}) {
 		t.Fatalf("built-in Mihomo settings = %+v", settings)
 	}
 }
@@ -225,10 +229,10 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 		parsed.ProxyGroups[0].Name != "🚀 默认代理" ||
 		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"DIRECT", "Custom"}) ||
 		!slices.Equal(parsed.Rules, []string{
-			"RULE-SET,OpenAI,🤖 AI", "RULE-SET,Claude,🤖 AI", "RULE-SET,Gemini,🤖 AI",
+			"RULE-SET,Lan,DIRECT", "RULE-SET,OpenAI,🤖 AI", "RULE-SET,Claude,🤖 AI", "RULE-SET,Gemini,🤖 AI",
 			"RULE-SET,YouTube,▶️ YouTube", "RULE-SET,Netflix,🎬 Netflix", "RULE-SET,Telegram,✈️ Telegram",
 			"RULE-SET,TikTok,🎵 TikTok", "RULE-SET,Apple,🍎 Apple", "RULE-SET,Copilot,Ⓜ️ Microsoft",
-			"RULE-SET,Microsoft,Ⓜ️ Microsoft", "GEOIP,CN,DIRECT,no-resolve", "MATCH,🚀 默认代理",
+			"RULE-SET,Microsoft,Ⓜ️ Microsoft", "RULE-SET,ChinaDomain,DIRECT", "GEOIP,CN,DIRECT", "MATCH,🚀 默认代理",
 		}) {
 		t.Fatalf("custom Mihomo template behavior changed:\n%s", body)
 	}
@@ -327,5 +331,13 @@ func TestBuiltinMihomoProviders(t *testing.T) {
 			provider.Interval != 86400 || provider.URL != "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/"+name+"/"+name+".list" {
 			t.Fatalf("provider %q = %+v", name, provider)
 		}
+	}
+	if provider := value.Providers["Lan"]; provider.Type != "http" || provider.Behavior != "classical" || provider.Format != "text" ||
+		provider.URL != "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Lan/Lan.list" {
+		t.Fatalf("Lan provider = %+v", provider)
+	}
+	if provider := value.Providers["ChinaDomain"]; provider.Type != "http" || provider.Behavior != "domain" || provider.Format != "text" ||
+		provider.URL != "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list" {
+		t.Fatalf("ChinaDomain provider = %+v", provider)
 	}
 }

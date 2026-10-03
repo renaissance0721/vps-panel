@@ -487,7 +487,7 @@ func writeRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrInvalidEntryHost):
 		writeError(w, http.StatusBadRequest, "手动入口地址必须是有效 IPv4、IPv6 或域名，且不能包含协议、路径或端口")
 	case errors.Is(err, relaystore.ErrIPv6Unavailable):
-		writeError(w, http.StatusConflict, "当前源服务器未检测到可用公网 IPv6")
+		writeError(w, http.StatusConflict, "当前源服务器未检测到 IPv6 地址")
 	case errors.Is(err, relaystore.ErrEntryUnavailable):
 		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报对应公网地址")
 	case errors.Is(err, relaystore.ErrInvalidTarget):

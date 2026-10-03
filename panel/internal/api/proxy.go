@@ -314,7 +314,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrInvalidListenFamily):
 		writeError(w, http.StatusBadRequest, "监听 IP 类型仅支持 IPv4 或 IPv6")
 	case errors.Is(err, proxystore.ErrIPv6Unavailable):
-		writeError(w, http.StatusConflict, "当前服务器未检测到可用公网 IPv6")
+		writeError(w, http.StatusConflict, "当前服务器未检测到 IPv6 地址")
 	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
 		writeError(w, http.StatusConflict, "代理节点入口地址不可用，请填写手动入口地址或等待服务器上报公网地址")
 	case errors.Is(err, proxystore.ErrInvalidServerName):

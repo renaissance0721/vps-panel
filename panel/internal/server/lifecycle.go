@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
@@ -71,7 +72,9 @@ func (s *Service) UpdateBoundDomains(ctx context.Context, id int64, boundDomainI
 			if err != nil {
 				return Server{}, err
 			}
-			if normalized != current.BoundDomainIPv6 && current.SystemInfo != nil && current.SystemInfo.PublicIPv6 == "" {
+			if normalized != current.BoundDomainIPv6 && current.SystemInfo != nil &&
+				!netutil.HasIPv6Stack(current.SystemInfo.IPv6) &&
+				netutil.EffectivePublicIPv6(current.SystemInfo.PublicIPv6, current.SystemInfo.IPv6) == "" {
 				return Server{}, ErrIPv6Unavailable
 			}
 		}

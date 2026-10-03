@@ -111,14 +111,15 @@ func TestCollectIPAddressesFiltersClassifiesAndDeduplicates(t *testing.T) {
 		&net.IPNet{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
 		&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
 		&net.IPNet{IP: net.ParseIP("ff02::1"), Mask: net.CIDRMask(16, 128)},
+		&net.IPNet{IP: net.ParseIP("fd00:33bc:9d0b::10"), Mask: net.CIDRMask(128, 128)},
 		&net.IPNet{IP: net.ParseIP("2001:db8::10"), Mask: net.CIDRMask(64, 128)},
 	}
 	ipv4, ipv6 := collectIPAddresses(addresses)
 	if len(ipv4) != 2 || ipv4[0] != "192.168.1.20" || ipv4[1] != "203.0.113.10" {
 		t.Fatalf("IPv4 addresses = %v, want sorted private and public addresses", ipv4)
 	}
-	if len(ipv6) != 1 || ipv6[0] != "2001:db8::10" {
-		t.Fatalf("IPv6 addresses = %v, want [2001:db8::10]", ipv6)
+	if len(ipv6) != 2 || ipv6[0] != "2001:db8::10" || ipv6[1] != "fd00:33bc:9d0b::10" {
+		t.Fatalf("IPv6 addresses = %v, want public and ULA addresses", ipv6)
 	}
 }
 

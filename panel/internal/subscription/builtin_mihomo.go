@@ -59,8 +59,13 @@ dns:
   nameserver:
     - https://1.1.1.1/dns-query
     - https://8.8.8.8/dns-query
+  nameserver-policy:
+    "geosite:cn":
+      - https://dns.alidns.com/dns-query
+      - https://doh.pub/dns-query
   proxy-server-nameserver:
     - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
 `
 
 func BuildMihomoConfiguration(template *SubscriptionTemplate) (MihomoConfiguration, error) {

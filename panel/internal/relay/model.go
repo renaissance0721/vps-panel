@@ -31,7 +31,7 @@ var (
 	ErrInvalidEntryHostMode           = errors.New("entry host mode must be auto or manual")
 	ErrInvalidEntryHost               = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
 	ErrEntryUnavailable               = errors.New("relay entry address is unavailable")
-	ErrIPv6Unavailable                = errors.New("server public IPv6 address unavailable")
+	ErrIPv6Unavailable                = errors.New("server IPv6 listener unavailable")
 	ErrInvalidTarget                  = errors.New("relay target is invalid")
 	ErrInvalidTargetClient            = errors.New("relay target client must belong to target proxy")
 	ErrInvalidNetwork                 = errors.New("relay network must be tcp, udp, or tcp,udp")

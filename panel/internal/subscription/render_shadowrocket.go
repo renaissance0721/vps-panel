@@ -268,16 +268,21 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 	case "IP-CIDR", "IP-CIDR6", "GEOIP":
 		supportsNoResolve = true
 	case "RULE-SET":
-		supportsNoResolve = true
 		provider, exists := providers[parts[1]]
 		if !exists {
 			return "", fmt.Errorf("未找到规则源 %q: %w", shadowrocketErrorContext(parts[1]), ErrUnsupportedShadowrocketRule)
+		}
+		ruleType, err := shadowrocketProviderRuleType(provider)
+		if err != nil {
+			return "", fmt.Errorf("规则源 %q：%w", shadowrocketErrorContext(parts[1]), err)
 		}
 		address, err := shadowrocketProviderURL(provider)
 		if err != nil {
 			return "", fmt.Errorf("规则源 %q：%w", shadowrocketErrorContext(parts[1]), err)
 		}
+		parts[0] = ruleType
 		parts[1] = address
+		supportsNoResolve = ruleType == "RULE-SET"
 	default:
 		// GEOSITE, logical expressions and other Mihomo-only rules are not
 		// equivalent. Failing keeps their intended routing from being lost.
@@ -292,15 +297,8 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 }
 
 func shadowrocketProviderURL(provider RoutingRuleProvider) (string, error) {
-	for _, attribute := range []struct{ name, value, required string }{
-		{"type", provider.Type, "http"},
-		{"behavior", provider.Behavior, "classical"},
-		{"format", provider.Format, "text"},
-	} {
-		if attribute.value != attribute.required {
-			return "", fmt.Errorf("使用 %s=%q，Shadowrocket 仅支持 http / classical / text Rule Provider: %w",
-				attribute.name, shadowrocketErrorContext(attribute.value), ErrUnsupportedShadowrocketRule)
-		}
+	if _, err := shadowrocketProviderRuleType(provider); err != nil {
+		return "", err
 	}
 	parsed, err := url.Parse(provider.URL)
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || !safeShadowrocketValue(provider.URL) {
@@ -309,6 +307,22 @@ func shadowrocketProviderURL(provider RoutingRuleProvider) (string, error) {
 	// Compatibility is declared by the provider metadata, not its name, host
 	// or URL suffix. The client downloads the text; Panel never rewrites it.
 	return provider.URL, nil
+}
+
+func shadowrocketProviderRuleType(provider RoutingRuleProvider) (string, error) {
+	if provider.Type != "http" || provider.Format != "text" {
+		return "", fmt.Errorf("使用 type=%q / format=%q，Shadowrocket 仅支持 http + classical/text 或 domain/text Rule Provider: %w",
+			shadowrocketErrorContext(provider.Type), shadowrocketErrorContext(provider.Format), ErrUnsupportedShadowrocketRule)
+	}
+	switch provider.Behavior {
+	case "classical":
+		return "RULE-SET", nil
+	case "domain":
+		return "DOMAIN-SET", nil
+	default:
+		return "", fmt.Errorf("使用 behavior=%q，Shadowrocket 仅支持 classical 或 domain Rule Provider: %w",
+			shadowrocketErrorContext(provider.Behavior), ErrUnsupportedShadowrocketRule)
+	}
 }
 
 func shadowrocketErrorContext(value string) string {

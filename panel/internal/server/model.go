@@ -27,7 +27,7 @@ const (
 var (
 	ErrInvalidName               = errors.New("server name must be 1-100 characters")
 	ErrInvalidBoundDomain        = errors.New("invalid server bound domain")
-	ErrIPv6Unavailable           = errors.New("server public IPv6 address unavailable")
+	ErrIPv6Unavailable           = errors.New("server IPv6 listener unavailable")
 	ErrNotFound                  = errors.New("server not found")
 	ErrInvalidSystemInfo         = errors.New("invalid system information")
 	ErrInvalidMetrics            = errors.New("invalid server metrics")

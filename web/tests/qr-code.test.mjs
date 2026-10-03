@@ -189,7 +189,7 @@ test('Relay 创建和编辑正确映射 IPv4、IPv6 并保留历史自定义监�
     name: 'Source',
     bound_domain_ipv4: '',
     bound_domain_ipv6: '',
-    system_info: { public_ipv4: '198.51.100.10', public_ipv6: '2001:db8::10' },
+    system_info: { ipv6: ['2001:db8::10'], public_ipv4: '198.51.100.10', public_ipv6: '2001:db8::10' },
     agent_implementation: '',
     agent_api_version: 0,
     agent_capabilities: [],
@@ -240,6 +240,66 @@ test('Relay 创建和编辑正确映射 IPv4、IPv6 并保留历史自定义监�
   bindings.listenFamily.value = 'ipv4'
   await bindings.saveRelay()
   assert.equal(mutations[3].body.listen_address, '0.0.0.0')
+})
+
+test('Relay 在 ULA IPv6 上保留 IPv6 listener 并只禁用自动入口', async t => {
+  const mutations = []
+  t.mock.method(globalThis, 'fetch', async (url, init = {}) => {
+    if (init.method === 'POST') {
+      const body = JSON.parse(init.body)
+      mutations.push(body)
+      return new Response(JSON.stringify({ relay: relay({ id: 30, ...body }) }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (url === '/api/relays') {
+      return new Response(JSON.stringify({ relays: [] }), { headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected request: ${url}`)
+  })
+
+  const { bindings } = await renderWithBindings(RelaysView, { servers: [{
+    id: 1,
+    name: 'Azure',
+    bound_domain_ipv4: '',
+    bound_domain_ipv6: 'azure-v6.example.com',
+    system_info: { ipv6: ['fd00:33bc:9d0b::10'], public_ipv4: '198.51.100.10', public_ipv6: '' },
+    agent_implementation: '',
+    agent_api_version: 0,
+    agent_capabilities: [],
+  }] }, model => {
+    model.loading.value = false
+    model.formOpen.value = true
+    model.enabled.value = false
+    model.serverID.value = 1
+    model.name.value = 'Azure Relay'
+    model.targetType.value = 'manual'
+    model.targetHost.value = 'target.example.com'
+  })
+
+  bindings.listenFamily.value = 'ipv6'
+  bindings.onListenFamilyChange()
+  assert.equal(bindings.listenFamily.value, 'ipv6')
+  assert.equal(bindings.selectedServerSupportsIPv6Listener.value, true)
+  assert.equal(bindings.selectedServerHasAutoPublicIPv6.value, false)
+  assert.equal(bindings.entryHostMode.value, 'bound')
+  await bindings.saveRelay()
+  assert.equal(mutations[0].listen_address, '::')
+  assert.equal(mutations[0].entry_host_mode, 'manual')
+  assert.equal(mutations[0].entry_host, 'azure-v6.example.com')
+
+  bindings.entryHostMode.value = 'auto'
+  await bindings.saveRelay()
+  assert.equal(mutations.length, 1)
+  assert.match(bindings.error.value, /无法自动检测公网 IPv6/)
+
+  bindings.entryHostMode.value = 'manual'
+  bindings.entryHost.value = 'manual-v6.example.com'
+  await bindings.saveRelay()
+  assert.equal(mutations.length, 2)
+  assert.equal(mutations[1].listen_address, '::')
+  assert.equal(mutations[1].entry_host, 'manual-v6.example.com')
 })
 
 test('外部节点按需加载原始 URI，可复制并按协议生成二维码参数', async t => {

@@ -66,7 +66,7 @@ const {
 		  <label>
 			<span>IPv6 已绑定域名（可选）</span>
 			<n-input v-model:value="createServerBoundDomainIPv6" maxlength="254" placeholder="例如：v6.jp.example.com" :disabled="submitting" />
-			<small class="form-help">服务器尚未上报网络信息，可先保存；注册 Agent 后会检测公网 IPv6。</small>
+			<small class="form-help">尚未收到 Agent 网络信息，暂时无法确认 IPv6 状态；可提前保存绑定域名。</small>
           </label>
         </fieldset>
 

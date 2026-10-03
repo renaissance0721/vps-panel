@@ -13,6 +13,7 @@ const props = defineProps<{
     | 'closeCreateServerModal'
     | 'resetCreateServerForm'
     | 'createServerName'
+    | 'createServerBoundDomain'
     | 'createServerVisibility'
     | 'createServerAccessUserIDs'
     | 'createServerExpiration'
@@ -32,7 +33,7 @@ const props = defineProps<{
 
 const {
   createServerModalOpen, createServerFormError, createServerRecord, closeCreateServerModal,
-  resetCreateServerForm, createServerName, createServerVisibility, createServerAccessUserIDs,
+  resetCreateServerForm, createServerName, createServerBoundDomain, createServerVisibility, createServerAccessUserIDs,
   createServerExpiration, createServerRenewalPeriod, createServerAutoRenew, createServerTrafficLimit,
   createServerTrafficUnit, createServerTrafficCountMode, createServerTrafficResetDay,
   createServerTrafficResetTime, submitting, ensureCreateCurrentUser, serverAccessUsers, state,
@@ -55,6 +56,11 @@ const {
           <label>
             <span>名称</span>
             <n-input v-model:value="createServerName" maxlength="100" placeholder="例如：日本服务器 01" :disabled="submitting" />
+          </label>
+          <label>
+            <span>已绑定域名（可选）</span>
+            <n-input v-model:value="createServerBoundDomain" maxlength="254" placeholder="例如：jp.example.com" :disabled="submitting" />
+            <small class="form-help">可选。设置后，新增代理节点或中转时可直接使用该域名作为入口地址。</small>
           </label>
         </fieldset>
 

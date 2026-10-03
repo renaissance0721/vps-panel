@@ -169,6 +169,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                       </small>
                     </td>
                     <td class="server-actions">
+                      <div class="server-action-buttons">
                       <n-button
                         size="small"
                         secondary
@@ -186,6 +187,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                       >
                         {{ value.decommission_status ? '删除中' : '删除' }}
                       </n-button>
+                      </div>
                     </td>
                   </tr>
                 </TransitionGroup>
@@ -222,6 +224,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>
                     <td>{{ formatTime(value.created_at) }}</td>
                     <td class="server-actions">
+                      <div class="server-action-buttons">
                       <n-button
                         size="small"
                         secondary
@@ -230,6 +233,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                       >
                         查看
                       </n-button>
+                      </div>
                     </td>
                   </tr>
                 </TransitionGroup>

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 20
+const LatestSchemaVersion = 21
 
 type migration struct {
 	version            int
@@ -43,6 +43,19 @@ var migrations = []migration{
 	{version: 18, name: "materialize_default_probe_assignments", up: materializeDefaultProbeAssignments},
 	{version: 19, name: "subscription_client_templates", up: migrateSubscriptionClientTemplates},
 	{version: 20, name: "shared_text_rule_providers", up: migrateSharedTextRuleProviders},
+	{version: 21, name: "server_bound_domain", up: addServerBoundDomain},
+}
+
+func addServerBoundDomain(ctx context.Context, tx *sql.Tx) error {
+	exists, err := migrationColumnExists(ctx, tx, "servers", "bound_domain")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN bound_domain TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func migrateSharedTextRuleProviders(ctx context.Context, tx *sql.Tx) error {

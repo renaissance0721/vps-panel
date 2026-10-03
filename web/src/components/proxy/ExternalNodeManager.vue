@@ -267,11 +267,13 @@ onUnmounted(() => {
             <td><n-tag :type="value.visibility === 'public' ? 'success' : 'default'" size="small">{{ landingVisibilityLabel(value.visibility) }}</n-tag></td>
             <td>{{ value.owned_by_me ? '我的节点' : '公开节点 · 仅所有者可编辑' }}</td>
             <td class="server-actions">
+              <div class="server-action-buttons">
               <n-button size="small" secondary @click="showExternalNode(value)">查看</n-button>
               <template v-if="value.owned_by_me">
                 <n-button size="small" secondary @click="openEdit(value)">编辑</n-button>
                 <n-button size="small" type="error" secondary @click="removeExternalNode(value)">删除</n-button>
               </template>
+              </div>
             </td>
           </tr>
         </TransitionGroup>

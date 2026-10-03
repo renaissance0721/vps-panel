@@ -93,7 +93,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	// Keep inheritance ordered with probe PATCH's read/replace of assignments.
 	s.probeMu.Lock()
 	created, err := s.servers.CreateWithSettings(r.Context(), serverstore.CreateServerInput{
-		Name: request.Name, Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
+		Name: request.Name, BoundDomain: request.BoundDomain, Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
 		ExpiresAt: expiresAt, RenewalPeriodMonths: renewalPeriod, AutoRenew: request.AutoRenew,
 		MonthlyTrafficLimitBytes: monthlyLimit, TrafficCountMode: traffic.CountMode,
 		TrafficResetDay: traffic.ResetDay, TrafficResetTime: traffic.ResetTime,
@@ -207,13 +207,14 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAutoRenew := request.AutoRenew != nil
 	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
 	hasName := request.Name != nil
+	hasBoundDomain := request.BoundDomain != nil
 	hasOwner := len(request.OwnerUserID) != 0
 	hasOutboundPreference := request.OutboundPreference != nil
 	hasBlockChinaInbound := request.BlockChinaInbound != nil
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
+	for _, present := range []bool{hasName, hasBoundDomain, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
@@ -229,6 +230,16 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		s.recordAudit(r, user, "server.update", "server", id, "更新服务器名称")
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
+		return
+	}
+	if hasBoundDomain {
+		updated, err := s.servers.UpdateBoundDomain(r.Context(), id, *request.BoundDomain)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器绑定域名")
 		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
@@ -488,6 +499,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeMonitorError(w, err)
 	case errors.Is(err, serverstore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
+	case errors.Is(err, serverstore.ErrInvalidBoundDomain):
+		writeError(w, http.StatusBadRequest, "服务器绑定域名格式无效")
 	case errors.Is(err, serverstore.ErrInvalidVisibility):
 		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
 	case errors.Is(err, serverstore.ErrInvalidServerAccess):

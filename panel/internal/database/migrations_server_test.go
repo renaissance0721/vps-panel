@@ -1,10 +1,45 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
 )
+
+func TestServerBoundDomainMigrationPreservesExistingRows(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(schemaMigrationsStatement); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version, name, applied_at) VALUES (20, 'shared_text_rule_providers', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO servers (id, name) VALUES (1, 'Existing')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigration(context.Background(), db, migrations[len(migrations)-1]); err != nil {
+		t.Fatal(err)
+	}
+	var name, boundDomain string
+	if err := db.QueryRow(`SELECT name, bound_domain FROM servers WHERE id = 1`).Scan(&name, &boundDomain); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Existing" || boundDomain != "" {
+		t.Fatalf("migrated server = %q/%q", name, boundDomain)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 21 {
+		t.Fatalf("migration version = %d, %v", version, err)
+	}
+}
 
 func TestOpenMigratesExistingServersToPublicVisibility(t *testing.T) {
 	dataDir := t.TempDir()

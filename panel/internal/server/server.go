@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
@@ -34,6 +36,10 @@ func (s *Service) CreateForUser(
 func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInput) (CreatedServer, error) {
 	var err error
 	input.Name, err = normalizeServerName(input.Name)
+	if err != nil {
+		return CreatedServer{}, err
+	}
+	input.BoundDomain, err = normalizeBoundDomain(input.BoundDomain)
 	if err != nil {
 		return CreatedServer{}, err
 	}
@@ -133,12 +139,12 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO servers
-		 (name, owner_user_id, created_by_user_id, created_by_role, status, visibility,
+		 (name, bound_domain, owner_user_id, created_by_user_id, created_by_role, status, visibility,
 		  expires_at, renewal_period_months, auto_renew, renewal_anchor_day,
 		  monthly_traffic_limit_bytes, traffic_count_mode, traffic_reset_day, traffic_reset_time,
 		  created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.Name, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.Name, input.BoundDomain, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
 		expiresAt, renewalPeriod, input.AutoRenew, renewalAnchorDay,
 		monthlyTrafficLimit, input.TrafficCountMode, input.TrafficResetDay, input.TrafficResetTime,
 		now.Unix(), now.Unix(),
@@ -183,6 +189,7 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 		Server: Server{
 			ID:                       serverID,
 			Name:                     input.Name,
+			BoundDomain:              input.BoundDomain,
 			OwnerUserID:              ownerUserID,
 			OwnerUsername:            ownerUsername,
 			CreatedByUserID:          ownerUserID,
@@ -216,6 +223,36 @@ func normalizeServerName(name string) (string, error) {
 	return name, nil
 }
 
+func normalizeBoundDomain(value string) (string, error) {
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return "", ErrInvalidBoundDomain
+		}
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "", nil
+	}
+	if strings.HasSuffix(value, ".") {
+		value = strings.TrimSuffix(value, ".")
+	}
+	if value == "" || len(value) > 253 || net.ParseIP(value) != nil {
+		return "", ErrInvalidBoundDomain
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", ErrInvalidBoundDomain
+		}
+		for i := 0; i < len(label); i++ {
+			character := label[i]
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return "", ErrInvalidBoundDomain
+			}
+		}
+	}
+	return value, nil
+}
+
 func (s *Service) List(ctx context.Context) ([]Server, error) {
 	return s.list(ctx, false, 0)
 }
@@ -247,7 +284,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		arguments = append(arguments, userID)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bound_domain, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -296,7 +333,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bound_domain, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -358,7 +395,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &ownerUserID, &ownerUsername,
+		&value.ID, &value.Name, &value.BoundDomain, &ownerUserID, &ownerUsername,
 		&createdByUserID, &createdByUsername, &value.CreatedByRole,
 		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
 		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,

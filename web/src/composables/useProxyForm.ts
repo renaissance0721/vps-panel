@@ -28,7 +28,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyName = ref('')
   const proxyServerID = ref<number | null>(null)
   const proxyPort = ref(443)
-  const proxyEntryHostMode = ref<'auto' | 'manual'>('auto')
+  const proxyEntryHostMode = ref<'bound' | 'auto' | 'manual'>('auto')
   const proxyEntryHost = ref('')
   const proxyEnabled = ref(true)
   const proxyProtocol = ref<ProxyProtocol>('vless')
@@ -46,6 +46,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
   )
   const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
+  const selectedServerBoundDomain = computed(() => selectedServer.value?.bound_domain ?? '')
   const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
   const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
   const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
@@ -66,10 +67,21 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   })
 
   function openCreateProxy() {
-    resetProxyForm()
     proxyFormMode.value = 'create'
+    resetProxyForm()
     proxyServerID.value = props.servers[0]?.id ?? null
+    syncCreateProxyEntryHost()
     proxyFormOpen.value = true
+  }
+
+  function syncCreateProxyEntryHost() {
+    if (proxyFormMode.value !== 'create') return
+    proxyEntryHostMode.value = selectedServerBoundDomain.value ? 'bound' : 'auto'
+    proxyEntryHost.value = ''
+  }
+
+  function onProxyServerChange() {
+    syncCreateProxyEntryHost()
   }
 
   function openEditProxy(value: ProxyRecord) {
@@ -78,7 +90,9 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyName.value = value.name
     proxyServerID.value = value.server_id
     proxyPort.value = value.listen_port
-    proxyEntryHostMode.value = value.entry_host_mode
+    proxyEntryHostMode.value = value.entry_host_mode === 'manual' && selectedServerBoundDomain.value && value.entry_host === selectedServerBoundDomain.value
+      ? 'bound'
+      : value.entry_host_mode
     proxyEntryHost.value = value.entry_host
     proxyEnabled.value = value.enabled
     proxyProtocol.value = value.protocol
@@ -128,16 +142,26 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       error.value = '请选择服务器'
       return
     }
+    if (proxyEntryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
+      error.value = '当前服务器未设置绑定域名'
+      return
+    }
     if (proxyEntryHostMode.value === 'manual' && !proxyEntryHost.value.trim()) {
       error.value = '请填写手动入口地址'
       return
     }
     await run(async () => {
+      const entryHostMode = proxyEntryHostMode.value === 'auto' ? 'auto' : 'manual'
+      const entryHost = proxyEntryHostMode.value === 'bound'
+        ? selectedServerBoundDomain.value
+        : proxyEntryHostMode.value === 'manual'
+          ? proxyEntryHost.value
+          : ''
       const common = {
         name: proxyName.value,
         listen_port: proxyPort.value,
-        entry_host_mode: proxyEntryHostMode.value,
-        entry_host: proxyEntryHost.value,
+        entry_host_mode: entryHostMode,
+        entry_host: entryHost,
         enabled: proxyEnabled.value,
       }
       const protocolConfig = proxyProtocol.value === 'vless'
@@ -201,6 +225,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     firstClientName,
     firstClientUDP443,
     selectedServerPublicIPv4,
+    selectedServerBoundDomain,
     proxyVLESSSupported,
     proxyVLESSRealitySupported,
     proxyTLSSupported,
@@ -209,6 +234,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyShadowsocksSupported,
     proxyCapabilityWarning,
     openCreateProxy,
+    onProxyServerChange,
     openEditProxy,
     resetProxyForm,
     saveProxy,

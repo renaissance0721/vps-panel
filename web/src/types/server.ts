@@ -3,6 +3,7 @@ export type RenewalPeriodMonths = 1 | 3 | 6 | 12 | 24 | 36
 export type ServerRecord = {
   id: number
   name: string
+  bound_domain: string
   owner_user_id: number | null
   owner_username: string
   created_by_user_id: number | null
@@ -83,6 +84,7 @@ export type CreatedServer = {
 
 export type CreateServerPayload = {
   name: string
+  bound_domain: string
   visibility: ServerRecord['visibility']
   user_ids: number[]
   expires_at: string | null

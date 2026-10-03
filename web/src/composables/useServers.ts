@@ -118,6 +118,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const diagnosticReport = ref<DiagnosticReport | null>(null)
   const diagnosticError = ref('')
   const createServerName = ref('')
+  const createServerBoundDomain = ref('')
   const createServerVisibility = ref<ServerRecord['visibility']>('public')
   const createServerAccessUserIDs = ref<number[]>([])
   const createServerExpiration = ref('')
@@ -140,6 +141,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const renewalPeriodInput = ref<RenewalPeriodMonths | 0>(0)
   const autoRenewInput = ref(false)
   const nameInput = ref('')
+  const boundDomainInput = ref('')
   const ownerUserID = ref(0)
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
@@ -308,6 +310,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     const renewalPeriod = expiration ? (createServerRenewalPeriod.value || null) : null
     const payload: CreateServerPayload = {
       name,
+      bound_domain: createServerBoundDomain.value,
       visibility: createServerVisibility.value,
       user_ids: createServerVisibility.value === 'private' ? withCurrentUser(createServerAccessUserIDs.value) : [],
       expires_at: expiration || null,
@@ -348,6 +351,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function resetCreateServerForm() {
     createServerFormError.value = ''
     createServerName.value = ''
+    createServerBoundDomain.value = ''
     createServerVisibility.value = 'public'
     createServerAccessUserIDs.value = []
     createServerExpiration.value = ''
@@ -672,6 +676,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     nameInput.value = ''
+    boundDomainInput.value = ''
     ownerUserID.value = 0
     accessVisibility.value = 'public'
     accessUserIDs.value = []
@@ -681,6 +686,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function openBasicInfoModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     nameInput.value = selectedServer.value.name
+    boundDomainInput.value = selectedServer.value.bound_domain ?? ''
     ownerUserID.value = selectedServer.value.owner_user_id ?? 0
     accessVisibility.value = selectedServer.value.visibility
     accessUserIDs.value = selectedServer.value.visibility === 'private'
@@ -699,6 +705,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    boundDomainInput.value = ''
     ownerUserID.value = 0
     accessVisibility.value = 'public'
     accessUserIDs.value = []
@@ -716,6 +723,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   async function saveBasicInfo() {
     if (!selectedServer.value || submitting.value) return
     const name = nameInput.value.trim()
+    const boundDomain = boundDomainInput.value.trim()
     if (!name || [...name].length > 100) {
       basicInfoFormError.value = '服务器名称不能为空且不能超过 100 个字符'
       return
@@ -741,6 +749,13 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
         const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ name }),
+        })
+        current = response.server
+      }
+      if (boundDomain !== (current.bound_domain ?? '')) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ bound_domain: boundDomain }),
         })
         current = response.server
       }
@@ -1011,6 +1026,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    boundDomainInput.value = ''
     ownerUserID.value = 0
     trafficAdjustmentModalOpen.value = false
     accessVisibility.value = 'public'
@@ -1052,6 +1068,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen,
     basicInfoFormError,
     nameInput,
+    boundDomainInput,
     ownerUserID,
     trafficAdjustmentModalOpen,
     diagnosticOpen,
@@ -1059,6 +1076,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport,
     diagnosticError,
     createServerName,
+    createServerBoundDomain,
     createServerVisibility,
     createServerAccessUserIDs,
     createServerExpiration,

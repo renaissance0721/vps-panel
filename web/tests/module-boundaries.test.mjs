@@ -34,7 +34,7 @@ after(async () => {
 
 function serverRecord(overrides = {}) {
   return {
-    id: 7, name: '测试服务器', status: 'pending', visibility: 'public', access_user_ids: [],
+    id: 7, name: '测试服务器', bound_domain: '', status: 'pending', visibility: 'public', access_user_ids: [],
     owner_user_id: 1, owner_username: 'admin',
     archived_at: null, expires_at: null, renewal_period_months: null, auto_renew: false,
     decommissioning_at: null, decommission_status: '', decommission_error: '',
@@ -165,6 +165,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   const { model, submitting } = serverModel()
   model.openCreateServerModal()
   model.createServerName.value = '测试服务器'
+  model.createServerBoundDomain.value = 'node.example.com'
   model.createServerVisibility.value = 'private'
   model.createServerAccessUserIDs.value = [2]
   model.createServerExpiration.value = '2027-04-03'
@@ -177,7 +178,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   model.createServerTrafficResetTime.value = '08:30'
   await model.createServerRecord()
   assert.deepEqual(JSON.parse(calls[0].init.body), {
-    name: '测试服务器', visibility: 'private', user_ids: [2, 1],
+    name: '测试服务器', bound_domain: 'node.example.com', visibility: 'private', user_ids: [2, 1],
     expires_at: '2027-04-03', renewal_period_months: 12, auto_renew: true,
     monthly_traffic_limit_bytes: 500 * 1024 ** 3, traffic_count_mode: 'bidirectional',
     traffic_reset_day: 31, traffic_reset_time: '08:30',
@@ -186,6 +187,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   assert.equal(model.serverModalOpen.value, true)
   assert.equal(model.createdServer.value.agent_installation_command, created.agent_installation_command)
   assert.equal(model.createServerName.value, '')
+  assert.equal(model.createServerBoundDomain.value, '')
   assert.equal(model.createServerTrafficLimit.value, '')
   assert.equal(submitting.value, false)
   model.closeServerDetails()
@@ -304,6 +306,29 @@ test('Server 统一基本信息表单初始化、保存续费设置并保持列�
   model.openBasicInfoModal()
   form = await render('components/server/ServerBasicInfoForm.vue', model)
   assert.match(form, /<button[^>]*disabled[^>]*role="switch"/)
+})
+
+test('Server 绑定域名在基本信息中独立 PATCH 并立即刷新详情', async t => {
+  const initial = serverRecord({ bound_domain: 'old.example.com' })
+  const updated = { ...initial, bound_domain: 'new.example.com' }
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (init?.method === 'PATCH') {
+      calls.push({ url, body: JSON.parse(init.body) })
+      return json({ server: updated })
+    }
+    return json({ servers: url.includes('?archived=true') ? [] : [updated] })
+  })
+  const { model } = serverModel()
+  model.servers.value = [initial]
+  model.viewServer(initial)
+  model.openBasicInfoModal()
+  assert.equal(model.boundDomainInput.value, 'old.example.com')
+  model.boundDomainInput.value = ' new.example.com '
+  await model.saveBasicInfo()
+  assert.deepEqual(calls, [{ url: '/api/servers/7', body: { bound_domain: 'new.example.com' } }])
+  assert.equal(model.selectedServer.value.bound_domain, 'new.example.com')
+  assert.equal(model.serverModalOpen.value, true)
 })
 
 test('Server 详情基本信息只读且归档状态不显示统一修改入口', async () => {
@@ -780,6 +805,44 @@ test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段'
   assert.equal(calls[1].url, '/api/proxies/4')
   assert.equal(calls[1].body.certificate, 'test-certificate')
   assert.equal(calls[1].body.private_key, 'test-key')
+})
+
+test('Proxy 入口选择将绑定域名映射为现有 manual 请求并按服务器刷新', async t => {
+  const calls = []
+  const servers = [
+    { id: 7, name: 'A', bound_domain: 'a.example.com', system_info: null },
+    { id: 8, name: 'B', bound_domain: '', system_info: null },
+  ]
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) })
+    return json({ proxy: { id: 4 } })
+  })
+  const form = useProxyForm({ servers }, ref(null), ref(''), action => action(), async () => {}, async () => {})
+  form.openCreateProxy()
+  assert.equal(form.proxyEntryHostMode.value, 'bound')
+  form.proxyName.value = 'Bound'
+  form.proxyServerName.value = 'sni.example.com'
+  await form.saveProxy()
+  assert.equal(calls[0].body.entry_host_mode, 'manual')
+  assert.equal(calls[0].body.entry_host, 'a.example.com')
+
+  form.openCreateProxy()
+  form.proxyEntryHostMode.value = 'manual'
+  form.proxyEntryHost.value = 'custom.example.com'
+  form.proxyServerID.value = 8
+  form.onProxyServerChange()
+  assert.equal(form.proxyEntryHostMode.value, 'auto')
+  assert.equal(form.proxyEntryHost.value, '')
+  form.proxyName.value = 'Auto'
+  form.proxyServerName.value = 'sni.example.com'
+  await form.saveProxy()
+  assert.equal(calls[1].body.entry_host_mode, 'auto')
+  assert.equal(calls[1].body.entry_host, '')
+
+  form.openEditProxy({ id: 4, name: 'Bound', server_id: 7, listen_port: 443, entry_host_mode: 'manual', entry_host: 'a.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
+  assert.equal(form.proxyEntryHostMode.value, 'bound')
+  form.openEditProxy({ id: 5, name: 'Custom', server_id: 7, listen_port: 443, entry_host_mode: 'manual', entry_host: 'custom.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
+  assert.equal(form.proxyEntryHostMode.value, 'manual')
 })
 
 test('Client 表单拆分保持数值额度、周期、到期和协议专属 UDP/443', async t => {

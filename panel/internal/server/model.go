@@ -26,6 +26,7 @@ const (
 
 var (
 	ErrInvalidName               = errors.New("server name must be 1-100 characters")
+	ErrInvalidBoundDomain        = errors.New("invalid server bound domain")
 	ErrNotFound                  = errors.New("server not found")
 	ErrInvalidSystemInfo         = errors.New("invalid system information")
 	ErrInvalidMetrics            = errors.New("invalid server metrics")
@@ -45,6 +46,7 @@ var (
 type Server struct {
 	ID                        int64
 	Name                      string
+	BoundDomain               string
 	OwnerUserID               *int64
 	OwnerUsername             string
 	CreatedByUserID           *int64
@@ -93,6 +95,7 @@ type CreatedServer struct {
 
 type CreateServerInput struct {
 	Name                     string
+	BoundDomain              string
 	Visibility               string
 	UserIDs                  []int64
 	CreatorID                int64

@@ -70,8 +70,8 @@ test('中转入口表单和派生客户端链接保持单一 canonical URI 流�
   assert.match(view, /value="manual">手动填写/)
   assert.match(view, /entryHostMode === 'manual'/)
   assert.match(view, /selectedServerPublicIPv4 \|\| '未检测到'/)
-  assert.match(view, /entry_host_mode: entryHostMode\.value/)
-  assert.match(view, /entry_host: entryHost\.value/)
+  assert.match(view, /entry_host_mode: savedEntryHostMode/)
+  assert.match(view, /entry_host: savedEntryHost/)
   assert.match(view, /\/api\/relays\/\$\{value\.id\}\/clients/)
   assert.match(view, /copyRelayClientURI\(client\)/)
   assert.match(view, /navigator\.clipboard\.writeText\(value\.uri\)/)
@@ -80,6 +80,21 @@ test('中转入口表单和派生客户端链接保持单一 canonical URI 流�
   assert.match(view, /当前中转 Network 与该 Proxy 不兼容|client\.network_notice/)
   assert.match(view, /:disabled="!client\.network_compatible"/)
   assert.match(view, /clientStatusLabel\(value\.client\.status\)/)
+})
+
+test('中转新增时入口域名和监听端口随来源及目标刷新，编辑时保留已有端口', async () => {
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
+  assert.match(view, /selectedServerBoundDomain/)
+  assert.match(view, /value="bound">已绑定域名：\{\{ selectedServerBoundDomain \}\}/)
+  assert.match(view, /entryHostMode\.value = selectedServerBoundDomain\.value \? 'bound' : 'auto'/)
+  assert.match(view, /const savedEntryHostMode = entryHostMode\.value === 'auto' \? 'auto' : 'manual'/)
+  assert.match(view, /const savedEntryHost = entryHostMode\.value === 'bound'[\s\S]*\? entryHost\.value[\s\S]*: ''/)
+  assert.match(view, /function syncCreateListenPortToTarget\(\) \{\s*if \(formMode\.value !== 'create'\) return/s)
+  assert.match(view, /targetType\.value === 'proxy'[\s\S]*?listen_port[\s\S]*?targetType\.value === 'landing'[\s\S]*?\.port[\s\S]*?: targetPort\.value/)
+  assert.match(view, /function onTargetProxyChange\(\) \{\s*syncCreateListenPortToTarget\(\)/s)
+  assert.match(view, /function onTargetLandingChange\(\)[\s\S]*?syncCreateListenPortToTarget\(\)/)
+  assert.match(view, /v-model\.number="targetPort"[^>]*@input="syncCreateListenPortToTarget"/)
+  assert.doesNotMatch(view, /watch\(\s*listenPort/)
 })
 
 test('订阅发布中转详情隐藏固定客户端区域且不加载分享', async () => {

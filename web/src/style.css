@@ -272,10 +272,20 @@ h1 {
 }
 
 .admin-nav,
-.server-actions {
+.server-action-buttons,
+div.server-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+td.server-actions {
+  display: table-cell;
+  vertical-align: middle;
+}
+
+.server-action-buttons {
+  align-items: center;
 }
 
 .server-status-tags {
@@ -480,10 +490,17 @@ h1 {
 
 .server-create-section {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   margin: 0;
   padding: 16px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
+}
+
+.server-create-section > label {
+  align-self: start;
+  align-content: start;
+  width: 100%;
 }
 
 .server-create-section > legend {
@@ -759,7 +776,7 @@ h1 {
   padding-left: 8px;
 }
 
-.client-table .server-actions {
+.client-table .server-action-buttons {
   gap: 6px;
 }
 

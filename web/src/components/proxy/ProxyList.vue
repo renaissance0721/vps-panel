@@ -128,10 +128,12 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
             </td>
             <td class="server-actions">
+              <div class="server-action-buttons">
               <n-button size="small" secondary @click="showProxy(value.id)">查看</n-button>
               <n-button size="small" secondary @click="openEditProxy(value)">编辑</n-button>
               <n-button size="small" secondary @click="toggleProxy(value)">{{ value.enabled ? '禁用' : '启用' }}</n-button>
               <n-button size="small" type="error" secondary @click="removeProxy(value)">删除</n-button>
+              </div>
             </td>
           </tr>
         </TransitionGroup>

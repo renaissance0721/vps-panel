@@ -46,7 +46,7 @@ import {
 import type { ServerRecord } from '../types/server'
 
 type ServerOption = Pick<ServerRecord,
-  'id' | 'name' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+  'id' | 'name' | 'bound_domain' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
 >
 
 type ProxyOption = {
@@ -152,7 +152,7 @@ const serverID = ref<number | null>(null)
 const listenFamily = ref<RelayListenFamily>('ipv4')
 const originalListenAddress = ref('0.0.0.0')
 const listenPort = ref(9502)
-const entryHostMode = ref<'auto' | 'manual'>('auto')
+const entryHostMode = ref<'bound' | 'auto' | 'manual'>('auto')
 const entryHost = ref('')
 const network = ref<RelayNetwork>('tcp')
 const targetType = ref<RelayTargetType>('proxy')
@@ -169,6 +169,9 @@ const enabled = ref(true)
 
 const selectedServerPublicIPv4 = computed(() =>
   props.servers.find((server) => server.id === serverID.value)?.system_info?.public_ipv4 ?? '',
+)
+const selectedServerBoundDomain = computed(() =>
+  props.servers.find((server) => server.id === serverID.value)?.bound_domain ?? '',
 )
 function serverSupportsRealm(id: number | null) {
   const server = props.servers.find((value) => value.id === id)
@@ -295,6 +298,7 @@ async function loadTargetClients(proxyID: number | null, selectedID: number | nu
 }
 
 function onTargetProxyChange() {
+  syncCreateListenPortToTarget()
   void loadTargetClients(targetProxyID.value)
 }
 
@@ -306,12 +310,34 @@ function onTargetTypeChange() {
     targetLandingID.value = landings.value[0]?.id ?? null
   }
   if (targetType.value === 'landing') onTargetLandingChange()
+  else syncCreateListenPortToTarget()
   void loadTargetClients(targetType.value === 'proxy' ? targetProxyID.value : null)
 }
 
 function onTargetLandingChange() {
   const selected = landings.value.find((value) => value.id === targetLandingID.value)
   if (selected) network.value = selected.protocol === 'vless' ? 'tcp' : 'tcp,udp'
+  syncCreateListenPortToTarget()
+}
+
+function syncCreateListenPortToTarget() {
+  if (formMode.value !== 'create') return
+  const port = targetType.value === 'proxy'
+    ? proxies.value.find((value) => value.id === targetProxyID.value)?.listen_port
+    : targetType.value === 'landing'
+      ? landings.value.find((value) => value.id === targetLandingID.value)?.port
+      : targetPort.value
+  if (port !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535) listenPort.value = port
+}
+
+function syncCreateEntryHostToServer() {
+  if (formMode.value !== 'create') return
+  entryHostMode.value = selectedServerBoundDomain.value ? 'bound' : 'auto'
+  entryHost.value = ''
+}
+
+function onSourceServerChange() {
+  syncCreateEntryHostToServer()
 }
 
 function relayListenFamily(address: string): RelayListenFamily {
@@ -342,14 +368,16 @@ function resetForm() {
   targetHost.value = ''
   targetPort.value = 443
   enabled.value = true
+  syncCreateEntryHostToServer()
+  syncCreateListenPortToTarget()
 }
 
 function openCreate() {
+  formMode.value = 'create'
   resetForm()
   if (targetType.value === 'landing') onTargetLandingChange()
   void loadTargetClients(targetType.value === 'proxy' ? targetProxyID.value : null)
   error.value = ''
-  formMode.value = 'create'
   formOpen.value = true
 }
 
@@ -362,7 +390,9 @@ function openEdit(value: RelayRecord) {
   listenFamily.value = relayListenFamily(value.listen_address)
   originalListenAddress.value = value.listen_address
   listenPort.value = value.listen_port
-  entryHostMode.value = value.entry_host_mode
+  entryHostMode.value = value.entry_host_mode === 'manual' && selectedServerBoundDomain.value && value.entry_host === selectedServerBoundDomain.value
+    ? 'bound'
+    : value.entry_host_mode
   entryHost.value = value.entry_host
   network.value = value.network
   targetType.value = value.target_type
@@ -380,14 +410,24 @@ async function saveRelay() {
     error.value = '当前 Agent 不支持 Realm 中转'
     return
   }
+  if (entryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
+    error.value = '当前源服务器未设置绑定域名'
+    return
+  }
   await run(async () => {
+    const savedEntryHostMode = entryHostMode.value === 'auto' ? 'auto' : 'manual'
+    const savedEntryHost = entryHostMode.value === 'bound'
+      ? selectedServerBoundDomain.value
+      : entryHostMode.value === 'manual'
+        ? entryHost.value
+        : ''
     const payload = {
       ...(formMode.value === 'create' ? { server_id: serverID.value } : {}),
       name: name.value,
       listen_address: selectedListenAddress(),
       listen_port: listenPort.value,
-      entry_host_mode: entryHostMode.value,
-      entry_host: entryHost.value,
+      entry_host_mode: savedEntryHostMode,
+      entry_host: savedEntryHost,
       network: network.value,
       target_type: targetType.value,
       ...(targetType.value === 'proxy'
@@ -609,10 +649,12 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
             </td>
             <td class="server-actions">
+              <div class="server-action-buttons">
               <n-button size="small" secondary @click="showRelay(value.id)">查看</n-button>
               <n-button v-if="!value.owner_username && !value.subscription_published" size="small" secondary @click="openEdit(value)">编辑</n-button>
               <n-button v-if="!value.subscription_published" size="small" secondary :disabled="!value.enabled && !serverSupportsRealm(value.server_id)" :title="!value.enabled && !serverSupportsRealm(value.server_id) ? '当前 Agent 不支持 Realm 中转' : undefined" @click="toggleRelay(value)">{{ value.enabled ? '禁用' : '启用' }}</n-button>
               <n-button v-if="!value.subscription_published" size="small" type="error" secondary @click="removeRelay(value)">删除</n-button>
+              </div>
             </td>
           </tr>
         </TransitionGroup>
@@ -627,7 +669,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <label><span>名称</span><n-input v-model:value="name" maxlength="100" /></label>
         <label>
           <span>源服务器</span>
-          <select v-model.number="serverID" class="settings-input" :disabled="formMode === 'edit'">
+          <select v-model.number="serverID" class="settings-input" :disabled="formMode === 'edit'" @change="onSourceServerChange">
             <option v-for="server in props.servers" :key="server.id" :value="server.id" :disabled="!serverSupportsRealm(server.id)">{{ server.name }}</option>
           </select>
         </label>
@@ -642,10 +684,12 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <label>
           <span>客户端入口</span>
           <select v-model="entryHostMode" class="settings-input">
+            <option v-if="selectedServerBoundDomain" value="bound">已绑定域名：{{ selectedServerBoundDomain }}</option>
             <option value="auto">自动检测公网 IPv4</option><option value="manual">手动填写</option>
           </select>
         </label>
         <label v-if="entryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="entryHost" placeholder="例如：1.2.3.4、2001:db8::1 或 relay.example.com" /></label>
+        <p v-else-if="entryHostMode === 'bound'">使用源服务器绑定域名：{{ selectedServerBoundDomain }}</p>
         <p v-else>自动使用源服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
         <label>
           <span>Network</span>
@@ -690,7 +734,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         </template>
         <template v-else>
           <label><span>目标 Host / IP</span><n-input v-model:value="targetHost" placeholder="例如：node.example.com 或 2001:db8::1" /></label>
-          <label><span>目标端口</span><input v-model.number="targetPort" class="settings-input" type="number" min="1" max="65535" /></label>
+          <label><span>目标端口</span><input v-model.number="targetPort" class="settings-input" type="number" min="1" max="65535" @input="syncCreateListenPortToTarget" /></label>
         </template>
         <n-alert v-if="relayCapabilityWarning" type="warning">{{ relayCapabilityWarning }}</n-alert>
         <div class="switch-row"><span>启用中转</span><n-switch v-model:value="enabled" /></div>

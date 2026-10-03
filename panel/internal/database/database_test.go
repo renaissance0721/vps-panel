@@ -66,9 +66,16 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	if expirationColumnCount != 1 {
 		t.Fatalf("servers expires_at column count = %d, want 1", expirationColumnCount)
 	}
+	var boundDomainDefault sql.NullString
+	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('servers') WHERE name = 'bound_domain'`).Scan(&boundDomainDefault); err != nil {
+		t.Fatalf("inspect servers bound_domain default: %v", err)
+	}
+	if !boundDomainDefault.Valid || boundDomainDefault.String != "''" {
+		t.Fatalf("servers bound_domain default = %q, want empty string", boundDomainDefault.String)
+	}
 	for table, columns := range map[string][]string{
 		"servers": {
-			"visibility", "desired_state_version", "renewal_period_months", "auto_renew", "renewal_anchor_day",
+			"bound_domain", "visibility", "desired_state_version", "renewal_period_months", "auto_renew", "renewal_anchor_day",
 			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
 			"decommissioning_at", "decommission_status", "decommission_error",
 		},

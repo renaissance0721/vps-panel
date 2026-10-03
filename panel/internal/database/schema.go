@@ -49,6 +49,7 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			bound_domain TEXT NOT NULL DEFAULT '',
 			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			created_by_role TEXT NOT NULL DEFAULT 'unknown'

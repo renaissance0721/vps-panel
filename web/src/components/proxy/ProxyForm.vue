@@ -31,6 +31,8 @@ const props = defineProps<{
     | 'proxyEntryHostMode'
     | 'proxyEntryHost'
     | 'selectedServerPublicIPv4'
+    | 'selectedServerBoundDomain'
+    | 'onProxyServerChange'
     | 'proxySecurity'
     | 'proxyServerName'
     | 'proxyEnabled'
@@ -56,6 +58,8 @@ const {
   proxyEntryHostMode,
   proxyEntryHost,
   selectedServerPublicIPv4,
+  selectedServerBoundDomain,
+  onProxyServerChange,
   proxySecurity,
   proxyServerName,
   proxyEnabled,
@@ -76,7 +80,7 @@ const {
         <label><span>名称</span><n-input v-model:value="proxyName" maxlength="100" /></label>
         <label>
           <span>服务器</span>
-          <select v-model.number="proxyServerID" class="settings-input" :disabled="proxyFormMode === 'edit'">
+          <select v-model.number="proxyServerID" class="settings-input" :disabled="proxyFormMode === 'edit'" @change="onProxyServerChange">
             <option v-for="server in servers" :key="server.id" :value="server.id">{{ server.name }}</option>
           </select>
         </label>
@@ -91,10 +95,12 @@ const {
         <label>
           <span>入口地址模式</span>
           <select v-model="proxyEntryHostMode" class="settings-input">
+            <option v-if="selectedServerBoundDomain" value="bound">已绑定域名：{{ selectedServerBoundDomain }}</option>
             <option value="auto">自动检测</option><option value="manual">手动输入</option>
           </select>
         </label>
         <label v-if="proxyEntryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="proxyEntryHost" placeholder="例如：1.2.3.4 或 jp.example.com" /></label>
+        <p v-else-if="proxyEntryHostMode === 'bound'">使用服务器绑定域名：{{ selectedServerBoundDomain }}</p>
         <p v-else>自动使用服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
 		<div v-if="proxyProtocol === 'vless'" class="fixed-fields"><span>传输：TCP</span><span>流控：XTLS Vision</span></div>
 		<template v-if="proxyProtocol === 'vless'">

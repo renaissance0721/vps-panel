@@ -52,6 +52,29 @@ func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server
 	return s.Get(ctx, id)
 }
 
+func (s *Service) UpdateBoundDomain(ctx context.Context, id int64, boundDomain string) (Server, error) {
+	var err error
+	boundDomain, err = normalizeBoundDomain(boundDomain)
+	if err != nil {
+		return Server{}, err
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET bound_domain = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+		boundDomain, s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server bound domain: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server bound domain count: %w", err)
+	}
+	if count != 1 {
+		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *Service) UpdateOwner(ctx context.Context, id int64, ownerUserID *int64) (Server, error) {
 	if ownerUserID != nil && *ownerUserID <= 0 {
 		return Server{}, ErrInvalidServerOwner

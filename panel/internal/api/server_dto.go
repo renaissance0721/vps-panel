@@ -15,6 +15,7 @@ var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type createServerRequest struct {
 	Name                     string          `json:"name"`
+	BoundDomain              string          `json:"bound_domain"`
 	Visibility               string          `json:"visibility"`
 	UserIDs                  []int64         `json:"user_ids"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`
@@ -33,6 +34,7 @@ type updateServerAccessRequest struct {
 
 type updateServerRequest struct {
 	Name                     *string         `json:"name"`
+	BoundDomain              *string         `json:"bound_domain"`
 	OwnerUserID              json.RawMessage `json:"owner_user_id"`
 	OutboundPreference       *string         `json:"outbound_preference"`
 	BlockChinaInbound        *bool           `json:"block_china_inbound"`
@@ -52,6 +54,7 @@ type updateTrafficAdjustmentRequest struct {
 type serverResponse struct {
 	ID                        int64               `json:"id"`
 	Name                      string              `json:"name"`
+	BoundDomain               string              `json:"bound_domain"`
 	OwnerUserID               *int64              `json:"owner_user_id"`
 	OwnerUsername             string              `json:"owner_username"`
 	CreatedByUserID           *int64              `json:"created_by_user_id"`
@@ -134,6 +137,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 	response := serverResponse{
 		ID:                       value.ID,
 		Name:                     value.Name,
+		BoundDomain:              value.BoundDomain,
 		OwnerUserID:              value.OwnerUserID,
 		OwnerUsername:            value.OwnerUsername,
 		CreatedByUserID:          value.CreatedByUserID,

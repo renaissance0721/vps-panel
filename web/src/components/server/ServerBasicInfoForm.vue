@@ -11,6 +11,7 @@ const props = defineProps<{
     | 'basicInfoFormError'
     | 'submitting'
     | 'nameInput'
+    | 'boundDomainInput'
     | 'ownerUserID'
     | 'orderedUsers'
     | 'serverAccessUsers'
@@ -31,6 +32,7 @@ const {
   basicInfoFormError,
   submitting,
   nameInput,
+  boundDomainInput,
   ownerUserID,
   orderedUsers,
   serverAccessUsers,
@@ -69,6 +71,12 @@ watch(expirationInput, (value) => {
         </n-alert>
 
         <label><span>名称</span><n-input v-model:value="nameInput" maxlength="100" :disabled="submitting" /></label>
+
+        <label>
+          <span>已绑定域名（可选）</span>
+          <n-input v-model:value="boundDomainInput" maxlength="254" placeholder="例如：jp.example.com" :disabled="submitting" />
+          <small class="form-help">可选。设置后，新增代理节点或中转时可直接使用该域名作为入口地址。</small>
+        </label>
 
         <label>
           <span>所有者</span>

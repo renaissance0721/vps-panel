@@ -17,7 +17,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	defer tx.Rollback()
 
 	value, err := scanServer(tx.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bound_domain, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,

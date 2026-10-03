@@ -29,12 +29,30 @@ func TestDesiredStateFiltersDisabledRecordsAndClientUDPDoesNotChangeIt(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(desired) != 1 || desired[0].ID != first.ID || len(desired[0].Clients) != 1 ||
+	if len(desired) != 1 || desired[0].ID != first.ID || desired[0].Listen != "0.0.0.0" || len(desired[0].Clients) != 1 ||
 		desired[0].Clients[0].ID != client.ID || desired[0].Clients[0].StatsID != clientStatsIdentifier(client.ID) {
 		t.Fatalf("desired proxies = %+v", desired)
 	}
 	if desired[0].Reality == nil || desired[0].Reality.PrivateKey == "" {
 		t.Fatal("desired REALITY state lacks private material")
+	}
+}
+
+func TestDesiredStateUsesListenFamily(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO server_system_info
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["2606:4700:4700::1111"]', '', '2606:4700:4700::1111', '', 1)`, serverID); err != nil {
+		t.Fatal(err)
+	}
+	value := createRealityProxy(t, service, serverID, 443, "IPv6")
+	family := ListenFamilyIPv6
+	if _, _, err := service.Update(t.Context(), value.ID, UpdateInput{ListenFamily: &family}); err != nil {
+		t.Fatal(err)
+	}
+	desired, err := ListDesired(t.Context(), db, serverID)
+	if err != nil || len(desired) != 1 || desired[0].Listen != "::" {
+		t.Fatalf("IPv6 desired proxies = %+v, %v", desired, err)
 	}
 }
 

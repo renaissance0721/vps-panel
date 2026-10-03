@@ -10,8 +10,10 @@ const props = defineProps<{
     | 'basicInfoModalOpen'
     | 'basicInfoFormError'
     | 'submitting'
+	| 'selectedServer'
     | 'nameInput'
-    | 'boundDomainInput'
+	| 'boundDomainIPv4Input'
+	| 'boundDomainIPv6Input'
     | 'ownerUserID'
     | 'orderedUsers'
     | 'serverAccessUsers'
@@ -32,7 +34,8 @@ const {
   basicInfoFormError,
   submitting,
   nameInput,
-  boundDomainInput,
+	boundDomainIPv4Input,
+	boundDomainIPv6Input,
   ownerUserID,
   orderedUsers,
   serverAccessUsers,
@@ -73,9 +76,13 @@ watch(expirationInput, (value) => {
         <label><span>名称</span><n-input v-model:value="nameInput" maxlength="100" :disabled="submitting" /></label>
 
         <label>
-          <span>已绑定域名（可选）</span>
-          <n-input v-model:value="boundDomainInput" maxlength="254" placeholder="例如：jp.example.com" :disabled="submitting" />
-          <small class="form-help">可选。设置后，新增代理节点或中转时可直接使用该域名作为入口地址。</small>
+		  <span>IPv4 已绑定域名（可选）</span>
+		  <n-input v-model:value="boundDomainIPv4Input" maxlength="254" placeholder="例如：v4.jp.example.com" :disabled="submitting" />
+		</label>
+		<label>
+		  <span>IPv6 已绑定域名（可选）</span>
+		  <n-input v-model:value="boundDomainIPv6Input" maxlength="254" placeholder="例如：v6.jp.example.com" :disabled="submitting" />
+		  <n-alert v-if="model.selectedServer?.system_info !== null && !model.selectedServer?.system_info?.public_ipv6" type="warning">当前服务器未检测到可用公网 IPv6</n-alert>
         </label>
 
         <label>

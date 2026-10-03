@@ -42,6 +42,18 @@ func TestProxyCreationRollsBackAndRejectsPortConflict(t *testing.T) {
 	}
 }
 
+func TestProxyIPv6RequiresUsableServerAddress(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	_, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: serverID, Name: "IPv6", ListenFamily: ListenFamilyIPv6, ListenPort: 443,
+		EntryHostMode: EntryHostAuto, Enabled: true, Security: SecurityReality,
+		ServerName: "www.example.com", RealityTarget: "www.example.com:443", FirstClientName: "default",
+	})
+	if !errors.Is(err, ErrIPv6Unavailable) {
+		t.Fatalf("IPv6 Proxy without public IPv6 error = %v", err)
+	}
+}
+
 func TestProxyUpdatesPreserveTLSAndRealitySecrets(t *testing.T) {
 	_, service, serverID := newTestService(t)
 	certificate, privateKey := testCertificate(t)

@@ -30,6 +30,7 @@ import {
 import {
   clientStatusLabel,
   clientStatusTagType,
+	manualEntryHostMatchesFamily,
   type ClientStatus,
 } from '../proxy'
 import { moveRow, persistMove } from '../reorder'
@@ -42,11 +43,12 @@ import {
 import {
   agentCapabilities,
   agentSupportsCapability,
+  serverHasUsableIPv6,
 } from '../server'
 import type { ServerRecord } from '../types/server'
 
 type ServerOption = Pick<ServerRecord,
-  'id' | 'name' | 'bound_domain' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+	'id' | 'name' | 'bound_domain_ipv4' | 'bound_domain_ipv6' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
 >
 
 type ProxyOption = {
@@ -67,6 +69,7 @@ type RelayRecord = {
   source_proxy_name?: string
   server_name: string
   server_public_ipv4: string
+	server_public_ipv6: string
   name: string
   listen_address: string
   listen_port: number
@@ -170,9 +173,13 @@ const enabled = ref(true)
 const selectedServerPublicIPv4 = computed(() =>
   props.servers.find((server) => server.id === serverID.value)?.system_info?.public_ipv4 ?? '',
 )
-const selectedServerBoundDomain = computed(() =>
-  props.servers.find((server) => server.id === serverID.value)?.bound_domain ?? '',
-)
+const selectedServer = computed(() => props.servers.find((server) => server.id === serverID.value) ?? null)
+const selectedServerPublicIPv6 = computed(() => selectedServer.value?.system_info?.public_ipv6 ?? '')
+const selectedServerPublicAddress = computed(() => listenFamily.value === 'ipv6' ? selectedServerPublicIPv6.value : selectedServerPublicIPv4.value)
+const selectedServerHasUsableIPv6 = computed(() => serverHasUsableIPv6(selectedServer.value))
+const selectedServerBoundDomain = computed(() => listenFamily.value === 'ipv6'
+  ? selectedServer.value?.bound_domain_ipv6 ?? ''
+  : selectedServer.value?.bound_domain_ipv4 ?? '')
 function serverSupportsRealm(id: number | null) {
   const server = props.servers.find((value) => value.id === id)
   return server !== undefined && agentSupportsCapability(server, agentCapabilities.relayRealm)
@@ -337,7 +344,19 @@ function syncCreateEntryHostToServer() {
 }
 
 function onSourceServerChange() {
+	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  listenFamily.value = 'ipv4'
+	  error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	}
   syncCreateEntryHostToServer()
+}
+
+function onListenFamilyChange() {
+	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  listenFamily.value = 'ipv4'
+	  error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	}
+	if (entryHostMode.value === 'bound' && !selectedServerBoundDomain.value) entryHostMode.value = 'auto'
 }
 
 function relayListenFamily(address: string): RelayListenFamily {
@@ -414,6 +433,14 @@ async function saveRelay() {
     error.value = '当前源服务器未设置绑定域名'
     return
   }
+	if (listenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  error.value = '当前服务器未检测到可用公网 IPv6'
+	  return
+	}
+	if (entryHostMode.value === 'manual' && !manualEntryHostMatchesFamily(entryHost.value, listenFamily.value)) {
+	  error.value = `手动入口 IP 必须与 ${listenFamily.value === 'ipv6' ? 'IPv6' : 'IPv4'} 监听类型一致`
+	  return
+	}
   await run(async () => {
     const savedEntryHostMode = entryHostMode.value === 'auto' ? 'auto' : 'manual'
     const savedEntryHost = entryHostMode.value === 'bound'
@@ -674,23 +701,24 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
           </select>
         </label>
         <label>
-          <span>监听协议</span>
-          <select v-model="listenFamily" class="settings-input">
-            <option value="ipv4">IPv4</option><option value="ipv6">IPv6</option>
+          <span>监听地址族</span>
+		  <select v-model="listenFamily" class="settings-input" @change="onListenFamilyChange">
+			<option value="ipv4">IPv4</option><option value="ipv6" :disabled="!selectedServerHasUsableIPv6">IPv6</option>
           </select>
         </label>
+		<n-alert v-if="!selectedServerHasUsableIPv6" type="info">当前服务器未检测到可用公网 IPv6</n-alert>
         <p>实际监听地址：{{ selectedListenAddress() }}</p>
         <label><span>监听端口</span><input v-model.number="listenPort" class="settings-input" type="number" min="1" max="65535" /></label>
         <label>
           <span>客户端入口</span>
           <select v-model="entryHostMode" class="settings-input">
             <option v-if="selectedServerBoundDomain" value="bound">已绑定域名：{{ selectedServerBoundDomain }}</option>
-            <option value="auto">自动检测公网 IPv4</option><option value="manual">手动填写</option>
+			<option value="auto">自动检测公网 {{ listenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}</option><option value="manual">手动填写</option>
           </select>
         </label>
         <label v-if="entryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="entryHost" placeholder="例如：1.2.3.4、2001:db8::1 或 relay.example.com" /></label>
         <p v-else-if="entryHostMode === 'bound'">使用源服务器绑定域名：{{ selectedServerBoundDomain }}</p>
-        <p v-else>自动使用源服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
+		<p v-else>自动使用源服务器公网 {{ listenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}。当前地址：{{ selectedServerPublicAddress || '未检测到' }}</p>
         <label>
           <span>Network</span>
           <select v-model="network" class="settings-input"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="tcp,udp">TCP + UDP</option></select>
@@ -760,7 +788,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <h3>{{ selectedRelay.target_type === 'landing' ? '外部节点中转链接' : '目标客户端' }}</h3>
         <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
         <n-alert v-else-if="selectedRelay.target_type === 'proxy' && selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
-        <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4</n-alert>
+        <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报对应公网地址</n-alert>
         <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">目标代理节点入口地址不可用</n-alert>
         <n-alert v-else-if="relayShareError" type="error">{{ relayShareError }}</n-alert>
         <div v-else-if="relayClientsLoading" class="loading-row"><n-spin size="small" /><span>正在加载客户端节点…</span></div>

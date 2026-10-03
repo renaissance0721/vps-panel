@@ -79,7 +79,7 @@ type xrayManager struct {
 	assets            map[string]managedXrayAsset
 	client            *http.Client
 	runCommand        func(context.Context, string, ...string) ([]byte, error)
-	probeListener     func(context.Context, int) error
+	probeListener     func(context.Context, string, int) error
 	reconcileFirewall func(context.Context, []firewallRule) error
 	purgeFirewall     func(context.Context) error
 	removePath        func(string) error
@@ -242,7 +242,7 @@ func (m *xrayManager) disable(ctx context.Context) error {
 }
 
 func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy, outboundPreference string) (applyErr error) {
-	expectedPorts := expectedProxyPorts(proxies)
+	expectedListeners := expectedProxyListeners(proxies)
 	expectedRules := expectedProxyFirewallRules(proxies)
 	domains := make([]string, 0)
 	seenDomains := map[string]bool{}
@@ -310,7 +310,7 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy, outbou
 		if err != nil {
 			return err
 		}
-		if active && m.listenersHealthy(ctx, expectedPorts) {
+		if active && m.listenersHealthy(ctx, expectedListeners) {
 			return m.reconcileFirewall(ctx, expectedRules)
 		}
 		var startErr error
@@ -322,13 +322,13 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy, outbou
 		if startErr != nil {
 			return fmt.Errorf("%w: %v", errManagedXrayStart, startErr)
 		}
-		if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
+		if err := m.waitUntilHealthy(ctx, expectedListeners); err != nil {
 			return err
 		}
 		return m.reconcileFirewall(ctx, expectedRules)
 	}
 
-	previousPorts, previousRules, previousStateKnown := renderedConfigState(current)
+	previousListeners, previousRules, previousStateKnown := renderedConfigState(current)
 	if exists {
 		if err := writeFileAtomically(m.previousPath, current, 0o600); err != nil {
 			return fmt.Errorf("save previous managed Xray config: %w", err)
@@ -339,13 +339,13 @@ func (m *xrayManager) enable(ctx context.Context, proxies []desiredProxy, outbou
 	}
 
 	if err := m.serviceManager().Restart(ctx); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
+		return m.rollbackFailedApply(ctx, exists, previousListeners, previousRules, previousStateKnown, fmt.Errorf("%w: %v", errManagedXrayStart, err))
 	}
-	if err := m.waitUntilHealthy(ctx, expectedPorts); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, err)
+	if err := m.waitUntilHealthy(ctx, expectedListeners); err != nil {
+		return m.rollbackFailedApply(ctx, exists, previousListeners, previousRules, previousStateKnown, err)
 	}
 	if err := m.reconcileFirewall(ctx, expectedRules); err != nil {
-		return m.rollbackFailedApply(ctx, exists, previousPorts, previousRules, previousStateKnown, err)
+		return m.rollbackFailedApply(ctx, exists, previousListeners, previousRules, previousStateKnown, err)
 	}
 	return nil
 }
@@ -362,7 +362,7 @@ func (m *xrayManager) renewCertificates(ctx context.Context) error {
 	return nil
 }
 
-func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, previousPorts []int, previousRules []firewallRule, previousStateKnown bool, applyErr error) error {
+func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool, previousListeners []xrayListener, previousRules []firewallRule, previousStateKnown bool, applyErr error) error {
 	log.Printf("new config apply failed: %v", applyErr)
 	rollbackContext, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), managedXrayRollbackTimeout)
 	defer cancelRollback()
@@ -396,7 +396,7 @@ func (m *xrayManager) rollbackFailedApply(ctx context.Context, hasPrevious bool,
 		log.Printf("rollback failed: restart previous managed Xray config: %v", err)
 		return applyErr
 	}
-	if err := m.waitUntilHealthy(rollbackContext, previousPorts); err != nil {
+	if err := m.waitUntilHealthy(rollbackContext, previousListeners); err != nil {
 		log.Printf("rollback failed: %v", err)
 	}
 	if previousStateKnown {
@@ -678,7 +678,7 @@ func (m *xrayManager) serviceManager() serviceManager {
 	}
 }
 
-func (m *xrayManager) waitUntilHealthy(ctx context.Context, ports []int) error {
+func (m *xrayManager) waitUntilHealthy(ctx context.Context, listeners []xrayListener) error {
 	consecutiveHealthy := 0
 	wasActive := false
 	for attempt := 0; attempt < m.healthAttempts; attempt++ {
@@ -688,7 +688,7 @@ func (m *xrayManager) waitUntilHealthy(ctx context.Context, ports []int) error {
 		}
 		if active {
 			wasActive = true
-			if m.listenersHealthy(ctx, ports) {
+			if m.listenersHealthy(ctx, listeners) {
 				consecutiveHealthy++
 				if consecutiveHealthy == 2 || m.healthAttempts == 1 {
 					return nil
@@ -711,18 +711,18 @@ func (m *xrayManager) waitUntilHealthy(ctx context.Context, ports []int) error {
 	return errManagedXrayStart
 }
 
-func (m *xrayManager) listenersHealthy(ctx context.Context, ports []int) bool {
-	for _, port := range ports {
-		if err := m.probeListener(ctx, port); err != nil {
+func (m *xrayManager) listenersHealthy(ctx context.Context, listeners []xrayListener) bool {
+	for _, listener := range listeners {
+		if err := m.probeListener(ctx, listener.Address, listener.Port); err != nil {
 			return false
 		}
 	}
 	return true
 }
 
-func probeXrayListener(ctx context.Context, port int) error {
+func probeXrayListener(ctx context.Context, address string, port int) error {
 	connection, err := (&net.Dialer{Timeout: 300 * time.Millisecond}).DialContext(
-		ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		ctx, "tcp", net.JoinHostPort(address, strconv.Itoa(port)),
 	)
 	if err != nil {
 		return err
@@ -730,8 +730,13 @@ func probeXrayListener(ctx context.Context, port int) error {
 	return connection.Close()
 }
 
-func expectedProxyPorts(proxies []desiredProxy) []int {
-	ports := make([]int, 0, len(proxies))
+type xrayListener struct {
+	Address string
+	Port    int
+}
+
+func expectedProxyListeners(proxies []desiredProxy) []xrayListener {
+	listeners := make([]xrayListener, 0, len(proxies))
 	seen := make(map[int]struct{}, len(proxies))
 	for _, proxy := range proxies {
 		if proxy.Protocol == "shadowsocks" && len(proxy.Clients) == 0 {
@@ -741,10 +746,17 @@ func expectedProxyPorts(proxies []desiredProxy) []int {
 			continue
 		}
 		seen[proxy.Port] = struct{}{}
-		ports = append(ports, proxy.Port)
+		listeners = append(listeners, xrayListener{Address: xrayHealthAddress(proxy.Listen), Port: proxy.Port})
 	}
-	sort.Ints(ports)
-	return ports
+	sort.Slice(listeners, func(i, j int) bool { return listeners[i].Port < listeners[j].Port })
+	return listeners
+}
+
+func xrayHealthAddress(listen string) string {
+	if listen == "::" {
+		return "::1"
+	}
+	return "127.0.0.1"
 }
 
 func expectedProxyFirewallRules(proxies []desiredProxy) []firewallRule {
@@ -762,25 +774,29 @@ func expectedProxyFirewallRules(proxies []desiredProxy) []firewallRule {
 }
 
 func renderedConfigPorts(value []byte) ([]int, bool) {
-	ports, _, ok := renderedConfigState(value)
+	listeners, _, ok := renderedConfigState(value)
+	ports := make([]int, 0, len(listeners))
+	for _, listener := range listeners {
+		ports = append(ports, listener.Port)
+	}
 	return ports, ok
 }
 
-func renderedConfigState(value []byte) ([]int, []firewallRule, bool) {
+func renderedConfigState(value []byte) ([]xrayListener, []firewallRule, bool) {
 	var config renderedXrayConfig
 	if len(value) == 0 || json.Unmarshal(value, &config) != nil {
 		return nil, nil, false
 	}
-	ports := make([]int, 0, len(config.Inbounds))
+	listeners := make([]xrayListener, 0, len(config.Inbounds))
 	rules := make([]firewallRule, 0, len(config.Inbounds)*2)
 	for _, inbound := range config.Inbounds {
-		ports = append(ports, inbound.Port)
+		listeners = append(listeners, xrayListener{Address: xrayHealthAddress(inbound.Listen), Port: inbound.Port})
 		rules = append(rules, firewallRule{port: inbound.Port, protocol: "tcp"})
 		if inbound.Protocol == "shadowsocks" {
 			rules = append(rules, firewallRule{port: inbound.Port, protocol: "udp"})
 		}
 	}
-	return ports, rules, true
+	return listeners, rules, true
 }
 
 func renderManagedXrayBaseConfig() []byte {

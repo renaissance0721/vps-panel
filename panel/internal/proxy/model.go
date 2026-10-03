@@ -13,6 +13,8 @@ const (
 	SecurityReality     = "reality"
 	EntryHostAuto       = "auto"
 	EntryHostManual     = "manual"
+	ListenFamilyIPv4    = "ipv4"
+	ListenFamilyIPv6    = "ipv6"
 	ServerFlow          = "xtls-rprx-vision"
 	Fingerprint         = "chrome"
 	TrafficResetNever   = "never"
@@ -31,6 +33,7 @@ var (
 	ErrPortConflict                   = errors.New("listen port is already used on this server")
 	ErrInvalidEntryHostMode           = errors.New("entry host mode must be auto or manual")
 	ErrInvalidEntryHost               = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
+	ErrInvalidListenFamily            = errors.New("listen family must be ipv4 or ipv6")
 	ErrInvalidSecurity                = errors.New("security must be tls or reality")
 	ErrInvalidServerName              = errors.New("server name must be a hostname or IP address")
 	ErrInvalidTLS                     = errors.New("TLS certificate and private key are required and must match")
@@ -45,6 +48,7 @@ var (
 	ErrInvalidShadowsocksCredential   = errors.New("invalid stored Shadowsocks credential")
 	ErrInvalidShadowsocksUpdate       = errors.New("TLS and REALITY fields are not supported for Shadowsocks")
 	ErrConnectionAddressUnavailable   = errors.New("connection address unavailable")
+	ErrIPv6Unavailable                = errors.New("server public IPv6 address unavailable")
 	ErrInvalidClientTrafficConfig     = errors.New("invalid client traffic configuration")
 	ErrInvalidClientExpiration        = errors.New("invalid client expiration")
 	ErrAssignmentUserNotFound         = errors.New("assigned user not found")
@@ -70,8 +74,10 @@ type Proxy struct {
 	ServerIPv4       []string
 	ServerIPv6       []string
 	ServerPublicIPv4 string
+	ServerPublicIPv6 string
 	Name             string
 	Protocol         string
+	ListenFamily     string
 	ListenPort       int
 	EntryHostMode    string
 	EntryHost        string
@@ -157,6 +163,7 @@ type CreateInput struct {
 	ServerID          int64
 	Name              string
 	ListenPort        int
+	ListenFamily      string
 	EntryHostMode     string
 	EntryHost         string
 	Enabled           bool
@@ -175,6 +182,7 @@ type CreateInput struct {
 type UpdateInput struct {
 	Name          *string
 	ListenPort    *int
+	ListenFamily  *string
 	EntryHostMode *string
 	EntryHost     *string
 	Enabled       *bool

@@ -49,6 +49,7 @@ import {
   renewalPeriodLabel,
   canBulkUpgradeAgent,
   chinaInboundConfigNeedsPolling,
+  serverHasUsableIPv6,
 } from '../server'
 import {
   formatTrafficLimitInput,
@@ -118,7 +119,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const diagnosticReport = ref<DiagnosticReport | null>(null)
   const diagnosticError = ref('')
   const createServerName = ref('')
-  const createServerBoundDomain = ref('')
+  const createServerBoundDomainIPv4 = ref('')
+  const createServerBoundDomainIPv6 = ref('')
   const createServerVisibility = ref<ServerRecord['visibility']>('public')
   const createServerAccessUserIDs = ref<number[]>([])
   const createServerExpiration = ref('')
@@ -141,7 +143,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const renewalPeriodInput = ref<RenewalPeriodMonths | 0>(0)
   const autoRenewInput = ref(false)
   const nameInput = ref('')
-  const boundDomainInput = ref('')
+  const boundDomainIPv4Input = ref('')
+  const boundDomainIPv6Input = ref('')
   const ownerUserID = ref(0)
   const trafficAdjustmentInput = ref<string | number>('')
   const trafficAdjustmentUnit = ref<TrafficLimitUnit>('G')
@@ -310,7 +313,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     const renewalPeriod = expiration ? (createServerRenewalPeriod.value || null) : null
     const payload: CreateServerPayload = {
       name,
-      bound_domain: createServerBoundDomain.value,
+      bound_domain_ipv4: createServerBoundDomainIPv4.value,
+      bound_domain_ipv6: createServerBoundDomainIPv6.value,
       visibility: createServerVisibility.value,
       user_ids: createServerVisibility.value === 'private' ? withCurrentUser(createServerAccessUserIDs.value) : [],
       expires_at: expiration || null,
@@ -351,7 +355,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function resetCreateServerForm() {
     createServerFormError.value = ''
     createServerName.value = ''
-    createServerBoundDomain.value = ''
+    createServerBoundDomainIPv4.value = ''
+    createServerBoundDomainIPv6.value = ''
     createServerVisibility.value = 'public'
     createServerAccessUserIDs.value = []
     createServerExpiration.value = ''
@@ -676,7 +681,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     nameInput.value = ''
-    boundDomainInput.value = ''
+    boundDomainIPv4Input.value = ''
+    boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
     accessVisibility.value = 'public'
     accessUserIDs.value = []
@@ -686,7 +692,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function openBasicInfoModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     nameInput.value = selectedServer.value.name
-    boundDomainInput.value = selectedServer.value.bound_domain ?? ''
+    boundDomainIPv4Input.value = selectedServer.value.bound_domain_ipv4 ?? ''
+    boundDomainIPv6Input.value = selectedServer.value.bound_domain_ipv6 ?? ''
     ownerUserID.value = selectedServer.value.owner_user_id ?? 0
     accessVisibility.value = selectedServer.value.visibility
     accessUserIDs.value = selectedServer.value.visibility === 'private'
@@ -705,7 +712,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
-    boundDomainInput.value = ''
+    boundDomainIPv4Input.value = ''
+    boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
     accessVisibility.value = 'public'
     accessUserIDs.value = []
@@ -723,9 +731,15 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   async function saveBasicInfo() {
     if (!selectedServer.value || submitting.value) return
     const name = nameInput.value.trim()
-    const boundDomain = boundDomainInput.value.trim()
+    const boundDomainIPv4 = boundDomainIPv4Input.value.trim()
+    const boundDomainIPv6 = boundDomainIPv6Input.value.trim()
     if (!name || [...name].length > 100) {
       basicInfoFormError.value = '服务器名称不能为空且不能超过 100 个字符'
+      return
+    }
+    if (boundDomainIPv6 && boundDomainIPv6 !== (selectedServer.value.bound_domain_ipv6 ?? '') &&
+      selectedServer.value.system_info !== null && !serverHasUsableIPv6(selectedServer.value)) {
+      basicInfoFormError.value = '当前服务器未检测到可用公网 IPv6'
       return
     }
     const expiration = expirationInput.value.trim()
@@ -752,10 +766,10 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
         })
         current = response.server
       }
-      if (boundDomain !== (current.bound_domain ?? '')) {
+      if (boundDomainIPv4 !== (current.bound_domain_ipv4 ?? '') || boundDomainIPv6 !== (current.bound_domain_ipv6 ?? '')) {
         const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ bound_domain: boundDomain }),
+          body: JSON.stringify({ bound_domain_ipv4: boundDomainIPv4, bound_domain_ipv6: boundDomainIPv6 }),
         })
         current = response.server
       }
@@ -1026,7 +1040,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
-    boundDomainInput.value = ''
+    boundDomainIPv4Input.value = ''
+    boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
     trafficAdjustmentModalOpen.value = false
     accessVisibility.value = 'public'
@@ -1068,7 +1083,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen,
     basicInfoFormError,
     nameInput,
-    boundDomainInput,
+    boundDomainIPv4Input,
+    boundDomainIPv6Input,
     ownerUserID,
     trafficAdjustmentModalOpen,
     diagnosticOpen,
@@ -1076,7 +1092,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport,
     diagnosticError,
     createServerName,
-    createServerBoundDomain,
+    createServerBoundDomainIPv4,
+    createServerBoundDomainIPv6,
     createServerVisibility,
     createServerAccessUserIDs,
     createServerExpiration,

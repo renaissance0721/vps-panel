@@ -3,11 +3,14 @@ package relay
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/listener"
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 )
 
@@ -88,6 +91,15 @@ func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now tim
 	if err := ensureActiveServer(ctx, tx, value.ServerID); err != nil {
 		return 0, Mutation{}, err
 	}
+	if net.ParseIP(value.ListenAddress).To4() == nil {
+		publicIPv6, err := readServerPublicIPv6(ctx, tx, value.ServerID)
+		if err != nil {
+			return 0, Mutation{}, err
+		}
+		if publicIPv6 == "" {
+			return 0, Mutation{}, ErrIPv6Unavailable
+		}
+	}
 	if value.OwnerUserID != nil {
 		var count int
 		if err := tx.QueryRowContext(ctx,
@@ -153,6 +165,15 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	value, err = ValidateUpdateInput(value, input)
 	if err != nil {
 		return Relay{}, Mutation{}, err
+	}
+	if net.ParseIP(value.ListenAddress).To4() == nil {
+		publicIPv6, err := readServerPublicIPv6(ctx, tx, value.ServerID)
+		if err != nil {
+			return Relay{}, Mutation{}, err
+		}
+		if publicIPv6 == "" {
+			return Relay{}, Mutation{}, ErrIPv6Unavailable
+		}
 	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
 		return Relay{}, Mutation{}, err
@@ -318,19 +339,41 @@ func subscriptionManaged(ctx context.Context, query interface {
 	return managed, nil
 }
 
+func readServerPublicIPv6(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, serverID int64) (string, error) {
+	var publicIPv6, ipv6JSON sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT system_info.public_ipv6, system_info.ipv6 FROM servers
+		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE servers.id = ? AND servers.archived_at IS NULL`, serverID,
+	).Scan(&publicIPv6, &ipv6JSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrServerNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read Relay server public IPv6: %w", err)
+	}
+	var addresses []string
+	_ = json.Unmarshal([]byte(ipv6JSON.String), &addresses)
+	return netutil.EffectivePublicIPv6(publicIPv6.String, addresses), nil
+}
+
 func list(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, condition string, arguments ...any) ([]Relay, error) {
 	rows, err := query.QueryContext(ctx,
 		`SELECT relays.id, relays.server_id, relays.owner_user_id, owner.username,
 		 relays.source_client_id, source_proxy.name, source.name, COALESCE(source_info.public_ipv4, ''),
+		 COALESCE(source_info.public_ipv6, ''), COALESCE(source_info.ipv6, '[]'),
 		 relays.name, relays.listen_address, relays.listen_port, relays.entry_host_mode, relays.entry_host, relays.target_type,
 		 relays.target_proxy_id, relays.target_client_id, target_client.name, relays.target_landing_id,
 		 target_landing.name, target_landing.protocol, target_landing.visibility, target_landing.host, target_landing.port,
 		 relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
-		 target_proxy.name, target_server.name, target_proxy.listen_port, target_proxy.entry_host_mode,
-		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), target_server.archived_at,
+		 target_proxy.name, target_server.name, target_proxy.listen_family, target_proxy.listen_port, target_proxy.entry_host_mode,
+		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), COALESCE(target_info.public_ipv6, ''),
+		 COALESCE(target_info.ipv6, '[]'), target_server.archived_at,
 		 EXISTS(SELECT 1 FROM subscription_published_nodes WHERE relay_id = relays.id)
 		 FROM relays
 		 JOIN servers AS source ON source.id = relays.server_id
@@ -356,18 +399,19 @@ func list(ctx context.Context, query interface {
 		var ownerUsername, sourceProxyName sql.NullString
 		var targetProxyID, targetClientID, targetLandingID, storedTargetPort, proxyPort, landingPort, targetArchived sql.NullInt64
 		var targetProxyName, targetServerName, targetClientName, targetLandingName, targetLandingProtocol, targetLandingVisibility sql.NullString
-		var targetLandingHost, targetEntryMode, targetEntryHost, targetPublicIPv4 sql.NullString
+		var sourcePublicIPv6, sourceIPv6JSON sql.NullString
+		var targetLandingHost, targetListenFamily, targetEntryMode, targetEntryHost, targetPublicIPv4, targetPublicIPv6, targetIPv6JSON sql.NullString
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.ServerID, &ownerUserID, &ownerUsername, &sourceClientID, &sourceProxyName,
-			&value.ServerName, &value.ServerPublicIPv4,
+			&value.ServerName, &value.ServerPublicIPv4, &sourcePublicIPv6, &sourceIPv6JSON,
 			&value.Name, &value.ListenAddress, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &value.TargetType,
 			&targetProxyID, &targetClientID, &targetClientName, &targetLandingID,
 			&targetLandingName, &targetLandingProtocol, &targetLandingVisibility, &targetLandingHost, &landingPort,
 			&value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
-			&targetProxyName, &targetServerName, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetArchived,
+			&targetProxyName, &targetServerName, &targetListenFamily, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetPublicIPv6, &targetIPv6JSON, &targetArchived,
 			&value.SubscriptionPublished,
 		); err != nil {
 			return nil, fmt.Errorf("scan relay: %w", err)
@@ -387,8 +431,13 @@ func list(ctx context.Context, query interface {
 		if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
 			return nil, errors.New("invalid stored Relay entry host")
 		}
+		var sourceIPv6 []string
+		_ = json.Unmarshal([]byte(sourceIPv6JSON.String), &sourceIPv6)
+		value.ServerPublicIPv6 = netutil.EffectivePublicIPv6(sourcePublicIPv6.String, sourceIPv6)
 		if value.EntryHostMode == EntryHostManual {
 			value.EntryAddress = value.EntryHost
+		} else if net.ParseIP(value.ListenAddress).To4() == nil {
+			value.EntryAddress = value.ServerPublicIPv6
 		} else {
 			value.EntryAddress = value.ServerPublicIPv4
 		}
@@ -423,6 +472,10 @@ func list(ctx context.Context, query interface {
 			value.TargetPort = int(proxyPort.Int64)
 			if targetEntryMode.String == "manual" {
 				value.TargetHost = targetEntryHost.String
+			} else if targetListenFamily.String == "ipv6" {
+				var targetIPv6 []string
+				_ = json.Unmarshal([]byte(targetIPv6JSON.String), &targetIPv6)
+				value.TargetHost = netutil.EffectivePublicIPv6(targetPublicIPv6.String, targetIPv6)
 			} else {
 				value.TargetHost = targetPublicIPv4.String
 			}

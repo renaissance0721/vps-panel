@@ -25,7 +25,7 @@ func TestServerBoundDomainMigrationPreservesExistingRows(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO servers (id, name) VALUES (1, 'Existing')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyMigration(context.Background(), db, migrations[len(migrations)-1]); err != nil {
+	if err := applyMigration(context.Background(), db, migrations[20]); err != nil {
 		t.Fatal(err)
 	}
 	var name, boundDomain string
@@ -38,6 +38,44 @@ func TestServerBoundDomainMigrationPreservesExistingRows(t *testing.T) {
 	var version int
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil || version != 21 {
 		t.Fatalf("migration version = %d, %v", version, err)
+	}
+}
+
+func TestDualStackEntryMigrationPreservesIPv4Data(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		schemaMigrationsStatement,
+		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (21, 'server_bound_domain', 1)`,
+		`CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, bound_domain TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE server_system_info (server_id INTEGER PRIMARY KEY, ipv6 TEXT NOT NULL, public_ipv4 TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE proxies (id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL, name TEXT NOT NULL)`,
+		`INSERT INTO servers (id, name, bound_domain) VALUES (1, 'Existing', 'v4.example.com')`,
+		`INSERT INTO server_system_info (server_id, ipv6, public_ipv4) VALUES (1, '["2606:4700:4700::1111"]', '198.51.100.10')`,
+		`INSERT INTO proxies (id, server_id, name) VALUES (1, 1, 'Existing Proxy')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := applyMigration(context.Background(), db, migrations[21]); err != nil {
+		t.Fatal(err)
+	}
+	var ipv4Domain, ipv6Domain, publicIPv6, listenFamily string
+	if err := db.QueryRow(`SELECT bound_domain_ipv4, bound_domain_ipv6 FROM servers WHERE id = 1`).Scan(&ipv4Domain, &ipv6Domain); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT public_ipv6 FROM server_system_info WHERE server_id = 1`).Scan(&publicIPv6); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT listen_family FROM proxies WHERE id = 1`).Scan(&listenFamily); err != nil {
+		t.Fatal(err)
+	}
+	if ipv4Domain != "v4.example.com" || ipv6Domain != "" || publicIPv6 != "" || listenFamily != "ipv4" {
+		t.Fatalf("migrated dual stack data = %q/%q/%q/%q", ipv4Domain, ipv6Domain, publicIPv6, listenFamily)
 	}
 }
 

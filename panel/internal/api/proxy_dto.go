@@ -10,6 +10,7 @@ type createProxyRequest struct {
 	ServerID          int64  `json:"server_id"`
 	Name              string `json:"name"`
 	ListenPort        int    `json:"listen_port"`
+	ListenFamily      string `json:"listen_family"`
 	EntryHostMode     string `json:"entry_host_mode"`
 	EntryHost         string `json:"entry_host"`
 	Enabled           *bool  `json:"enabled"`
@@ -28,6 +29,7 @@ type createProxyRequest struct {
 type updateProxyRequest struct {
 	Name          *string `json:"name"`
 	ListenPort    *int    `json:"listen_port"`
+	ListenFamily  *string `json:"listen_family"`
 	EntryHostMode *string `json:"entry_host_mode"`
 	EntryHost     *string `json:"entry_host"`
 	Enabled       *bool   `json:"enabled"`
@@ -48,9 +50,11 @@ type proxyResponse struct {
 	ServerIPv4       []string                `json:"server_ipv4"`
 	ServerIPv6       []string                `json:"server_ipv6"`
 	ServerPublicIPv4 string                  `json:"server_public_ipv4"`
+	ServerPublicIPv6 string                  `json:"server_public_ipv6"`
 	Name             string                  `json:"name"`
 	Protocol         string                  `json:"protocol"`
 	ListenPort       int                     `json:"listen_port"`
+	ListenFamily     string                  `json:"listen_family"`
 	EntryHostMode    string                  `json:"entry_host_mode"`
 	EntryHost        string                  `json:"entry_host"`
 	EntryAddress     string                  `json:"entry_address"`
@@ -78,7 +82,8 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 	response := proxyResponse{
 		ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
 		ServerIPv4: value.ServerIPv4, ServerIPv6: value.ServerIPv6, Name: value.Name,
-		ServerPublicIPv4: value.ServerPublicIPv4, Protocol: value.Protocol, ListenPort: value.ListenPort,
+		ServerPublicIPv4: value.ServerPublicIPv4, ServerPublicIPv6: value.ServerPublicIPv6,
+		Protocol: value.Protocol, ListenFamily: value.ListenFamily, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		Config: proxyConfigResponse{

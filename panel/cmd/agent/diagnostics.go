@@ -85,12 +85,13 @@ func (runner *agentDiagnosticRunner) diagnoseXray(ctx context.Context, state des
 
 	for _, proxy := range state.Proxies {
 		id := proxy.ID
+		address := xrayHealthAddress(proxy.Listen)
 		check := diagnostic.Check{
 			Code: "xray.listener", Status: diagnostic.StatusPass, ResourceID: &id,
-			Endpoint: net.JoinHostPort("127.0.0.1", strconv.Itoa(proxy.Port)), Protocol: "tcp",
+			Endpoint: net.JoinHostPort(address, strconv.Itoa(proxy.Port)), Protocol: "tcp",
 			Detail: "Xray 本地 TCP listener 正在监听",
 		}
-		if err := runner.xray.probeListener(ctx, proxy.Port); err != nil {
+		if err := runner.xray.probeListener(ctx, address, proxy.Port); err != nil {
 			check.Status = diagnostic.StatusFail
 			check.Detail = safeDiagnosticError("Xray 本地 TCP listener 不可达", err)
 		}

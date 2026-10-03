@@ -120,7 +120,8 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                           {{ visibilityLabel(value.visibility) }}
                         </n-tag>
                       </div>
-                      <small v-if="value.bound_domain" class="secondary-text server-bound-domain">{{ value.bound_domain }}</small>
+					  <small v-if="value.bound_domain_ipv4" class="secondary-text server-bound-domain">v4 · {{ value.bound_domain_ipv4 }}</small>
+					  <small v-if="value.bound_domain_ipv6" class="secondary-text server-bound-domain">v6 · {{ value.bound_domain_ipv6 }}</small>
                     </td>
                     <td>{{ value.owner_username || '—' }}</td>
                     <td>
@@ -224,7 +225,8 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
                           {{ visibilityLabel(value.visibility) }}
                         </n-tag>
                       </div>
-                      <small v-if="value.bound_domain" class="secondary-text server-bound-domain">{{ value.bound_domain }}</small>
+					  <small v-if="value.bound_domain_ipv4" class="secondary-text server-bound-domain">v4 · {{ value.bound_domain_ipv4 }}</small>
+					  <small v-if="value.bound_domain_ipv6" class="secondary-text server-bound-domain">v6 · {{ value.bound_domain_ipv6 }}</small>
                     </td>
                     <td>{{ value.owner_username || '—' }}</td>
                     <td>{{ value.archived_at ? formatTime(value.archived_at) : '—' }}</td>

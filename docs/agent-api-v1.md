@@ -44,10 +44,10 @@ The implementation must match the value saved at registration. A legacy record w
 
 ## Existing protocol operations
 
-- Desired state: `GET /api/agent/config` returns the desired-state `version`, the Server-level `decommission` and `block_china_inbound` flags, plus Xray and Realm configuration, each with `enabled` and `purge`. `config_changed` tells an online Agent to fetch a newer version.
+- Desired state: `GET /api/agent/config` returns the desired-state `version`, the Server-level `decommission` and `block_china_inbound` flags, plus Xray and Realm configuration, each with `enabled` and `purge`. A managed Xray Proxy uses `listen` value `0.0.0.0` for IPv4 or `::` for IPv6. `config_changed` tells an online Agent to fetch a newer version.
 - Config result: `POST /api/agent/config/result` reports the applied desired-state version and `success` or `failed` status.
 - Heartbeat: WebSocket `heartbeat` refreshes liveness.
-- System information: WebSocket `system_info` reports hostname, OS, kernel, architecture, addresses, and public IPv4.
+- System information: WebSocket `system_info` reports hostname, OS, kernel, architecture, addresses, public IPv4, and public IPv6. Older Agents may omit `public_ipv6`; Panel derives the effective public IPv6 from the reported IPv6 address list when possible.
 - Metrics: WebSocket `metrics` reports CPU, memory, disk, uptime, and network counters.
 - Client traffic: `POST /api/agent/traffic` reports per-client uplink and downlink counters.
 - Diagnostics: an Agent declaring `diagnostics_v1` can receive `diagnostic_request` and reply with `diagnostic_result`. The Panel uses capabilities from the current online connection, not stale stored metadata.

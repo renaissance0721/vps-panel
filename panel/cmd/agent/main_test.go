@@ -532,11 +532,11 @@ func TestAgentAdvertisesDiagnosticsAndReturnsMatchingRequestIDAfterUnknownMessag
 
 	value := config{PanelURL: panel.URL, ServerID: 1, AgentID: 1, AgentToken: "diagnostic-token"}
 	synchronizer := newConfigSynchronizer(value, panel.Client())
-	publicIPv4 := &publicIPv4State{detect: func(context.Context) string { return "" }}
+	publicIPv4 := &publicIPState{detect: func(context.Context) string { return "" }}
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{}, 1)
 	go func() {
-		connectAgentOnce(ctx, value, synchronizer, publicIPv4)
+		connectAgentOnce(ctx, value, synchronizer, publicIPv4, &publicIPState{detect: func(context.Context) string { return "" }})
 		finished <- struct{}{}
 	}()
 	select {

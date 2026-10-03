@@ -109,6 +109,7 @@ func (s *server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
 				IPv4:       systemInfo.IPv4,
 				IPv6:       systemInfo.IPv6,
 				PublicIPv4: systemInfo.PublicIPv4,
+				PublicIPv6: systemInfo.PublicIPv6,
 			})
 			if !current {
 				return

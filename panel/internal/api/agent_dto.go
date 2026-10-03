@@ -63,6 +63,7 @@ type agentSystemInfoMessage struct {
 	IPv4       []string `json:"ipv4"`
 	IPv6       []string `json:"ipv6"`
 	PublicIPv4 string   `json:"public_ipv4"`
+	PublicIPv6 string   `json:"public_ipv6"`
 }
 
 type agentMetricsMessage struct {

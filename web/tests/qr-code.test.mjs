@@ -184,7 +184,16 @@ test('Relay 创建和编辑正确映射 IPv4、IPv6 并保留历史自定义监�
     throw new Error(`unexpected request: ${url}`)
   })
 
-  const { html, bindings } = await renderWithBindings(RelaysView, { servers: [] }, model => {
+  const { html, bindings } = await renderWithBindings(RelaysView, { servers: [{
+    id: 1,
+    name: 'Source',
+    bound_domain_ipv4: '',
+    bound_domain_ipv6: '',
+    system_info: { public_ipv4: '198.51.100.10', public_ipv6: '2001:db8::10' },
+    agent_implementation: '',
+    agent_api_version: 0,
+    agent_capabilities: [],
+  }] }, model => {
     model.loading.value = false
     model.formOpen.value = true
     model.enabled.value = false
@@ -193,7 +202,7 @@ test('Relay 创建和编辑正确映射 IPv4、IPv6 并保留历史自定义监�
     model.targetType.value = 'manual'
     model.targetHost.value = 'target.example.com'
   })
-  assert.match(html, /监听协议/)
+  assert.match(html, /监听地址族/)
   assert.match(html, />IPv4<\/option>/)
   assert.match(html, />IPv6<\/option>/)
   assert.equal(bindings.listenFamily.value, 'ipv4')

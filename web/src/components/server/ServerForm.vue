@@ -13,7 +13,8 @@ const props = defineProps<{
     | 'closeCreateServerModal'
     | 'resetCreateServerForm'
     | 'createServerName'
-    | 'createServerBoundDomain'
+	| 'createServerBoundDomainIPv4'
+	| 'createServerBoundDomainIPv6'
     | 'createServerVisibility'
     | 'createServerAccessUserIDs'
     | 'createServerExpiration'
@@ -33,7 +34,7 @@ const props = defineProps<{
 
 const {
   createServerModalOpen, createServerFormError, createServerRecord, closeCreateServerModal,
-  resetCreateServerForm, createServerName, createServerBoundDomain, createServerVisibility, createServerAccessUserIDs,
+	resetCreateServerForm, createServerName, createServerBoundDomainIPv4, createServerBoundDomainIPv6, createServerVisibility, createServerAccessUserIDs,
   createServerExpiration, createServerRenewalPeriod, createServerAutoRenew, createServerTrafficLimit,
   createServerTrafficUnit, createServerTrafficCountMode, createServerTrafficResetDay,
   createServerTrafficResetTime, submitting, ensureCreateCurrentUser, serverAccessUsers, state,
@@ -58,9 +59,14 @@ const {
             <n-input v-model:value="createServerName" maxlength="100" placeholder="例如：日本服务器 01" :disabled="submitting" />
           </label>
           <label>
-            <span>已绑定域名（可选）</span>
-            <n-input v-model:value="createServerBoundDomain" maxlength="254" placeholder="例如：jp.example.com" :disabled="submitting" />
-            <small class="form-help">可选。设置后，新增代理节点或中转时可直接使用该域名作为入口地址。</small>
+			<span>IPv4 已绑定域名（可选）</span>
+			<n-input v-model:value="createServerBoundDomainIPv4" maxlength="254" placeholder="例如：v4.jp.example.com" :disabled="submitting" />
+			<small class="form-help">新增代理节点或中转时，可作为 IPv4 入口地址。</small>
+		  </label>
+		  <label>
+			<span>IPv6 已绑定域名（可选）</span>
+			<n-input v-model:value="createServerBoundDomainIPv6" maxlength="254" placeholder="例如：v6.jp.example.com" :disabled="submitting" />
+			<small class="form-help">服务器尚未上报网络信息，可先保存；注册 Agent 后会检测公网 IPv6。</small>
           </label>
         </fieldset>
 

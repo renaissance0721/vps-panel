@@ -143,6 +143,12 @@ func normalizeRelay(value Relay) (Relay, error) {
 		return Relay{}, err
 	}
 	value.EntryHostMode, value.EntryHost = entryHostMode, entryHost
+	if value.EntryHostMode == EntryHostManual {
+		entryIP := net.ParseIP(value.EntryHost)
+		if entryIP != nil && (ip.To4() != nil) != (entryIP.To4() != nil) {
+			return Relay{}, ErrInvalidEntryHost
+		}
+	}
 	value.TargetType = strings.ToLower(strings.TrimSpace(value.TargetType))
 	value.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value.Network), " ", ""))
 	if value.Network != NetworkTCP && value.Network != NetworkUDP && value.Network != NetworkBoth {

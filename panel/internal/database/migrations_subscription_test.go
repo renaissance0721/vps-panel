@@ -60,13 +60,13 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 		`CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, created_by_role TEXT NOT NULL)`,
 		`CREATE TABLE proxies (
 			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-			name TEXT NOT NULL, listen_port INTEGER NOT NULL,
+			name TEXT NOT NULL, listen_family TEXT NOT NULL DEFAULT 'ipv4', listen_port INTEGER NOT NULL,
 			entry_host_mode TEXT NOT NULL, entry_host TEXT NOT NULL)`,
 		`CREATE TABLE relays (
 			id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			target_proxy_id INTEGER REFERENCES proxies(id) ON DELETE RESTRICT,
-			listen_port INTEGER NOT NULL, entry_host_mode TEXT NOT NULL, entry_host TEXT NOT NULL)`,
-		`CREATE TABLE server_system_info (server_id INTEGER PRIMARY KEY, public_ipv4 TEXT NOT NULL)`,
+			listen_address TEXT NOT NULL DEFAULT '0.0.0.0', listen_port INTEGER NOT NULL, entry_host_mode TEXT NOT NULL, entry_host TEXT NOT NULL)`,
+		`CREATE TABLE server_system_info (server_id INTEGER PRIMARY KEY, ipv6 TEXT NOT NULL DEFAULT '[]', public_ipv4 TEXT NOT NULL, public_ipv6 TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE subscription_published_nodes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -93,10 +93,10 @@ func TestMigrateSubscriptionSourceProxyToServer(t *testing.T) {
 			created_at INTEGER NOT NULL, PRIMARY KEY (user_id, proxy_id))`,
 		`INSERT INTO servers VALUES (1, 'Source', 'admin'), (2, 'Target', 'admin')`,
 		`INSERT INTO proxies VALUES
-			(10, 1, 'Legacy Source Proxy', 8443, 'manual', 'source.example.com'),
-			(20, 2, 'Target Proxy', 443, 'auto', '')`,
-		`INSERT INTO relays VALUES (30, 1, 20, 20000, 'auto', '')`,
-		`INSERT INTO server_system_info VALUES (1, '198.51.100.10')`,
+			(10, 1, 'Legacy Source Proxy', 'ipv4', 8443, 'manual', 'source.example.com'),
+			(20, 2, 'Target Proxy', 'ipv4', 443, 'auto', '')`,
+		`INSERT INTO relays VALUES (30, 1, 20, '0.0.0.0', 20000, 'auto', '')`,
+		`INSERT INTO server_system_info VALUES (1, '[]', '198.51.100.10', '')`,
 		`INSERT INTO subscription_published_nodes VALUES
 			(40, 'Legacy Relay', 'relay', 20, 10, 30, 125, 1, 1, 1)`,
 		`INSERT INTO subscription_plans VALUES (50)`,

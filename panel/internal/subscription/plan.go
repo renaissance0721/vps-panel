@@ -396,10 +396,11 @@ func listPlanNodes(ctx context.Context, query interface {
 }, planID int64) ([]PlanNode, error) {
 	rows, err := query.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
 		target.server_id, target_server.name, target_server.created_by_role,
-		target.entry_host_mode, target.entry_host, target.listen_port, COALESCE(target_info.public_ipv4, ''),
+		target.entry_host_mode, target.entry_host, target.listen_family, target.listen_port,
+		COALESCE(target_info.public_ipv4, ''), COALESCE(target_info.public_ipv6, ''), COALESCE(target_info.ipv6, '[]'),
 		nodes.source_server_id, source_server.name, source_server.created_by_role,
-		nodes.relay_id, nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode, relay.listen_port,
-		COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
+		nodes.relay_id, nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode, relay.listen_address, relay.listen_port,
+		COALESCE(source_info.public_ipv4, ''), COALESCE(source_info.public_ipv6, ''), COALESCE(source_info.ipv6, '[]'), nodes.traffic_multiplier_bp,
 		nodes.enabled, nodes.created_at, nodes.updated_at, mapping.position
 		FROM subscription_plan_nodes AS mapping
 		JOIN subscription_published_nodes AS nodes ON nodes.id = mapping.published_node_id
@@ -418,22 +419,23 @@ func listPlanNodes(ctx context.Context, query interface {
 	for rows.Next() {
 		var value PlanNode
 		var sourceServerID, relayID, relayEntryPort sql.NullInt64
-		var sourceServerName, sourceCreatorRole, sourcePublicIPv4 sql.NullString
-		var targetCreatorRole, targetEntryHostMode, targetEntryHost, targetPublicIPv4 string
+		var sourceServerName, sourceCreatorRole, relayListenAddress, sourcePublicIPv4, sourcePublicIPv6, sourceIPv6JSON sql.NullString
+		var targetCreatorRole, targetEntryHostMode, targetEntryHost, targetListenFamily, targetPublicIPv4, targetPublicIPv6, targetIPv6JSON string
 		var targetEntryPort int
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
 			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole,
-			&targetEntryHostMode, &targetEntryHost, &targetEntryPort, &targetPublicIPv4,
+			&targetEntryHostMode, &targetEntryHost, &targetListenFamily, &targetEntryPort, &targetPublicIPv4, &targetPublicIPv6, &targetIPv6JSON,
 			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID,
-			&value.EntryHostMode, &value.EntryHost, &value.EntryPortMode, &relayEntryPort,
-			&sourcePublicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
+			&value.EntryHostMode, &value.EntryHost, &value.EntryPortMode, &relayListenAddress, &relayEntryPort,
+			&sourcePublicIPv4, &sourcePublicIPv6, &sourceIPv6JSON, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt, &value.Position); err != nil {
 			return nil, fmt.Errorf("scan subscription plan node: %w", err)
 		}
 		populatePlanNode(&value, sourceServerID, relayID, relayEntryPort, sourceServerName,
-			targetEntryHostMode, targetEntryHost, targetEntryPort, targetPublicIPv4,
-			sourcePublicIPv4, enabled, createdAt, updatedAt)
+			targetEntryHostMode, targetEntryHost, targetListenFamily, targetEntryPort, targetPublicIPv4,
+			effectiveIPv6(targetPublicIPv6, targetIPv6JSON), relayListenAddress, sourcePublicIPv4,
+			effectiveIPv6(sourcePublicIPv6.String, sourceIPv6JSON.String), enabled, createdAt, updatedAt)
 		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		values = append(values, value)
 	}
@@ -445,7 +447,8 @@ func listPlanNodes(ctx context.Context, query interface {
 
 func populatePlanNode(value *PlanNode, sourceServerID, relayID, relayEntryPort sql.NullInt64,
 	sourceServerName sql.NullString, targetEntryHostMode, targetEntryHost string,
-	targetEntryPort int, targetPublicIPv4 string, sourcePublicIPv4 sql.NullString,
+	targetListenFamily string, targetEntryPort int, targetPublicIPv4, targetPublicIPv6 string,
+	relayListenAddress, sourcePublicIPv4 sql.NullString, sourcePublicIPv6 string,
 	enabled int, createdAt, updatedAt int64,
 ) {
 	if sourceServerID.Valid {
@@ -458,7 +461,8 @@ func populatePlanNode(value *PlanNode, sourceServerID, relayID, relayEntryPort s
 		value.RelayID = &id
 	}
 	populatePublishedNodeEndpoint(&value.PublishedNode, targetEntryHostMode, targetEntryHost,
-		targetEntryPort, targetPublicIPv4, sourcePublicIPv4.String, relayEntryPort)
+		targetListenFamily, targetEntryPort, targetPublicIPv4, targetPublicIPv6,
+		relayListenAddress.String, sourcePublicIPv4.String, sourcePublicIPv6, relayEntryPort)
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
 	value.UpdatedAt = time.Unix(updatedAt, 0).UTC()

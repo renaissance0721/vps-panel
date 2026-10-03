@@ -13,6 +13,10 @@ export const renewalPeriodOptions: Array<{ label: string; value: RenewalPeriodMo
   { label: '三年付', value: 36 },
 ]
 
+export function serverHasUsableIPv6(server: Pick<ServerRecord, 'system_info'> | null | undefined): boolean {
+  return Boolean(server?.system_info?.public_ipv6)
+}
+
 type AgentMetadata = Pick<ServerRecord, 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'>
 
 export const agentCapabilities = {

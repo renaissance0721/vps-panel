@@ -3,13 +3,16 @@ package subscription
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
@@ -414,10 +417,11 @@ func listPublishedNodes(ctx context.Context, query interface {
 	rows, err := query.QueryContext(ctx, `
 		SELECT nodes.id, nodes.name, nodes.mode, nodes.target_proxy_id, target.name,
 		 target.server_id, target_server.name, target_server.created_by_role,
-		 target.entry_host_mode, target.entry_host, target.listen_port, COALESCE(target_info.public_ipv4, ''),
+		 target.entry_host_mode, target.entry_host, target.listen_family, target.listen_port,
+		 COALESCE(target_info.public_ipv4, ''), COALESCE(target_info.public_ipv6, ''), COALESCE(target_info.ipv6, '[]'),
 		 nodes.source_server_id, source_server.name, source_server.created_by_role, nodes.relay_id,
-		 nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode, relay.listen_port,
-		 COALESCE(source_info.public_ipv4, ''), nodes.traffic_multiplier_bp,
+		 nodes.entry_host_mode, nodes.entry_host, nodes.entry_port_mode, relay.listen_address, relay.listen_port,
+		 COALESCE(source_info.public_ipv4, ''), COALESCE(source_info.public_ipv6, ''), COALESCE(source_info.ipv6, '[]'), nodes.traffic_multiplier_bp,
 		 nodes.enabled, nodes.created_at, nodes.updated_at
 		FROM subscription_published_nodes AS nodes
 		JOIN proxies AS target ON target.id = nodes.target_proxy_id
@@ -434,18 +438,18 @@ func listPublishedNodes(ctx context.Context, query interface {
 	for rows.Next() {
 		var value PublishedNode
 		var sourceServerID, relayID, relayEntryPort sql.NullInt64
-		var sourceServerName, sourceCreatorRole, sourcePublicIPv4 sql.NullString
-		var targetCreatorRole, targetEntryHostMode, targetEntryHost, targetPublicIPv4 string
+		var sourceServerName, sourceCreatorRole, relayListenAddress, sourcePublicIPv4, sourcePublicIPv6, sourceIPv6JSON sql.NullString
+		var targetCreatorRole, targetEntryHostMode, targetEntryHost, targetListenFamily, targetPublicIPv4, targetPublicIPv6, targetIPv6JSON string
 		var targetEntryPort int
 		var enabled int
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.Name, &value.Mode, &value.TargetProxyID, &value.TargetProxyName,
 			&value.TargetServerID, &value.TargetServerName, &targetCreatorRole,
-			&targetEntryHostMode, &targetEntryHost, &targetEntryPort, &targetPublicIPv4,
+			&targetEntryHostMode, &targetEntryHost, &targetListenFamily, &targetEntryPort, &targetPublicIPv4, &targetPublicIPv6, &targetIPv6JSON,
 			&sourceServerID, &sourceServerName, &sourceCreatorRole, &relayID,
-			&value.EntryHostMode, &value.EntryHost, &value.EntryPortMode, &relayEntryPort,
-			&sourcePublicIPv4, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
+			&value.EntryHostMode, &value.EntryHost, &value.EntryPortMode, &relayListenAddress, &relayEntryPort,
+			&sourcePublicIPv4, &sourcePublicIPv6, &sourceIPv6JSON, &value.TrafficMultiplierBP, &enabled, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan published node: %w", err)
 		}
@@ -458,8 +462,9 @@ func listPublishedNodes(ctx context.Context, query interface {
 			id := relayID.Int64
 			value.RelayID = &id
 		}
-		populatePublishedNodeEndpoint(&value, targetEntryHostMode, targetEntryHost, targetEntryPort,
-			targetPublicIPv4, sourcePublicIPv4.String, relayEntryPort)
+		populatePublishedNodeEndpoint(&value, targetEntryHostMode, targetEntryHost, targetListenFamily, targetEntryPort,
+			targetPublicIPv4, effectiveIPv6(targetPublicIPv6, targetIPv6JSON), relayListenAddress.String,
+			sourcePublicIPv4.String, effectiveIPv6(sourcePublicIPv6.String, sourceIPv6JSON.String), relayEntryPort)
 		value.Enabled = enabled != 0
 		value.Distributable = targetCreatorRole == "admin" && (value.Mode == NodeModeDirect || sourceCreatorRole.String == "admin")
 		value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -472,8 +477,9 @@ func listPublishedNodes(ctx context.Context, query interface {
 	return values, nil
 }
 
-func populatePublishedNodeEndpoint(value *PublishedNode, targetEntryHostMode, targetEntryHost string,
-	targetEntryPort int, targetPublicIPv4, sourcePublicIPv4 string, relayEntryPort sql.NullInt64,
+func populatePublishedNodeEndpoint(value *PublishedNode, targetEntryHostMode, targetEntryHost, targetListenFamily string,
+	targetEntryPort int, targetPublicIPv4, targetPublicIPv6, relayListenAddress, sourcePublicIPv4, sourcePublicIPv6 string,
+	relayEntryPort sql.NullInt64,
 ) {
 	if value.Mode == NodeModeDirect {
 		value.EntryPort = targetEntryPort
@@ -482,7 +488,11 @@ func populatePublishedNodeEndpoint(value *PublishedNode, targetEntryHostMode, ta
 		} else if targetEntryHostMode == proxystore.EntryHostManual {
 			value.EntryAddress = targetEntryHost
 		} else {
-			value.EntryAddress = targetPublicIPv4
+			if targetListenFamily == proxystore.ListenFamilyIPv6 {
+				value.EntryAddress = targetPublicIPv6
+			} else {
+				value.EntryAddress = targetPublicIPv4
+			}
 		}
 		return
 	}
@@ -492,8 +502,18 @@ func populatePublishedNodeEndpoint(value *PublishedNode, targetEntryHostMode, ta
 	if value.EntryHostMode == EntryHostModeManual {
 		value.EntryAddress = value.EntryHost
 	} else {
-		value.EntryAddress = sourcePublicIPv4
+		if ip := net.ParseIP(relayListenAddress); ip != nil && ip.To4() == nil {
+			value.EntryAddress = sourcePublicIPv6
+		} else {
+			value.EntryAddress = sourcePublicIPv4
+		}
 	}
+}
+
+func effectiveIPv6(publicIPv6, ipv6JSON string) string {
+	var addresses []string
+	_ = json.Unmarshal([]byte(ipv6JSON), &addresses)
+	return netutil.EffectivePublicIPv6(publicIPv6, addresses)
 }
 
 func syncPublishedNodePlansTx(

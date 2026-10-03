@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 21
+const LatestSchemaVersion = 22
 
 type migration struct {
 	version            int
@@ -44,6 +44,7 @@ var migrations = []migration{
 	{version: 19, name: "subscription_client_templates", up: migrateSubscriptionClientTemplates},
 	{version: 20, name: "shared_text_rule_providers", up: migrateSharedTextRuleProviders},
 	{version: 21, name: "server_bound_domain", up: addServerBoundDomain},
+	{version: 22, name: "dual_stack_entry_addresses", up: migrateDualStackEntryAddresses},
 }
 
 func addServerBoundDomain(ctx context.Context, tx *sql.Tx) error {
@@ -54,8 +55,52 @@ func addServerBoundDomain(ctx context.Context, tx *sql.Tx) error {
 	if exists {
 		return nil
 	}
+	ipv4Exists, err := migrationColumnExists(ctx, tx, "servers", "bound_domain_ipv4")
+	if err != nil {
+		return err
+	}
+	if ipv4Exists {
+		return nil
+	}
 	_, err = tx.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN bound_domain TEXT NOT NULL DEFAULT ''`)
 	return err
+}
+
+func migrateDualStackEntryAddresses(ctx context.Context, tx *sql.Tx) error {
+	boundDomainExists, err := migrationColumnExists(ctx, tx, "servers", "bound_domain")
+	if err != nil {
+		return err
+	}
+	boundDomainIPv4Exists, err := migrationColumnExists(ctx, tx, "servers", "bound_domain_ipv4")
+	if err != nil {
+		return err
+	}
+	if boundDomainExists && !boundDomainIPv4Exists {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE servers RENAME COLUMN bound_domain TO bound_domain_ipv4`); err != nil {
+			return fmt.Errorf("rename server IPv4 bound domain: %w", err)
+		}
+	}
+	for _, column := range []struct {
+		table     string
+		name      string
+		statement string
+	}{
+		{"servers", "bound_domain_ipv6", `ALTER TABLE servers ADD COLUMN bound_domain_ipv6 TEXT NOT NULL DEFAULT ''`},
+		{"server_system_info", "public_ipv6", `ALTER TABLE server_system_info ADD COLUMN public_ipv6 TEXT NOT NULL DEFAULT ''`},
+		{"proxies", "listen_family", `ALTER TABLE proxies ADD COLUMN listen_family TEXT NOT NULL DEFAULT 'ipv4' CHECK (listen_family IN ('ipv4', 'ipv6'))`},
+	} {
+		exists, err := migrationColumnExists(ctx, tx, column.table, column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, column.statement); err != nil {
+			return fmt.Errorf("add %s.%s: %w", column.table, column.name, err)
+		}
+	}
+	return nil
 }
 
 func migrateSharedTextRuleProviders(ctx context.Context, tx *sql.Tx) error {

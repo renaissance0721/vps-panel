@@ -51,7 +51,7 @@ func ListDesired(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, serverID int64) ([]DesiredProxy, error) {
 	rows, err := query.QueryContext(ctx,
-		`SELECT id, listen_port, protocol, config_json FROM proxies
+		`SELECT id, listen_family, listen_port, protocol, config_json FROM proxies
 		 WHERE server_id = ? AND enabled = 1 ORDER BY id`, serverID,
 	)
 	if err != nil {
@@ -65,14 +65,19 @@ func ListDesired(ctx context.Context, query interface {
 	for rows.Next() {
 		var value DesiredProxy
 		var configJSON string
-		if err := rows.Scan(&value.ID, &value.Port, &value.Protocol, &configJSON); err != nil {
+		var listenFamily string
+		if err := rows.Scan(&value.ID, &listenFamily, &value.Port, &value.Protocol, &configJSON); err != nil {
 			return nil, fmt.Errorf("scan desired proxy: %w", err)
 		}
 		config, err := decodeConfig(value.Protocol, configJSON)
 		if err != nil {
 			return nil, err
 		}
-		value.Listen = "0.0.0.0"
+		if listenFamily == ListenFamilyIPv6 {
+			value.Listen = "::"
+		} else {
+			value.Listen = "0.0.0.0"
+		}
 		if value.Protocol == ProtocolVLESS {
 			value.Transport = config.Transport
 			value.Security = config.Security

@@ -112,7 +112,8 @@ func TestVLESSShareAutoUsesOnlyPublicIPv4AndManualOverridesIt(t *testing.T) {
 		t.Fatalf("manual share changed with public IPv4 = %+v, %v", manualShareAfterPublicChange, err)
 	}
 	manualHost = "[2001:db8::1]"
-	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{EntryHost: &manualHost}); err != nil {
+	ipv6Family := ListenFamilyIPv6
+	if _, _, err := service.Update(t.Context(), proxyValue.ID, UpdateInput{ListenFamily: &ipv6Family, EntryHost: &manualHost}); err != nil {
 		t.Fatal(err)
 	}
 	manualShare, err = service.GetClientShare(t.Context(), proxyValue.Clients[0].ID)
@@ -240,8 +241,11 @@ func TestClientShareDisplayNameOverride(t *testing.T) {
 
 func TestShadowsocksSIP002ShareUsesMasterAndUserPassword(t *testing.T) {
 	db, service, serverID := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO server_system_info (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at) VALUES (?, '', '', '', '', '', '[]', '["2001:db8::8"]', '', '2001:db8::8', '', 1)`, serverID); err != nil {
+		t.Fatal(err)
+	}
 	value, _, err := service.Create(t.Context(), CreateInput{
-		ServerID: serverID, Name: "东京 节点", Protocol: ProtocolShadowsocks,
+		ServerID: serverID, Name: "东京 节点", Protocol: ProtocolShadowsocks, ListenFamily: ListenFamilyIPv6,
 		Method: ShadowsocksMethodAES128GCM, ListenPort: 8388, EntryHostMode: EntryHostManual,
 		EntryHost: "[2001:db8::8]", Enabled: true, FirstClientName: "手机 + 用户",
 	})

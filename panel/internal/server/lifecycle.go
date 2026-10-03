@@ -52,18 +52,39 @@ func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server
 	return s.Get(ctx, id)
 }
 
-func (s *Service) UpdateBoundDomain(ctx context.Context, id int64, boundDomain string) (Server, error) {
-	var err error
-	boundDomain, err = normalizeBoundDomain(boundDomain)
-	if err != nil {
-		return Server{}, err
+func (s *Service) UpdateBoundDomains(ctx context.Context, id int64, boundDomainIPv4, boundDomainIPv6 *string) (Server, error) {
+	var ipv4Value, ipv6Value any
+	if boundDomainIPv4 != nil {
+		normalized, err := normalizeBoundDomain(*boundDomainIPv4)
+		if err != nil {
+			return Server{}, err
+		}
+		ipv4Value = normalized
+	}
+	if boundDomainIPv6 != nil {
+		normalized, err := normalizeBoundDomain(*boundDomainIPv6)
+		if err != nil {
+			return Server{}, err
+		}
+		if normalized != "" {
+			current, err := s.Get(ctx, id)
+			if err != nil {
+				return Server{}, err
+			}
+			if normalized != current.BoundDomainIPv6 && current.SystemInfo != nil && current.SystemInfo.PublicIPv6 == "" {
+				return Server{}, ErrIPv6Unavailable
+			}
+		}
+		ipv6Value = normalized
 	}
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE servers SET bound_domain = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
-		boundDomain, s.now().UTC().Truncate(time.Second).Unix(), id,
+		`UPDATE servers SET bound_domain_ipv4 = COALESCE(?, bound_domain_ipv4),
+		 bound_domain_ipv6 = COALESCE(?, bound_domain_ipv6), updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL`,
+		ipv4Value, ipv6Value, s.now().UTC().Truncate(time.Second).Unix(), id,
 	)
 	if err != nil {
-		return Server{}, fmt.Errorf("update server bound domain: %w", err)
+		return Server{}, fmt.Errorf("update server bound domains: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {

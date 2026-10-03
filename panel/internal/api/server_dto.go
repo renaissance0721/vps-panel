@@ -15,7 +15,8 @@ var shanghaiLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 type createServerRequest struct {
 	Name                     string          `json:"name"`
-	BoundDomain              string          `json:"bound_domain"`
+	BoundDomainIPv4          string          `json:"bound_domain_ipv4"`
+	BoundDomainIPv6          string          `json:"bound_domain_ipv6"`
 	Visibility               string          `json:"visibility"`
 	UserIDs                  []int64         `json:"user_ids"`
 	ExpiresAt                json.RawMessage `json:"expires_at"`
@@ -34,7 +35,8 @@ type updateServerAccessRequest struct {
 
 type updateServerRequest struct {
 	Name                     *string         `json:"name"`
-	BoundDomain              *string         `json:"bound_domain"`
+	BoundDomainIPv4          *string         `json:"bound_domain_ipv4"`
+	BoundDomainIPv6          *string         `json:"bound_domain_ipv6"`
 	OwnerUserID              json.RawMessage `json:"owner_user_id"`
 	OutboundPreference       *string         `json:"outbound_preference"`
 	BlockChinaInbound        *bool           `json:"block_china_inbound"`
@@ -54,7 +56,8 @@ type updateTrafficAdjustmentRequest struct {
 type serverResponse struct {
 	ID                        int64               `json:"id"`
 	Name                      string              `json:"name"`
-	BoundDomain               string              `json:"bound_domain"`
+	BoundDomainIPv4           string              `json:"bound_domain_ipv4"`
+	BoundDomainIPv6           string              `json:"bound_domain_ipv6"`
 	OwnerUserID               *int64              `json:"owner_user_id"`
 	OwnerUsername             string              `json:"owner_username"`
 	CreatedByUserID           *int64              `json:"created_by_user_id"`
@@ -107,6 +110,7 @@ type systemInfoResponse struct {
 	IPv4         []string `json:"ipv4"`
 	IPv6         []string `json:"ipv6"`
 	PublicIPv4   string   `json:"public_ipv4"`
+	PublicIPv6   string   `json:"public_ipv6"`
 	AgentVersion string   `json:"agent_version"`
 }
 
@@ -137,7 +141,8 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 	response := serverResponse{
 		ID:                       value.ID,
 		Name:                     value.Name,
-		BoundDomain:              value.BoundDomain,
+		BoundDomainIPv4:          value.BoundDomainIPv4,
+		BoundDomainIPv6:          value.BoundDomainIPv6,
 		OwnerUserID:              value.OwnerUserID,
 		OwnerUsername:            value.OwnerUsername,
 		CreatedByUserID:          value.CreatedByUserID,
@@ -193,6 +198,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 			IPv4:         value.SystemInfo.IPv4,
 			IPv6:         value.SystemInfo.IPv6,
 			PublicIPv4:   value.SystemInfo.PublicIPv4,
+			PublicIPv6:   value.SystemInfo.PublicIPv6,
 			AgentVersion: value.SystemInfo.AgentVersion,
 		}
 	}

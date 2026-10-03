@@ -23,7 +23,7 @@ before(async () => {
 after(async () => { globalThis.fetch = originalFetch; await loader?.close() })
 
 function server(overrides = {}) {
-  return { id: 1, name: 'Tokyo', status: 'online', agent_capabilities: ['probe.tcp'], system_info: { hostname: 'host', os_name: 'Debian', os_version: '12', kernel: '6.1', arch: 'amd64', ipv4: ['192.0.2.1'], ipv6: ['2001:db8::1'], public_ipv4: '198.51.100.1' }, metrics: { memory_total_bytes: 1024, disk_total_bytes: 4096, uptime_seconds: 60 }, ...overrides }
+  return { id: 1, name: 'Tokyo', status: 'online', agent_capabilities: ['probe.tcp'], system_info: { hostname: 'host', os_name: 'Debian', os_version: '12', kernel: '6.1', arch: 'amd64', ipv4: ['192.0.2.1'], ipv6: ['2001:db8::1'], public_ipv4: '198.51.100.1', public_ipv6: '2606:4700:4700::1111' }, metrics: { memory_total_bytes: 1024, disk_total_bytes: 4096, uptime_seconds: 60 }, ...overrides }
 }
 function task(overrides = {}) {
   return { id: 1, name: 'Tokyo TCP', type: 'tcp', target: 'example.com', port: 443, interval_seconds: 60, enabled: true, default_on: false, server_ids: [1], created_at: '', updated_at: '', latest_latency_ms: 42, latest_outcome: 'success', failure_rate: 0.2, ...overrides }
@@ -46,7 +46,7 @@ test('探针卡片只打开独立详情，按现有 ServerRecord 显示基础信
   assert.equal(bindings.monitorDetailOpen.value, true)
   assert.equal(bindings.selectedMonitorServer.value.id, 1)
   const detail = await render(Detail, { server: record, show: true })
-  for (const label of ['基础信息', '主机名', '操作系统', '系统版本', '内核', '架构', '内存总量', '磁盘总量', 'IPv4', 'IPv6', '公网 IPv4', '运行时间', '网络延迟']) assert.ok(detail.html.includes(label), label)
+  for (const label of ['基础信息', '主机名', '操作系统', '系统版本', '内核', '架构', '内存总量', '磁盘总量', 'IPv4', 'IPv6', '公网 IPv4', '公网 IPv6', '运行时间', '网络延迟']) assert.ok(detail.html.includes(label), label)
   for (const forbidden of ['所有者', '访问范围', '到期', '续费', 'Agent 类型', 'Agent 版本', 'Agent API', 'Agent 升级', '一键诊断', '出站', '防火墙', '删除服务器', '安装令牌', '流量配置']) assert.ok(!detail.html.includes(forbidden), forbidden)
   assert.match(detail.html, /当前 Agent 不支持延迟探测/)
   assert.match(detail.html, /1 小时/); assert.match(detail.html, /6 小时/); assert.match(detail.html, /24 小时/)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 )
 
 func (s *Service) Create(ctx context.Context, name string) (CreatedServer, error) {
@@ -39,7 +40,11 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 	if err != nil {
 		return CreatedServer{}, err
 	}
-	input.BoundDomain, err = normalizeBoundDomain(input.BoundDomain)
+	input.BoundDomainIPv4, err = normalizeBoundDomain(input.BoundDomainIPv4)
+	if err != nil {
+		return CreatedServer{}, err
+	}
+	input.BoundDomainIPv6, err = normalizeBoundDomain(input.BoundDomainIPv6)
 	if err != nil {
 		return CreatedServer{}, err
 	}
@@ -139,12 +144,12 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO servers
-		 (name, bound_domain, owner_user_id, created_by_user_id, created_by_role, status, visibility,
+		 (name, bound_domain_ipv4, bound_domain_ipv6, owner_user_id, created_by_user_id, created_by_role, status, visibility,
 		  expires_at, renewal_period_months, auto_renew, renewal_anchor_day,
 		  monthly_traffic_limit_bytes, traffic_count_mode, traffic_reset_day, traffic_reset_time,
 		  created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.Name, input.BoundDomain, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.Name, input.BoundDomainIPv4, input.BoundDomainIPv6, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
 		expiresAt, renewalPeriod, input.AutoRenew, renewalAnchorDay,
 		monthlyTrafficLimit, input.TrafficCountMode, input.TrafficResetDay, input.TrafficResetTime,
 		now.Unix(), now.Unix(),
@@ -189,7 +194,8 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 		Server: Server{
 			ID:                       serverID,
 			Name:                     input.Name,
-			BoundDomain:              input.BoundDomain,
+			BoundDomainIPv4:          input.BoundDomainIPv4,
+			BoundDomainIPv6:          input.BoundDomainIPv6,
 			OwnerUserID:              ownerUserID,
 			OwnerUsername:            ownerUsername,
 			CreatedByUserID:          ownerUserID,
@@ -284,7 +290,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		arguments = append(arguments, userID)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.bound_domain, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -297,7 +303,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -333,7 +339,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.bound_domain, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -346,7 +352,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -388,14 +394,14 @@ func scanServer(row rowScanner) (Server, error) {
 	var appliedConfigVersion, configSyncedAt sql.NullInt64
 	var configSyncStatus, configSyncError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
-	var ipv4JSON, ipv6JSON, publicIPv4, agentVersion sql.NullString
+	var ipv4JSON, ipv6JSON, publicIPv4, publicIPv6, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
 	var cpuPercent sql.NullFloat64
 	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime sql.NullInt64
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.BoundDomain, &ownerUserID, &ownerUsername,
+		&value.ID, &value.Name, &value.BoundDomainIPv4, &value.BoundDomainIPv6, &ownerUserID, &ownerUsername,
 		&createdByUserID, &createdByUsername, &value.CreatedByRole,
 		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
 		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,
@@ -404,7 +410,7 @@ func scanServer(row rowScanner) (Server, error) {
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,
 		&appliedConfigVersion, &configSyncStatus, &configSyncError, &configSyncedAt,
-		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &agentVersion, &reportedAt,
+		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &publicIPv6, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
@@ -481,6 +487,7 @@ func scanServer(row rowScanner) (Server, error) {
 		if err := json.Unmarshal([]byte(ipv6JSON.String), &info.IPv6); err != nil {
 			return Server{}, fmt.Errorf("decode server IPv6 addresses: %w", err)
 		}
+		info.PublicIPv6 = netutil.EffectivePublicIPv6(publicIPv6.String, info.IPv6)
 		value.SystemInfo = &info
 	}
 	if metricsUpdatedAt.Valid {

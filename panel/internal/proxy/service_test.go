@@ -36,7 +36,7 @@ func createRealityProxy(t *testing.T, service *Service, serverID int64, port int
 
 func getProxyForTest(service *Service, id int64) (Proxy, storedConfig, error) {
 	row := service.db.QueryRow(`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		proxies.config_json, proxies.created_at, proxies.updated_at
 		FROM proxies JOIN servers ON servers.id = proxies.server_id

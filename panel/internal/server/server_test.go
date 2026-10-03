@@ -67,7 +67,7 @@ func TestCreateWithSettingsPersistsRenewalTrafficAccessAndEnrollment(t *testing.
 	period := 12
 	limit := int64(500 << 30)
 	created, err := service.CreateWithSettings(t.Context(), CreateServerInput{
-		Name: "  DMIT LAX  ", BoundDomain: "  LAX.Example.COM.  ", Visibility: VisibilityPrivate, UserIDs: []int64{2}, CreatorID: 1,
+		Name: "  DMIT LAX  ", BoundDomainIPv4: "  LAX.Example.COM.  ", BoundDomainIPv6: " V6.LAX.Example.COM. ", Visibility: VisibilityPrivate, UserIDs: []int64{2}, CreatorID: 1,
 		ExpiresAt: &expiresAt, RenewalPeriodMonths: &period, AutoRenew: true,
 		MonthlyTrafficLimitBytes: &limit, TrafficCountMode: TrafficBidirectional,
 		TrafficResetDay: 31, TrafficResetTime: "08:30",
@@ -75,7 +75,7 @@ func TestCreateWithSettingsPersistsRenewalTrafficAccessAndEnrollment(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "DMIT LAX" || created.BoundDomain != "lax.example.com" || created.ExpiresAt == nil || !created.ExpiresAt.Equal(expiresAt) ||
+	if created.Name != "DMIT LAX" || created.BoundDomainIPv4 != "lax.example.com" || created.BoundDomainIPv6 != "v6.lax.example.com" || created.ExpiresAt == nil || !created.ExpiresAt.Equal(expiresAt) ||
 		created.RenewalPeriodMonths == nil || *created.RenewalPeriodMonths != period || !created.AutoRenew ||
 		created.MonthlyTrafficLimitBytes == nil || *created.MonthlyTrafficLimitBytes != limit ||
 		created.TrafficCountMode != TrafficBidirectional || created.TrafficResetDay != 31 || created.TrafficResetTime != "08:30" ||
@@ -111,7 +111,7 @@ func TestCreateWithSettingsValidationIsAtomic(t *testing.T) {
 		{"invalid reset day", CreateServerInput{Name: "Invalid", TrafficResetDay: 32}, ErrInvalidTrafficConfig},
 		{"invalid reset time", CreateServerInput{Name: "Invalid", TrafficResetTime: "24:00"}, ErrInvalidTrafficConfig},
 		{"invalid access user", CreateServerInput{Name: "Invalid", Visibility: VisibilityPrivate, UserIDs: []int64{999}}, ErrInvalidServerAccess},
-		{"invalid bound domain", CreateServerInput{Name: "Invalid", BoundDomain: "https://node.example.com"}, ErrInvalidBoundDomain},
+		{"invalid bound domain", CreateServerInput{Name: "Invalid", BoundDomainIPv4: "https://node.example.com"}, ErrInvalidBoundDomain},
 	} {
 		t.Run(check.name, func(t *testing.T) {
 			service, db := newTestService(t)
@@ -133,30 +133,42 @@ func TestCreateWithSettingsValidationIsAtomic(t *testing.T) {
 	}
 }
 
-func TestUpdateBoundDomain(t *testing.T) {
-	service, _ := newTestService(t)
+func TestUpdateBoundDomains(t *testing.T) {
+	service, db := newTestService(t)
 	created, err := service.Create(context.Background(), "Original")
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := service.UpdateBoundDomain(context.Background(), created.ID, "  NODE.Example.COM. ")
-	if err != nil || updated.BoundDomain != "node.example.com" || updated.Name != created.Name {
-		t.Fatalf("UpdateBoundDomain() = (%+v, %v)", updated, err)
+	updated, err := service.UpdateBoundDomains(context.Background(), created.ID, stringPointer("  NODE.Example.COM. "), stringPointer(" V6.NODE.Example.COM. "))
+	if err != nil || updated.BoundDomainIPv4 != "node.example.com" || updated.BoundDomainIPv6 != "v6.node.example.com" || updated.Name != created.Name {
+		t.Fatalf("UpdateBoundDomains() = (%+v, %v)", updated, err)
 	}
-	cleared, err := service.UpdateBoundDomain(context.Background(), created.ID, "")
-	if err != nil || cleared.BoundDomain != "" {
+	cleared, err := service.UpdateBoundDomains(context.Background(), created.ID, stringPointer(""), nil)
+	if err != nil || cleared.BoundDomainIPv4 != "" || cleared.BoundDomainIPv6 != "v6.node.example.com" {
 		t.Fatalf("clear bound domain = (%+v, %v)", cleared, err)
+	}
+	if _, err := db.Exec(`INSERT INTO server_system_info
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["fd00::1"]', '', '', '', 1)`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer("new-v6.example.com")); !errors.Is(err, ErrIPv6Unavailable) {
+		t.Fatalf("IPv6 domain without public IPv6 error = %v", err)
+	}
+	cleared, err = service.UpdateBoundDomains(context.Background(), created.ID, nil, stringPointer(""))
+	if err != nil || cleared.BoundDomainIPv6 != "" {
+		t.Fatalf("clear unavailable IPv6 domain = (%+v, %v)", cleared, err)
 	}
 	for _, value := range []string{
 		"https://node.example.com", "node.example.com/path", "node.example.com:443", "node example.com",
 		"-node.example.com", "node-.example.com", "node..example.com", "127.0.0.1", "node.example.com\n", strings.Repeat("a", 64) + ".example.com",
 	} {
-		if _, err := service.UpdateBoundDomain(context.Background(), created.ID, value); !errors.Is(err, ErrInvalidBoundDomain) {
-			t.Fatalf("UpdateBoundDomain(%q) error = %v", value, err)
+		if _, err := service.UpdateBoundDomains(context.Background(), created.ID, stringPointer(value), nil); !errors.Is(err, ErrInvalidBoundDomain) {
+			t.Fatalf("UpdateBoundDomains(%q) error = %v", value, err)
 		}
 	}
-	if _, err := service.UpdateBoundDomain(context.Background(), created.ID+100, "node.example.com"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("UpdateBoundDomain(missing) error = %v", err)
+	if _, err := service.UpdateBoundDomains(context.Background(), created.ID+100, stringPointer("node.example.com"), nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateBoundDomains(missing) error = %v", err)
 	}
 }
 
@@ -304,3 +316,5 @@ func TestServerCreationRollsBackIfDefaultProbesExceedLimit(t *testing.T) {
 		}
 	}
 }
+
+func stringPointer(value string) *string { return &value }

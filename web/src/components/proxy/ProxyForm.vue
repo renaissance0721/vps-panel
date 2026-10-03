@@ -28,11 +28,14 @@ const props = defineProps<{
     | 'servers'
     | 'proxyProtocol'
     | 'proxyPort'
+	| 'proxyListenFamily'
     | 'proxyEntryHostMode'
     | 'proxyEntryHost'
-    | 'selectedServerPublicIPv4'
+	| 'selectedServerPublicAddress'
+	| 'selectedServerHasUsableIPv6'
     | 'selectedServerBoundDomain'
     | 'onProxyServerChange'
+	| 'onProxyFamilyChange'
     | 'proxySecurity'
     | 'proxyServerName'
     | 'proxyEnabled'
@@ -55,11 +58,14 @@ const {
   servers,
   proxyProtocol,
   proxyPort,
+	proxyListenFamily,
   proxyEntryHostMode,
   proxyEntryHost,
-  selectedServerPublicIPv4,
+	selectedServerPublicAddress,
+	selectedServerHasUsableIPv6,
   selectedServerBoundDomain,
   onProxyServerChange,
+	onProxyFamilyChange,
   proxySecurity,
   proxyServerName,
   proxyEnabled,
@@ -91,17 +97,24 @@ const {
 			</select>
 		</label>
 		<div v-else class="fixed-fields"><span>协议：{{ proxyProtocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</span></div>
+		<label>
+		  <span>监听 IP 类型</span>
+		  <select v-model="proxyListenFamily" class="settings-input" @change="onProxyFamilyChange">
+			<option value="ipv4">IPv4</option><option value="ipv6" :disabled="!selectedServerHasUsableIPv6">IPv6</option>
+		  </select>
+		</label>
+		<n-alert v-if="!selectedServerHasUsableIPv6" type="info">当前服务器未检测到可用公网 IPv6</n-alert>
         <label><span>监听端口</span><input v-model.number="proxyPort" class="settings-input" type="number" min="1" max="65535" /></label>
         <label>
           <span>入口地址模式</span>
           <select v-model="proxyEntryHostMode" class="settings-input">
             <option v-if="selectedServerBoundDomain" value="bound">已绑定域名：{{ selectedServerBoundDomain }}</option>
-            <option value="auto">自动检测</option><option value="manual">手动输入</option>
+			<option value="auto">自动检测公网 {{ proxyListenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}</option><option value="manual">手动输入</option>
           </select>
         </label>
         <label v-if="proxyEntryHostMode === 'manual'"><span>入口 IP / 域名</span><n-input v-model:value="proxyEntryHost" placeholder="例如：1.2.3.4 或 jp.example.com" /></label>
         <p v-else-if="proxyEntryHostMode === 'bound'">使用服务器绑定域名：{{ selectedServerBoundDomain }}</p>
-        <p v-else>自动使用服务器公网 IPv4。当前公网 IPv4：{{ selectedServerPublicIPv4 || '未检测到' }}</p>
+		<p v-else>自动使用服务器公网 {{ proxyListenFamily === 'ipv6' ? 'IPv6' : 'IPv4' }}。当前地址：{{ selectedServerPublicAddress || '未检测到' }}</p>
 		<div v-if="proxyProtocol === 'vless'" class="fixed-fields"><span>传输：TCP</span><span>流控：XTLS Vision</span></div>
 		<template v-if="proxyProtocol === 'vless'">
 		<label>

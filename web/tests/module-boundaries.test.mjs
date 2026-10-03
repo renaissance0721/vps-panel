@@ -34,7 +34,7 @@ after(async () => {
 
 function serverRecord(overrides = {}) {
   return {
-    id: 7, name: '测试服务器', bound_domain: '', status: 'pending', visibility: 'public', access_user_ids: [],
+    id: 7, name: '测试服务器', bound_domain_ipv4: '', bound_domain_ipv6: '', status: 'pending', visibility: 'public', access_user_ids: [],
     owner_user_id: 1, owner_username: 'admin',
     archived_at: null, expires_at: null, renewal_period_months: null, auto_renew: false,
     decommissioning_at: null, decommission_status: '', decommission_error: '',
@@ -165,7 +165,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   const { model, submitting } = serverModel()
   model.openCreateServerModal()
   model.createServerName.value = '测试服务器'
-  model.createServerBoundDomain.value = 'node.example.com'
+  model.createServerBoundDomainIPv4.value = 'node.example.com'
   model.createServerVisibility.value = 'private'
   model.createServerAccessUserIDs.value = [2]
   model.createServerExpiration.value = '2027-04-03'
@@ -178,7 +178,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   model.createServerTrafficResetTime.value = '08:30'
   await model.createServerRecord()
   assert.deepEqual(JSON.parse(calls[0].init.body), {
-    name: '测试服务器', bound_domain: 'node.example.com', visibility: 'private', user_ids: [2, 1],
+    name: '测试服务器', bound_domain_ipv4: 'node.example.com', bound_domain_ipv6: '', visibility: 'private', user_ids: [2, 1],
     expires_at: '2027-04-03', renewal_period_months: 12, auto_renew: true,
     monthly_traffic_limit_bytes: 500 * 1024 ** 3, traffic_count_mode: 'bidirectional',
     traffic_reset_day: 31, traffic_reset_time: '08:30',
@@ -187,7 +187,7 @@ test('Server 创建一次提交管理字段，成功后打开安装命令并重�
   assert.equal(model.serverModalOpen.value, true)
   assert.equal(model.createdServer.value.agent_installation_command, created.agent_installation_command)
   assert.equal(model.createServerName.value, '')
-  assert.equal(model.createServerBoundDomain.value, '')
+  assert.equal(model.createServerBoundDomainIPv4.value, '')
   assert.equal(model.createServerTrafficLimit.value, '')
   assert.equal(submitting.value, false)
   model.closeServerDetails()
@@ -247,7 +247,7 @@ test('Server 刷新失去访问权限时关闭关联弹窗，不恢复原始令�
 test('拆分后的 Server 列表与月流量表单实际渲染到期日期和 Modal 内错误', async () => {
   const { model } = serverModel()
   model.servers.value = [
-    serverRecord({ bound_domain: 'core.example.com', expires_at: '2026-12-31T15:59:59Z', owner_username: 'refrain' }),
+    serverRecord({ bound_domain_ipv4: 'core.example.com', expires_at: '2026-12-31T15:59:59Z', owner_username: 'refrain' }),
     serverRecord({ id: 8, owner_user_id: null, owner_username: '' }),
   ]
   const list = await render('components/server/ServerList.vue', model)
@@ -312,8 +312,8 @@ test('Server 统一基本信息表单初始化、保存续费设置并保持列�
 })
 
 test('Server 绑定域名在基本信息中独立 PATCH 并立即刷新详情', async t => {
-  const initial = serverRecord({ bound_domain: 'old.example.com' })
-  const updated = { ...initial, bound_domain: 'new.example.com' }
+  const initial = serverRecord({ bound_domain_ipv4: 'old.example.com', bound_domain_ipv6: '' })
+  const updated = { ...initial, bound_domain_ipv4: 'new.example.com' }
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     if (init?.method === 'PATCH') {
@@ -326,12 +326,28 @@ test('Server 绑定域名在基本信息中独立 PATCH 并立即刷新详情', 
   model.servers.value = [initial]
   model.viewServer(initial)
   model.openBasicInfoModal()
-  assert.equal(model.boundDomainInput.value, 'old.example.com')
-  model.boundDomainInput.value = ' new.example.com '
+  assert.equal(model.boundDomainIPv4Input.value, 'old.example.com')
+  model.boundDomainIPv4Input.value = ' new.example.com '
   await model.saveBasicInfo()
-  assert.deepEqual(calls, [{ url: '/api/servers/7', body: { bound_domain: 'new.example.com' } }])
-  assert.equal(model.selectedServer.value.bound_domain, 'new.example.com')
+  assert.deepEqual(calls, [{ url: '/api/servers/7', body: { bound_domain_ipv4: 'new.example.com', bound_domain_ipv6: '' } }])
+  assert.equal(model.selectedServer.value.bound_domain_ipv4, 'new.example.com')
   assert.equal(model.serverModalOpen.value, true)
+})
+
+test('已上报但无公网 IPv6 的 Server 拒绝新增 IPv6 绑定域名', async t => {
+  const current = serverRecord({
+    system_info: { hostname: 'host', ipv4: [], ipv6: ['fd00::1'], public_ipv4: '198.51.100.7', public_ipv6: '' },
+  })
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('不应发送请求') })
+  const { model } = serverModel()
+  model.servers.value = [current]
+  model.viewServer(current)
+  model.openBasicInfoModal()
+  model.nameInput.value = '不应提前修改'
+  model.boundDomainIPv6Input.value = 'v6.example.com'
+  await model.saveBasicInfo()
+  assert.equal(fetch.mock.calls.length, 0)
+  assert.match(model.basicInfoFormError.value, /未检测到可用公网 IPv6/)
 })
 
 test('Server 详情基本信息只读且归档状态不显示统一修改入口', async () => {
@@ -801,7 +817,7 @@ test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段'
   assert.equal('private_key' in calls[0].body, false)
   assert.equal(form.proxyFormOpen.value, false)
   assert.equal(shown, 4)
-  form.openEditProxy({ id: 4, name: 'legacy', server_id: 7, listen_port: 443, entry_host_mode: 'auto', entry_host: '', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'node.example.com', tls_certificate_configured: true } })
+  form.openEditProxy({ id: 4, name: 'legacy', server_id: 7, listen_family: 'ipv4', listen_port: 443, entry_host_mode: 'auto', entry_host: '', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'node.example.com', tls_certificate_configured: true } })
   assert.equal(form.proxyTLSMode.value, 'manual')
   form.proxyCertificate.value = 'test-certificate'
   form.proxyPrivateKey.value = 'test-key'
@@ -814,8 +830,8 @@ test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段'
 test('Proxy 入口选择将绑定域名映射为现有 manual 请求并按服务器刷新', async t => {
   const calls = []
   const servers = [
-    { id: 7, name: 'A', bound_domain: 'a.example.com', system_info: null },
-    { id: 8, name: 'B', bound_domain: '', system_info: null },
+    { id: 7, name: 'A', bound_domain_ipv4: 'a.example.com', bound_domain_ipv6: '', system_info: null },
+    { id: 8, name: 'B', bound_domain_ipv4: '', bound_domain_ipv6: '', system_info: null },
   ]
   t.mock.method(globalThis, 'fetch', async (url, init) => {
     calls.push({ url, body: JSON.parse(init.body) })
@@ -843,10 +859,45 @@ test('Proxy 入口选择将绑定域名映射为现有 manual 请求并按服务
   assert.equal(calls[1].body.entry_host_mode, 'auto')
   assert.equal(calls[1].body.entry_host, '')
 
-  form.openEditProxy({ id: 4, name: 'Bound', server_id: 7, listen_port: 443, entry_host_mode: 'manual', entry_host: 'a.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
+  form.openEditProxy({ id: 4, name: 'Bound', server_id: 7, listen_family: 'ipv4', listen_port: 443, entry_host_mode: 'manual', entry_host: 'a.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
   assert.equal(form.proxyEntryHostMode.value, 'bound')
-  form.openEditProxy({ id: 5, name: 'Custom', server_id: 7, listen_port: 443, entry_host_mode: 'manual', entry_host: 'custom.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
+  form.openEditProxy({ id: 5, name: 'Custom', server_id: 7, listen_family: 'ipv4', listen_port: 443, entry_host_mode: 'manual', entry_host: 'custom.example.com', enabled: true, protocol: 'vless', config: { security: 'tls', server_name: 'sni.example.com', tls_certificate_configured: true } })
   assert.equal(form.proxyEntryHostMode.value, 'manual')
+})
+
+test('Proxy Family 切换使用对应域名，无 IPv6 的服务器自动回退', async t => {
+  const calls = []
+  const error = ref('')
+  const servers = [
+    { id: 7, name: 'A', bound_domain_ipv4: 'a4.example.com', bound_domain_ipv6: 'a6.example.com', system_info: { public_ipv4: '198.51.100.7', public_ipv6: '2606:4700:4700::1111' } },
+    { id: 8, name: 'B', bound_domain_ipv4: 'b4.example.com', bound_domain_ipv6: '', system_info: { public_ipv4: '198.51.100.8', public_ipv6: '' } },
+  ]
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) })
+    return json({ proxy: { id: 6 } })
+  })
+  const form = useProxyForm({ servers }, ref(null), error, action => action(), async () => {}, async () => {})
+  form.openCreateProxy()
+  assert.equal(form.proxyListenFamily.value, 'ipv4')
+  form.proxyListenFamily.value = 'ipv6'
+  form.onProxyFamilyChange()
+  assert.equal(form.proxyEntryHostMode.value, 'bound')
+  assert.equal(form.selectedServerBoundDomain.value, 'a6.example.com')
+  form.proxyName.value = 'IPv6'
+  form.proxyServerName.value = 'sni.example.com'
+  await form.saveProxy()
+  assert.equal(calls[0].body.listen_family, 'ipv6')
+  assert.equal(calls[0].body.entry_host, 'a6.example.com')
+
+  form.openCreateProxy()
+  form.proxyListenFamily.value = 'ipv6'
+  form.onProxyFamilyChange()
+  form.proxyServerID.value = 8
+  form.onProxyServerChange()
+  assert.equal(form.proxyListenFamily.value, 'ipv4')
+  assert.equal(form.proxyEntryHostMode.value, 'bound')
+  assert.equal(form.selectedServerBoundDomain.value, 'b4.example.com')
+  assert.match(error.value, /已切换为 IPv4/)
 })
 
 test('Client 表单拆分保持数值额度、周期、到期和协议专属 UDP/443', async t => {

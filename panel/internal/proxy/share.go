@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 )
 
 type ClientShare struct {
@@ -59,7 +62,7 @@ func (s *Service) GetClientShareAtEndpointWithOptions(ctx context.Context, id in
 func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareEndpoint, options ShareOptions) (ClientShare, error) {
 	var value Client
 	var credentialJSON, configJSON string
-	var proxyName, protocol, entryHostMode, entryHost, publicIPv4 string
+	var proxyName, protocol, listenFamily, entryHostMode, entryHost, publicIPv4, publicIPv6, ipv6JSON string
 	var listenPort int
 	var clientUDP443, enabled, effectiveEnabled, subscriptionManaged int
 	var expiresAt, trafficLimit sql.NullInt64
@@ -72,8 +75,8 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		 clients.effective_enabled_snapshot,
 		 EXISTS(SELECT 1 FROM subscriber_clients WHERE client_id = clients.id),
 		 clients.created_at, clients.updated_at,
-		 proxies.name, proxies.protocol, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
-		 proxies.config_json, COALESCE(system_info.public_ipv4, '')
+		 proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port, proxies.entry_host_mode, proxies.entry_host,
+		 proxies.config_json, COALESCE(system_info.public_ipv4, ''), COALESCE(system_info.public_ipv6, ''), COALESCE(system_info.ipv6, '[]')
 		 FROM clients
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
@@ -83,7 +86,7 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		&value.ID, &value.ProxyID, &value.Name, &credentialJSON, &clientUDP443, &enabled,
 		&expiresAt, &trafficLimit, &value.TrafficResetMode, &value.TrafficResetWeekday,
 		&value.TrafficResetDay, &value.TrafficResetTime,
-		&effectiveEnabled, &subscriptionManaged, &createdAt, &updatedAt, &proxyName, &protocol, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4,
+		&effectiveEnabled, &subscriptionManaged, &createdAt, &updatedAt, &proxyName, &protocol, &listenFamily, &listenPort, &entryHostMode, &entryHost, &configJSON, &publicIPv4, &publicIPv6, &ipv6JSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClientShare{}, ErrClientNotFound
@@ -122,7 +125,10 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 	}
 	address, port := "", listenPort
 	if endpoint == nil {
-		address, err = resolveEntryAddress(entryHostMode, entryHost, publicIPv4)
+		var ipv6 []string
+		_ = json.Unmarshal([]byte(ipv6JSON), &ipv6)
+		publicIPv6 = netutil.EffectivePublicIPv6(publicIPv6, ipv6)
+		address, err = resolveEntryAddress(listenFamily, entryHostMode, entryHost, publicIPv4, publicIPv6)
 		if err != nil {
 			return ClientShare{}, err
 		}
@@ -164,13 +170,23 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 	return share, nil
 }
 
-func resolveEntryAddress(mode, entryHost, publicIPv4 string) (string, error) {
+func resolveEntryAddress(family, mode, entryHost, publicIPv4, publicIPv6 string) (string, error) {
 	mode, entryHost, err := normalizeEntryHost(mode, entryHost)
 	if err != nil {
 		return "", err
 	}
 	if mode == EntryHostManual {
+		if err := validateEntryHostFamily(family, entryHost); err != nil {
+			return "", err
+		}
 		return entryHost, nil
+	}
+	if family == ListenFamilyIPv6 {
+		ip := net.ParseIP(strings.TrimSpace(publicIPv6))
+		if ip == nil || ip.To4() != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return "", ErrConnectionAddressUnavailable
+		}
+		return ip.String(), nil
 	}
 	ip := net.ParseIP(strings.TrimSpace(publicIPv4))
 	if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {

@@ -140,7 +140,7 @@ func TestRenderManagedXrayACMEUsesCertificateFilesOnly(t *testing.T) {
 }
 
 func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
-	reality := desiredProxy{ID: 2, Listen: "0.0.0.0", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, StatsID: "vp-client-3", UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
+	reality := desiredProxy{ID: 2, Listen: "::", Port: 8443, Protocol: "vless", Transport: "tcp", Security: "reality", ServerFlow: "xtls-rprx-vision", ServerName: "www.example.com", Reality: &desiredReality{Target: "www.example.com:443", PrivateKey: "private", ShortID: "0123456789abcdef"}, Clients: []desiredClient{{ID: 3, StatsID: "vp-client-3", UUID: "123e4567-e89b-42d3-a456-426614174002"}}}
 	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), reality}, "auto")
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestRenderManagedXrayRealityAndMultipleInbounds(t *testing.T) {
 	if err := json.Unmarshal(value, &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Inbounds) != 2 || config.Inbounds[1].StreamSettings.RealitySettings == nil ||
+	if len(config.Inbounds) != 2 || config.Inbounds[1].Listen != "::" || config.Inbounds[1].StreamSettings.RealitySettings == nil ||
 		config.Inbounds[1].StreamSettings.Network != "raw" ||
 		config.Inbounds[1].Settings.Clients[0].Flow != "xtls-rprx-vision" ||
 		config.Inbounds[1].StreamSettings.RealitySettings.Target != "www.example.com:443" ||
@@ -188,6 +188,7 @@ func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
 		ID: 2, StatsID: "vp-client-2", Password: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 16)),
 	})
 	ss256 := testDesiredShadowsocksProxy(4, 8389, "2022-blake3-aes-256-gcm", 32)
+	ss256.Listen = "::"
 	empty := testDesiredShadowsocksProxy(5, 8390, "2022-blake3-aes-128-gcm", 16)
 	empty.Clients = nil
 	value, err := renderManagedXrayConfig([]desiredProxy{testDesiredTLSProxy(), ss128, ss256, empty}, "auto")
@@ -203,7 +204,7 @@ func TestRenderManagedXrayShadowsocks2022AndZeroClients(t *testing.T) {
 	}
 	for index, expected := range []desiredProxy{ss128, ss256} {
 		inbound := config.Inbounds[index+1]
-		if inbound.Protocol != "shadowsocks" || inbound.StreamSettings != nil ||
+		if inbound.Listen != expected.Listen || inbound.Protocol != "shadowsocks" || inbound.StreamSettings != nil ||
 			inbound.Settings.Method != expected.Shadowsocks.Method || inbound.Settings.Password != expected.Shadowsocks.Password ||
 			inbound.Settings.Network != "tcp,udp" || inbound.Settings.Decryption != "" || len(inbound.Settings.Clients) != len(expected.Clients) ||
 			inbound.Settings.Clients[0].Password != expected.Clients[0].Password || inbound.Settings.Clients[0].Email != "vp-client-1" ||

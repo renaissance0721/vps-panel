@@ -1,4 +1,5 @@
 export type ProxyProtocol = 'vless' | 'shadowsocks'
+export type ProxyListenFamily = 'ipv4' | 'ipv6'
 export type ShadowsocksMethod = '2022-blake3-aes-128-gcm' | '2022-blake3-aes-256-gcm'
 export type ClientTrafficLimitUnit = 'G' | 'T'
 export type ClientTrafficResetMode = 'never' | 'daily' | 'weekly' | 'monthly'
@@ -21,11 +22,18 @@ export const shadowsocksMethods: ShadowsocksMethod[] = [
   '2022-blake3-aes-256-gcm',
 ]
 
-export function proxyAddressLines(value: { server_public_ipv4: string; entry_address: string }): string[] {
-  const ip = value.server_public_ipv4
+export function proxyAddressLines(value: { listen_family: ProxyListenFamily; server_public_ipv4: string; server_public_ipv6: string; entry_address: string }): string[] {
+	const ip = value.listen_family === 'ipv6' ? value.server_public_ipv6 : value.server_public_ipv4
   const address = value.entry_address
   if (!ip && !address) return ['未检测']
   return address && address !== ip ? [ip, address].filter(Boolean) : [ip || address]
+}
+
+export function manualEntryHostMatchesFamily(host: string, family: ProxyListenFamily): boolean {
+  const value = host.trim().replace(/^\[|\]$/g, '')
+  if (value.includes(':')) return family === 'ipv6'
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return family === 'ipv4'
+  return true
 }
 
 export function proxyListProtocolFields(protocol: ProxyProtocol, security?: 'tls' | 'reality') {

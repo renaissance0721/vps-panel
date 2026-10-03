@@ -34,7 +34,7 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 	}
 	listenAddress := "::"
 	updated, mutation, err := service.Update(t.Context(), created.ID, UpdateInput{ListenAddress: &listenAddress})
-	if err != nil || updated.ListenAddress != "::" || mutation.Version != 3 {
+	if err != nil || updated.ListenAddress != "::" || updated.EntryAddress != "2001:db8::10" || mutation.Version != 3 {
 		t.Fatalf("updated IPv6 listener = %+v, mutation = %+v, error = %v", updated, mutation, err)
 	}
 	desired, err = service.ListDesired(t.Context(), db, 1)
@@ -56,6 +56,15 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 	}
 	if _, err := service.Get(t.Context(), created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted relay error = %v", err)
+	}
+	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv6 = '', ipv6 = '[]' WHERE server_id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "IPv6 unavailable", ListenAddress: "::", ListenPort: 9503,
+		TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP,
+	}); !errors.Is(err, ErrIPv6Unavailable) {
+		t.Fatalf("IPv6 Relay without public IPv6 error = %v", err)
 	}
 }
 
@@ -115,14 +124,16 @@ func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testi
 	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
 
 	host = "[2001:db8::1]"
-	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{EntryHost: &host})
+	listenAddress := "::"
+	updated, _, err = service.Update(t.Context(), created.ID, UpdateInput{ListenAddress: &listenAddress, EntryHost: &host})
 	if err != nil || updated.EntryAddress != "2001:db8::1" {
 		t.Fatalf("IPv6 Relay entry update = %+v, %v", updated, err)
 	}
 	assertRelayDesiredTarget(t, service, db, "203.0.113.20", 443)
 
 	mode = EntryHostAuto
-	if _, _, err := service.Update(t.Context(), created.ID, UpdateInput{EntryHostMode: &mode}); err != nil {
+	listenAddress = "0.0.0.0"
+	if _, _, err := service.Update(t.Context(), created.ID, UpdateInput{ListenAddress: &listenAddress, EntryHostMode: &mode}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = '198.51.100.11' WHERE server_id = 1`); err != nil {

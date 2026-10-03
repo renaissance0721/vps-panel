@@ -78,8 +78,8 @@ func TestServerAPILifecycle(t *testing.T) {
 	if created.Server.Name != "JP Native 01" || created.Server.Status != "pending" {
 		t.Fatalf("created server = %+v, want named pending server", created.Server)
 	}
-	if created.Server.BoundDomain != "" {
-		t.Fatalf("new server bound domain = %q, want empty", created.Server.BoundDomain)
+	if created.Server.BoundDomainIPv4 != "" {
+		t.Fatalf("new server bound domain = %q, want empty", created.Server.BoundDomainIPv4)
 	}
 	if created.Server.OwnerUserID == nil || *created.Server.OwnerUserID <= 0 || created.Server.OwnerUsername != "admin" {
 		t.Fatalf("created server owner = (%v, %q), want admin", created.Server.OwnerUserID, created.Server.OwnerUsername)
@@ -422,7 +422,7 @@ func TestCreateServerWithManagementSettingsAndAtomicValidation(t *testing.T) {
 	db, handler, accounts := setupAccessTest(t)
 	defer db.Close()
 	response := performRequest(t, handler, http.MethodPost, "/api/servers", map[string]any{
-		"name": "DMIT LAX", "bound_domain": " LAX.Example.COM. ", "visibility": "private", "user_ids": []int64{accounts.memberID},
+		"name": "DMIT LAX", "bound_domain_ipv4": " LAX.Example.COM. ", "visibility": "private", "user_ids": []int64{accounts.memberID},
 		"expires_at": "2027-04-03", "renewal_period_months": 12, "auto_renew": true,
 		"monthly_traffic_limit_bytes": int64(500 << 30), "traffic_count_mode": "bidirectional",
 		"traffic_reset_day": 31, "traffic_reset_time": "08:30",
@@ -435,7 +435,7 @@ func TestCreateServerWithManagementSettingsAndAtomicValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedExpiration := time.Date(2027, 4, 3, 15, 59, 59, 0, time.UTC)
-	if created.Server.BoundDomain != "lax.example.com" || created.Server.ExpiresAt == nil || !created.Server.ExpiresAt.Equal(expectedExpiration) ||
+	if created.Server.BoundDomainIPv4 != "lax.example.com" || created.Server.ExpiresAt == nil || !created.Server.ExpiresAt.Equal(expectedExpiration) ||
 		created.Server.RenewalPeriodMonths == nil || *created.Server.RenewalPeriodMonths != 12 || !created.Server.AutoRenew ||
 		created.Server.MonthlyTrafficLimitBytes == nil || *created.Server.MonthlyTrafficLimitBytes != int64(500<<30) ||
 		created.Server.TrafficCountMode != "bidirectional" || created.Server.TrafficResetDay != 31 || created.Server.TrafficResetTime != "08:30" ||
@@ -458,7 +458,7 @@ func TestCreateServerWithManagementSettingsAndAtomicValidation(t *testing.T) {
 		{"name": "Bad time", "traffic_reset_time": "24:00"},
 		{"name": "Bad date", "expires_at": "2027-02-30"},
 		{"name": "Bad access", "visibility": "private", "user_ids": []int64{999999}},
-		{"name": "Bad domain", "bound_domain": "https://node.example.com/path"},
+		{"name": "Bad domain", "bound_domain_ipv4": "https://node.example.com/path"},
 	}
 	for _, payload := range invalidPayloads {
 		before := map[string]int{}
@@ -503,33 +503,33 @@ func TestServerRenamePatchContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/api/servers/" + strconv.FormatInt(result.Server.ID, 10)
-	if result.Server.BoundDomain != "" {
-		t.Fatalf("created bound domain = %q", result.Server.BoundDomain)
+	if result.Server.BoundDomainIPv4 != "" {
+		t.Fatalf("created bound domain = %q", result.Server.BoundDomainIPv4)
 	}
 	renamed := performRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "  Renamed  "}, cookie)
 	if renamed.Code != http.StatusOK || !strings.Contains(renamed.Body.String(), `"name":"Renamed"`) {
 		t.Fatalf("rename: %d %s", renamed.Code, renamed.Body.String())
 	}
-	updatedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain": " New.Example.COM. "}, cookie)
-	if updatedDomain.Code != http.StatusOK || !strings.Contains(updatedDomain.Body.String(), `"bound_domain":"new.example.com"`) {
+	updatedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain_ipv4": " New.Example.COM. "}, cookie)
+	if updatedDomain.Code != http.StatusOK || !strings.Contains(updatedDomain.Body.String(), `"bound_domain_ipv4":"new.example.com"`) {
 		t.Fatalf("add bound domain: %d %s", updatedDomain.Code, updatedDomain.Body.String())
 	}
-	modifiedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain": "Latest.Example.COM"}, cookie)
-	if modifiedDomain.Code != http.StatusOK || !strings.Contains(modifiedDomain.Body.String(), `"bound_domain":"latest.example.com"`) {
+	modifiedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain_ipv4": "Latest.Example.COM"}, cookie)
+	if modifiedDomain.Code != http.StatusOK || !strings.Contains(modifiedDomain.Body.String(), `"bound_domain_ipv4":"latest.example.com"`) {
 		t.Fatalf("modify bound domain: %d %s", modifiedDomain.Code, modifiedDomain.Body.String())
 	}
 	for _, endpoint := range []string{"/api/servers", path} {
 		response := performRequest(t, handler, http.MethodGet, endpoint, nil, cookie)
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"bound_domain":"latest.example.com"`) {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"bound_domain_ipv4":"latest.example.com"`) {
 			t.Fatalf("bound domain response %s: %d %s", endpoint, response.Code, response.Body.String())
 		}
 	}
 	for _, payload := range []map[string]any{
 		{"name": "  "},
 		{"name": strings.Repeat("a", 101)},
-		{"bound_domain": "node.example.com:443"},
+		{"bound_domain_ipv4": "node.example.com:443"},
 		{"name": "Another", "expires_at": "2026-12-31"},
-		{"name": "Another", "bound_domain": "node.example.com"},
+		{"name": "Another", "bound_domain_ipv4": "node.example.com"},
 	} {
 		response := performRequest(t, handler, http.MethodPatch, path, payload, cookie)
 		if response.Code != http.StatusBadRequest {
@@ -539,8 +539,8 @@ func TestServerRenamePatchContract(t *testing.T) {
 			t.Fatalf("mixed patch: %s", response.Body.String())
 		}
 	}
-	clearedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain": ""}, cookie)
-	if clearedDomain.Code != http.StatusOK || !strings.Contains(clearedDomain.Body.String(), `"bound_domain":""`) {
+	clearedDomain := performRequest(t, handler, http.MethodPatch, path, map[string]any{"bound_domain_ipv4": ""}, cookie)
+	if clearedDomain.Code != http.StatusOK || !strings.Contains(clearedDomain.Body.String(), `"bound_domain_ipv4":""`) {
 		t.Fatalf("clear bound domain: %d %s", clearedDomain.Code, clearedDomain.Body.String())
 	}
 	missing := performRequest(t, handler, http.MethodPatch, "/api/servers/999999", map[string]any{"name": "Missing"}, cookie)

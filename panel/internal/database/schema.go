@@ -49,7 +49,8 @@ func schemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
-			bound_domain TEXT NOT NULL DEFAULT '',
+			bound_domain_ipv4 TEXT NOT NULL DEFAULT '',
+			bound_domain_ipv6 TEXT NOT NULL DEFAULT '',
 			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			created_by_role TEXT NOT NULL DEFAULT 'unknown'
@@ -139,6 +140,7 @@ func schemaStatements() []string {
 			ipv4 TEXT NOT NULL,
 			ipv6 TEXT NOT NULL,
 			public_ipv4 TEXT NOT NULL DEFAULT '',
+			public_ipv6 TEXT NOT NULL DEFAULT '',
 			agent_version TEXT NOT NULL,
 			reported_at INTEGER NOT NULL
 		)`,
@@ -163,6 +165,8 @@ func schemaStatements() []string {
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
+			listen_family TEXT NOT NULL DEFAULT 'ipv4'
+				CHECK (listen_family IN ('ipv4', 'ipv6')),
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
 			entry_host_mode TEXT NOT NULL DEFAULT 'auto'
 				CHECK (entry_host_mode IN ('auto', 'manual')),

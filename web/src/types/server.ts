@@ -3,7 +3,8 @@ export type RenewalPeriodMonths = 1 | 3 | 6 | 12 | 24 | 36
 export type ServerRecord = {
   id: number
   name: string
-  bound_domain: string
+  bound_domain_ipv4: string
+  bound_domain_ipv6: string
   owner_user_id: number | null
   owner_username: string
   created_by_user_id: number | null
@@ -56,6 +57,7 @@ export type ServerSystemInfo = {
   ipv4: string[]
   ipv6: string[]
   public_ipv4: string
+  public_ipv6: string
   agent_version: string
 }
 
@@ -84,7 +86,8 @@ export type CreatedServer = {
 
 export type CreateServerPayload = {
   name: string
-  bound_domain: string
+  bound_domain_ipv4: string
+  bound_domain_ipv6: string
   visibility: ServerRecord['visibility']
   user_ids: number[]
   expires_at: string | null

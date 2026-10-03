@@ -41,7 +41,7 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 			},
 			{
 				DisplayName: "日本 SS", Protocol: proxystore.ProtocolShadowsocks,
-				Address: "198.51.100.20", Port: 8388,
+				Address: "2606:4700:4700::1111", Port: 8388,
 				Method:              proxystore.ShadowsocksMethodAES128GCM,
 				ShadowsocksPassword: "master-password:client-password",
 			},
@@ -70,6 +70,7 @@ func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 	}
 	shadowsocks := parsed.Proxies[1]
 	if shadowsocks.Name != data.Nodes[1].DisplayName || shadowsocks.Type != "ss" ||
+		shadowsocks.Server != "2606:4700:4700::1111" || shadowsocks.Port != 8388 ||
 		shadowsocks.Cipher != proxystore.ShadowsocksMethodAES128GCM ||
 		shadowsocks.Password != "master-password:client-password" || !shadowsocks.UDP {
 		t.Fatalf("Mihomo Shadowsocks proxy = %+v", shadowsocks)

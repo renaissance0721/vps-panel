@@ -93,7 +93,8 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	// Keep inheritance ordered with probe PATCH's read/replace of assignments.
 	s.probeMu.Lock()
 	created, err := s.servers.CreateWithSettings(r.Context(), serverstore.CreateServerInput{
-		Name: request.Name, BoundDomain: request.BoundDomain, Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
+		Name: request.Name, BoundDomainIPv4: request.BoundDomainIPv4, BoundDomainIPv6: request.BoundDomainIPv6,
+		Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
 		ExpiresAt: expiresAt, RenewalPeriodMonths: renewalPeriod, AutoRenew: request.AutoRenew,
 		MonthlyTrafficLimitBytes: monthlyLimit, TrafficCountMode: traffic.CountMode,
 		TrafficResetDay: traffic.ResetDay, TrafficResetTime: traffic.ResetTime,
@@ -207,7 +208,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAutoRenew := request.AutoRenew != nil
 	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
 	hasName := request.Name != nil
-	hasBoundDomain := request.BoundDomain != nil
+	hasBoundDomain := request.BoundDomainIPv4 != nil || request.BoundDomainIPv6 != nil
 	hasOwner := len(request.OwnerUserID) != 0
 	hasOutboundPreference := request.OutboundPreference != nil
 	hasBlockChinaInbound := request.BlockChinaInbound != nil
@@ -234,7 +235,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if hasBoundDomain {
-		updated, err := s.servers.UpdateBoundDomain(r.Context(), id, *request.BoundDomain)
+		updated, err := s.servers.UpdateBoundDomains(r.Context(), id, request.BoundDomainIPv4, request.BoundDomainIPv6)
 		if err != nil {
 			writeServerError(w, err)
 			return
@@ -501,6 +502,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, serverstore.ErrInvalidBoundDomain):
 		writeError(w, http.StatusBadRequest, "服务器绑定域名格式无效")
+	case errors.Is(err, serverstore.ErrIPv6Unavailable):
+		writeError(w, http.StatusConflict, "当前服务器未检测到可用公网 IPv6")
 	case errors.Is(err, serverstore.ErrInvalidVisibility):
 		writeError(w, http.StatusBadRequest, "服务器可见范围无效")
 	case errors.Is(err, serverstore.ErrInvalidServerAccess):
@@ -554,7 +557,7 @@ func writeServerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, agentcontrol.ErrAgentUpgradeUnsupported):
 		writeError(w, http.StatusConflict, "该 Agent 不支持官方自动升级")
 	case errors.Is(err, relaystore.ErrTargetUnavailable):
-		writeError(w, http.StatusConflict, "中转目标地址不可用，请设置目标 Proxy 的手动入口地址或等待目标服务器上报公网 IPv4")
+		writeError(w, http.StatusConflict, "中转目标地址不可用，请设置目标 Proxy 的手动入口地址或等待目标服务器上报对应公网地址")
 	default:
 		writeInternalError(w, err)
 	}

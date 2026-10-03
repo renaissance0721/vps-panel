@@ -340,6 +340,11 @@ func TestLandingRelayShareShadowsocksUnavailableAndPrivateIDOR(t *testing.T) {
 	db, handler, accounts := setupAccessTest(t)
 	defer db.Close()
 	source := createAccessTestServer(t, handler, accounts.adminCookie, "Source", "public", nil)
+	if _, err := db.Exec(`INSERT INTO server_system_info
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["2001:db8::10"]', '', '2001:db8::10', '', 1)`, source.Server.ID); err != nil {
+		t.Fatal(err)
+	}
 	private := createLandingForAPI(t, handler, accounts.adminCookie, createLandingRequest{
 		Name: "Private", URI: "ss://aes-256-gcm:secret@example.com:8388#SS",
 	})
@@ -354,7 +359,7 @@ func TestLandingRelayShareShadowsocksUnavailableAndPrivateIDOR(t *testing.T) {
 		}
 	}
 	creation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
-		ServerID: source.Server.ID, Name: "Private Relay", ListenPort: 9502,
+		ServerID: source.Server.ID, Name: "Private Relay", ListenAddress: "::", ListenPort: 9502,
 		EntryHostMode: "manual", EntryHost: "2001:db8::10",
 		TargetType: "landing", TargetLandingID: &privateID, Network: "tcp,udp",
 	}, accounts.adminCookie)

@@ -74,7 +74,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		request.EntryHostMode = proxystore.EntryHostAuto
 	}
 	input := proxystore.CreateInput{
-		ServerID: request.ServerID, Name: request.Name, ListenPort: request.ListenPort,
+		ServerID: request.ServerID, Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
@@ -133,7 +133,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	input := proxystore.UpdateInput{
-		Name: request.Name, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
+		Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 		Protocol: request.Protocol, Method: request.Method,
@@ -161,7 +161,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyProxyMutation(mutation)
-	if previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
+	if previous.ListenFamily != value.ListenFamily || previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
 		mutations, err := s.relays.BumpForProxyTarget(r.Context(), value.ID, value.ServerID)
 		if err != nil {
 			writeInternalError(w, err)
@@ -311,6 +311,12 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "入口地址模式仅支持自动检测或手动输入")
 	case errors.Is(err, proxystore.ErrInvalidEntryHost):
 		writeError(w, http.StatusBadRequest, "手动入口地址必须是有效 IPv4、IPv6 或域名，且不能包含协议、路径或端口")
+	case errors.Is(err, proxystore.ErrInvalidListenFamily):
+		writeError(w, http.StatusBadRequest, "监听 IP 类型仅支持 IPv4 或 IPv6")
+	case errors.Is(err, proxystore.ErrIPv6Unavailable):
+		writeError(w, http.StatusConflict, "当前服务器未检测到可用公网 IPv6")
+	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
+		writeError(w, http.StatusConflict, "代理节点入口地址不可用，请填写手动入口地址或等待服务器上报公网地址")
 	case errors.Is(err, proxystore.ErrInvalidServerName):
 		writeError(w, http.StatusBadRequest, "SNI 必须是有效域名或 IP")
 	case errors.Is(err, proxystore.ErrInvalidSecurity):
@@ -335,8 +341,6 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "Shadowsocks 客户端不支持 UDP 443 流控选项")
 	case errors.Is(err, proxystore.ErrInvalidShadowsocksUpdate):
 		writeError(w, http.StatusBadRequest, "Shadowsocks 不支持 TLS 或 REALITY 配置")
-	case errors.Is(err, proxystore.ErrConnectionAddressUnavailable):
-		writeError(w, http.StatusConflict, "连接地址不可用，请手动填写入口地址或等待服务器上报公网 IPv4")
 	case errors.Is(err, proxystore.ErrInvalidClientTrafficConfig):
 		writeError(w, http.StatusBadRequest, "客户端流量设置无效")
 	case errors.Is(err, proxystore.ErrInvalidClientExpiration):

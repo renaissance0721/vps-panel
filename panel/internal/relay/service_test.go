@@ -21,8 +21,8 @@ func insertRelayTestServer(t *testing.T, db interface {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO server_system_info
-		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, agent_version, reported_at)
-		VALUES (?, '', '', '', '', '', '[]', '[]', ?, '', 1)`, id, publicIPv4); err != nil {
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["2001:db8::10"]', ?, '2001:db8::10', '', 1)`, id, publicIPv4); err != nil {
 		t.Fatal(err)
 	}
 }

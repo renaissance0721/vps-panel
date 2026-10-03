@@ -68,6 +68,37 @@ func TestDetectPublicIPv4TimeoutReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestDetectPublicIPv6(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(" 2606:4700:4700::1111\n"))
+	}))
+	defer server.Close()
+	if value := detectPublicIPv6(context.Background(), server.Client(), server.URL); value != "2606:4700:4700::1111" {
+		t.Fatalf("detected public IPv6 = %q", value)
+	}
+
+	for _, response := range []string{
+		"not-an-ip", "198.51.100.24", "fd00::1", "fe80::1", "::1", "::", "ff02::1",
+		strings.Repeat("1", publicIPv4ResponseLimit+1),
+	} {
+		invalidServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(response))
+		}))
+		if value := detectPublicIPv6(context.Background(), invalidServer.Client(), invalidServer.URL); value != "" {
+			invalidServer.Close()
+			t.Fatalf("invalid response %q produced %q", response, value)
+		}
+		invalidServer.Close()
+	}
+
+	failedServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	failedClient, failedURL := failedServer.Client(), failedServer.URL
+	failedServer.Close()
+	if value := detectPublicIPv6(context.Background(), failedClient, failedURL); value != "" {
+		t.Fatalf("failed IPv6 detection produced %q", value)
+	}
+}
+
 func TestCollectIPAddressesFiltersClassifiesAndDeduplicates(t *testing.T) {
 	addresses := []net.Addr{
 		&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},

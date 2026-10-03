@@ -31,6 +31,7 @@ var (
 	ErrInvalidEntryHostMode           = errors.New("entry host mode must be auto or manual")
 	ErrInvalidEntryHost               = errors.New("manual entry host must be a hostname or IP address without scheme, path, or port")
 	ErrEntryUnavailable               = errors.New("relay entry address is unavailable")
+	ErrIPv6Unavailable                = errors.New("server public IPv6 address unavailable")
 	ErrInvalidTarget                  = errors.New("relay target is invalid")
 	ErrInvalidTargetClient            = errors.New("relay target client must belong to target proxy")
 	ErrInvalidNetwork                 = errors.New("relay network must be tcp, udp, or tcp,udp")
@@ -51,6 +52,7 @@ type Relay struct {
 	SourceProxyName         string
 	ServerName              string
 	ServerPublicIPv4        string
+	ServerPublicIPv6        string
 	Name                    string
 	ListenAddress           string
 	ListenPort              int

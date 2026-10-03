@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,11 +41,15 @@ func (m *diagnosticServiceManager) IsActive(context.Context) (bool, error) {
 func TestXrayDiagnosticsAreReadOnlyAndReportServiceConfigAndListeners(t *testing.T) {
 	root := t.TempDir()
 	service := &diagnosticServiceManager{active: true}
+	probed := make([]string, 0, 2)
 	manager := &xrayManager{
 		markerPath: filepath.Join(root, "managed"), binaryPath: filepath.Join(root, "xray"),
 		configPath: filepath.Join(root, "config.json"), service: service,
-		runCommand:    func(context.Context, string, ...string) ([]byte, error) { return nil, nil },
-		probeListener: func(context.Context, int) error { return nil },
+		runCommand: func(context.Context, string, ...string) ([]byte, error) { return nil, nil },
+		probeListener: func(_ context.Context, address string, port int) error {
+			probed = append(probed, net.JoinHostPort(address, strconv.Itoa(port)))
+			return nil
+		},
 	}
 	for _, path := range []string{manager.markerPath, manager.binaryPath, manager.configPath} {
 		if err := os.WriteFile(path, []byte("present"), 0o600); err != nil {
@@ -52,18 +57,24 @@ func TestXrayDiagnosticsAreReadOnlyAndReportServiceConfigAndListeners(t *testing
 		}
 	}
 	runner := &agentDiagnosticRunner{xray: manager}
-	state := desiredXrayState{Enabled: true, Proxies: []desiredProxy{{ID: 7, Port: 443}}}
+	state := desiredXrayState{Enabled: true, Proxies: []desiredProxy{
+		{ID: 7, Listen: "0.0.0.0", Port: 443},
+		{ID: 8, Listen: "::", Port: 8443},
+	}}
 	checks := runner.diagnoseXray(t.Context(), state)
 	assertDiagnosticStatus(t, checks, "xray.service", diagnostic.StatusPass)
 	assertDiagnosticStatus(t, checks, "xray.config", diagnostic.StatusPass)
 	assertDiagnosticStatus(t, checks, "xray.listener", diagnostic.StatusPass)
+	if !slices.Equal(probed, []string{"127.0.0.1:443", "[::1]:8443"}) {
+		t.Fatalf("Xray diagnostic endpoints = %v", probed)
+	}
 	if service.mutationCalls != 0 {
 		t.Fatalf("diagnostics invoked %d service mutations", service.mutationCalls)
 	}
 
 	service.active = false
 	manager.runCommand = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("invalid") }
-	manager.probeListener = func(context.Context, int) error { return errors.New("closed") }
+	manager.probeListener = func(context.Context, string, int) error { return errors.New("closed") }
 	checks = runner.diagnoseXray(t.Context(), state)
 	assertDiagnosticStatus(t, checks, "xray.service", diagnostic.StatusFail)
 	assertDiagnosticStatus(t, checks, "xray.config", diagnostic.StatusFail)

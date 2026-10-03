@@ -89,7 +89,7 @@ type config struct {
 	AgentToken string `json:"agent_token"`
 }
 
-type publicIPv4State struct {
+type publicIPState struct {
 	detect    func(context.Context) string
 	value     string
 	checkedAt time.Time
@@ -151,8 +151,11 @@ func run(arguments []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	publicIPv4Client := newPublicIPv4HTTPClient()
-	return connectAgentWithPublicIPv4(ctx, defaultConfigPath, func(ctx context.Context) string {
+	publicIPv6Client := newPublicIPv6HTTPClient()
+	return connectAgentWithPublicIPs(ctx, defaultConfigPath, func(ctx context.Context) string {
 		return detectPublicIPv4(ctx, publicIPv4Client, publicIPv4Endpoint)
+	}, func(ctx context.Context) string {
+		return detectPublicIPv6(ctx, publicIPv6Client, publicIPv6Endpoint)
 	})
 }
 
@@ -346,19 +349,27 @@ func connectAgent(ctx context.Context, configPath string) error {
 }
 
 func connectAgentWithPublicIPv4(ctx context.Context, configPath string, detect func(context.Context) string) error {
+	return connectAgentWithPublicIPs(ctx, configPath, detect, func(context.Context) string { return "" })
+}
+
+func connectAgentWithPublicIPs(ctx context.Context, configPath string, detectIPv4, detectIPv6 func(context.Context) string) error {
 	value, err := readAgentConfig(configPath)
 	if err != nil {
 		return err
 	}
 	configSync := newConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
-	publicIPv4 := &publicIPv4State{detect: detect}
+	publicIPv4 := &publicIPState{detect: detectIPv4}
+	publicIPv6 := &publicIPState{detect: detectIPv6}
 	detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
 	publicIPv4.current(detectionContext)
+	cancelDetection()
+	detectionContext, cancelDetection = context.WithTimeout(ctx, publicIPv4RequestTimeout)
+	publicIPv6.current(detectionContext)
 	cancelDetection()
 
 	reconnectDelay := initialReconnectDelay
 	for {
-		connected, authenticationRejected := connectAgentOnce(ctx, value, configSync, publicIPv4)
+		connected, authenticationRejected := connectAgentOnce(ctx, value, configSync, publicIPv4, publicIPv6)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -399,7 +410,7 @@ func readAgentConfig(configPath string) (config, error) {
 	return value, nil
 }
 
-func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer, publicIPv4 *publicIPv4State) (bool, bool) {
+func connectAgentOnce(ctx context.Context, value config, configSync *configSynchronizer, publicIPv4, publicIPv6 *publicIPState) (bool, bool) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+value.AgentToken)
 	header.Set("X-VPS-Panel-Agent-Version", agentVersion)
@@ -425,6 +436,9 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	message := collectSystemInfo()
 	detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
 	message.PublicIPv4 = publicIPv4.current(detectionContext)
+	cancelDetection()
+	detectionContext, cancelDetection = context.WithTimeout(ctx, publicIPv4RequestTimeout)
+	message.PublicIPv6 = publicIPv6.current(detectionContext)
 	cancelDetection()
 	systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
 	err = sendSystemInfo(systemInfoContext, connection, message)
@@ -600,6 +614,9 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)
 			message.PublicIPv4 = publicIPv4.current(detectionContext)
 			cancelDetection()
+			detectionContext, cancelDetection = context.WithTimeout(ctx, publicIPv4RequestTimeout)
+			message.PublicIPv6 = publicIPv6.current(detectionContext)
+			cancelDetection()
 			systemInfoContext, cancelSystemInfo := context.WithTimeout(ctx, 5*time.Second)
 			err := sendSystemInfo(systemInfoContext, connection, message)
 			cancelSystemInfo()
@@ -630,7 +647,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	}
 }
 
-func (state *publicIPv4State) current(ctx context.Context) string {
+func (state *publicIPState) current(ctx context.Context) string {
 	now := time.Now()
 	if !state.checkedAt.IsZero() && now.Sub(state.checkedAt) < publicIPv4RefreshInterval {
 		return state.value

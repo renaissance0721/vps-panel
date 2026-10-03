@@ -37,6 +37,11 @@ func TestRelayAPIAuthenticationAndCRUD(t *testing.T) {
 	if err := json.Unmarshal(serverCreation.Body.Bytes(), &server); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`INSERT INTO server_system_info
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["2001:db8::10"]', '', '2001:db8::10', '', 1)`, server.Server.ID); err != nil {
+		t.Fatal(err)
+	}
 	ignoredTargetID := int64(999)
 	creation := performRequest(t, handler, http.MethodPost, "/api/relays", createRelayRequest{
 		ServerID: server.Server.ID, Name: "Manual TCP", ListenPort: 9502,
@@ -104,8 +109,8 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 	}
 	source, target := createServer("Relay Source"), createServer("Proxy Target")
 	if _, err := db.Exec(`INSERT INTO server_system_info
-		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, agent_version, reported_at)
-		VALUES (?, '', '', '', '', '', '[]', '[]', '198.51.100.10', '', 1)`, source.Server.ID); err != nil {
+		(server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
+		VALUES (?, '', '', '', '', '', '[]', '["2001:db8::10"]', '198.51.100.10', '2001:db8::10', '', 1)`, source.Server.ID); err != nil {
 		t.Fatal(err)
 	}
 	proxyCreation := performRequest(t, handler, http.MethodPost, "/api/proxies", createProxyRequest{
@@ -224,7 +229,8 @@ func TestRelayDerivedVLESSShareUsesRelayEndpointAndClientLifecycle(t *testing.T)
 	}
 
 	mode, host := "manual", "2001:db8::10"
-	update := performRequest(t, handler, http.MethodPatch, path, updateRelayRequest{EntryHostMode: &mode, EntryHost: &host}, cookie)
+	listenAddress := "::"
+	update := performRequest(t, handler, http.MethodPatch, path, updateRelayRequest{ListenAddress: &listenAddress, EntryHostMode: &mode, EntryHost: &host}, cookie)
 	if update.Code != http.StatusOK {
 		t.Fatalf("update Relay IPv6 entry = %d, %s", update.Code, update.Body.String())
 	}

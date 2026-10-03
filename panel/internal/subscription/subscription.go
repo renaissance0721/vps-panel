@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
@@ -74,20 +75,24 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	}
 
 	type subscriptionNode struct {
-		id            int64
-		name          string
-		mode          string
-		entryHostMode string
-		multiplierBP  int
-		clientID      int64
-		entryAddress  string
-		entryPort     int
+		id             int64
+		name           string
+		mode           string
+		entryHostMode  string
+		entryHost      string
+		multiplierBP   int
+		clientID       int64
+		relayListen    string
+		sourceIPv4     string
+		sourceIPv6     string
+		sourceIPv6JSON string
+		entryAddress   string
+		entryPort      int
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.entry_host_mode,
+	rows, err := s.db.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode, nodes.entry_host_mode, nodes.entry_host,
 		nodes.traffic_multiplier_bp, clients.client_id,
-		CASE WHEN nodes.entry_host_mode = 'manual' THEN nodes.entry_host
-		     WHEN nodes.mode = 'relay' THEN COALESCE(source_info.public_ipv4, '')
-		     ELSE '' END,
+		COALESCE(relay.listen_address, ''), COALESCE(source_info.public_ipv4, ''),
+		COALESCE(source_info.public_ipv6, ''), COALESCE(source_info.ipv6, '[]'),
 		CASE WHEN nodes.mode = 'relay' THEN COALESCE(relay.listen_port, 0)
 		     ELSE target.listen_port END
 		FROM subscriber_profiles AS profiles
@@ -106,10 +111,21 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	nodes := make([]subscriptionNode, 0)
 	for rows.Next() {
 		var value subscriptionNode
-		if err := rows.Scan(&value.id, &value.name, &value.mode, &value.entryHostMode, &value.multiplierBP,
-			&value.clientID, &value.entryAddress, &value.entryPort); err != nil {
+		if err := rows.Scan(&value.id, &value.name, &value.mode, &value.entryHostMode, &value.entryHost,
+			&value.multiplierBP, &value.clientID, &value.relayListen,
+			&value.sourceIPv4, &value.sourceIPv6, &value.sourceIPv6JSON, &value.entryPort); err != nil {
 			rows.Close()
 			return SubscriptionData{}, mutations, fmt.Errorf("scan subscription node: %w", err)
+		}
+		if value.entryHostMode == EntryHostModeManual {
+			value.entryAddress = value.entryHost
+		} else if value.mode == NodeModeRelay {
+			value.sourceIPv6 = effectiveIPv6(value.sourceIPv6, value.sourceIPv6JSON)
+			if ip := net.ParseIP(value.relayListen); ip != nil && ip.To4() == nil {
+				value.entryAddress = value.sourceIPv6
+			} else {
+				value.entryAddress = value.sourceIPv4
+			}
 		}
 		nodes = append(nodes, value)
 	}

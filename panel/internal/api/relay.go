@@ -58,6 +58,7 @@ type relayResponse struct {
 	SourceProxyName         string    `json:"source_proxy_name,omitempty"`
 	ServerName              string    `json:"server_name"`
 	ServerPublicIPv4        string    `json:"server_public_ipv4"`
+	ServerPublicIPv6        string    `json:"server_public_ipv6"`
 	Name                    string    `json:"name"`
 	ListenAddress           string    `json:"listen_address"`
 	ListenPort              int       `json:"listen_port"`
@@ -442,7 +443,7 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 	return relayResponse{
 		ID: value.ID, ServerID: value.ServerID, OwnerUsername: value.OwnerUsername,
 		SourceClientID: value.SourceClientID, SourceProxyName: value.SourceProxyName, ServerName: value.ServerName,
-		ServerPublicIPv4: value.ServerPublicIPv4, Name: value.Name,
+		ServerPublicIPv4: value.ServerPublicIPv4, ServerPublicIPv6: value.ServerPublicIPv6, Name: value.Name,
 		ListenAddress: value.ListenAddress, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		TargetType: value.TargetType, TargetProxyID: value.TargetProxyID, TargetClientID: value.TargetClientID,
@@ -485,8 +486,10 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "入口地址模式仅支持自动检测或手动输入")
 	case errors.Is(err, relaystore.ErrInvalidEntryHost):
 		writeError(w, http.StatusBadRequest, "手动入口地址必须是有效 IPv4、IPv6 或域名，且不能包含协议、路径或端口")
+	case errors.Is(err, relaystore.ErrIPv6Unavailable):
+		writeError(w, http.StatusConflict, "当前源服务器未检测到可用公网 IPv6")
 	case errors.Is(err, relaystore.ErrEntryUnavailable):
-		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报公网 IPv4")
+		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报对应公网地址")
 	case errors.Is(err, relaystore.ErrInvalidTarget):
 		writeError(w, http.StatusBadRequest, "目标必须是有效代理节点、外部节点或 Host/IP 与端口")
 	case errors.Is(err, relaystore.ErrInvalidTargetClient):
@@ -496,7 +499,7 @@ func writeRelayError(w http.ResponseWriter, err error) {
 	case errors.Is(err, relaystore.ErrPortConflict):
 		writeError(w, http.StatusConflict, "该服务器上的监听端口与现有代理节点或中转规则冲突")
 	case errors.Is(err, relaystore.ErrTargetUnavailable):
-		writeError(w, http.StatusConflict, "目标代理节点入口地址不可用，请填写手动入口地址或等待目标服务器上报公网 IPv4")
+		writeError(w, http.StatusConflict, "目标代理节点入口地址不可用，请填写手动入口地址或等待目标服务器上报对应公网地址")
 	default:
 		writeInternalError(w, err)
 	}

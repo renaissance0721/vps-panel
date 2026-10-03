@@ -223,7 +223,8 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 </div>
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
-              <div><dt>已绑定域名</dt><dd>{{ selectedServer.bound_domain || '未设置' }}</dd></div>
+			  <div><dt>IPv4 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv4 || '未设置' }}</dd></div>
+			  <div><dt>IPv6 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv6 || '未设置' }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div><dt>所有者</dt><dd>{{ selectedServer.owner_username || '—' }}</dd></div>
               <div>

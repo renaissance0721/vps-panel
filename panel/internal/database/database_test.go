@@ -66,16 +66,16 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 	if expirationColumnCount != 1 {
 		t.Fatalf("servers expires_at column count = %d, want 1", expirationColumnCount)
 	}
-	var boundDomainDefault sql.NullString
-	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('servers') WHERE name = 'bound_domain'`).Scan(&boundDomainDefault); err != nil {
-		t.Fatalf("inspect servers bound_domain default: %v", err)
+	var boundDomainIPv4Default sql.NullString
+	if err := db.QueryRow(`SELECT dflt_value FROM pragma_table_info('servers') WHERE name = 'bound_domain_ipv4'`).Scan(&boundDomainIPv4Default); err != nil {
+		t.Fatalf("inspect servers bound_domain_ipv4 default: %v", err)
 	}
-	if !boundDomainDefault.Valid || boundDomainDefault.String != "''" {
-		t.Fatalf("servers bound_domain default = %q, want empty string", boundDomainDefault.String)
+	if !boundDomainIPv4Default.Valid || boundDomainIPv4Default.String != "''" {
+		t.Fatalf("servers bound_domain_ipv4 default = %q, want empty string", boundDomainIPv4Default.String)
 	}
 	for table, columns := range map[string][]string{
 		"servers": {
-			"bound_domain", "visibility", "desired_state_version", "renewal_period_months", "auto_renew", "renewal_anchor_day",
+			"bound_domain_ipv4", "bound_domain_ipv6", "visibility", "desired_state_version", "renewal_period_months", "auto_renew", "renewal_anchor_day",
 			"monthly_traffic_limit_bytes", "traffic_count_mode", "traffic_reset_day", "traffic_reset_time",
 			"decommissioning_at", "decommission_status", "decommission_error",
 		},
@@ -86,8 +86,8 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"server_metrics": {
 			"nic_rx_bytes", "nic_tx_bytes", "cycle_rx_bytes", "cycle_tx_bytes", "traffic_adjustment_bytes", "cycle_started_at",
 		},
-		"server_system_info": {"public_ipv4"},
-		"proxies":            {"entry_host_mode", "entry_host"},
+		"server_system_info": {"public_ipv4", "public_ipv6"},
+		"proxies":            {"listen_family", "entry_host_mode", "entry_host"},
 		"admin_invitations":  {"role"},
 		"relays":             {"entry_host_mode", "entry_host", "owner_user_id", "source_client_id"},
 		"clients": {

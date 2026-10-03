@@ -29,7 +29,7 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		Kernel:     "6.1.0-amd64",
 		Arch:       "amd64",
 		IPv4:       []string{"203.0.113.10", "10.0.0.2", "203.0.113.10"},
-		IPv6:       []string{"2001:db8::10"},
+		IPv6:       []string{"2606:4700:4700::1111"},
 		PublicIPv4: "198.51.100.20",
 	}
 	publicIPv4Changed, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, report)
@@ -52,8 +52,8 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		value.SystemInfo.Arch != report.Arch || value.SystemInfo.AgentVersion != "v0.7.0" ||
 		!value.SystemInfo.ReportedAt.Equal(reportedAt) ||
 		strings.Join(value.SystemInfo.IPv4, ",") != "10.0.0.2,203.0.113.10" ||
-		strings.Join(value.SystemInfo.IPv6, ",") != "2001:db8::10" ||
-		value.SystemInfo.PublicIPv4 != "198.51.100.20" {
+		strings.Join(value.SystemInfo.IPv6, ",") != "2606:4700:4700::1111" ||
+		value.SystemInfo.PublicIPv4 != "198.51.100.20" || value.SystemInfo.PublicIPv6 != "2606:4700:4700::1111" {
 		t.Fatalf("stored system information = %+v", value.SystemInfo)
 	}
 
@@ -86,6 +86,11 @@ func TestReportSystemInfoUpsertsForCurrentAgent(t *testing.T) {
 		PublicIPv4: "172.26.1.10",
 	}); !errors.Is(err, ErrInvalidSystemInfo) {
 		t.Fatalf("private public IPv4 error = %v, want ErrInvalidSystemInfo", err)
+	}
+	if _, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
+		PublicIPv6: "fd00::1",
+	}); !errors.Is(err, ErrInvalidSystemInfo) {
+		t.Fatalf("private public IPv6 error = %v, want ErrInvalidSystemInfo", err)
 	}
 	if _, err := service.ReportSystemInfo(context.Background(), registered.ID, registered.ServerID, SystemInfoReport{
 		Hostname: strings.Repeat("a", 256),

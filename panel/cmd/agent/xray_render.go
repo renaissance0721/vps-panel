@@ -202,7 +202,7 @@ func renderVLESSInbound(proxy desiredProxy) (renderedXrayInbound, error) {
 }
 
 func renderShadowsocksInbound(proxy desiredProxy) (renderedXrayInbound, bool, error) {
-	if proxy.ID <= 0 || proxy.Listen != "0.0.0.0" || proxy.Port < 1 || proxy.Port > 65535 ||
+	if proxy.ID <= 0 || !validManagedListenAddress(proxy.Listen) || proxy.Port < 1 || proxy.Port > 65535 ||
 		proxy.Protocol != "shadowsocks" || proxy.Shadowsocks == nil || proxy.Transport != "" ||
 		proxy.Security != "" || proxy.ServerFlow != "" || proxy.ServerName != "" || proxy.TLS != nil || proxy.Reality != nil ||
 		proxy.Shadowsocks.Network != "tcp,udp" || !validShadowsocksDesiredKey(proxy.Shadowsocks.Password, proxy.Shadowsocks.Method) {
@@ -231,7 +231,7 @@ func renderShadowsocksInbound(proxy desiredProxy) (renderedXrayInbound, bool, er
 }
 
 func validateDesiredVLESSProxy(proxy desiredProxy) error {
-	if proxy.ID <= 0 || proxy.Listen != "0.0.0.0" || proxy.Port < 1 || proxy.Port > 65535 ||
+	if proxy.ID <= 0 || !validManagedListenAddress(proxy.Listen) || proxy.Port < 1 || proxy.Port > 65535 ||
 		proxy.Protocol != "vless" || proxy.Transport != "tcp" || proxy.ServerFlow != "xtls-rprx-vision" ||
 		strings.TrimSpace(proxy.ServerName) == "" || proxy.Shadowsocks != nil {
 		return errUnsupportedManagedConfig
@@ -262,6 +262,10 @@ func validateDesiredVLESSProxy(proxy desiredProxy) error {
 		return errUnsupportedManagedConfig
 	}
 	return nil
+}
+
+func validManagedListenAddress(value string) bool {
+	return value == "0.0.0.0" || value == "::"
 }
 
 func desiredTLSMode(value *desiredTLS) string {

@@ -83,3 +83,14 @@ func TestRelayValidationAcceptsIPv4AndIPv6ListenAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayManualEntryHostMatchesListenFamily(t *testing.T) {
+	for _, input := range []CreateInput{
+		{ServerID: 1, Name: "Relay", ListenAddress: "0.0.0.0", ListenPort: 31821, EntryHostMode: EntryHostManual, EntryHost: "2606:4700:4700::1111", TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP},
+		{ServerID: 1, Name: "Relay", ListenAddress: "::", ListenPort: 31821, EntryHostMode: EntryHostManual, EntryHost: "198.51.100.10", TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443, Network: NetworkTCP},
+	} {
+		if _, err := normalizeCreate(input); !errors.Is(err, ErrInvalidEntryHost) {
+			t.Fatalf("normalizeCreate(%+v) error = %v, want ErrInvalidEntryHost", input, err)
+		}
+	}
+}

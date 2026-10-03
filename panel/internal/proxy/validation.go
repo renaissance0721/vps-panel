@@ -32,6 +32,28 @@ func validatePort(value int) error {
 	return nil
 }
 
+func normalizeListenFamily(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ListenFamilyIPv4, nil
+	}
+	if value != ListenFamilyIPv4 && value != ListenFamilyIPv6 {
+		return "", ErrInvalidListenFamily
+	}
+	return value, nil
+}
+
+func validateEntryHostFamily(family, host string) error {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return nil
+	}
+	if (family == ListenFamilyIPv4) != (ip.To4() != nil) {
+		return ErrInvalidEntryHost
+	}
+	return nil
+}
+
 func normalizeEntryHost(mode, host string) (string, string, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	switch mode {

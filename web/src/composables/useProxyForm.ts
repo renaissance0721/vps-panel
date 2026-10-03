@@ -4,7 +4,9 @@ import {
 } from 'vue'
 import {
   type ProxyProtocol,
+  type ProxyListenFamily,
   type ShadowsocksMethod,
+  manualEntryHostMatchesFamily,
 } from '../proxy'
 import type {
   ServerOption,
@@ -16,6 +18,7 @@ import {
 import {
   agentCapabilities,
   agentSupportsCapability,
+  serverHasUsableIPv6,
 } from '../server'
 import type {
   Ref,
@@ -28,6 +31,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyName = ref('')
   const proxyServerID = ref<number | null>(null)
   const proxyPort = ref(443)
+	const proxyListenFamily = ref<ProxyListenFamily>('ipv4')
   const proxyEntryHostMode = ref<'bound' | 'auto' | 'manual'>('auto')
   const proxyEntryHost = ref('')
   const proxyEnabled = ref(true)
@@ -45,8 +49,15 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const selectedServerPublicIPv4 = computed(() =>
     props.servers.find((server) => server.id === proxyServerID.value)?.system_info?.public_ipv4 ?? '',
   )
+	const selectedServerPublicIPv6 = computed(() => selectedServer.value?.system_info?.public_ipv6 ?? '')
+	const selectedServerPublicAddress = computed(() => proxyListenFamily.value === 'ipv6'
+	  ? selectedServerPublicIPv6.value
+	  : selectedServerPublicIPv4.value)
   const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
-  const selectedServerBoundDomain = computed(() => selectedServer.value?.bound_domain ?? '')
+	const selectedServerBoundDomain = computed(() => proxyListenFamily.value === 'ipv6'
+	  ? selectedServer.value?.bound_domain_ipv6 ?? ''
+	  : selectedServer.value?.bound_domain_ipv4 ?? '')
+	const selectedServerHasUsableIPv6 = computed(() => serverHasUsableIPv6(selectedServer.value))
   const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
   const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
   const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
@@ -81,8 +92,22 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   }
 
   function onProxyServerChange() {
+	  if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	    proxyListenFamily.value = 'ipv4'
+	    error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	  }
     syncCreateProxyEntryHost()
   }
+
+	function onProxyFamilyChange() {
+	  if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	    proxyListenFamily.value = 'ipv4'
+	    error.value = '当前服务器未检测到可用公网 IPv6，已切换为 IPv4'
+	  }
+	  if (proxyEntryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
+	    proxyEntryHostMode.value = 'auto'
+	  }
+	}
 
   function openEditProxy(value: ProxyRecord) {
     proxyFormMode.value = 'edit'
@@ -90,6 +115,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyName.value = value.name
     proxyServerID.value = value.server_id
     proxyPort.value = value.listen_port
+	proxyListenFamily.value = value.listen_family
     proxyEntryHostMode.value = value.entry_host_mode === 'manual' && selectedServerBoundDomain.value && value.entry_host === selectedServerBoundDomain.value
       ? 'bound'
       : value.entry_host_mode
@@ -110,6 +136,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     editingProxyID.value = null
     proxyName.value = ''
     proxyPort.value = 443
+	proxyListenFamily.value = 'ipv4'
     proxyEntryHostMode.value = 'auto'
     proxyEntryHost.value = ''
     proxyEnabled.value = true
@@ -142,6 +169,10 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       error.value = '请选择服务器'
       return
     }
+	if (proxyListenFamily.value === 'ipv6' && !selectedServerHasUsableIPv6.value) {
+	  error.value = '当前服务器未检测到可用公网 IPv6'
+	  return
+	}
     if (proxyEntryHostMode.value === 'bound' && !selectedServerBoundDomain.value) {
       error.value = '当前服务器未设置绑定域名'
       return
@@ -150,6 +181,10 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       error.value = '请填写手动入口地址'
       return
     }
+	if (proxyEntryHostMode.value === 'manual' && !manualEntryHostMatchesFamily(proxyEntryHost.value, proxyListenFamily.value)) {
+	  error.value = `手动入口 IP 必须与 ${proxyListenFamily.value === 'ipv6' ? 'IPv6' : 'IPv4'} 监听类型一致`
+	  return
+	}
     await run(async () => {
       const entryHostMode = proxyEntryHostMode.value === 'auto' ? 'auto' : 'manual'
       const entryHost = proxyEntryHostMode.value === 'bound'
@@ -159,6 +194,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
           : ''
       const common = {
         name: proxyName.value,
+		listen_family: proxyListenFamily.value,
         listen_port: proxyPort.value,
         entry_host_mode: entryHostMode,
         entry_host: entryHost,
@@ -211,6 +247,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyName,
     proxyServerID,
     proxyPort,
+	proxyListenFamily,
     proxyEntryHostMode,
     proxyEntryHost,
     proxyEnabled,
@@ -225,7 +262,10 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     firstClientName,
     firstClientUDP443,
     selectedServerPublicIPv4,
+	selectedServerPublicIPv6,
+	selectedServerPublicAddress,
     selectedServerBoundDomain,
+	selectedServerHasUsableIPv6,
     proxyVLESSSupported,
     proxyVLESSRealitySupported,
     proxyTLSSupported,
@@ -235,6 +275,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyCapabilityWarning,
     openCreateProxy,
     onProxyServerChange,
+	onProxyFamilyChange,
     openEditProxy,
     resetProxyForm,
     saveProxy,

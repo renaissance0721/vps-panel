@@ -15,6 +15,7 @@ import {
   formatClientTrafficBytes,
   formatClientExpiration,
   formatClientExpirationInput,
+  manualEntryHostMatchesFamily,
   parseClientTrafficLimit,
   proxyListProtocolFields,
   shadowsocksMethods,
@@ -28,6 +29,15 @@ test('代理列表按协议显示字段', () => {
   assert.deepEqual(proxyListProtocolFields('shadowsocks'), {
     protocol: 'Shadowsocks', transport: '--', security: '--', flow: '--',
   })
+})
+
+test('手动入口 IP 必须匹配监听 Family，域名保持可用', () => {
+  assert.equal(manualEntryHostMatchesFamily('198.51.100.10', 'ipv4'), true)
+  assert.equal(manualEntryHostMatchesFamily('198.51.100.10', 'ipv6'), false)
+  assert.equal(manualEntryHostMatchesFamily('[2606:4700:4700::1111]', 'ipv6'), true)
+  assert.equal(manualEntryHostMatchesFamily('2606:4700:4700::1111', 'ipv4'), false)
+  assert.equal(manualEntryHostMatchesFamily('node.example.com', 'ipv4'), true)
+  assert.equal(manualEntryHostMatchesFamily('node.example.com', 'ipv6'), true)
 })
 test('Shadowsocks 创建方法固定为支持的 SS2022 AES 方法', () => {
   assert.deepEqual(shadowsocksMethods, [

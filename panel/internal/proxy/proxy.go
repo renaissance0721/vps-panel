@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/listener"
+	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 type preparedCreate struct {
-	protocol, name, clientName, entryHostMode, entryHost string
-	configJSON, credentialJSON                           []byte
+	protocol, name, clientName, listenFamily, entryHostMode, entryHost string
+	configJSON, credentialJSON                                         []byte
 }
 
 func prepareCreateInput(input CreateInput) (preparedCreate, error) {
@@ -37,8 +38,15 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 	if err := validatePort(input.ListenPort); err != nil {
 		return preparedCreate{}, err
 	}
+	listenFamily, err := normalizeListenFamily(input.ListenFamily)
+	if err != nil {
+		return preparedCreate{}, err
+	}
 	entryHostMode, entryHost, err := normalizeEntryHost(input.EntryHostMode, input.EntryHost)
 	if err != nil {
+		return preparedCreate{}, err
+	}
+	if err := validateEntryHostFamily(listenFamily, entryHost); err != nil {
 		return preparedCreate{}, err
 	}
 	var config storedConfig
@@ -67,7 +75,7 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 		return preparedCreate{}, fmt.Errorf("encode client credential: %w", err)
 	}
 	return preparedCreate{
-		protocol: protocol, name: name, clientName: clientName,
+		protocol: protocol, name: name, clientName: clientName, listenFamily: listenFamily,
 		entryHostMode: entryHostMode, entryHost: entryHost,
 		configJSON: configJSON, credentialJSON: credentialJSON,
 	}, nil
@@ -93,6 +101,15 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	if err := ensureActiveServer(ctx, tx, input.ServerID); err != nil {
 		return Proxy{}, Mutation{}, err
 	}
+	if prepared.listenFamily == ListenFamilyIPv6 {
+		publicIPv6, err := readServerPublicIPv6(ctx, tx, input.ServerID)
+		if err != nil {
+			return Proxy{}, Mutation{}, err
+		}
+		if publicIPv6 == "" {
+			return Proxy{}, Mutation{}, ErrIPv6Unavailable
+		}
+	}
 	if err := relaystore.ProxyPortAvailable(ctx, tx, input.ServerID, input.ListenPort, prepared.protocol); err != nil {
 		if errors.Is(err, relaystore.ErrPortConflict) {
 			return Proxy{}, Mutation{}, ErrPortConflict
@@ -101,9 +118,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
-		 (server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.ServerID, prepared.name, prepared.protocol, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
+		 (server_id, name, protocol, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.ServerID, prepared.name, prepared.protocol, prepared.listenFamily, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
 		string(prepared.configJSON), now.Unix(), now.Unix(),
 	)
 	if isUniqueConstraint(err) || listener.IsConflict(err) {
@@ -152,7 +169,7 @@ func (s *Service) ListDistributable(ctx context.Context) ([]Proxy, error) {
 func (s *Service) list(ctx context.Context, originCondition string) ([]Proxy, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies
@@ -201,7 +218,7 @@ func RequireAdminCreatedProxy(ctx context.Context, query interface {
 func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {
 	value, _, err := scanProxy(s.db.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies
@@ -257,6 +274,12 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 		}
 		value.ListenPort = *input.ListenPort
 	}
+	if input.ListenFamily != nil {
+		value.ListenFamily, err = normalizeListenFamily(*input.ListenFamily)
+		if err != nil {
+			return Proxy{}, storedConfig{}, err
+		}
+	}
 	entryHostMode, entryHost := value.EntryHostMode, value.EntryHost
 	if input.EntryHostMode != nil {
 		entryHostMode = *input.EntryHostMode
@@ -267,6 +290,12 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	value.EntryHostMode, value.EntryHost, err = normalizeEntryHost(entryHostMode, entryHost)
 	if err != nil {
 		return Proxy{}, storedConfig{}, err
+	}
+	if err := validateEntryHostFamily(value.ListenFamily, value.EntryHost); err != nil {
+		return Proxy{}, storedConfig{}, err
+	}
+	if value.ListenFamily == ListenFamilyIPv6 && value.ServerPublicIPv6 == "" {
+		return Proxy{}, storedConfig{}, ErrIPv6Unavailable
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
@@ -329,9 +358,9 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
 	}
 	_, err = tx.ExecContext(ctx,
-		`UPDATE proxies SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
+		`UPDATE proxies SET name = ?, listen_family = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
 		 WHERE id = ?`,
-		value.Name, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), id,
+		value.Name, value.ListenFamily, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), id,
 	)
 	if isUniqueConstraint(err) || listener.IsConflict(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
@@ -427,12 +456,12 @@ func validateDelete(ctx context.Context, query interface {
 
 func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	var value Proxy
-	var ipv4JSON, ipv6JSON, publicIPv4 sql.NullString
+	var ipv4JSON, ipv6JSON, publicIPv4, publicIPv6 sql.NullString
 	var enabled int
 	var configJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.ServerID, &value.ServerName, &ipv4JSON, &ipv6JSON,
-		&publicIPv4, &value.Name, &value.Protocol, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &enabled,
+		&publicIPv4, &publicIPv6, &value.Name, &value.Protocol, &value.ListenFamily, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &enabled,
 		&configJSON, &createdAt, &updatedAt); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
@@ -440,15 +469,15 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
 		return Proxy{}, storedConfig{}, errors.New("invalid stored proxy entry host")
 	}
+	listenFamily, err := normalizeListenFamily(value.ListenFamily)
+	if err != nil || listenFamily != value.ListenFamily || validateEntryHostFamily(listenFamily, entryHost) != nil {
+		return Proxy{}, storedConfig{}, errors.New("invalid stored proxy listen family")
+	}
 	config, err := decodeConfig(value.Protocol, configJSON)
 	if err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
 	value.ServerPublicIPv4 = publicIPv4.String
-	value.EntryAddress, err = resolveEntryAddress(value.EntryHostMode, value.EntryHost, value.ServerPublicIPv4)
-	if err != nil && !errors.Is(err, ErrConnectionAddressUnavailable) {
-		return Proxy{}, storedConfig{}, err
-	}
 	value.Enabled = enabled != 0
 	value.Config = publicConfig(config)
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()
@@ -460,6 +489,11 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	}
 	if value.ServerIPv6 == nil {
 		value.ServerIPv6 = []string{}
+	}
+	value.ServerPublicIPv6 = netutil.EffectivePublicIPv6(publicIPv6.String, value.ServerIPv6)
+	value.EntryAddress, err = resolveEntryAddress(value.ListenFamily, value.EntryHostMode, value.EntryHost, value.ServerPublicIPv4, value.ServerPublicIPv6)
+	if err != nil && !errors.Is(err, ErrConnectionAddressUnavailable) {
+		return Proxy{}, storedConfig{}, err
 	}
 	return value, config, nil
 }
@@ -484,7 +518,7 @@ func getProxyForMutation(ctx context.Context, query interface {
 	}
 	value, config, err := scanProxy(query.QueryRowContext(ctx,
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
-		 system_info.public_ipv4, proxies.name, proxies.protocol, proxies.listen_port,
+		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
 		 proxies.config_json, proxies.created_at, proxies.updated_at
 		 FROM proxies JOIN servers ON servers.id = proxies.server_id
@@ -514,4 +548,24 @@ func ensureActiveServer(ctx context.Context, tx *sql.Tx, serverID int64) error {
 		return ErrServerDecommissioning
 	}
 	return nil
+}
+
+func readServerPublicIPv6(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, serverID int64) (string, error) {
+	var publicIPv6, ipv6JSON sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT system_info.public_ipv6, system_info.ipv6 FROM servers
+		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
+		 WHERE servers.id = ? AND servers.archived_at IS NULL`, serverID,
+	).Scan(&publicIPv6, &ipv6JSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrServerNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read server public IPv6: %w", err)
+	}
+	var addresses []string
+	_ = json.Unmarshal([]byte(ipv6JSON.String), &addresses)
+	return netutil.EffectivePublicIPv6(publicIPv6.String, addresses), nil
 }

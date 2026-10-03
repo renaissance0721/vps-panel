@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -464,6 +465,7 @@ func TestManagedXraySameConfigActiveAndHealthyAvoidsRestart(t *testing.T) {
 	manager, commands := newTestXrayManager(t)
 	seedManagedXray(t, manager, []byte("binary"))
 	proxy := testDesiredTLSProxy()
+	proxy.Listen = "::"
 	state := desiredState{Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{proxy}}}
 	config, err := renderManagedXrayConfig(state.Xray.Proxies, "auto")
 	if err != nil {
@@ -471,16 +473,16 @@ func TestManagedXraySameConfigActiveAndHealthyAvoidsRestart(t *testing.T) {
 	}
 	writeTestFile(t, manager.configPath, config, 0o600)
 	commands.active = true
-	var probed []int
-	manager.probeListener = func(_ context.Context, port int) error {
-		probed = append(probed, port)
+	var probed []string
+	manager.probeListener = func(_ context.Context, address string, port int) error {
+		probed = append(probed, net.JoinHostPort(address, strconv.Itoa(port)))
 		return nil
 	}
 
 	if err := manager.apply(t.Context(), state); err != nil {
 		t.Fatalf("apply healthy same config: %v", err)
 	}
-	if commands.count("systemctl", "start") != 0 || commands.count("systemctl", "restart") != 0 || len(probed) != 1 || probed[0] != proxy.Port {
+	if commands.count("systemctl", "start") != 0 || commands.count("systemctl", "restart") != 0 || len(probed) != 1 || probed[0] != "[::1]:443" {
 		t.Fatalf("healthy no-op calls = %v, probed = %v", commands.calls, probed)
 	}
 }
@@ -496,7 +498,7 @@ func TestManagedXraySameConfigMissingListenerRestartsAndFails(t *testing.T) {
 	}
 	writeTestFile(t, manager.configPath, config, 0o600)
 	commands.active = true
-	manager.probeListener = func(context.Context, int) error { return errors.New("not listening") }
+	manager.probeListener = func(context.Context, string, int) error { return errors.New("not listening") }
 
 	err = manager.apply(t.Context(), state)
 	if !errors.Is(err, errManagedXrayHealth) || commands.count("systemctl", "restart") != 1 {
@@ -535,7 +537,7 @@ func TestManagedXrayRemovedProxyAppliesOnlyRemainingPort(t *testing.T) {
 	}
 	writeTestFile(t, manager.configPath, oldConfig, 0o600)
 	var probed, firewallPorts []int
-	manager.probeListener = func(_ context.Context, port int) error {
+	manager.probeListener = func(_ context.Context, _ string, port int) error {
 		probed = append(probed, port)
 		return nil
 	}
@@ -576,7 +578,7 @@ func TestManagedXrayMissingListenerRollsBackNewConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, manager.configPath, oldConfig, 0o600)
-	manager.probeListener = func(_ context.Context, port int) error {
+	manager.probeListener = func(_ context.Context, _ string, port int) error {
 		if port == oldProxy.Port {
 			return nil
 		}
@@ -1026,7 +1028,7 @@ func newTestXrayManager(t *testing.T) (*xrayManager, *xrayCommandRecorder) {
 		assets:            managedXrayAssets,
 		client:            &http.Client{Timeout: time.Second},
 		runCommand:        commands.run,
-		probeListener:     func(context.Context, int) error { return nil },
+		probeListener:     func(context.Context, string, int) error { return nil },
 		reconcileFirewall: func(context.Context, []firewallRule) error { return nil },
 		wait:              func(context.Context, time.Duration) error { return nil },
 		healthAttempts:    2,

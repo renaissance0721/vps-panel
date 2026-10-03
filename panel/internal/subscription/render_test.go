@@ -282,12 +282,27 @@ func TestRenderMihomoRuleSetRequiresProvider(t *testing.T) {
 	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); !errors.Is(err, ErrInvalidRoutingPreset) {
 		t.Fatalf("missing provider error = %v", err)
 	}
-	routing.RuleProviders = []RoutingRuleProvider{{
-		Name: "Missing", Type: "http", Behavior: "classical", Format: "yaml", Interval: 86400,
-		URL: "https://example.com/rules.yaml",
-	}}
-	if _, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing}); err != nil {
-		t.Fatalf("valid RULE-SET render error = %v", err)
+	for _, format := range []string{"yaml", "text"} {
+		routing.RuleProviders = []RoutingRuleProvider{{
+			Name: "Missing", Type: "http", Behavior: "classical", Format: format, Interval: 86400,
+			URL: "https://example.com/rules",
+		}}
+		body, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: routing})
+		if err != nil {
+			t.Fatalf("valid %s RULE-SET render error = %v", format, err)
+		}
+		var value struct {
+			Providers map[string]RoutingRuleProvider `yaml:"rule-providers"`
+			Rules     []string                       `yaml:"rules"`
+		}
+		if err := yaml.Unmarshal(body, &value); err != nil {
+			t.Fatal(err)
+		}
+		provider := value.Providers["Missing"]
+		if provider.Type != "http" || provider.Behavior != "classical" || provider.Format != format || provider.URL != routing.RuleProviders[0].URL ||
+			len(value.Rules) != 2 || value.Rules[0] != "RULE-SET,Missing,Custom" {
+			t.Fatalf("provider or name-based rule changed: %s", body)
+		}
 	}
 }
 
@@ -307,8 +322,8 @@ func TestBuiltinMihomoProviders(t *testing.T) {
 	}
 	for _, name := range []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"} {
 		provider, exists := value.Providers[name]
-		if !exists || provider.Type != "http" || provider.Behavior != "classical" || provider.Format != "yaml" ||
-			provider.Interval != 86400 || !strings.Contains(provider.URL, "/"+name+"/") {
+		if !exists || provider.Type != "http" || provider.Behavior != "classical" || provider.Format != "text" ||
+			provider.Interval != 86400 || provider.URL != "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/"+name+"/"+name+".list" {
 			t.Fatalf("provider %q = %+v", name, provider)
 		}
 	}

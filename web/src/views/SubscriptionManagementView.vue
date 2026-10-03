@@ -1072,7 +1072,7 @@ async function saveRoutingPreset() {
 
 function addRoutingProvider() {
   routingProviders.value.push({
-    name: '', url: '', type: 'http', behavior: 'classical', format: 'yaml', interval: 86400,
+    name: '', url: '', type: 'http', behavior: 'classical', format: 'text', interval: 86400,
   })
 }
 
@@ -1494,7 +1494,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <h3>策略组</h3>
     <RoutingGroupEditor :model-value="routingPreviewGroups" readonly />
     <h3>远程规则集（Rule Providers）</h3>
-    <p class="form-help">这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical / text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。</p>
+    <p class="form-help">Rule Provider 建议使用 http / classical / text 的 .list 规则源，可同时供 Mihomo 和 Shadowrocket 使用；URL 不要求 .list 后缀。Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider。</p>
     <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
     <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
     <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
@@ -1521,13 +1521,13 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <section class="routing-config-section">
       <div class="collapsible-section-header"><strong>远程规则集（Rule Providers）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingProvidersExpanded" @click="routingProvidersExpanded = !routingProvidersExpanded">{{ routingProvidersExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingProvidersExpanded" class="routing-config-scroll routing-config-scroll-providers">
-        <p class="form-help">这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical / text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。</p>
+        <p class="form-help">Rule Provider 建议使用 http / classical / text 的 .list 规则源，可同时供 Mihomo 和 Shadowrocket 使用；URL 不要求 .list 后缀。Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider。</p>
         <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
           <label><span>名称</span><n-input :value="provider.name" placeholder="Google" @update:value="setRoutingProviderName(index, $event)" /></label>
-          <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
+          <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.list" /></label>
           <label><span>类型</span><select v-model="provider.type" class="settings-input"><option value="http">http</option></select></label>
           <label><span>Behavior</span><n-input v-model:value="provider.behavior" placeholder="classical" /></label>
-          <label><span>Format</span><n-input v-model:value="provider.format" placeholder="yaml" /></label>
+          <label><span>Format</span><n-input v-model:value="provider.format" placeholder="text" /></label>
           <label><span>更新间隔（秒）</span><n-input-number v-model:value="provider.interval" :min="1" :precision="0" /></label>
           <n-button type="error" secondary attr-type="button" @click="removeRoutingProvider(index)">删除规则集</n-button>
         </div>

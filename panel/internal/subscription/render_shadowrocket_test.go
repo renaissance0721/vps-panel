@@ -31,7 +31,7 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 	for _, expected := range []string{"[General]", "[Proxy]", "[Proxy Group]", "[Rule]",
 		"US1 = vless,203.0.113.1,443,", "password=test-uuid", "tls=true", "reality=true",
 		"pbk=public-test-key", "sid=abcd", "fp=chrome", "peer=example.com", "flow=xtls-rprx-vision", "udp-relay=true",
-		"FINAL,\"🚀 默认代理\"", "/Shadowrocket/OpenAI/OpenAI.list"} {
+		"FINAL,\"🚀 默认代理\"", "/Surge/OpenAI/OpenAI.list"} {
 		if !strings.Contains(string(body), expected) {
 			t.Errorf("missing %q", expected)
 		}
@@ -144,19 +144,9 @@ func TestShadowrocketRulesAndProviderCompatibility(t *testing.T) {
 			t.Errorf("unsupported rule %q: %v", rule, err)
 		}
 	}
-	for _, provider := range []RoutingRuleProvider{
-		{Name: "Unknown", URL: "https://example.com/rules.yaml", Type: "http", Behavior: "classical", Format: "yaml"},
-		{Name: "Unknown", URL: "https://example.com/rules.mrs", Type: "http", Behavior: "domain", Format: "mrs"},
-		{Name: "Unknown", URL: "https://example.com/rules.list", Type: "http", Behavior: "domain", Format: "text"},
-		{Name: "OpenAI", URL: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml?x=1", Type: "http", Behavior: "classical", Format: "yaml"},
-	} {
-		if _, err := shadowrocketProviderURL(provider); !errors.Is(err, ErrUnsupportedShadowrocketRule) {
-			t.Errorf("unknown provider accepted: %v", err)
-		}
-	}
 	for _, provider := range defaultRoutingPresetForTest(t).RuleProviders {
 		got, err := shadowrocketProviderURL(provider)
-		want := "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Shadowrocket/" + provider.Name + "/" + provider.Name + ".list"
+		want := "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/" + provider.Name + "/" + provider.Name + ".list"
 		if err != nil || got != want {
 			t.Errorf("built-in provider %s: %v", provider.Name, err)
 		}
@@ -189,5 +179,77 @@ func TestShadowrocketTemplateValidationAndTypeIsolation(t *testing.T) {
 	}
 	if _, err := renderShadowrocketProxy(ResolvedSubscriptionNode{Name: "Unknown", Address: "example.com", Port: 443, Protocol: "unsupported"}); !errors.Is(err, ErrUnsupportedShadowrocketProtocol) {
 		t.Fatal(err)
+	}
+}
+
+func TestShadowrocketTextProvidersUseOriginalURLWithAnyName(t *testing.T) {
+	for _, name := range []string{"OpenAI", "Muse", "MetaAI", "MyCustomProvider"} {
+		for _, address := range []string{"https://example.com/OpenAI.list", "http://mirror.example.com/rules", "https://example.com/rules.yaml",
+			"https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Surge/Muse/Muse.list"} {
+			provider := RoutingRuleProvider{Name: name, Type: "http", Behavior: "classical", Format: "text", URL: address, Interval: 86400}
+			got, err := renderShadowrocketRule("RULE-SET,"+name+",AI", map[string]RoutingRuleProvider{name: provider})
+			if err != nil || got != "RULE-SET,"+address+",AI" {
+				t.Fatalf("%s: original URL was not used: %q, %v", name, got, err)
+			}
+		}
+	}
+}
+
+func TestShadowrocketProviderErrorsIncludeRuleAndReason(t *testing.T) {
+	for _, check := range []struct{ field, value, reason string }{
+		{"type", "file", `type="file"`},
+		{"format", "yaml", `format="yaml"`},
+		{"legacy", "", `format="yaml"`},
+		{"format", "mrs", `format="mrs"`},
+		{"behavior", "domain", `behavior="domain"`},
+		{"url", "ftp://example.com/rules.list", "URL 无效"},
+		{"url", "https:///rules.list", "URL 无效"},
+		{"url", "https://example.com/%zz", "URL 无效"},
+		{"url", "https://example.com/line\nbreak", "URL 无效"},
+		{"url", "https://example.com/line\u2028break", "URL 无效"},
+		{"missing", "", "未找到规则源"},
+	} {
+		t.Run(check.field+check.value, func(t *testing.T) {
+			routing := shadowrocketTestRouting()
+			routing.RuleProviders[0].Name = "Muse"
+			routing.Rules = []string{"DOMAIN,example.com,DIRECT", "GEOIP,CN,DIRECT", "RULE-SET,Muse,AI", "MATCH,Proxy"}
+			provider := &routing.RuleProviders[0]
+			switch check.field {
+			case "type":
+				provider.Type = check.value
+			case "format":
+				provider.Format = check.value
+			case "legacy":
+				provider.Format = "yaml"
+				provider.URL = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml"
+			case "behavior":
+				provider.Behavior = check.value
+			case "url":
+				provider.URL = check.value
+			case "missing":
+				routing.RuleProviders = nil
+			}
+			_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: routing,
+				Nodes: []ResolvedSubscriptionNode{{Name: "US1", Protocol: proxystore.ProtocolShadowsocks, Address: "example.com", Port: 443,
+					Method: "aes-256-gcm", ShadowsocksPassword: "secret-not-for-errors"}}})
+			if !errors.Is(err, ErrUnsupportedShadowrocketRule) {
+				t.Fatalf("missing typed rule error: %v", err)
+			}
+			for _, want := range []string{"第 3 条规则", `"RULE-SET,Muse,AI"`, `规则源 "Muse"`, check.reason} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("missing %q in %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), "secret-not-for-errors") {
+				t.Fatal("error exposed node credentials")
+			}
+		})
+	}
+	// Bound and escape administrator-supplied context, including malformed rules.
+	routing := shadowrocketTestRouting()
+	routing.Rules = []string{"GEOSITE," + strings.Repeat("x", 4096) + "\n,DIRECT"}
+	_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: routing})
+	if !errors.Is(err, ErrUnsupportedShadowrocketRule) || len(err.Error()) > 1200 || strings.Contains(err.Error(), "\n") {
+		t.Fatal("unbounded or unsafe error context", err)
 	}
 }

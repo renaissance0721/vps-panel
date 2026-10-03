@@ -229,7 +229,7 @@ test('分流方案弹窗将策略组、远程规则集和 Rules 拆成可独立�
   assert.equal((managementSource.match(/class="routing-config-scroll routing-config-scroll-/g) ?? []).length, 3)
   assert.match(styleSource, /\.routing-config-scroll\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
   assert.match(managementSource, /远程规则集（Rule Providers）/)
-  assert.match(managementSource, /这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical \/ text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。/)
+  assert.match(managementSource, /Rule Provider 建议使用 http \/ classical \/ text 的 .list 规则源，可同时供 Mihomo 和 Shadowrocket 使用；URL 不要求 .list 后缀。Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider。/)
   assert.match(managementSource, /Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。/)
 })
 

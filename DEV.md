@@ -194,7 +194,11 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 Shadowrocket renderer 直接生成原生节点：VLESS 的 UUID 写入 `password`，SNI 写入 `peer`，REALITY 写入 `reality=true`、`pbk`、`sid`、`fp`，flow 与 Mihomo 共用处理；SS / SS2022 使用 resolved password。名称和参数按配置值转义，拒绝控制字符，错误不回显凭据。现有组类型仅支持 `select`。规则支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOIP、RULE-SET；MATCH 转为 FINAL，IP / GEOIP / RULE-SET 保留可用的 no-resolve。其他规则明确失败，不静默丢弃分流意图。
 
-RULE-SET 将逻辑 provider 名解析为 URL。http / classical / text 源保留 URL；内置十个 Blackmatrix7 Clash YAML URL 使用精确白名单映射到上游 Shadowrocket `.list`，不修改存储或 Mihomo 输出。未知 YAML、非 classical 源拒绝转换。renderer 不下载远程规则，自定义 text 源的实际内容兼容性由配置者确认。
+RoutingPreset 是客户端无关的逻辑分流配置。Rule Provider 推荐使用 http / classical / text：Mihomo 的 rule-providers 使用原 URL，RULE-SET 保留 provider 名称；Shadowrocket 直接将同一 URL 写入 RULE-SET，仅验证类型、行为、格式及安全的 http/https URL，不按名称、域名或后缀猜测和改写。YAML、mrs、非 classical 源及不兼容规则明确拒绝，错误包含规则序号、原文、provider 名和具体原因，上下文限制长度。renderer 不下载远程规则，text 源的实际内容兼容性由配置者确认。
+
+新数据库默认十个规则源使用 Blackmatrix7 Surge classical text `.list`。升级仅修改 is_default=1 方案中仍使用旧内置 Clash YAML URL 的 provider URL / format，保留默认 ID、分组、规则、绑定及引用；自定义方案和自定义 URL 不变。
+
+共享 provider 元数据不保证远程列表内每种规则都被两端支持。例如上游 [YouTube Surge 列表](https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/YouTube/YouTube.list) 含有 USER-AGENT，而 [Mihomo 规则解析器](https://github.com/MetaCubeX/mihomo/blob/Meta/rules/parser.go) 不支持该类型；Panel 不过滤或转换远程列表内容，配置预览不能代替客户端加载验证。
 
 模板模型和管理 API 使用 `type`（`mihomo` / `shadowrocket`）与 `content`，类型创建后不可修改，两个 renderer 严格校验类型。数据库沿用原表，将旧 `config_yaml` 列重命名为 `content`，原数据全部标记为 mihomo；保留 ID、内容、启用状态、时间及引用。个人订阅新增 `shadowrocket_template_id`，套餐数据库保留 `template_id` 的 Mihomo 语义并新增 Shadowrocket 引用；Go 与套餐 API 将原引用明确命名为 `mihomo_template_id`。调用模板管理 API 的旧集成需将 `config_yaml` 改为 `type` / `content`，套餐 API 的 `template_id` 改为 `mihomo_template_id`。
 

@@ -151,6 +151,55 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	if rocketAuto.Code != http.StatusOK || rocketAuto.Body.String() != rocket.Body.String() {
 		t.Fatal("personal Shadowrocket auto detection")
 	}
+	var originalProviders string
+	if err := db.QueryRow(`SELECT rule_providers_yaml FROM subscription_routing_presets WHERE is_default = 1`).Scan(&originalProviders); err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range []bool{false, true} {
+		var providers map[string]map[string]any
+		if err := yaml.Unmarshal([]byte(originalProviders), &providers); err != nil {
+			t.Fatal(err)
+		}
+		reason := `format="yaml"`
+		if missing {
+			delete(providers, "Gemini")
+			reason = "未找到规则源"
+		} else {
+			providers["Gemini"]["format"] = "yaml"
+			providers["Gemini"]["url"] = "https://example.com/custom.yaml"
+		}
+		encoded, err := yaml.Marshal(providers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`UPDATE subscription_routing_presets SET rule_providers_yaml = ? WHERE is_default = 1`, string(encoded)); err != nil {
+			t.Fatal(err)
+		}
+		response := performRequest(t, handler, http.MethodGet, rocketPreviewPath, nil, adminCookie)
+		var problem map[string]string
+		if response.Code != http.StatusUnprocessableEntity || json.Unmarshal(response.Body.Bytes(), &problem) != nil {
+			t.Fatalf("preview error status %d", response.Code)
+		}
+		for _, want := range []string{"第 3 条规则", "RULE-SET,Gemini,🤖 AI", `规则源 "Gemini"`, reason} {
+			if !strings.Contains(problem["error"], want) {
+				t.Errorf("preview lost %q: %s", want, problem["error"])
+			}
+		}
+		if strings.Contains(problem["error"], "password=") || strings.Contains(problem["error"], "uuid") {
+			t.Fatal("preview error contains credentials")
+		}
+		if !missing {
+			if response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionMihomoURL), nil, nil); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "https://example.com/custom.yaml") {
+				t.Fatal("custom YAML provider no longer works in Mihomo")
+			}
+		}
+		if response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionBase64URL), nil, nil); response.Code != http.StatusOK || response.Body.String() != base64Response.Body.String() {
+			t.Fatal("Base64 output changed")
+		}
+	}
+	if _, err := db.Exec(`UPDATE subscription_routing_presets SET rule_providers_yaml = ? WHERE is_default = 1`, originalProviders); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`UPDATE personal_subscription_groups SET enabled = 0 WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}

@@ -193,3 +193,29 @@ test('模板编辑器只显示当前客户端的格式帮助', async () => {
     }
   }
 })
+
+test('新增规则源默认 text，编辑和预览使用数据库内容且保留自定义 YAML', async () => {
+  const providers = [
+    { name: 'OpenAI', type: 'http', behavior: 'classical', format: 'text', interval: 86400,
+      url: 'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/OpenAI/OpenAI.list' },
+    { name: 'Custom', type: 'http', behavior: 'classical', format: 'yaml', interval: 3600, url: 'https://example.com/custom.yaml' },
+  ]
+  const preset = { id: 42, name: '数据库中的默认分流', is_default: true, enabled: true, groups: [], rules: ['RULE-SET,OpenAI,DIRECT'], rule_providers: providers }
+  const { html, state } = await render(Subscriptions, state => {
+    state.routingPresets.value = [preset]
+    state.planRoutingPresetID.value = 42
+    state.viewSelectedPlanRouting()
+  }, { role: 'admin' })
+  assert.deepEqual(state.routingPreviewProviders.value, providers)
+  assert.deepEqual(state.routingPreviewRules.value, preset.rules)
+  assert.match(html, /http · classical · text · 86400 秒/)
+  assert.ok(html.includes(providers[0].url))
+  assert.match(html, /Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider/)
+  state.openEditRoutingPreset(preset)
+  assert.deepEqual(state.routingProviders.value, providers)
+  state.addRoutingProvider()
+  assert.deepEqual(state.routingProviders.value.at(-1), { name: '', url: '', type: 'http', behavior: 'classical', format: 'text', interval: 86400 })
+  assert.equal(providers.length, 2)
+  assert.equal(state.routingProviders.value[1].format, 'yaml')
+  assert.equal(state.routingProviders.value[1].url, providers[1].url)
+})

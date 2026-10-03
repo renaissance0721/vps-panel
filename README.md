@@ -117,7 +117,7 @@ Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有
 
 Shadowrocket 模板保留 `[General]`，可添加 `[Host]`、`[URL Rewrite]`；`[Proxy]`、`[Proxy Group]`、`[Rule]` 必须分别包含唯一的独立行 `{{PROXIES}}`、`{{PROXY_GROUPS}}`、`{{RULES}}`，不能放入旧节点或规则。策略组和规则统一来自分流方案与节点绑定。
 
-当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组。Shadowrocket 的 `RULE-SET` 使用远程 URL；内置 Blackmatrix7 源映射到其对应 `.list`，自定义源应使用兼容的 classical / text 列表。未知 YAML 源、GEOSITE 等不兼容规则会返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
+当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组。通用分流方案与客户端无关，Rule Provider 推荐使用 http / classical / text 列表；默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
 
 ## 项目结构
 

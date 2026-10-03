@@ -34,6 +34,20 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 		return nil, ErrInvalidRoutingPreset
 	}
 	routing := *preset
+	// Resolve rules before generic preset validation so missing providers and
+	// incompatible attributes retain the rule's position and original text.
+	providers := make(map[string]RoutingRuleProvider, len(routing.RuleProviders))
+	for _, provider := range routing.RuleProviders {
+		providers[strings.TrimSpace(provider.Name)] = provider
+	}
+	ruleLines := make([]string, 0, len(routing.Rules))
+	for index, rule := range routing.Rules {
+		line, err := renderShadowrocketRule(rule, providers)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
+		}
+		ruleLines = append(ruleLines, line)
+	}
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
@@ -73,18 +87,6 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 			return nil, err
 		}
 		groupLines = append(groupLines, line)
-	}
-	providers := make(map[string]RoutingRuleProvider, len(routing.RuleProviders))
-	for _, provider := range routing.RuleProviders {
-		providers[provider.Name] = provider
-	}
-	ruleLines := make([]string, 0, len(routing.Rules))
-	for index, rule := range routing.Rules {
-		line, err := renderShadowrocketRule(rule, providers)
-		if err != nil {
-			return nil, fmt.Errorf("第 %d 条规则: %w", index+1, err)
-		}
-		ruleLines = append(ruleLines, line)
 	}
 	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), nil
 }
@@ -181,11 +183,11 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 		supportsNoResolve = true
 		provider, exists := providers[parts[1]]
 		if !exists {
-			return "", ErrUnsupportedShadowrocketRule
+			return "", fmt.Errorf("未找到规则源 %q: %w", shadowrocketErrorContext(parts[1]), ErrUnsupportedShadowrocketRule)
 		}
 		address, err := shadowrocketProviderURL(provider)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("规则源 %q：%w", shadowrocketErrorContext(parts[1]), err)
 		}
 		parts[1] = address
 	default:
@@ -202,32 +204,31 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 }
 
 func shadowrocketProviderURL(provider RoutingRuleProvider) (string, error) {
-	if provider.Type != "http" || provider.Behavior != "classical" || !safeShadowrocketValue(provider.URL) {
-		return "", ErrUnsupportedShadowrocketRule
-	}
-	parsed, err := url.Parse(provider.URL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
-		return "", ErrUnsupportedShadowrocketRule
-	}
-	if provider.Format == "text" && !strings.HasSuffix(strings.ToLower(parsed.Path), ".yaml") && !strings.HasSuffix(strings.ToLower(parsed.Path), ".yml") {
-		return provider.URL, nil
-	}
-	// These exact URLs ship in Panel's default preset. The upstream publishes
-	// equivalent Shadowrocket lists. Keep stored URLs and Mihomo output intact;
-	// never rewrite an arbitrary YAML URL, mirror, branch or query string.
-	const base = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/"
-	if provider.Format == "yaml" {
-		for _, name := range []string{"OpenAI", "Claude", "Gemini", "YouTube", "Netflix", "Telegram", "TikTok", "Apple", "Copilot", "Microsoft"} {
-			file := name
-			if name == "Netflix" || name == "Apple" {
-				file += "_Classical"
-			}
-			if provider.URL == base+"Clash/"+name+"/"+file+".yaml" {
-				return base + "Shadowrocket/" + name + "/" + name + ".list", nil
-			}
+	for _, attribute := range []struct{ name, value, required string }{
+		{"type", provider.Type, "http"},
+		{"behavior", provider.Behavior, "classical"},
+		{"format", provider.Format, "text"},
+	} {
+		if attribute.value != attribute.required {
+			return "", fmt.Errorf("使用 %s=%q，Shadowrocket 仅支持 http / classical / text Rule Provider: %w",
+				attribute.name, shadowrocketErrorContext(attribute.value), ErrUnsupportedShadowrocketRule)
 		}
 	}
-	return "", ErrUnsupportedShadowrocketRule
+	parsed, err := url.Parse(provider.URL)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || !safeShadowrocketValue(provider.URL) {
+		return "", fmt.Errorf("URL 无效，须为不含控制字符的 http/https URL: %w", ErrUnsupportedShadowrocketRule)
+	}
+	// Compatibility is declared by the provider metadata, not its name, host
+	// or URL suffix. The client downloads the text; Panel never rewrites it.
+	return provider.URL, nil
+}
+
+func shadowrocketErrorContext(value string) string {
+	runes := []rune(value)
+	if len(runes) > 256 {
+		return string(runes[:256]) + "…"
+	}
+	return value
 }
 
 func safeShadowrocketValue(value string) bool {

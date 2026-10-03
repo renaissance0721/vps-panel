@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 19
+const LatestSchemaVersion = 20
 
 type migration struct {
 	version            int
@@ -42,6 +42,68 @@ var migrations = []migration{
 	{version: 17, name: "server_access_management_users", up: cleanupServerAccessUsers},
 	{version: 18, name: "materialize_default_probe_assignments", up: materializeDefaultProbeAssignments},
 	{version: 19, name: "subscription_client_templates", up: migrateSubscriptionClientTemplates},
+	{version: 20, name: "shared_text_rule_providers", up: migrateSharedTextRuleProviders},
+}
+
+func migrateSharedTextRuleProviders(ctx context.Context, tx *sql.Tx) error {
+	var id int64
+	var groups, rules, source string
+	err := tx.QueryRowContext(ctx, `SELECT id, groups_json, rules_json, rule_providers_yaml
+		FROM subscription_routing_presets WHERE is_default = 1`).Scan(&id, &groups, &rules, &source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := validateMigratedRouting(groups, rules, source); err != nil {
+		return err
+	}
+	// These are the exact URLs shipped before schema 20, not runtime URL
+	// inference. Even the editable default preset may contain custom sources.
+	legacyPaths := map[string]string{
+		"OpenAI/OpenAI.yaml":             "OpenAI/OpenAI.list",
+		"Claude/Claude.yaml":             "Claude/Claude.list",
+		"Gemini/Gemini.yaml":             "Gemini/Gemini.list",
+		"YouTube/YouTube.yaml":           "YouTube/YouTube.list",
+		"Netflix/Netflix_Classical.yaml": "Netflix/Netflix.list",
+		"Telegram/Telegram.yaml":         "Telegram/Telegram.list",
+		"TikTok/TikTok.yaml":             "TikTok/TikTok.list",
+		"Apple/Apple_Classical.yaml":     "Apple/Apple.list",
+		"Copilot/Copilot.yaml":           "Copilot/Copilot.list",
+		"Microsoft/Microsoft.yaml":       "Microsoft/Microsoft.list",
+	}
+	const base = "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/"
+	var providers map[string]map[string]any
+	if err := yaml.Unmarshal([]byte(source), &providers); err != nil {
+		return fmt.Errorf("decode default routing providers: %w", err)
+	}
+	changed := false
+	for _, provider := range providers {
+		if provider["type"] != "http" || provider["behavior"] != "classical" || provider["format"] != "yaml" {
+			continue
+		}
+		for oldPath, newPath := range legacyPaths {
+			if provider["url"] == base+"Clash/"+oldPath {
+				provider["url"] = base + "Surge/" + newPath
+				provider["format"] = "text"
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := yaml.Marshal(providers)
+	if err != nil {
+		return fmt.Errorf("encode default routing providers: %w", err)
+	}
+	if err := validateMigratedRouting(groups, rules, string(encoded)); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE subscription_routing_presets SET rule_providers_yaml = ? WHERE id = ? AND is_default = 1`, string(encoded), id)
+	return err
 }
 
 func migrateSubscriptionClientTemplates(ctx context.Context, tx *sql.Tx) error {
@@ -1191,63 +1253,63 @@ const defaultRoutingRulesJSON = `["RULE-SET,OpenAI,ðŸ¤– AI","RULE-SET,Claude,ðŸ¤
 const defaultRoutingProvidersYAML = `OpenAI:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/OpenAI/OpenAI.list
 Claude:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Claude/Claude.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Claude/Claude.list
 Gemini:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Gemini/Gemini.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Gemini/Gemini.list
 YouTube:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/YouTube/YouTube.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/YouTube/YouTube.list
 Netflix:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Netflix/Netflix_Classical.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Netflix/Netflix.list
 Telegram:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Telegram/Telegram.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Telegram/Telegram.list
 TikTok:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/TikTok/TikTok.list
 Apple:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple_Classical.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Apple/Apple.list
 Copilot:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Copilot/Copilot.yaml
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Copilot/Copilot.list
 Microsoft:
   type: http
   behavior: classical
-  format: yaml
+  format: text
   interval: 86400
-  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.yaml`
+  url: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Microsoft/Microsoft.list`
 
 func migrateRoutingPresetsAsRuntimeProfiles(ctx context.Context, tx *sql.Tx) error {
 	for _, statement := range []string{

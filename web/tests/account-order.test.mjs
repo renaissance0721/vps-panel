@@ -108,14 +108,88 @@ test('dragover 只提示目标，失败后恢复持久化顺序并显示错误',
   assert.equal(state.reorderingID.value, null)
 })
 
-test('个人订阅卡片只保留复制、二维码、编辑和删除，其他预览不受影响', async () => {
+test('个人订阅卡片提供 Shadowrocket 链接与配置预览，既有操作保持可用', async () => {
   const { html } = await render(Subscriptions, state => {
     state.loading.value = false
     state.personalSubscriptions.value = [{ id: 1, name: 'iPhone', enabled: true, client_name: 'refrain', nodes: [], routing_preset_name: '个人自用' }]
   }, { role: 'vip' })
-  for (const label of ['复制链接', '二维码', '编辑', '删除']) assert.match(html, new RegExp(`>${label}<`))
+  for (const label of ['复制链接', '复制 Shadowrocket URL', '预览 Shadowrocket', '二维码', '编辑', '删除']) assert.match(html, new RegExp(`>${label}<`))
   assert.doesNotMatch(html, />预览<|重置链接|个人订阅 Mihomo Preview/)
   const source = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
-  assert.doesNotMatch(source, /personalPreviewOpen|personalPreviewYAML|previewPersonal|regeneratePersonalToken/)
+  assert.doesNotMatch(source, /personalPreviewOpen|personalPreviewYAML|regeneratePersonalToken/)
+  assert.match(source, /\/api\/personal-subscriptions\/\$\{value.id\}\/shadowrocket-preview/)
   assert.match(source, /\/api\/admin\/subscription\/users\/\$\{value.user_id\}\/mihomo-preview/)
+})
+
+test('个人和共享模板选择按客户端类型隔离，停用模板仅保留当前引用', async () => {
+  const { state } = await render(Subscriptions, state => {
+    state.templates.value = [
+      { id: 1, type: 'mihomo', enabled: true },
+      { id: 2, type: 'shadowrocket', enabled: true },
+      { id: 3, type: 'mihomo', enabled: false },
+      { id: 4, type: 'shadowrocket', enabled: false },
+      { id: 5, type: 'shadowrocket', enabled: false },
+    ]
+  }, { role: 'admin' })
+  const ids = name => state[name].value.map(value => value.id)
+  for (const name of ['selectablePersonalTemplates', 'selectablePlanMihomoTemplates']) assert.deepEqual(ids(name), [1])
+  for (const name of ['selectablePersonalShadowrocketTemplates', 'selectablePlanShadowrocketTemplates']) assert.deepEqual(ids(name), [2])
+  state.editingPersonal.value = { mihomo_template_id: 3, shadowrocket_template_id: 4 }
+  state.editingPlan.value = { mihomo_template_id: 1, shadowrocket_template_id: 5 }
+  assert.deepEqual(ids('selectablePersonalTemplates'), [1, 3])
+  assert.deepEqual(ids('selectablePersonalShadowrocketTemplates'), [2, 4])
+  assert.deepEqual(ids('selectablePlanMihomoTemplates'), [1])
+  assert.deepEqual(ids('selectablePlanShadowrocketTemplates'), [2, 5])
+})
+
+test('切换模板类型提供对应初始内容，编辑模板保留类型和原文', async () => {
+  const conf = '[General]\ndns-server = system\n[Proxy]\n{{PROXIES}}'
+  const { state } = await render(Subscriptions, state => {
+    state.builtinShadowrocket.value = { name: 'Shadowrocket', conf }
+  }, { role: 'admin' })
+  state.openCreateTemplate()
+  assert.equal(state.templateType.value, 'mihomo')
+  assert.match(state.templateContent.value, /dns:/)
+  state.templateType.value = 'shadowrocket'
+  state.resetTemplateContent()
+  assert.equal(state.templateContent.value, conf)
+  state.openEditTemplate({ id: 9, name: '自定义', enabled: false, type: 'shadowrocket', content: conf + '\n# preserved' })
+  assert.equal(state.templateType.value, 'shadowrocket')
+  assert.equal(state.templateContent.value, conf + '\n# preserved')
+  assert.equal(state.templateEnabled.value, false)
+})
+
+test('Shadowrocket 预览读取 conf 并显示，接口错误保留可读原因', async () => {
+  const { state } = await render(Subscriptions, () => {}, { role: 'vip' })
+  const calls = []
+  globalThis.fetch = async (url) => {
+    calls.push(url)
+    return { ok: true, status: 200, json: async () => ({ conf: '[Rule]\nFINAL,DIRECT\n' }) }
+  }
+  await state.previewPersonalShadowrocket({ id: 8 })
+  assert.deepEqual(calls, ['/api/personal-subscriptions/8/shadowrocket-preview'])
+  assert.equal(state.shadowrocketPreviewOpen.value, true)
+  assert.equal(state.shadowrocketPreviewConf.value, '[Rule]\nFINAL,DIRECT\n')
+  state.shadowrocketPreviewOpen.value = false
+  globalThis.fetch = async () => ({ ok: false, status: 422, json: async () => ({ error: '当前规则无法转换为 Shadowrocket 格式' }) })
+  await state.previewPersonalShadowrocket({ id: 8 })
+  assert.equal(state.shadowrocketPreviewOpen.value, false)
+  assert.equal(state.error.value, '当前规则无法转换为 Shadowrocket 格式')
+})
+
+test('模板编辑器只显示当前客户端的格式帮助', async () => {
+  for (const type of ['mihomo', 'shadowrocket']) {
+    const { html } = await render(Subscriptions, state => {
+      state.openCreateTemplate()
+      state.templateType.value = type
+    }, { role: 'admin' })
+    if (type === 'mihomo') {
+      assert.match(html, /不能包含 proxies、proxy-groups、rule-providers 或 rules/)
+      assert.doesNotMatch(html, /保留 \[General\]/)
+    } else {
+      assert.match(html, /保留 \[General\]/)
+      assert.match(html, /\{\{PROXIES\}\}/)
+      assert.doesNotMatch(html, /不能包含 proxies、proxy-groups、rule-providers 或 rules/)
+    }
+  }
 })

@@ -55,10 +55,11 @@ func (s *server) regenerateSubscriberToken(w http.ResponseWriter, r *http.Reques
 	}
 	urls := buildSubscriptionURLs(baseURL, tokenValue)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subscription_token":      tokenValue,
-		"subscription_url":        urls.Base64,
-		"subscription_base64_url": urls.Base64,
-		"subscription_mihomo_url": urls.Mihomo,
-		"subscription_auto_url":   urls.Auto,
+		"subscription_token":            tokenValue,
+		"subscription_url":              urls.Base64,
+		"subscription_base64_url":       urls.Base64,
+		"subscription_mihomo_url":       urls.Mihomo,
+		"subscription_shadowrocket_url": urls.Shadowrocket,
+		"subscription_auto_url":         urls.Auto,
 	})
 }

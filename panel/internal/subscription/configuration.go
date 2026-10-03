@@ -537,7 +537,7 @@ func scanRoutingPreset(row rowScanner) (RoutingPreset, error) {
 }
 
 func (s *Service) ListTemplates(ctx context.Context) ([]SubscriptionTemplate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, enabled, config_yaml, created_at, updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, enabled, content, created_at, updated_at
 		FROM subscription_templates ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription templates: %w", err)
@@ -556,7 +556,7 @@ func (s *Service) ListTemplates(ctx context.Context) ([]SubscriptionTemplate, er
 
 func (s *Service) GetTemplate(ctx context.Context, id int64) (SubscriptionTemplate, error) {
 	value, err := scanTemplate(s.db.QueryRowContext(ctx,
-		`SELECT id, name, enabled, config_yaml, created_at, updated_at FROM subscription_templates WHERE id = ?`, id))
+		`SELECT id, name, type, enabled, content, created_at, updated_at FROM subscription_templates WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionTemplate{}, ErrTemplateNotFound
 	}
@@ -567,14 +567,14 @@ func (s *Service) GetTemplate(ctx context.Context, id int64) (SubscriptionTempla
 }
 
 func (s *Service) CreateTemplate(ctx context.Context, input CreateSubscriptionTemplateInput) (SubscriptionTemplate, error) {
-	value := SubscriptionTemplate{Name: input.Name, Enabled: input.Enabled, ConfigYAML: input.ConfigYAML}
+	value := SubscriptionTemplate{Type: input.Type, Name: input.Name, Enabled: input.Enabled, Content: input.Content}
 	if err := validateTemplate(&value); err != nil {
 		return SubscriptionTemplate{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_templates
-		(name, enabled, config_yaml, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		value.Name, value.Enabled, value.ConfigYAML, now.Unix(), now.Unix())
+		(name, type, enabled, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		value.Name, value.Type, value.Enabled, value.Content, now.Unix(), now.Unix())
 	if err != nil {
 		return SubscriptionTemplate{}, fmt.Errorf("create subscription template: %w", err)
 	}
@@ -590,21 +590,25 @@ func (s *Service) UpdateTemplate(ctx context.Context, id int64, input UpdateSubs
 	if err != nil {
 		return SubscriptionTemplate{}, err
 	}
+	// Client type is immutable so existing references can never change meaning.
+	if input.Type != nil && *input.Type != value.Type {
+		return SubscriptionTemplate{}, ErrTemplateTypeMismatch
+	}
 	if input.Name != nil {
 		value.Name = *input.Name
 	}
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
 	}
-	if input.ConfigYAML != nil {
-		value.ConfigYAML = *input.ConfigYAML
+	if input.Content != nil {
+		value.Content = *input.Content
 	}
 	if err := validateTemplate(&value); err != nil {
 		return SubscriptionTemplate{}, err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE subscription_templates
-		SET name = ?, enabled = ?, config_yaml = ?, updated_at = ? WHERE id = ?`,
-		value.Name, value.Enabled, value.ConfigYAML, s.now().UTC().Truncate(time.Second).Unix(), id); err != nil {
+		SET name = ?, enabled = ?, content = ?, updated_at = ? WHERE id = ?`,
+		value.Name, value.Enabled, value.Content, s.now().UTC().Truncate(time.Second).Unix(), id); err != nil {
 		return SubscriptionTemplate{}, fmt.Errorf("update subscription template: %w", err)
 	}
 	return s.GetTemplate(ctx, id)
@@ -613,8 +617,8 @@ func (s *Service) UpdateTemplate(ctx context.Context, id int64, input UpdateSubs
 func (s *Service) DeleteTemplate(ctx context.Context, id int64) error {
 	var references int
 	if err := s.db.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM subscription_plans WHERE template_id = ?) +
-		(SELECT COUNT(*) FROM personal_subscription_groups WHERE mihomo_template_id = ?)`, id, id).Scan(&references); err != nil {
+		(SELECT COUNT(*) FROM subscription_plans WHERE template_id = ? OR shadowrocket_template_id = ?) +
+		(SELECT COUNT(*) FROM personal_subscription_groups WHERE mihomo_template_id = ? OR shadowrocket_template_id = ?)`, id, id, id, id).Scan(&references); err != nil {
 		return fmt.Errorf("count subscription template references: %w", err)
 	}
 	if references != 0 {
@@ -634,13 +638,22 @@ func (s *Service) DeleteTemplate(ctx context.Context, id int64) error {
 
 func validateTemplate(value *SubscriptionTemplate) error {
 	value.Name = strings.TrimSpace(value.Name)
-	value.ConfigYAML = strings.TrimSpace(value.ConfigYAML)
+	value.Content = strings.TrimSpace(value.Content)
 	if value.Name == "" || utf8.RuneCountInString(value.Name) > maxNameRunes ||
-		value.ConfigYAML == "" || len(value.ConfigYAML) > maxSubscriptionTemplateBytes {
+		value.Content == "" || len(value.Content) > maxSubscriptionTemplateBytes {
+		if value.Type == TemplateTypeShadowrocket {
+			return ErrInvalidShadowrocketTemplate
+		}
 		return ErrInvalidTemplate
 	}
+	if value.Type == TemplateTypeShadowrocket {
+		return validateShadowrocketTemplate(value.Content)
+	}
+	if value.Type != TemplateTypeMihomo {
+		return ErrTemplateTypeMismatch
+	}
 	var document yaml.Node
-	if err := yaml.Unmarshal([]byte(value.ConfigYAML), &document); err != nil || len(document.Content) != 1 ||
+	if err := yaml.Unmarshal([]byte(value.Content), &document); err != nil || len(document.Content) != 1 ||
 		document.Content[0].Kind != yaml.MappingNode || !safeYAMLNode(document.Content[0]) {
 		return ErrInvalidTemplate
 	}
@@ -685,7 +698,7 @@ func scanTemplate(row rowScanner) (SubscriptionTemplate, error) {
 	var value SubscriptionTemplate
 	var enabled int
 	var createdAt, updatedAt int64
-	if err := row.Scan(&value.ID, &value.Name, &enabled, &value.ConfigYAML, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&value.ID, &value.Name, &value.Type, &enabled, &value.Content, &createdAt, &updatedAt); err != nil {
 		return SubscriptionTemplate{}, err
 	}
 	value.Enabled = enabled != 0
@@ -696,18 +709,25 @@ func scanTemplate(row rowScanner) (SubscriptionTemplate, error) {
 
 func validatePlanTemplateRef(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, templateID *int64) error {
+}, templateID, allowedDisabledID *int64, clientType string) error {
 	if templateID == nil {
 		return nil
 	}
 	if *templateID <= 0 {
 		return ErrTemplateNotFound
 	}
-	var exists int
-	if err := query.QueryRowContext(ctx, `SELECT 1 FROM subscription_templates WHERE id = ?`, *templateID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var storedType string
+	var enabled bool
+	if err := query.QueryRowContext(ctx, `SELECT type, enabled FROM subscription_templates WHERE id = ?`, *templateID).Scan(&storedType, &enabled); errors.Is(err, sql.ErrNoRows) {
 		return ErrTemplateNotFound
 	} else if err != nil {
-		return fmt.Errorf("validate subscription plan template: %w", err)
+		return fmt.Errorf("validate subscription template: %w", err)
+	}
+	if storedType != clientType {
+		return ErrTemplateTypeMismatch
+	}
+	if !enabled && (allowedDisabledID == nil || *allowedDisabledID != *templateID) {
+		return ErrTemplateDisabled
 	}
 	return nil
 }

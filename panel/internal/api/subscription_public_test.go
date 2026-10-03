@@ -134,6 +134,30 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		len(config.Rules) != 12 || config.Rules[len(config.Rules)-1] != "MATCH,🚀 默认代理" {
 		t.Fatalf("Mihomo YAML = %+v, error = %v\n%s", config, err, mihomo.Body.String())
 	}
+	shadowrocket := performRequest(t, handler, http.MethodGet, "/sub/public-token/shadowrocket", nil, nil)
+	if shadowrocket.Code != http.StatusOK || shadowrocket.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		!strings.HasSuffix(shadowrocket.Header().Get("Content-Disposition"), ".conf") ||
+		shadowrocket.Header().Get("Subscription-Userinfo") != response.Header().Get("Subscription-Userinfo") ||
+		shadowrocket.Header().Get("Profile-Title") != response.Header().Get("Profile-Title") ||
+		shadowrocket.Header().Get("Profile-Update-Interval") != "24" || shadowrocket.Header().Get("Cache-Control") != "no-store" ||
+		!strings.Contains(shadowrocket.Body.String(), "reality=true") || !strings.Contains(shadowrocket.Body.String(), "[Proxy Group]") {
+		t.Fatalf("Shadowrocket response: status %d", shadowrocket.Code)
+	}
+	rocketAuto := httptest.NewRecorder()
+	rocketRequest := httptest.NewRequest(http.MethodGet, "/sub/public-token/auto", nil)
+	rocketRequest.Header.Set("User-Agent", "Shadowrocket/2.2")
+	handler.ServeHTTP(rocketAuto, rocketRequest)
+	if rocketAuto.Code != http.StatusOK || rocketAuto.Body.String() != shadowrocket.Body.String() ||
+		rocketAuto.Header().Get("Subscription-Userinfo") != shadowrocket.Header().Get("Subscription-Userinfo") {
+		t.Fatal("Shadowrocket auto detection failed")
+	}
+	rocketRoot := httptest.NewRecorder()
+	rocketRequest = httptest.NewRequest(http.MethodGet, "/sub/public-token", nil)
+	rocketRequest.Header.Set("User-Agent", "Shadowrocket/2.2")
+	handler.ServeHTTP(rocketRoot, rocketRequest)
+	if rocketRoot.Body.String() != response.Body.String() {
+		t.Fatal("root URL no longer returns Base64")
+	}
 	preview := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/users/100/mihomo-preview", nil, adminCookie)
 	var previewPayload struct {
 		YAML string `json:"yaml"`
@@ -173,7 +197,7 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 		t.Fatalf("auto Base64 = %d %v %q", automaticBase64.Code, automaticBase64.Header(), automaticBase64.Body.String())
 	}
 
-	for _, suffix := range []string{"", "/mihomo", "/auto"} {
+	for _, suffix := range []string{"", "/mihomo", "/shadowrocket", "/auto"} {
 		missing := httptest.NewRecorder()
 		handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/sub/not-a-token"+suffix, nil))
 		if missing.Code != http.StatusNotFound || strings.Contains(missing.Body.String(), "not-a-token") {
@@ -199,11 +223,29 @@ func TestPublicSubscriptionResponseAndAvailability(t *testing.T) {
 
 func assertSubscriptionStatusForAllFormats(t *testing.T, handler http.Handler, tokenValue string, want int) {
 	t.Helper()
-	for _, suffix := range []string{"", "/mihomo", "/auto"} {
+	for _, suffix := range []string{"", "/mihomo", "/shadowrocket", "/auto"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/sub/"+tokenValue+suffix, nil))
 		if response.Code != want {
 			t.Fatalf("subscription status for %q = %d, want %d, body %q", suffix, response.Code, want, response.Body.String())
+		}
+	}
+}
+
+func TestSubscriptionFormatDetectionKeepsExistingClients(t *testing.T) {
+	for _, ua := range []string{"SHADOWROCKET/2", "Shadowrocket Meta"} {
+		if detectSubscriptionFormat(ua) != subscriptionFormatShadowrocket {
+			t.Errorf("Shadowrocket UA %q", ua)
+		}
+	}
+	for _, ua := range []string{"Clash", "Mihomo", "Clash Verge", "FlClash", "Stash", "clashmeta", "meta"} {
+		if detectSubscriptionFormat(ua) != subscriptionFormatMihomo {
+			t.Errorf("Mihomo UA %q", ua)
+		}
+	}
+	for _, ua := range []string{"", "Mozilla/5.0", "v2rayN", "Surge"} {
+		if detectSubscriptionFormat(ua) != subscriptionFormatBase64 {
+			t.Errorf("Base64 UA %q", ua)
 		}
 	}
 }

@@ -10,10 +10,10 @@ import (
 )
 
 type mihomoConfig struct {
-	Mode        string             `yaml:"mode"`
-	Proxies     []mihomoProxy      `yaml:"proxies"`
-	ProxyGroups []mihomoProxyGroup `yaml:"proxy-groups"`
-	Rules       []string           `yaml:"rules"`
+	Mode        string                 `yaml:"mode"`
+	Proxies     []mihomoProxy          `yaml:"proxies"`
+	ProxyGroups []resolvedRoutingGroup `yaml:"proxy-groups"`
+	Rules       []string               `yaml:"rules"`
 }
 
 type mihomoProxy struct {
@@ -38,7 +38,7 @@ type mihomoRealityOpts struct {
 	ShortID   string `yaml:"short-id"`
 }
 
-type mihomoProxyGroup struct {
+type resolvedRoutingGroup struct {
 	Name    string   `yaml:"name"`
 	Type    string   `yaml:"type"`
 	Proxies []string `yaml:"proxies"`
@@ -65,11 +65,11 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	for _, node := range data.Nodes {
 		nodes = append(nodes, resolvedNodeFromClientShare(node))
 	}
-	return renderMihomoResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.Template)
+	return renderMihomoResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.MihomoTemplate)
 }
 
 func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, error) {
-	return renderMihomoResolvedSubscription(data.Nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.Template)
+	return renderMihomoResolvedSubscription(data.Nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.MihomoTemplate)
 }
 
 func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
@@ -139,7 +139,10 @@ func decodeMihomoTemplateDocument(template *SubscriptionTemplate) (*yaml.Node, *
 	if template == nil {
 		return document, root, nil
 	}
-	_, overlay, err := decodeMihomoDocument(template.ConfigYAML, "custom Mihomo template")
+	if template.Type != TemplateTypeMihomo {
+		return nil, nil, ErrTemplateTypeMismatch
+	}
+	_, overlay, err := decodeMihomoDocument(template.Content, "custom Mihomo template")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -212,8 +215,8 @@ func encodeYAMLValue(value any) (*yaml.Node, error) {
 
 func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
 	allNames []string,
-) ([]mihomoProxyGroup, error) {
-	values := make([]mihomoProxyGroup, 0, len(groups))
+) ([]resolvedRoutingGroup, error) {
+	values := make([]resolvedRoutingGroup, 0, len(groups))
 	for _, group := range groups {
 		members := make([]string, 0, len(group.Proxies)+len(bindings[group.Key])+len(allNames))
 		members = append(members, group.Proxies...)
@@ -229,7 +232,7 @@ func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names
 		if len(members) == 0 {
 			return nil, fmt.Errorf("策略组 %q 没有任何可用成员: %w", group.Name, ErrRoutingGroupEmpty)
 		}
-		values = append(values, mihomoProxyGroup{Name: group.Name, Type: group.Type, Proxies: members})
+		values = append(values, resolvedRoutingGroup{Name: group.Name, Type: group.Type, Proxies: members})
 	}
 	return values, nil
 }
@@ -353,7 +356,7 @@ func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 		value.Network = proxystore.TransportTCP
 		value.TLS = share.TLS
 		value.ServerName = share.ServerName
-		value.Flow = mihomoVLESSFlow(share.Flow)
+		value.Flow = subscriptionVLESSFlow(share.Flow)
 		value.ClientFingerprint = share.Fingerprint
 		if share.Security == proxystore.SecurityReality {
 			value.RealityOptions = &mihomoRealityOpts{
@@ -373,7 +376,7 @@ func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 	return value, nil
 }
 
-func mihomoVLESSFlow(value string) string {
+func subscriptionVLESSFlow(value string) string {
 	value = strings.TrimSpace(value)
 	if value == proxystore.ServerFlow || value == proxystore.ServerFlow+"-udp443" {
 		return proxystore.ServerFlow

@@ -13,21 +13,23 @@ import (
 )
 
 type createPersonalSubscriptionRequest struct {
-	Name              string `json:"name"`
-	SubscriptionTitle string `json:"subscription_title"`
-	Enabled           *bool  `json:"enabled"`
-	ClientName        string `json:"client_name"`
-	RoutingPresetID   *int64 `json:"routing_preset_id"`
-	MihomoTemplateID  *int64 `json:"mihomo_template_id"`
+	Name                   string `json:"name"`
+	SubscriptionTitle      string `json:"subscription_title"`
+	Enabled                *bool  `json:"enabled"`
+	ClientName             string `json:"client_name"`
+	RoutingPresetID        *int64 `json:"routing_preset_id"`
+	MihomoTemplateID       *int64 `json:"mihomo_template_id"`
+	ShadowrocketTemplateID *int64 `json:"shadowrocket_template_id"`
 }
 
 type updatePersonalSubscriptionRequest struct {
-	Name              *string         `json:"name"`
-	SubscriptionTitle *string         `json:"subscription_title"`
-	Enabled           *bool           `json:"enabled"`
-	ClientName        *string         `json:"client_name"`
-	RoutingPresetID   *int64          `json:"routing_preset_id"`
-	MihomoTemplateID  json.RawMessage `json:"mihomo_template_id"`
+	Name                   *string         `json:"name"`
+	SubscriptionTitle      *string         `json:"subscription_title"`
+	Enabled                *bool           `json:"enabled"`
+	ClientName             *string         `json:"client_name"`
+	RoutingPresetID        *int64          `json:"routing_preset_id"`
+	MihomoTemplateID       json.RawMessage `json:"mihomo_template_id"`
+	ShadowrocketTemplateID json.RawMessage `json:"shadowrocket_template_id"`
 }
 
 type setPersonalSubscriptionNodesRequest struct {
@@ -67,22 +69,25 @@ type personalSubscriptionNodeResponse struct {
 }
 
 type personalSubscriptionResponse struct {
-	ID                    int64                              `json:"id"`
-	Name                  string                             `json:"name"`
-	SubscriptionTitle     string                             `json:"subscription_title"`
-	Enabled               bool                               `json:"enabled"`
-	ClientName            string                             `json:"client_name"`
-	RoutingPresetID       int64                              `json:"routing_preset_id"`
-	RoutingPresetName     string                             `json:"routing_preset_name"`
-	RoutingBindings       subscriptionstore.RoutingBindings  `json:"routing_bindings"`
-	MihomoTemplateID      *int64                             `json:"mihomo_template_id"`
-	MihomoTemplateName    string                             `json:"mihomo_template_name"`
-	Nodes                 []personalSubscriptionNodeResponse `json:"nodes"`
-	SubscriptionBase64URL string                             `json:"subscription_base64_url"`
-	SubscriptionMihomoURL string                             `json:"subscription_mihomo_url"`
-	SubscriptionAutoURL   string                             `json:"subscription_auto_url"`
-	CreatedAt             time.Time                          `json:"created_at"`
-	UpdatedAt             time.Time                          `json:"updated_at"`
+	ID                          int64                              `json:"id"`
+	Name                        string                             `json:"name"`
+	SubscriptionTitle           string                             `json:"subscription_title"`
+	Enabled                     bool                               `json:"enabled"`
+	ClientName                  string                             `json:"client_name"`
+	RoutingPresetID             int64                              `json:"routing_preset_id"`
+	RoutingPresetName           string                             `json:"routing_preset_name"`
+	RoutingBindings             subscriptionstore.RoutingBindings  `json:"routing_bindings"`
+	MihomoTemplateID            *int64                             `json:"mihomo_template_id"`
+	ShadowrocketTemplateID      *int64                             `json:"shadowrocket_template_id"`
+	MihomoTemplateName          string                             `json:"mihomo_template_name"`
+	ShadowrocketTemplateName    string                             `json:"shadowrocket_template_name"`
+	Nodes                       []personalSubscriptionNodeResponse `json:"nodes"`
+	SubscriptionBase64URL       string                             `json:"subscription_base64_url"`
+	SubscriptionMihomoURL       string                             `json:"subscription_mihomo_url"`
+	SubscriptionShadowrocketURL string                             `json:"subscription_shadowrocket_url"`
+	SubscriptionAutoURL         string                             `json:"subscription_auto_url"`
+	CreatedAt                   time.Time                          `json:"created_at"`
+	UpdatedAt                   time.Time                          `json:"updated_at"`
 }
 
 type personalSubscriptionSourceResponse struct {
@@ -127,7 +132,7 @@ func (s *server) createPersonalSubscription(w http.ResponseWriter, r *http.Reque
 		subscriptionstore.CreatePersonalSubscriptionInput{
 			Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: enabled,
 			ClientName: request.ClientName, RoutingPresetID: request.RoutingPresetID,
-			MihomoTemplateID: request.MihomoTemplateID,
+			MihomoTemplateID: request.MihomoTemplateID, ShadowrocketTemplateID: request.ShadowrocketTemplateID,
 		})
 	if err != nil {
 		writePersonalSubscriptionError(w, err)
@@ -174,11 +179,17 @@ func (s *server) updatePersonalSubscription(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "Mihomo 模板格式无效")
 		return
 	}
+	shadowrocketTemplateID, shadowrocketTemplateSet, err := decodeNullableInt64(request.ShadowrocketTemplateID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Shadowrocket 模板 ID 无效")
+		return
+	}
 	value, err := s.subscriptions.UpdatePersonalSubscription(r.Context(), personalActor(user), id,
 		subscriptionstore.UpdatePersonalSubscriptionInput{
 			Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: request.Enabled,
 			ClientName: request.ClientName, RoutingPresetID: request.RoutingPresetID,
 			MihomoTemplateIDSet: templateSet, MihomoTemplateID: templateID,
+			ShadowrocketTemplateIDSet: shadowrocketTemplateSet, ShadowrocketTemplateID: shadowrocketTemplateID,
 		})
 	if err != nil {
 		writePersonalSubscriptionError(w, err)
@@ -276,6 +287,29 @@ func (s *server) regeneratePersonalSubscriptionToken(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, map[string]any{"personal_subscription": toPersonalSubscriptionResponse(value, baseURL)})
 }
 
+func (s *server) previewPersonalSubscriptionShadowrocket(w http.ResponseWriter, r *http.Request, user auth.User) {
+	w.Header().Set("Cache-Control", "no-store")
+	id, ok := readPositiveID(w, r.PathValue("id"), "个人订阅 ID 无效")
+	if !ok {
+		return
+	}
+	data, err := s.subscriptions.GeneratePersonalSubscriptionDataForOwner(r.Context(), personalActor(user), id)
+	if err != nil {
+		writePersonalSubscriptionError(w, err)
+		return
+	}
+	value, err := subscriptionstore.RenderPersonalShadowrocketSubscription(data)
+	if err != nil {
+		if message := subscriptionRenderErrorMessage(err); message != "" {
+			writeError(w, http.StatusUnprocessableEntity, message)
+		} else {
+			writeInternalError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"conf": string(value)})
+}
+
 func (s *server) previewPersonalSubscriptionMihomo(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "个人订阅 ID 无效")
 	if !ok {
@@ -338,14 +372,16 @@ func toPersonalSubscriptionResponse(value subscriptionstore.PersonalSubscription
 		RoutingPresetName: value.RoutingPresetName, RoutingBindings: value.RoutingBindings,
 		MihomoTemplateID:   value.MihomoTemplateID,
 		MihomoTemplateName: value.MihomoTemplateName, Nodes: nodes,
-		SubscriptionBase64URL: urls.Base64, SubscriptionMihomoURL: urls.Mihomo, SubscriptionAutoURL: urls.Auto,
+		ShadowrocketTemplateID: value.ShadowrocketTemplateID, ShadowrocketTemplateName: value.ShadowrocketTemplateName,
+		SubscriptionShadowrocketURL: urls.Shadowrocket,
+		SubscriptionBase64URL:       urls.Base64, SubscriptionMihomoURL: urls.Mihomo, SubscriptionAutoURL: urls.Auto,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
 func buildPersonalSubscriptionURLs(baseURL, tokenValue string) subscriptionURLSet {
 	base := baseURL + "/sub/personal/" + url.PathEscape(tokenValue)
-	return subscriptionURLSet{Base64: base, Mihomo: base + "/mihomo", Auto: base + "/auto"}
+	return subscriptionURLSet{Base64: base, Mihomo: base + "/mihomo", Shadowrocket: base + "/shadowrocket", Auto: base + "/auto"}
 }
 
 func writePersonalSubscriptionError(w http.ResponseWriter, err error) {
@@ -367,7 +403,9 @@ func writePersonalSubscriptionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrInvalidPlanRouting):
 		writeError(w, http.StatusBadRequest, "该分流方案已停用，不能用于新的个人订阅选择")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
-		writeError(w, http.StatusBadRequest, "Mihomo 模板不存在")
+		writeError(w, http.StatusBadRequest, "客户端模板不存在")
+	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch), errors.Is(err, subscriptionstore.ErrTemplateDisabled):
+		writeSubscriptionConfigurationError(w, err)
 	default:
 		writeInternalError(w, err)
 	}

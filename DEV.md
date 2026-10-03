@@ -186,9 +186,23 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 管理用户的个人订阅按 owner 隔离，组织可访问的节点来源、节点实例及路由绑定。
 管理员的订阅分发维护发布节点、套餐、subscriber 资料及相应 Client / Relay；subscriber 通过独立门户访问自己的资源。
 
-模板、路由配置及绑定由现有 subscription 模块校验并输出 Mihomo 配置。
+模板、路由配置及绑定由现有 subscription 模块校验，输出 Base64 节点列表、Mihomo YAML 或 Shadowrocket `.conf`。
 引用节点的权限、停用、到期、流量限制和删除影响，都应通过该模块已有生成与协调逻辑处理。
 公开订阅地址以不可猜测的 Token 授权；Token 重置后旧链接失效，不应记录到日志。
+
+节点解析继续统一使用 `ResolvedSubscriptionNode`。共享订阅由既有 ClientShare 转换，个人订阅沿用 Proxy / Relay / Landing 的解析结果；renderer 不查询节点或凭据。`render.go` 的策略组解析由 Mihomo 和 `render_shadowrocket.go` 共用，保留 RoutingBindings 的节点顺序、IncludeAll、DIRECT / REJECT 及组间引用。
+
+Shadowrocket renderer 直接生成原生节点：VLESS 的 UUID 写入 `password`，SNI 写入 `peer`，REALITY 写入 `reality=true`、`pbk`、`sid`、`fp`，flow 与 Mihomo 共用处理；SS / SS2022 使用 resolved password。名称和参数按配置值转义，拒绝控制字符，错误不回显凭据。现有组类型仅支持 `select`。规则支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOIP、RULE-SET；MATCH 转为 FINAL，IP / GEOIP / RULE-SET 保留可用的 no-resolve。其他规则明确失败，不静默丢弃分流意图。
+
+RULE-SET 将逻辑 provider 名解析为 URL。http / classical / text 源保留 URL；内置十个 Blackmatrix7 Clash YAML URL 使用精确白名单映射到上游 Shadowrocket `.list`，不修改存储或 Mihomo 输出。未知 YAML、非 classical 源拒绝转换。renderer 不下载远程规则，自定义 text 源的实际内容兼容性由配置者确认。
+
+模板模型和管理 API 使用 `type`（`mihomo` / `shadowrocket`）与 `content`，类型创建后不可修改，两个 renderer 严格校验类型。数据库沿用原表，将旧 `config_yaml` 列重命名为 `content`，原数据全部标记为 mihomo；保留 ID、内容、启用状态、时间及引用。个人订阅新增 `shadowrocket_template_id`，套餐数据库保留 `template_id` 的 Mihomo 语义并新增 Shadowrocket 引用；Go 与套餐 API 将原引用明确命名为 `mihomo_template_id`。调用模板管理 API 的旧集成需将 `config_yaml` 改为 `type` / `content`，套餐 API 的 `template_id` 改为 `mihomo_template_id`。
+
+两个模板引用分别保存、独立生效：PATCH 省略字段保留原引用，传 null 清除并使用内置模板。新选择必须启用且类型匹配，已有停用引用允许保留，生成时按各客户端回退内置模板；任一引用仍存在时禁止删除模板。Mihomo 保持原有 YAML 校验和动态字段注入。Shadowrocket 使用轻量 section / marker 校验，保存时拒绝缺失或重复 marker、动态区静态条目、重复或未知 section；静态区及内置骨架规则见 [使用说明](README.md#订阅与客户端模板)。
+
+公开输出路径见 [订阅地址](README.md#订阅与客户端模板)。Shadowrocket 使用 `text/plain; charset=utf-8` 与 `.conf` 文件名，沿用 Profile-Title、Profile-Update-Interval、Subscription-Userinfo 等头部。`/auto` 优先识别大小写不敏感的 Shadowrocket UA，其余识别保持原行为；根地址始终返回 Base64。
+
+管理 API 新增 `GET /api/admin/subscription/builtin-shadowrocket`（admin / vip，返回 name / conf）和 `GET /api/personal-subscriptions/{id}/shadowrocket-preview`（admin / vip 且属于当前 owner，返回 conf，禁止缓存）。模板管理写入仍仅 admin；预览和公开输出经过相同节点解析、权限及状态校验。无法转换时预览返回 422，公开输出返回 503 和不含凭据的中文错误。
 
 ## 12. Traffic
 

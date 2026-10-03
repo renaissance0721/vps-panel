@@ -40,29 +40,41 @@ type routingPresetResponse struct {
 }
 
 type subscriptionTemplateRequest struct {
-	Name       string `json:"name"`
-	Enabled    *bool  `json:"enabled"`
-	ConfigYAML string `json:"config_yaml"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Enabled *bool  `json:"enabled"`
+	Content string `json:"content"`
 }
 
 type updateSubscriptionTemplateRequest struct {
-	Name       *string `json:"name"`
-	Enabled    *bool   `json:"enabled"`
-	ConfigYAML *string `json:"config_yaml"`
+	Type    *string `json:"type"`
+	Name    *string `json:"name"`
+	Enabled *bool   `json:"enabled"`
+	Content *string `json:"content"`
 }
 
 type subscriptionTemplateResponse struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Enabled    bool      `json:"enabled"`
-	ConfigYAML string    `json:"config_yaml"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Enabled   bool      `json:"enabled"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type mihomoConfigurationResponse struct {
 	Name string `json:"name"`
 	YAML string `json:"yaml"`
+}
+
+func (s *server) getBuiltinShadowrocketConfiguration(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	content, err := subscriptionstore.BuildShadowrocketConfiguration(nil)
+	if err != nil {
+		writeSubscriptionConfigurationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": subscriptionstore.BuiltinShadowrocketName, "conf": content})
 }
 
 func (s *server) getBuiltinMihomoConfiguration(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -81,6 +93,10 @@ func (s *server) getEffectiveMihomoConfiguration(w http.ResponseWriter, r *http.
 		value, err := s.subscriptions.GetTemplate(r.Context(), templateID)
 		if err != nil {
 			writeSubscriptionConfigurationError(w, err)
+			return
+		}
+		if value.Type != subscriptionstore.TemplateTypeMihomo {
+			writeSubscriptionConfigurationError(w, subscriptionstore.ErrTemplateTypeMismatch)
 			return
 		}
 		if value.Enabled {
@@ -196,7 +212,7 @@ func (s *server) createSubscriptionTemplate(w http.ResponseWriter, r *http.Reque
 		enabled = *request.Enabled
 	}
 	value, err := s.subscriptions.CreateTemplate(r.Context(), subscriptionstore.CreateSubscriptionTemplateInput{
-		Name: request.Name, Enabled: enabled, ConfigYAML: request.ConfigYAML,
+		Type: request.Type, Name: request.Name, Enabled: enabled, Content: request.Content,
 	})
 	if err != nil {
 		writeSubscriptionConfigurationError(w, err)
@@ -216,7 +232,7 @@ func (s *server) updateSubscriptionTemplate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	value, err := s.subscriptions.UpdateTemplate(r.Context(), id, subscriptionstore.UpdateSubscriptionTemplateInput{
-		Name: request.Name, Enabled: request.Enabled, ConfigYAML: request.ConfigYAML,
+		Type: request.Type, Name: request.Name, Enabled: request.Enabled, Content: request.Content,
 	})
 	if err != nil {
 		writeSubscriptionConfigurationError(w, err)
@@ -247,7 +263,7 @@ func toRoutingPresetResponse(value subscriptionstore.RoutingPreset) routingPrese
 
 func toSubscriptionTemplateResponse(value subscriptionstore.SubscriptionTemplate) subscriptionTemplateResponse {
 	return subscriptionTemplateResponse{ID: value.ID, Name: value.Name, Enabled: value.Enabled,
-		ConfigYAML: value.ConfigYAML, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+		Type: value.Type, Content: value.Content, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
@@ -267,6 +283,12 @@ func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
 		writeError(w, http.StatusBadRequest, "分流方案格式无效，请检查策略组、Rule Providers 和 Rules")
+	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch):
+		writeError(w, http.StatusBadRequest, "模板类型不匹配；Mihomo 和 Shadowrocket 模板不能混用或修改类型")
+	case errors.Is(err, subscriptionstore.ErrTemplateDisabled):
+		writeError(w, http.StatusBadRequest, "该客户端模板已停用，不能用于新的选择")
+	case errors.Is(err, subscriptionstore.ErrInvalidShadowrocketTemplate):
+		writeError(w, http.StatusBadRequest, "Shadowrocket 模板格式无效：需要 [General]，以及只包含对应 marker 的 [Proxy]、[Proxy Group]、[Rule]；可保留 [Host]、[URL Rewrite]")
 	case errors.Is(err, subscriptionstore.ErrInvalidTemplate):
 		writeError(w, http.StatusBadRequest, "Mihomo 模板必须是安全有效的基础配置 YAML，不能包含 proxies、proxy-groups、rule-providers 或 rules")
 	case errors.Is(err, subscriptionstore.ErrDefaultRoutingPreset):
@@ -274,7 +296,7 @@ func writeSubscriptionConfigurationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrRoutingPresetReferenced):
 		writeError(w, http.StatusConflict, "请先切换引用该分流方案的个人订阅或共享订阅")
 	case errors.Is(err, subscriptionstore.ErrTemplateReferenced):
-		writeError(w, http.StatusConflict, "请先解除个人订阅或共享订阅对该 Mihomo 模板的引用")
+		writeError(w, http.StatusConflict, "请先解除个人订阅或共享订阅对该客户端模板的引用")
 	default:
 		writeInternalError(w, err)
 	}

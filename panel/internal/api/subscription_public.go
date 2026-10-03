@@ -13,8 +13,9 @@ import (
 type subscriptionFormat string
 
 const (
-	subscriptionFormatBase64 subscriptionFormat = "base64"
-	subscriptionFormatMihomo subscriptionFormat = "mihomo"
+	subscriptionFormatBase64       subscriptionFormat = "base64"
+	subscriptionFormatMihomo       subscriptionFormat = "mihomo"
+	subscriptionFormatShadowrocket subscriptionFormat = "shadowrocket"
 )
 
 func (s *server) getPublicSubscription(w http.ResponseWriter, r *http.Request) {
@@ -23,6 +24,10 @@ func (s *server) getPublicSubscription(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getPublicSubscriptionMihomo(w http.ResponseWriter, r *http.Request) {
 	s.servePublicSubscription(w, r, subscriptionFormatMihomo)
+}
+
+func (s *server) getPublicSubscriptionShadowrocket(w http.ResponseWriter, r *http.Request) {
+	s.servePublicSubscription(w, r, subscriptionFormatShadowrocket)
 }
 
 func (s *server) getPublicSubscriptionAuto(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +40,10 @@ func (s *server) getPublicPersonalSubscription(w http.ResponseWriter, r *http.Re
 
 func (s *server) getPublicPersonalSubscriptionMihomo(w http.ResponseWriter, r *http.Request) {
 	s.servePublicPersonalSubscription(w, r, subscriptionFormatMihomo)
+}
+
+func (s *server) getPublicPersonalSubscriptionShadowrocket(w http.ResponseWriter, r *http.Request) {
+	s.servePublicPersonalSubscription(w, r, subscriptionFormatShadowrocket)
 }
 
 func (s *server) getPublicPersonalSubscriptionAuto(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +69,8 @@ func (s *server) getPublicSubscriptionPath(w http.ResponseWriter, r *http.Reques
 		switch parts[2] {
 		case "mihomo":
 			s.getPublicPersonalSubscriptionMihomo(w, r)
+		case "shadowrocket":
+			s.getPublicPersonalSubscriptionShadowrocket(w, r)
 		case "auto":
 			s.getPublicPersonalSubscriptionAuto(w, r)
 		default:
@@ -79,6 +90,8 @@ func (s *server) getPublicSubscriptionPath(w http.ResponseWriter, r *http.Reques
 	switch parts[1] {
 	case "mihomo":
 		s.getPublicSubscriptionMihomo(w, r)
+	case "shadowrocket":
+		s.getPublicSubscriptionShadowrocket(w, r)
 	case "auto":
 		s.getPublicSubscriptionAuto(w, r)
 	default:
@@ -98,6 +111,8 @@ func (s *server) servePublicSubscription(w http.ResponseWriter, r *http.Request,
 	switch format {
 	case subscriptionFormatMihomo:
 		body, err = subscriptionstore.RenderMihomoSubscription(value)
+	case subscriptionFormatShadowrocket:
+		body, err = subscriptionstore.RenderShadowrocketSubscription(value)
 	default:
 		body = []byte(subscriptionstore.RenderBase64Subscription(value))
 	}
@@ -121,6 +136,8 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 	switch format {
 	case subscriptionFormatMihomo:
 		body, err = subscriptionstore.RenderPersonalMihomoSubscription(value)
+	case subscriptionFormatShadowrocket:
+		body, err = subscriptionstore.RenderPersonalShadowrocketSubscription(value)
 	default:
 		body = []byte(subscriptionstore.RenderResolvedBase64Subscription(value.Nodes))
 	}
@@ -133,9 +150,27 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 	_, _ = w.Write(body)
 }
 
+func subscriptionRenderErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty):
+		return err.Error()
+	case errors.Is(err, subscriptionstore.ErrInvalidShadowrocketTemplate):
+		return "Shadowrocket 模板格式无效"
+	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch):
+		return "客户端模板类型不匹配"
+	case errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketProtocol), errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketRule):
+		return err.Error()
+	case errors.Is(err, subscriptionstore.ErrInvalidRoutingBindings):
+		return "策略组节点绑定无效"
+	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
+		return "分流方案无法转换为当前客户端配置"
+	}
+	return ""
+}
+
 func writePublicSubscriptionRenderError(w http.ResponseWriter, err error) {
-	if errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty) {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	if message := subscriptionRenderErrorMessage(err); message != "" {
+		http.Error(w, message, http.StatusServiceUnavailable)
 		return
 	}
 	writeInternalError(w, err)
@@ -181,11 +216,18 @@ func writeSubscriptionProfileHeaders(w http.ResponseWriter, title string, format
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(title)))
 	w.Header().Set("Profile-Update-Interval", "24")
-	w.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+encodeRFC5987(title))
+	filename := title
+	if format == subscriptionFormatShadowrocket {
+		filename += ".conf"
+	}
+	w.Header().Set("Content-Disposition", "inline; filename*=UTF-8''"+encodeRFC5987(filename))
 }
 
 func detectSubscriptionFormat(userAgent string) subscriptionFormat {
 	value := strings.ToLower(userAgent)
+	if strings.Contains(value, "shadowrocket") {
+		return subscriptionFormatShadowrocket
+	}
 	for _, marker := range []string{"clash", "mihomo", "clash-verge", "clashmeta", "meta", "stash", "flclash"} {
 		if strings.Contains(value, marker) {
 			return subscriptionFormatMihomo

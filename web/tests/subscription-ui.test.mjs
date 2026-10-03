@@ -214,7 +214,7 @@ test('分流方案使用策略组、结构化规则源和逐行规则编辑器',
   assert.doesNotMatch(managementSource, /routingProvidersYAML|Rule Providers YAML|rule_providers_yaml/)
   assert.match(managementSource, /function setRoutingProviderName[\s\S]*parts\[0\] === 'RULE-SET'[\s\S]*parts\[1\] = name/)
   assert.match(managementSource, /规则源“\$\{provider\.name\}”仍被第 \$\{referencedAt \+ 1\} 条 Rule 使用/)
-  assert.match(managementSource, /Rules（一行一条 Mihomo rule）/)
+  assert.match(managementSource, /Rules（一行一条逻辑规则）/)
   assert.match(managementSource, /RULE-SET,OpenAI,🤖 AI/)
 })
 
@@ -229,8 +229,8 @@ test('分流方案弹窗将策略组、远程规则集和 Rules 拆成可独立�
   assert.equal((managementSource.match(/class="routing-config-scroll routing-config-scroll-/g) ?? []).length, 3)
   assert.match(styleSource, /\.routing-config-scroll\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
   assert.match(managementSource, /远程规则集（Rule Providers）/)
-  assert.match(managementSource, /这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。/)
-  assert.match(managementSource, /Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。/)
+  assert.match(managementSource, /这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical \/ text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。/)
+  assert.match(managementSource, /Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。/)
 })
 
 test('个人和共享订阅分别编辑自身节点 binding 并用拖拽排序', () => {
@@ -355,7 +355,7 @@ test('共享订阅直接选择 Mihomo 模板和分流方案', () => {
 
 test('Mihomo 模板只负责客户端基础配置', () => {
   assert.match(managementSource, /内置默认 Mihomo 模板/)
-  assert.match(managementSource, /模板只负责 Mihomo 客户端基础配置，例如 DNS、sniffer、TUN、profile 等。proxies 由 Panel 动态生成，分流由所选分流方案提供。/)
+  assert.match(managementSource, /Mihomo 模板负责 DNS、sniffer、TUN、profile 等客户端基础配置。proxies 由 Panel 动态生成，分流由所选分流方案提供。/)
   assert.match(managementSource, /function openEditTemplate/)
   assert.match(managementSource, /method: id \? 'PATCH' : 'POST'/)
   assert.match(managementSource, /v-model:value="templateEnabled"/)
@@ -364,7 +364,7 @@ test('Mihomo 模板只负责客户端基础配置', () => {
 
 test('分流与模板页面展示数据库默认方案并解释产品语义', () => {
   assert.match(managementSource, /api<MihomoConfiguration>\('\/api\/admin\/subscription\/builtin-mihomo'\)/)
-  assert.match(managementSource, /通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案与 Mihomo 模板。/)
+  assert.match(managementSource, /通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案，以及独立的 Mihomo、Shadowrocket 模板。/)
   assert.match(managementSource, /<n-card title="通用分流方案"/)
   assert.match(managementSource, /<n-card title="客户端模板"/)
   assert.match(managementSource, /v-for="value in routingPresets"[\s\S]*value\.is_default[\s\S]*默认/)
@@ -383,7 +383,7 @@ test('分流方案可以在共享订阅中只读查看并统一到配置页编�
 })
 
 test('内置 Mihomo 基础模板可查看并复制', () => {
-  assert.match(managementSource, /function viewBuiltinTemplate\(\)[\s\S]*templatePreviewYAML.value = builtinMihomo.value.yaml/)
+  assert.match(managementSource, /function viewBuiltinTemplate\(\)[\s\S]*templatePreviewContent.value = builtinMihomo.value.yaml/)
   assert.match(managementSource, /真实 proxies 由 Panel 动态注入，策略组、规则源和 Rules 来自订阅选择的分流方案。/)
   assert.match(managementSource, /function copyBuiltinTemplate\(\)[\s\S]*内置默认 Mihomo 模板 - 副本[\s\S]*builtinMihomo.value.yaml.trim\(\)/)
 })

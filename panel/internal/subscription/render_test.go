@@ -206,7 +206,7 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 			Address: "custom.example.com", Port: 443, Security: proxystore.SecurityTLS,
 			ServerName: "custom.example.com", Fingerprint: proxystore.Fingerprint,
 		}},
-		Template: &SubscriptionTemplate{ConfigYAML: "dns:\n  enable: false\ntun:\n  enable: false"},
+		MihomoTemplate: &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: "dns:\n  enable: false\ntun:\n  enable: false"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 		Address: "node.example.com", Port: 443, Security: proxystore.SecurityTLS,
 		ServerName: "node.example.com", Fingerprint: proxystore.Fingerprint,
 	}
-	custom := &SubscriptionTemplate{ConfigYAML: "mixed-port: 9999\ndns:\n  enable: false"}
+	custom := &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: "mixed-port: 9999\ndns:\n  enable: false"}
 	routing := &RoutingPreset{
 		Name: "Plan", Enabled: true,
 		Groups: []RoutingGroup{
@@ -250,7 +250,7 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 	}
 	body, err := RenderMihomoSubscription(SubscriptionData{
 		Nodes: []proxystore.ClientShare{node}, NodeNames: map[int64]string{7: "Node A"},
-		RoutingBindings: RoutingBindings{"grp_plan": {7, 999}}, Template: custom, RoutingPreset: routing,
+		RoutingBindings: RoutingBindings{"grp_plan": {7, 999}}, MihomoTemplate: custom, RoutingPreset: routing,
 	})
 	if err != nil {
 		t.Fatal(err)

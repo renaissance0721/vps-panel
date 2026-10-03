@@ -46,7 +46,7 @@ func TestBuiltinMihomoConfigurationAPI(t *testing.T) {
 
 	created := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/templates", map[string]any{
 		"name": "Custom", "enabled": true,
-		"config_yaml": "dns:\n  enable: false\ntun:\n  enable: false",
+		"type": "mihomo", "content": "dns:\n  enable: false\ntun:\n  enable: false",
 	}, adminCookie)
 	var createdPayload struct {
 		Template subscriptionTemplateResponse `json:"template"`
@@ -64,7 +64,7 @@ func TestBuiltinMihomoConfigurationAPI(t *testing.T) {
 	}
 	for _, forbidden := range []string{"proxies", "proxy-groups", "rule-providers", "rules"} {
 		invalid := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/templates", map[string]any{
-			"name": "Invalid", "enabled": true, "config_yaml": forbidden + ": []",
+			"name": "Invalid", "enabled": true, "type": "mihomo", "content": forbidden + ": []",
 		}, adminCookie)
 		if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "不能包含") {
 			t.Fatalf("template routing field %q = %d %s", forbidden, invalid.Code, invalid.Body.String())

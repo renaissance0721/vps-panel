@@ -22,34 +22,35 @@ type updateSubscriptionUserRequest struct {
 }
 
 type subscriptionUserResponse struct {
-	UserID                int64                          `json:"user_id"`
-	Username              string                         `json:"username"`
-	PlanID                *int64                         `json:"plan_id"`
-	PlanName              string                         `json:"plan_name"`
-	SubscriptionTitle     string                         `json:"subscription_title"`
-	PlanEnabled           bool                           `json:"plan_enabled"`
-	Enabled               bool                           `json:"enabled"`
-	ExpiresAt             *time.Time                     `json:"expires_at"`
-	TrafficResetMode      string                         `json:"traffic_reset_mode"`
-	TrafficResetDay       int                            `json:"traffic_reset_day"`
-	TrafficResetTime      string                         `json:"traffic_reset_time"`
-	ClientCount           int                            `json:"client_count"`
-	EnabledNodeCount      int                            `json:"enabled_node_count"`
-	TrafficLimitBytes     *int64                         `json:"traffic_limit_bytes"`
-	UsedBytes             int64                          `json:"used_bytes"`
-	CycleStartedAt        time.Time                      `json:"cycle_started_at"`
-	NextResetAt           *time.Time                     `json:"next_reset_at"`
-	BillingPeriodMonths   *int                           `json:"billing_period_months"`
-	Active                bool                           `json:"active"`
-	Status                string                         `json:"status"`
-	SubscriptionToken     string                         `json:"subscription_token,omitempty"`
-	SubscriptionURL       string                         `json:"subscription_url,omitempty"`
-	SubscriptionBase64URL string                         `json:"subscription_base64_url,omitempty"`
-	SubscriptionMihomoURL string                         `json:"subscription_mihomo_url,omitempty"`
-	SubscriptionAutoURL   string                         `json:"subscription_auto_url,omitempty"`
-	PasswordRequest       *passwordChangeRequestResponse `json:"password_request,omitempty"`
-	CreatedAt             time.Time                      `json:"created_at"`
-	UpdatedAt             time.Time                      `json:"updated_at"`
+	UserID                      int64                          `json:"user_id"`
+	Username                    string                         `json:"username"`
+	PlanID                      *int64                         `json:"plan_id"`
+	PlanName                    string                         `json:"plan_name"`
+	SubscriptionTitle           string                         `json:"subscription_title"`
+	PlanEnabled                 bool                           `json:"plan_enabled"`
+	Enabled                     bool                           `json:"enabled"`
+	ExpiresAt                   *time.Time                     `json:"expires_at"`
+	TrafficResetMode            string                         `json:"traffic_reset_mode"`
+	TrafficResetDay             int                            `json:"traffic_reset_day"`
+	TrafficResetTime            string                         `json:"traffic_reset_time"`
+	ClientCount                 int                            `json:"client_count"`
+	EnabledNodeCount            int                            `json:"enabled_node_count"`
+	TrafficLimitBytes           *int64                         `json:"traffic_limit_bytes"`
+	UsedBytes                   int64                          `json:"used_bytes"`
+	CycleStartedAt              time.Time                      `json:"cycle_started_at"`
+	NextResetAt                 *time.Time                     `json:"next_reset_at"`
+	BillingPeriodMonths         *int                           `json:"billing_period_months"`
+	Active                      bool                           `json:"active"`
+	Status                      string                         `json:"status"`
+	SubscriptionToken           string                         `json:"subscription_token,omitempty"`
+	SubscriptionURL             string                         `json:"subscription_url,omitempty"`
+	SubscriptionBase64URL       string                         `json:"subscription_base64_url,omitempty"`
+	SubscriptionMihomoURL       string                         `json:"subscription_mihomo_url,omitempty"`
+	SubscriptionShadowrocketURL string                         `json:"subscription_shadowrocket_url,omitempty"`
+	SubscriptionAutoURL         string                         `json:"subscription_auto_url,omitempty"`
+	PasswordRequest             *passwordChangeRequestResponse `json:"password_request,omitempty"`
+	CreatedAt                   time.Time                      `json:"created_at"`
+	UpdatedAt                   time.Time                      `json:"updated_at"`
 }
 
 func (s *server) listSubscriptionUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -155,11 +156,12 @@ func (s *server) regenerateSubscriptionUserToken(w http.ResponseWriter, r *http.
 	}
 	urls := buildSubscriptionURLs(baseURL, tokenValue)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subscription_token":      tokenValue,
-		"subscription_url":        urls.Base64,
-		"subscription_base64_url": urls.Base64,
-		"subscription_mihomo_url": urls.Mihomo,
-		"subscription_auto_url":   urls.Auto,
+		"subscription_token":            tokenValue,
+		"subscription_url":              urls.Base64,
+		"subscription_base64_url":       urls.Base64,
+		"subscription_mihomo_url":       urls.Mihomo,
+		"subscription_shadowrocket_url": urls.Shadowrocket,
+		"subscription_auto_url":         urls.Auto,
 	})
 }
 
@@ -228,20 +230,22 @@ func toSubscriptionUserResponse(value subscriptionstore.Subscriber, baseURL stri
 		response.SubscriptionURL = urls.Base64
 		response.SubscriptionBase64URL = urls.Base64
 		response.SubscriptionMihomoURL = urls.Mihomo
+		response.SubscriptionShadowrocketURL = urls.Shadowrocket
 		response.SubscriptionAutoURL = urls.Auto
 	}
 	return response
 }
 
 type subscriptionURLSet struct {
-	Base64 string
-	Mihomo string
-	Auto   string
+	Shadowrocket string
+	Base64       string
+	Mihomo       string
+	Auto         string
 }
 
 func buildSubscriptionURLs(baseURL, tokenValue string) subscriptionURLSet {
 	base := baseURL + "/sub/" + url.PathEscape(tokenValue)
-	return subscriptionURLSet{Base64: base, Mihomo: base + "/mihomo", Auto: base + "/auto"}
+	return subscriptionURLSet{Base64: base, Mihomo: base + "/mihomo", Shadowrocket: base + "/shadowrocket", Auto: base + "/auto"}
 }
 
 func writeSubscriptionUserError(w http.ResponseWriter, err error) {

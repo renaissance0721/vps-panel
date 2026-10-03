@@ -89,7 +89,10 @@ func (s *Service) CreatePersonalSubscription(ctx context.Context, actor Personal
 	if err != nil {
 		return PersonalSubscription{}, err
 	}
-	if err := validatePlanTemplateRef(ctx, s.db, input.MihomoTemplateID); err != nil {
+	if err := validatePlanTemplateRef(ctx, s.db, input.MihomoTemplateID, nil, TemplateTypeMihomo); err != nil {
+		return PersonalSubscription{}, err
+	}
+	if err := validatePlanTemplateRef(ctx, s.db, input.ShadowrocketTemplateID, nil, TemplateTypeShadowrocket); err != nil {
 		return PersonalSubscription{}, err
 	}
 	tokenValue, _, err := token.New()
@@ -99,9 +102,9 @@ func (s *Service) CreatePersonalSubscription(ctx context.Context, actor Personal
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx, `INSERT INTO personal_subscription_groups
 		(owner_user_id, name, subscription_title, token, enabled, client_name, routing_preset_id,
-		 mihomo_template_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 mihomo_template_id, shadowrocket_template_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		actor.UserID, name, title, tokenValue, input.Enabled, clientName, *routingID,
-		nullableID(input.MihomoTemplateID), now.Unix(), now.Unix())
+		nullableID(input.MihomoTemplateID), nullableID(input.ShadowrocketTemplateID), now.Unix(), now.Unix())
 	if err != nil {
 		return PersonalSubscription{}, fmt.Errorf("create personal subscription: %w", err)
 	}
@@ -148,15 +151,22 @@ func (s *Service) UpdatePersonalSubscription(ctx context.Context, actor Personal
 	}
 	templateID := current.MihomoTemplateID
 	if input.MihomoTemplateIDSet {
-		if err := validatePlanTemplateRef(ctx, s.db, input.MihomoTemplateID); err != nil {
+		if err := validatePlanTemplateRef(ctx, s.db, input.MihomoTemplateID, current.MihomoTemplateID, TemplateTypeMihomo); err != nil {
 			return PersonalSubscription{}, err
 		}
 		templateID = input.MihomoTemplateID
 	}
+	shadowrocketTemplateID := current.ShadowrocketTemplateID
+	if input.ShadowrocketTemplateIDSet {
+		if err := validatePlanTemplateRef(ctx, s.db, input.ShadowrocketTemplateID, current.ShadowrocketTemplateID, TemplateTypeShadowrocket); err != nil {
+			return PersonalSubscription{}, err
+		}
+		shadowrocketTemplateID = input.ShadowrocketTemplateID
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE personal_subscription_groups
 		SET name = ?, subscription_title = ?, enabled = ?, client_name = ?, routing_preset_id = ?,
-		mihomo_template_id = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
-		name, title, enabled, clientName, routingID, nullableID(templateID),
+		mihomo_template_id = ?, shadowrocket_template_id = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
+		name, title, enabled, clientName, routingID, nullableID(templateID), nullableID(shadowrocketTemplateID),
 		s.now().UTC().Truncate(time.Second).Unix(), id, actor.UserID); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("update personal subscription: %w", err)
 	}
@@ -453,7 +463,16 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 			return PersonalSubscriptionData{}, err
 		}
 		if template.Enabled {
-			result.Template = &template
+			result.MihomoTemplate = &template
+		}
+	}
+	if group.ShadowrocketTemplateID != nil {
+		template, err := s.GetTemplate(ctx, *group.ShadowrocketTemplateID)
+		if err != nil {
+			return PersonalSubscriptionData{}, err
+		}
+		if template.Enabled {
+			result.ShadowrocketTemplate = &template
 		}
 	}
 	for _, node := range group.Nodes {
@@ -926,20 +945,22 @@ const personalSubscriptionSelect = `SELECT groups.id, groups.owner_user_id, grou
 	groups.subscription_title, groups.token, groups.enabled, groups.client_name,
 	groups.routing_preset_id, routing.name, groups.routing_bindings_json,
 	groups.mihomo_template_id, COALESCE(templates.name, ''),
+	groups.shadowrocket_template_id, COALESCE(shadowrocket_templates.name, ''),
 	groups.created_at, groups.updated_at
 	FROM personal_subscription_groups AS groups
 	JOIN subscription_routing_presets AS routing ON routing.id = groups.routing_preset_id
-	LEFT JOIN subscription_templates AS templates ON templates.id = groups.mihomo_template_id `
+	LEFT JOIN subscription_templates AS templates ON templates.id = groups.mihomo_template_id
+	LEFT JOIN subscription_templates AS shadowrocket_templates ON shadowrocket_templates.id = groups.shadowrocket_template_id `
 
 func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 	var value PersonalSubscription
 	var enabled int
-	var templateID sql.NullInt64
+	var templateID, shadowrocketTemplateID sql.NullInt64
 	var routingBindingsJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.SubscriptionTitle, &value.Token,
 		&enabled, &value.ClientName, &value.RoutingPresetID, &value.RoutingPresetName,
-		&routingBindingsJSON, &templateID, &value.MihomoTemplateName, &createdAt, &updatedAt); err != nil {
+		&routingBindingsJSON, &templateID, &value.MihomoTemplateName, &shadowrocketTemplateID, &value.ShadowrocketTemplateName, &createdAt, &updatedAt); err != nil {
 		return PersonalSubscription{}, err
 	}
 	bindings, err := decodeRoutingBindings(routingBindingsJSON)
@@ -950,6 +971,10 @@ func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 	if templateID.Valid {
 		id := templateID.Int64
 		value.MihomoTemplateID = &id
+	}
+	if shadowrocketTemplateID.Valid {
+		id := shadowrocketTemplateID.Int64
+		value.ShadowrocketTemplateID = &id
 	}
 	value.Enabled = enabled != 0
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()

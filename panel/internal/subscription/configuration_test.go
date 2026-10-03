@@ -33,7 +33,7 @@ func TestBuiltinMihomoConfigurationContainsOnlyClientBase(t *testing.T) {
 }
 
 func TestBuildMihomoConfigurationAppliesOnlyBaseTemplateOverlay(t *testing.T) {
-	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{ConfigYAML: "dns:\n  enable: false\ntun:\n  enable: false"})
+	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{Type: TemplateTypeMihomo, Content: "dns:\n  enable: false\ntun:\n  enable: false"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,14 +120,14 @@ func TestSubscriptionConfigurationRejectsUnsafeOrBrokenDefinitions(t *testing.T)
 		"defaults: &defaults\n  enable: true\ndns: *defaults",
 		"dns: !custom value",
 	} {
-		if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
-			Name: "Unsafe", Enabled: true, ConfigYAML: config,
+		if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{Type: TemplateTypeMihomo,
+			Name: "Unsafe", Enabled: true, Content: config,
 		}); !errors.Is(err, ErrInvalidTemplate) {
 			t.Fatalf("template %q error = %v", config, err)
 		}
 	}
-	if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{
-		Name: "Valid", Enabled: true, ConfigYAML: "dns:\n  enable: false",
+	if _, err := service.CreateTemplate(t.Context(), CreateSubscriptionTemplateInput{Type: TemplateTypeMihomo,
+		Name: "Valid", Enabled: true, Content: "dns:\n  enable: false",
 	}); err != nil {
 		t.Fatalf("valid template error = %v", err)
 	}

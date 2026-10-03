@@ -51,12 +51,12 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	if !subscriber.Active {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	}
-	var routingPresetID, templateID sql.NullInt64
+	var routingPresetID, templateID, shadowrocketTemplateID sql.NullInt64
 	var routingBindingsJSON string
-	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_preset_id, plans.routing_bindings_json, plans.template_id
+	if err := s.db.QueryRowContext(ctx, `SELECT plans.routing_preset_id, plans.routing_bindings_json, plans.template_id, plans.shadowrocket_template_id
 		FROM subscriber_profiles AS profiles
 		JOIN subscription_plans AS plans ON plans.id = profiles.plan_id
-		WHERE profiles.user_id = ?`, userID).Scan(&routingPresetID, &routingBindingsJSON, &templateID); errors.Is(err, sql.ErrNoRows) {
+		WHERE profiles.user_id = ?`, userID).Scan(&routingPresetID, &routingBindingsJSON, &templateID, &shadowrocketTemplateID); errors.Is(err, sql.ErrNoRows) {
 		return SubscriptionData{}, mutations, ErrSubscriptionUnavailable
 	} else if err != nil {
 		return SubscriptionData{}, mutations, fmt.Errorf("read subscription plan routing: %w", err)
@@ -158,7 +158,16 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 			return SubscriptionData{}, mutations, err
 		}
 		if template.Enabled {
-			result.Template = &template
+			result.MihomoTemplate = &template
+		}
+	}
+	if shadowrocketTemplateID.Valid {
+		template, err := s.GetTemplate(ctx, shadowrocketTemplateID.Int64)
+		if err != nil {
+			return SubscriptionData{}, mutations, err
+		}
+		if template.Enabled {
+			result.ShadowrocketTemplate = &template
 		}
 	}
 	if subscriber.TrafficLimitBytes != nil {

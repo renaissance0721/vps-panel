@@ -24,6 +24,7 @@ type Subscriber = {
   subscription_url: string
   subscription_base64_url: string
   subscription_mihomo_url: string
+  subscription_shadowrocket_url: string
   subscription_auto_url: string
   subscription_title: string
 }
@@ -33,7 +34,7 @@ const subscriber = ref<Subscriber | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
-const copied = ref<'base64' | 'mihomo' | ''>('')
+const copied = ref<'base64' | 'mihomo' | 'shadowrocket' | ''>('')
 const importModalOpen = ref(false)
 const qrOpen = ref(false)
 const hasPlan = computed(() => (subscriber.value?.plan_name ?? '').trim() !== '')
@@ -66,7 +67,7 @@ async function run(action: () => Promise<void>) {
   }
 }
 
-async function copySubscription(format: 'base64' | 'mihomo', value: string) {
+async function copySubscription(format: 'base64' | 'mihomo' | 'shadowrocket', value: string) {
   if (!value) return
   await run(async () => {
     await navigator.clipboard.writeText(value)
@@ -81,6 +82,7 @@ async function regenerateSubscription() {
       subscription_url: string
       subscription_base64_url: string
       subscription_mihomo_url: string
+      subscription_shadowrocket_url: string
       subscription_auto_url: string
     }>('/api/subscriber/subscription/regenerate', { method: 'POST' })
     if (subscriber.value) Object.assign(subscriber.value, value)
@@ -150,6 +152,10 @@ onMounted(async () => {
         <section class="subscription-import-option">
           <div><strong>Clash / Mihomo</strong><p>适用于 Clash Verge Rev、Mihomo、FlClash 等</p></div>
           <n-button secondary :disabled="busy" @click="copySubscription('mihomo', subscriber?.subscription_mihomo_url || '')">{{ copied === 'mihomo' ? '已复制' : '复制地址' }}</n-button>
+        </section>
+        <section class="subscription-import-option">
+          <div><strong>Shadowrocket</strong><p>完整 .conf 配置，请在 Shadowrocket 的配置页面从 URL 导入</p></div>
+          <n-button secondary :disabled="busy" @click="copySubscription('shadowrocket', subscriber?.subscription_shadowrocket_url || '')">{{ copied === 'shadowrocket' ? '已复制' : '复制地址' }}</n-button>
         </section>
         <section class="subscription-import-option">
           <div><strong>扫描二维码订阅</strong><p>扫描后自动适配常见订阅客户端</p></div>

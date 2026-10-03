@@ -9,6 +9,8 @@ import (
 )
 
 const (
+	TemplateTypeMihomo           = "mihomo"
+	TemplateTypeShadowrocket     = "shadowrocket"
 	NodeModeDirect               = "direct"
 	NodeModeRelay                = "relay"
 	EntryHostModeInherit         = "inherit"
@@ -29,55 +31,60 @@ const (
 )
 
 var (
-	ErrPublishedNodeNotFound        = errors.New("published node not found")
-	ErrInvalidNodeName              = errors.New("published node name must be 1-100 characters")
-	ErrInvalidNodeMode              = errors.New("published node mode must be direct or relay")
-	ErrTargetProxyNotFound          = errors.New("target proxy not found")
-	ErrSourceServerNotFound         = errors.New("source server not found")
-	ErrSourceServerRequired         = errors.New("source server is required for relay mode")
-	ErrInvalidNodeUpdate            = errors.New("published node update is empty")
-	ErrInvalidNodeTopology          = errors.New("published node topology is invalid")
-	ErrInvalidEntryHostMode         = errors.New("published node entry host mode is invalid")
-	ErrInvalidEntryPortMode         = errors.New("published node entry port mode is invalid")
-	ErrInvalidTrafficMultiplier     = errors.New("published node traffic multiplier is invalid")
-	ErrPublishedNodeReferenced      = errors.New("published node is referenced by a plan")
-	ErrPlanNotFound                 = errors.New("subscription plan not found")
-	ErrInvalidPlanName              = errors.New("subscription plan name must be 1-100 characters")
-	ErrInvalidSubscriptionTitle     = errors.New("subscription title must not exceed 100 characters")
-	ErrInvalidTrafficLimit          = errors.New("subscription plan traffic limit is invalid")
-	ErrInvalidTrafficReset          = errors.New("subscriber traffic reset is invalid")
-	ErrInvalidBillingPeriod         = errors.New("subscriber billing period is invalid")
-	ErrInvalidPlanNodes             = errors.New("subscription plan nodes are invalid")
-	ErrPlanReferenced               = errors.New("subscription plan is referenced by a subscriber")
-	ErrSubscriberNotFound           = errors.New("subscriber not found")
-	ErrInvalidSubscriberPlan        = errors.New("subscriber plan is invalid")
-	ErrInvalidSubscriberExpiry      = errors.New("subscriber expiration is invalid")
-	ErrSubscriptionNotFound         = errors.New("subscription not found")
-	ErrSubscriptionUnavailable      = errors.New("subscription unavailable")
-	ErrServerNotDistributable       = errors.New("published nodes require administrator-created servers")
-	ErrRoutingPresetNotFound        = errors.New("subscription routing preset not found")
-	ErrRoutingPresetReferenced      = errors.New("subscription routing preset is referenced by a plan")
-	ErrDefaultRoutingPreset         = errors.New("default subscription routing preset is protected")
-	ErrTemplateNotFound             = errors.New("subscription template not found")
-	ErrInvalidRoutingPreset         = errors.New("subscription routing preset is invalid")
-	ErrInvalidPlanRouting           = errors.New("subscription plan routing is invalid")
-	ErrRoutingGroupKeyInvalid       = fmt.Errorf("routing group key is invalid: %w", ErrInvalidRoutingPreset)
-	ErrRoutingGroupNameDuplicate    = fmt.Errorf("routing group name is duplicated: %w", ErrInvalidRoutingPreset)
-	ErrRoutingGroupReferenceMissing = fmt.Errorf("routing group reference is missing: %w", ErrInvalidRoutingPreset)
-	ErrRoutingGroupCycle            = fmt.Errorf("routing groups contain a cycle: %w", ErrInvalidRoutingPreset)
-	ErrRoutingRuleGroupMissing      = fmt.Errorf("routing rule group is missing: %w", ErrInvalidRoutingPreset)
-	ErrRoutingRuleProviderMissing   = fmt.Errorf("routing rule provider is missing: %w", ErrInvalidRoutingPreset)
-	ErrRoutingProviderNameDuplicate = fmt.Errorf("routing provider name is duplicated: %w", ErrInvalidRoutingPreset)
-	ErrRoutingProviderURLInvalid    = fmt.Errorf("routing provider URL is invalid: %w", ErrInvalidRoutingPreset)
-	ErrInvalidRoutingBindings       = errors.New("subscription routing bindings are invalid")
-	ErrRoutingGroupEmpty            = errors.New("routing group has no usable members")
-	ErrInvalidTemplate              = errors.New("subscription template is invalid")
-	ErrTemplateReferenced           = errors.New("subscription template is referenced by a plan")
-	ErrPersonalSubscriptionNotFound = errors.New("personal subscription not found")
-	ErrInvalidPersonalSubscription  = errors.New("personal subscription is invalid")
-	ErrInvalidPersonalNodes         = errors.New("personal subscription nodes are invalid")
-	ErrPersonalSubscriptionEmpty    = errors.New("personal subscription has no usable nodes")
-	ErrPersonalSourceNotFound       = errors.New("personal subscription source not found")
+	ErrPublishedNodeNotFound           = errors.New("published node not found")
+	ErrInvalidNodeName                 = errors.New("published node name must be 1-100 characters")
+	ErrInvalidNodeMode                 = errors.New("published node mode must be direct or relay")
+	ErrTargetProxyNotFound             = errors.New("target proxy not found")
+	ErrSourceServerNotFound            = errors.New("source server not found")
+	ErrSourceServerRequired            = errors.New("source server is required for relay mode")
+	ErrInvalidNodeUpdate               = errors.New("published node update is empty")
+	ErrInvalidNodeTopology             = errors.New("published node topology is invalid")
+	ErrInvalidEntryHostMode            = errors.New("published node entry host mode is invalid")
+	ErrInvalidEntryPortMode            = errors.New("published node entry port mode is invalid")
+	ErrInvalidTrafficMultiplier        = errors.New("published node traffic multiplier is invalid")
+	ErrPublishedNodeReferenced         = errors.New("published node is referenced by a plan")
+	ErrPlanNotFound                    = errors.New("subscription plan not found")
+	ErrInvalidPlanName                 = errors.New("subscription plan name must be 1-100 characters")
+	ErrInvalidSubscriptionTitle        = errors.New("subscription title must not exceed 100 characters")
+	ErrInvalidTrafficLimit             = errors.New("subscription plan traffic limit is invalid")
+	ErrInvalidTrafficReset             = errors.New("subscriber traffic reset is invalid")
+	ErrInvalidBillingPeriod            = errors.New("subscriber billing period is invalid")
+	ErrInvalidPlanNodes                = errors.New("subscription plan nodes are invalid")
+	ErrPlanReferenced                  = errors.New("subscription plan is referenced by a subscriber")
+	ErrSubscriberNotFound              = errors.New("subscriber not found")
+	ErrInvalidSubscriberPlan           = errors.New("subscriber plan is invalid")
+	ErrInvalidSubscriberExpiry         = errors.New("subscriber expiration is invalid")
+	ErrSubscriptionNotFound            = errors.New("subscription not found")
+	ErrSubscriptionUnavailable         = errors.New("subscription unavailable")
+	ErrServerNotDistributable          = errors.New("published nodes require administrator-created servers")
+	ErrRoutingPresetNotFound           = errors.New("subscription routing preset not found")
+	ErrRoutingPresetReferenced         = errors.New("subscription routing preset is referenced by a plan")
+	ErrDefaultRoutingPreset            = errors.New("default subscription routing preset is protected")
+	ErrTemplateNotFound                = errors.New("subscription template not found")
+	ErrInvalidRoutingPreset            = errors.New("subscription routing preset is invalid")
+	ErrInvalidPlanRouting              = errors.New("subscription plan routing is invalid")
+	ErrRoutingGroupKeyInvalid          = fmt.Errorf("routing group key is invalid: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupNameDuplicate       = fmt.Errorf("routing group name is duplicated: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupReferenceMissing    = fmt.Errorf("routing group reference is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingGroupCycle               = fmt.Errorf("routing groups contain a cycle: %w", ErrInvalidRoutingPreset)
+	ErrRoutingRuleGroupMissing         = fmt.Errorf("routing rule group is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingRuleProviderMissing      = fmt.Errorf("routing rule provider is missing: %w", ErrInvalidRoutingPreset)
+	ErrRoutingProviderNameDuplicate    = fmt.Errorf("routing provider name is duplicated: %w", ErrInvalidRoutingPreset)
+	ErrRoutingProviderURLInvalid       = fmt.Errorf("routing provider URL is invalid: %w", ErrInvalidRoutingPreset)
+	ErrInvalidRoutingBindings          = errors.New("subscription routing bindings are invalid")
+	ErrRoutingGroupEmpty               = errors.New("routing group has no usable members")
+	ErrTemplateTypeMismatch            = errors.New("subscription template type does not match client")
+	ErrTemplateDisabled                = errors.New("subscription template is disabled")
+	ErrInvalidShadowrocketTemplate     = errors.New("Shadowrocket 模板格式无效")
+	ErrUnsupportedShadowrocketProtocol = errors.New("节点协议或参数不支持 Shadowrocket 输出")
+	ErrUnsupportedShadowrocketRule     = errors.New("当前规则或规则源无法转换为 Shadowrocket 格式")
+	ErrInvalidTemplate                 = errors.New("subscription template is invalid")
+	ErrTemplateReferenced              = errors.New("subscription template is referenced by a plan")
+	ErrPersonalSubscriptionNotFound    = errors.New("personal subscription not found")
+	ErrInvalidPersonalSubscription     = errors.New("personal subscription is invalid")
+	ErrInvalidPersonalNodes            = errors.New("personal subscription nodes are invalid")
+	ErrPersonalSubscriptionEmpty       = errors.New("personal subscription has no usable nodes")
+	ErrPersonalSourceNotFound          = errors.New("personal subscription source not found")
 )
 
 type PublishedNode struct {
@@ -130,17 +137,18 @@ type UpdatePublishedNodeInput struct {
 }
 
 type Plan struct {
-	ID                int64
-	Name              string
-	SubscriptionTitle string
-	Enabled           bool
-	TrafficLimitBytes *int64
-	RoutingPresetID   *int64
-	RoutingBindings   RoutingBindings
-	TemplateID        *int64
-	Nodes             []PlanNode
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                     int64
+	Name                   string
+	SubscriptionTitle      string
+	Enabled                bool
+	TrafficLimitBytes      *int64
+	RoutingPresetID        *int64
+	RoutingBindings        RoutingBindings
+	MihomoTemplateID       *int64
+	ShadowrocketTemplateID *int64
+	Nodes                  []PlanNode
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type PlanNode struct {
@@ -149,24 +157,27 @@ type PlanNode struct {
 }
 
 type CreatePlanInput struct {
-	Name              string
-	SubscriptionTitle string
-	Enabled           bool
-	TrafficLimitBytes *int64
-	RoutingPresetID   *int64
-	TemplateID        *int64
+	Name                   string
+	SubscriptionTitle      string
+	Enabled                bool
+	TrafficLimitBytes      *int64
+	RoutingPresetID        *int64
+	MihomoTemplateID       *int64
+	ShadowrocketTemplateID *int64
 }
 
 type UpdatePlanInput struct {
-	Name                 *string
-	SubscriptionTitle    *string
-	Enabled              *bool
-	TrafficLimitBytesSet bool
-	TrafficLimitBytes    *int64
-	RoutingPresetIDSet   bool
-	RoutingPresetID      *int64
-	TemplateIDSet        bool
-	TemplateID           *int64
+	Name                      *string
+	SubscriptionTitle         *string
+	Enabled                   *bool
+	TrafficLimitBytesSet      bool
+	TrafficLimitBytes         *int64
+	RoutingPresetIDSet        bool
+	RoutingPresetID           *int64
+	MihomoTemplateIDSet       bool
+	ShadowrocketTemplateIDSet bool
+	MihomoTemplateID          *int64
+	ShadowrocketTemplateID    *int64
 }
 
 type Subscriber struct {
@@ -218,16 +229,17 @@ type GeneratedSubscription struct {
 }
 
 type SubscriptionData struct {
-	Title           string
-	Nodes           []proxystore.ClientShare
-	Upload          int64
-	Download        int64
-	Total           int64
-	Expire          int64
-	NodeNames       map[int64]string
-	RoutingBindings RoutingBindings
-	RoutingPreset   *RoutingPreset
-	Template        *SubscriptionTemplate
+	Title                string
+	Nodes                []proxystore.ClientShare
+	Upload               int64
+	Download             int64
+	Total                int64
+	Expire               int64
+	NodeNames            map[int64]string
+	RoutingBindings      RoutingBindings
+	RoutingPreset        *RoutingPreset
+	MihomoTemplate       *SubscriptionTemplate
+	ShadowrocketTemplate *SubscriptionTemplate
 }
 
 type RoutingPreset struct {
@@ -278,24 +290,27 @@ type UpdateRoutingPresetInput struct {
 }
 
 type SubscriptionTemplate struct {
-	ID         int64
-	Name       string
-	Enabled    bool
-	ConfigYAML string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID        int64
+	Name      string
+	Type      string
+	Enabled   bool
+	Content   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type CreateSubscriptionTemplateInput struct {
-	Name       string
-	Enabled    bool
-	ConfigYAML string
+	Type    string
+	Name    string
+	Enabled bool
+	Content string
 }
 
 type UpdateSubscriptionTemplateInput struct {
-	Name       *string
-	Enabled    *bool
-	ConfigYAML *string
+	Type    *string
+	Name    *string
+	Enabled *bool
+	Content *string
 }
 
 type SubscriberNode struct {
@@ -329,21 +344,23 @@ type PersonalSubscriptionActor struct {
 }
 
 type PersonalSubscription struct {
-	ID                 int64
-	OwnerUserID        int64
-	Name               string
-	SubscriptionTitle  string
-	Token              string
-	Enabled            bool
-	ClientName         string
-	RoutingPresetID    int64
-	RoutingPresetName  string
-	RoutingBindings    RoutingBindings
-	MihomoTemplateID   *int64
-	MihomoTemplateName string
-	Nodes              []PersonalSubscriptionNode
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                       int64
+	OwnerUserID              int64
+	Name                     string
+	SubscriptionTitle        string
+	Token                    string
+	Enabled                  bool
+	ClientName               string
+	RoutingPresetID          int64
+	RoutingPresetName        string
+	RoutingBindings          RoutingBindings
+	MihomoTemplateID         *int64
+	ShadowrocketTemplateID   *int64
+	MihomoTemplateName       string
+	ShadowrocketTemplateName string
+	Nodes                    []PersonalSubscriptionNode
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type PersonalSubscriptionNode struct {
@@ -377,22 +394,25 @@ type PersonalSubscriptionSource struct {
 }
 
 type CreatePersonalSubscriptionInput struct {
-	Name              string
-	SubscriptionTitle string
-	Enabled           bool
-	ClientName        string
-	RoutingPresetID   *int64
-	MihomoTemplateID  *int64
+	Name                   string
+	SubscriptionTitle      string
+	Enabled                bool
+	ClientName             string
+	RoutingPresetID        *int64
+	MihomoTemplateID       *int64
+	ShadowrocketTemplateID *int64
 }
 
 type UpdatePersonalSubscriptionInput struct {
-	Name                *string
-	SubscriptionTitle   *string
-	Enabled             *bool
-	ClientName          *string
-	RoutingPresetID     *int64
-	MihomoTemplateIDSet bool
-	MihomoTemplateID    *int64
+	Name                      *string
+	SubscriptionTitle         *string
+	Enabled                   *bool
+	ClientName                *string
+	RoutingPresetID           *int64
+	MihomoTemplateIDSet       bool
+	ShadowrocketTemplateIDSet bool
+	MihomoTemplateID          *int64
+	ShadowrocketTemplateID    *int64
 }
 
 type SetPersonalSubscriptionNodeInput struct {
@@ -425,10 +445,11 @@ type ResolvedSubscriptionNode struct {
 }
 
 type PersonalSubscriptionData struct {
-	Title           string
-	Nodes           []ResolvedSubscriptionNode
-	NodeNames       map[int64]string
-	RoutingBindings RoutingBindings
-	RoutingPreset   *RoutingPreset
-	Template        *SubscriptionTemplate
+	Title                string
+	Nodes                []ResolvedSubscriptionNode
+	NodeNames            map[int64]string
+	RoutingBindings      RoutingBindings
+	RoutingPreset        *RoutingPreset
+	MihomoTemplate       *SubscriptionTemplate
+	ShadowrocketTemplate *SubscriptionTemplate
 }

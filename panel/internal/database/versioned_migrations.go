@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 18
+const LatestSchemaVersion = 19
 
 type migration struct {
 	version            int
@@ -41,6 +41,24 @@ var migrations = []migration{
 	{version: 16, name: "telegram_notifications", up: createNotifications},
 	{version: 17, name: "server_access_management_users", up: cleanupServerAccessUsers},
 	{version: 18, name: "materialize_default_probe_assignments", up: materializeDefaultProbeAssignments},
+	{version: 19, name: "subscription_client_templates", up: migrateSubscriptionClientTemplates},
+}
+
+func migrateSubscriptionClientTemplates(ctx context.Context, tx *sql.Tx) error {
+	// Rename in place: preserve template IDs, contents, references and sequence.
+	for _, statement := range []string{
+		`ALTER TABLE subscription_templates RENAME COLUMN config_yaml TO content`,
+		`ALTER TABLE subscription_templates ADD COLUMN type TEXT NOT NULL DEFAULT 'mihomo' CHECK (type IN ('mihomo', 'shadowrocket'))`,
+		`ALTER TABLE subscription_plans ADD COLUMN shadowrocket_template_id INTEGER REFERENCES subscription_templates(id) ON DELETE RESTRICT`,
+		`ALTER TABLE personal_subscription_groups ADD COLUMN shadowrocket_template_id INTEGER REFERENCES subscription_templates(id) ON DELETE RESTRICT`,
+		`CREATE INDEX idx_subscription_plans_shadowrocket_template ON subscription_plans(shadowrocket_template_id)`,
+		`CREATE INDEX idx_personal_subscription_groups_shadowrocket_template ON personal_subscription_groups(shadowrocket_template_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func materializeDefaultProbeAssignments(ctx context.Context, tx *sql.Tx) error {

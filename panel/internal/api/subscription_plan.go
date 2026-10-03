@@ -11,21 +11,23 @@ import (
 )
 
 type createSubscriptionPlanRequest struct {
-	Name              string `json:"name"`
-	SubscriptionTitle string `json:"subscription_title"`
-	Enabled           *bool  `json:"enabled"`
-	TrafficLimitBytes *int64 `json:"traffic_limit_bytes"`
-	RoutingPresetID   *int64 `json:"routing_preset_id"`
-	TemplateID        *int64 `json:"template_id"`
+	Name                   string `json:"name"`
+	SubscriptionTitle      string `json:"subscription_title"`
+	Enabled                *bool  `json:"enabled"`
+	TrafficLimitBytes      *int64 `json:"traffic_limit_bytes"`
+	RoutingPresetID        *int64 `json:"routing_preset_id"`
+	MihomoTemplateID       *int64 `json:"mihomo_template_id"`
+	ShadowrocketTemplateID *int64 `json:"shadowrocket_template_id"`
 }
 
 type updateSubscriptionPlanRequest struct {
-	Name              *string         `json:"name"`
-	SubscriptionTitle *string         `json:"subscription_title"`
-	Enabled           *bool           `json:"enabled"`
-	TrafficLimitBytes json.RawMessage `json:"traffic_limit_bytes"`
-	RoutingPresetID   json.RawMessage `json:"routing_preset_id"`
-	TemplateID        json.RawMessage `json:"template_id"`
+	Name                   *string         `json:"name"`
+	SubscriptionTitle      *string         `json:"subscription_title"`
+	Enabled                *bool           `json:"enabled"`
+	TrafficLimitBytes      json.RawMessage `json:"traffic_limit_bytes"`
+	RoutingPresetID        json.RawMessage `json:"routing_preset_id"`
+	MihomoTemplateID       json.RawMessage `json:"mihomo_template_id"`
+	ShadowrocketTemplateID json.RawMessage `json:"shadowrocket_template_id"`
 }
 
 type setSubscriptionPlanNodesRequest struct {
@@ -33,17 +35,18 @@ type setSubscriptionPlanNodesRequest struct {
 }
 
 type subscriptionPlanResponse struct {
-	ID                int64                               `json:"id"`
-	Name              string                              `json:"name"`
-	SubscriptionTitle string                              `json:"subscription_title"`
-	Enabled           bool                                `json:"enabled"`
-	TrafficLimitBytes *int64                              `json:"traffic_limit_bytes"`
-	RoutingPresetID   *int64                              `json:"routing_preset_id"`
-	RoutingBindings   subscriptionstore.RoutingBindings   `json:"routing_bindings"`
-	TemplateID        *int64                              `json:"template_id"`
-	Nodes             []subscriptionPublishedNodeResponse `json:"nodes"`
-	CreatedAt         time.Time                           `json:"created_at"`
-	UpdatedAt         time.Time                           `json:"updated_at"`
+	ID                     int64                               `json:"id"`
+	Name                   string                              `json:"name"`
+	SubscriptionTitle      string                              `json:"subscription_title"`
+	Enabled                bool                                `json:"enabled"`
+	TrafficLimitBytes      *int64                              `json:"traffic_limit_bytes"`
+	RoutingPresetID        *int64                              `json:"routing_preset_id"`
+	RoutingBindings        subscriptionstore.RoutingBindings   `json:"routing_bindings"`
+	MihomoTemplateID       *int64                              `json:"mihomo_template_id"`
+	ShadowrocketTemplateID *int64                              `json:"shadowrocket_template_id"`
+	Nodes                  []subscriptionPublishedNodeResponse `json:"nodes"`
+	CreatedAt              time.Time                           `json:"created_at"`
+	UpdatedAt              time.Time                           `json:"updated_at"`
 }
 
 func (s *server) setSubscriptionPlanRoutingBindings(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -88,7 +91,7 @@ func (s *server) createSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 	value, err := s.subscriptions.CreatePlan(r.Context(), subscriptionstore.CreatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle,
 		Enabled: enabled, TrafficLimitBytes: request.TrafficLimitBytes,
-		RoutingPresetID: request.RoutingPresetID, TemplateID: request.TemplateID,
+		RoutingPresetID: request.RoutingPresetID, MihomoTemplateID: request.MihomoTemplateID, ShadowrocketTemplateID: request.ShadowrocketTemplateID,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
@@ -130,16 +133,22 @@ func (s *server) updateSubscriptionPlan(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "分流方案格式无效")
 		return
 	}
-	templateID, templateIDSet, err := decodeNullableInt64(request.TemplateID)
+	templateID, templateIDSet, err := decodeNullableInt64(request.MihomoTemplateID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "订阅模板格式无效")
+		return
+	}
+	shadowrocketTemplateID, shadowrocketTemplateSet, err := decodeNullableInt64(request.ShadowrocketTemplateID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Shadowrocket 模板 ID 无效")
 		return
 	}
 	value, mutations, err := s.subscriptions.UpdatePlan(r.Context(), id, subscriptionstore.UpdatePlanInput{
 		Name: request.Name, SubscriptionTitle: request.SubscriptionTitle, Enabled: request.Enabled,
 		TrafficLimitBytesSet: trafficLimitSet, TrafficLimitBytes: trafficLimit,
 		RoutingPresetIDSet: routingPresetIDSet, RoutingPresetID: routingPresetID,
-		TemplateIDSet: templateIDSet, TemplateID: templateID,
+		MihomoTemplateIDSet: templateIDSet, MihomoTemplateID: templateID,
+		ShadowrocketTemplateIDSet: shadowrocketTemplateSet, ShadowrocketTemplateID: shadowrocketTemplateID,
 	})
 	if err != nil {
 		writeSubscriptionPlanError(w, err)
@@ -192,8 +201,8 @@ func toSubscriptionPlanResponse(value subscriptionstore.Plan) subscriptionPlanRe
 		ID: value.ID, Name: value.Name, SubscriptionTitle: value.SubscriptionTitle, Enabled: value.Enabled,
 		TrafficLimitBytes: value.TrafficLimitBytes,
 		RoutingPresetID:   value.RoutingPresetID, RoutingBindings: value.RoutingBindings,
-		TemplateID: value.TemplateID,
-		Nodes:      nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		MihomoTemplateID: value.MihomoTemplateID, ShadowrocketTemplateID: value.ShadowrocketTemplateID,
+		Nodes: nodes, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -245,6 +254,8 @@ func writeSubscriptionPlanError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "分流方案不存在")
 	case errors.Is(err, subscriptionstore.ErrTemplateNotFound):
 		writeError(w, http.StatusBadRequest, "订阅模板不存在")
+	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch), errors.Is(err, subscriptionstore.ErrTemplateDisabled):
+		writeSubscriptionConfigurationError(w, err)
 	default:
 		writeInternalError(w, err)
 	}

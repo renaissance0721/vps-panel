@@ -14,7 +14,7 @@ import (
 
 func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, shadowrocket_template_id, created_at, updated_at
 		FROM subscription_plans ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscription plans: %w", err)
@@ -46,7 +46,7 @@ func (s *Service) ListPlans(ctx context.Context) ([]Plan, error) {
 
 func (s *Service) GetPlan(ctx context.Context, id int64) (Plan, error) {
 	value, err := scanPlan(s.db.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, shadowrocket_template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
@@ -65,13 +65,16 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	value, err := normalizePlan(Plan{
 		Name: input.Name, SubscriptionTitle: input.SubscriptionTitle,
 		Enabled: input.Enabled, TrafficLimitBytes: input.TrafficLimitBytes,
-		RoutingPresetID: input.RoutingPresetID, TemplateID: input.TemplateID,
+		RoutingPresetID: input.RoutingPresetID, MihomoTemplateID: input.MihomoTemplateID, ShadowrocketTemplateID: input.ShadowrocketTemplateID,
 	})
 	if err != nil {
 		return Plan{}, err
 	}
 	now := s.now().UTC().Truncate(time.Second)
-	if err := validatePlanTemplateRef(ctx, s.db, value.TemplateID); err != nil {
+	if err := validatePlanTemplateRef(ctx, s.db, value.MihomoTemplateID, nil, TemplateTypeMihomo); err != nil {
+		return Plan{}, err
+	}
+	if err := validatePlanTemplateRef(ctx, s.db, value.ShadowrocketTemplateID, nil, TemplateTypeShadowrocket); err != nil {
 		return Plan{}, err
 	}
 	value.RoutingPresetID, err = resolvePlanRoutingPresetRef(ctx, s.db, value.RoutingPresetID, nil)
@@ -79,11 +82,11 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 		return Plan{}, err
 	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_plans
-		(name, subscription_title, enabled, traffic_limit_bytes, routing_preset_id, template_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		(name, subscription_title, enabled, traffic_limit_bytes, routing_preset_id, template_id, shadowrocket_template_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		value.Name, nullableString(value.SubscriptionTitle), value.Enabled,
 		nullableInt64(value.TrafficLimitBytes), nullableInt64(value.RoutingPresetID),
-		nullableInt64(value.TemplateID), now.Unix(), now.Unix())
+		nullableInt64(value.MihomoTemplateID), nullableInt64(value.ShadowrocketTemplateID), now.Unix(), now.Unix())
 	if err != nil {
 		return Plan{}, fmt.Errorf("create subscription plan: %w", err)
 	}
@@ -102,7 +105,7 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	}
 	defer tx.Rollback()
 	current, err := scanPlan(tx.QueryRowContext(ctx, `SELECT id, name, subscription_title, enabled, traffic_limit_bytes,
-		routing_preset_id, routing_bindings_json, template_id, created_at, updated_at
+		routing_preset_id, routing_bindings_json, template_id, shadowrocket_template_id, created_at, updated_at
 		FROM subscription_plans WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Plan{}, nil, ErrPlanNotFound
@@ -126,14 +129,21 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	if input.RoutingPresetIDSet {
 		current.RoutingPresetID = input.RoutingPresetID
 	}
-	if input.TemplateIDSet {
-		current.TemplateID = input.TemplateID
+	previousMihomoTemplateID, previousShadowrocketTemplateID := current.MihomoTemplateID, current.ShadowrocketTemplateID
+	if input.ShadowrocketTemplateIDSet {
+		current.ShadowrocketTemplateID = input.ShadowrocketTemplateID
+	}
+	if input.MihomoTemplateIDSet {
+		current.MihomoTemplateID = input.MihomoTemplateID
 	}
 	current, err = normalizePlan(current)
 	if err != nil {
 		return Plan{}, nil, err
 	}
-	if err := validatePlanTemplateRef(ctx, tx, current.TemplateID); err != nil {
+	if err := validatePlanTemplateRef(ctx, tx, current.MihomoTemplateID, previousMihomoTemplateID, TemplateTypeMihomo); err != nil {
+		return Plan{}, nil, err
+	}
+	if err := validatePlanTemplateRef(ctx, tx, current.ShadowrocketTemplateID, previousShadowrocketTemplateID, TemplateTypeShadowrocket); err != nil {
 		return Plan{}, nil, err
 	}
 	current.RoutingPresetID, err = resolvePlanRoutingPresetRef(ctx, tx, current.RoutingPresetID, previousRoutingPresetID)
@@ -142,10 +152,10 @@ func (s *Service) UpdatePlan(ctx context.Context, id int64, input UpdatePlanInpu
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE subscription_plans SET
 		name = ?, subscription_title = ?, enabled = ?, traffic_limit_bytes = ?,
-		routing_preset_id = ?, template_id = ?, updated_at = ? WHERE id = ?`,
+		routing_preset_id = ?, template_id = ?, shadowrocket_template_id = ?, updated_at = ? WHERE id = ?`,
 		current.Name, nullableString(current.SubscriptionTitle), current.Enabled,
 		nullableInt64(current.TrafficLimitBytes), nullableInt64(current.RoutingPresetID),
-		nullableInt64(current.TemplateID), now.Unix(), id)
+		nullableInt64(current.MihomoTemplateID), nullableInt64(current.ShadowrocketTemplateID), now.Unix(), id)
 	if err != nil {
 		return Plan{}, nil, fmt.Errorf("update subscription plan: %w", err)
 	}
@@ -460,12 +470,12 @@ func scanPlan(row rowScanner) (Plan, error) {
 	var value Plan
 	var trafficLimit sql.NullInt64
 	var subscriptionTitle sql.NullString
-	var routingPresetID, templateID sql.NullInt64
+	var routingPresetID, templateID, shadowrocketTemplateID sql.NullInt64
 	var routingBindingsJSON string
 	var enabled int
 	var createdAt, updatedAt int64
 	err := row.Scan(&value.ID, &value.Name, &subscriptionTitle, &enabled, &trafficLimit,
-		&routingPresetID, &routingBindingsJSON, &templateID, &createdAt, &updatedAt)
+		&routingPresetID, &routingBindingsJSON, &templateID, &shadowrocketTemplateID, &createdAt, &updatedAt)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -485,7 +495,11 @@ func scanPlan(row rowScanner) (Plan, error) {
 	}
 	if templateID.Valid {
 		id := templateID.Int64
-		value.TemplateID = &id
+		value.MihomoTemplateID = &id
+	}
+	if shadowrocketTemplateID.Valid {
+		id := shadowrocketTemplateID.Int64
+		value.ShadowrocketTemplateID = &id
 	}
 	value.Nodes = make([]PlanNode, 0)
 	value.CreatedAt = time.Unix(createdAt, 0).UTC()

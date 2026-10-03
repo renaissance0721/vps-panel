@@ -42,7 +42,8 @@ type Plan = {
   enabled: boolean
   traffic_limit_bytes: number | null
   routing_preset_id: number
-  template_id: number | null
+  mihomo_template_id: number | null
+  shadowrocket_template_id: number | null
   nodes: PublishedNode[]
   routing_bindings: RoutingBindings
 }
@@ -63,7 +64,8 @@ type RoutingRuleProvider = {
   format: string
   interval: number
 }
-type SubscriptionTemplate = { id: number; name: string; enabled: boolean; config_yaml: string }
+type TemplateType = 'mihomo' | 'shadowrocket'
+type SubscriptionTemplate = { id: number; name: string; type: TemplateType; enabled: boolean; content: string }
 type MihomoConfiguration = {
   name: string
   yaml: string
@@ -117,10 +119,13 @@ type PersonalSubscription = {
   routing_preset_name: string
   mihomo_template_id: number | null
   mihomo_template_name: string
+  shadowrocket_template_id: number | null
+  shadowrocket_template_name: string
   nodes: PersonalNode[]
   routing_bindings: RoutingBindings
   subscription_base64_url: string
   subscription_mihomo_url: string
+  subscription_shadowrocket_url: string
   subscription_auto_url: string
 }
 type PersonalSource = {
@@ -144,6 +149,7 @@ const proxies = ref<ProxyRecord[]>([])
 const relayServers = ref<RelayServer[]>([])
 const routingPresets = ref<RoutingPreset[]>([])
 const templates = ref<SubscriptionTemplate[]>([])
+const builtinShadowrocket = ref<{ name: string; conf: string } | null>(null)
 const builtinMihomo = ref<MihomoConfiguration | null>(null)
 const loading = ref(true)
 const busy = ref(false)
@@ -174,7 +180,8 @@ const planTrafficGiB = ref('')
 const planNodeIDs = ref<number[]>([])
 const planRoutingBindings = ref<RoutingBindings>({})
 const planRoutingPresetID = ref(0)
-const planTemplateID = ref(0)
+const planMihomoTemplateID = ref(0)
+const planShadowrocketTemplateID = ref(0)
 const planFormError = ref('')
 
 const routingModalOpen = ref(false)
@@ -192,7 +199,8 @@ const templateModalOpen = ref(false)
 const editingTemplate = ref<SubscriptionTemplate | null>(null)
 const templateName = ref('')
 const templateEnabled = ref(true)
-const templateYAML = ref('dns:\n  enable: true')
+const templateType = ref<TemplateType>('mihomo')
+const templateContent = ref('dns:\n  enable: true')
 const templateFormError = ref('')
 const routingPreviewOpen = ref(false)
 const routingPreviewTitle = ref('')
@@ -201,7 +209,8 @@ const routingPreviewRules = ref<string[]>([])
 const routingPreviewProviders = ref<RoutingRuleProvider[]>([])
 const routingPreviewHelp = ref('')
 const templatePreviewOpen = ref(false)
-const templatePreviewYAML = ref('')
+const templatePreviewTitle = ref('')
+const templatePreviewContent = ref('')
 
 const userModalOpen = ref(false)
 const selectedUser = ref<Subscriber | null>(null)
@@ -217,6 +226,10 @@ const copiedUserURL = ref(false)
 const mihomoPreviewOpen = ref(false)
 const mihomoPreviewYAML = ref('')
 const copiedMihomoPreview = ref(false)
+const shadowrocketPreviewOpen = ref(false)
+const shadowrocketPreviewConf = ref('')
+const copiedShadowrocketPreview = ref(false)
+const personalShadowrocketCopiedID = ref<number | null>(null)
 
 const personalModalOpen = ref(false)
 const editingPersonal = ref<PersonalSubscription | null>(null)
@@ -226,6 +239,7 @@ const personalEnabled = ref(true)
 const personalClientName = ref('')
 const personalRoutingPresetID = ref(0)
 const personalMihomoTemplateID = ref(0)
+const personalShadowrocketTemplateID = ref(0)
 const personalNodes = ref<PersonalNode[]>([])
 const personalRoutingBindings = ref<RoutingBindings>({})
 const personalSources = ref<PersonalSource[]>([])
@@ -262,7 +276,16 @@ const selectablePersonalRoutingPresets = computed(() => routingPresets.value.fil
   value.enabled || value.id === editingPersonal.value?.routing_preset_id,
 ))
 const selectablePersonalTemplates = computed(() => templates.value.filter((value) =>
-  value.enabled || value.id === editingPersonal.value?.mihomo_template_id,
+  value.type === 'mihomo' && (value.enabled || value.id === editingPersonal.value?.mihomo_template_id),
+))
+const selectablePersonalShadowrocketTemplates = computed(() => templates.value.filter((value) =>
+  value.type === 'shadowrocket' && (value.enabled || value.id === editingPersonal.value?.shadowrocket_template_id),
+))
+const selectablePlanMihomoTemplates = computed(() => templates.value.filter((value) =>
+  value.type === 'mihomo' && (value.enabled || value.id === editingPlan.value?.mihomo_template_id),
+))
+const selectablePlanShadowrocketTemplates = computed(() => templates.value.filter((value) =>
+  value.type === 'shadowrocket' && (value.enabled || value.id === editingPlan.value?.shadowrocket_template_id),
 ))
 const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
 const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
@@ -337,13 +360,14 @@ async function loadAll() {
   routingPresets.value = routingResult.routing_presets
   templates.value = templateResult.templates
   if (props.role === 'admin') {
-    const [userResult, planResult, nodeResult, proxyResult, relayServerResult, builtinResult] = await Promise.all([
+    const [userResult, planResult, nodeResult, proxyResult, relayServerResult, builtinResult, builtinShadowrocketResult] = await Promise.all([
       api<{ users: Subscriber[] }>('/api/admin/subscription/users'),
       api<{ plans: Plan[] }>('/api/admin/subscription/plans'),
       api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes'),
       api<{ proxies: ProxyRecord[] }>('/api/admin/distributable-proxies'),
       api<{ servers: RelayServer[] }>('/api/admin/subscription/relay-servers'),
       api<MihomoConfiguration>('/api/admin/subscription/builtin-mihomo'),
+      api<{ name: string; conf: string }>('/api/admin/subscription/builtin-shadowrocket'),
     ])
     users.value = userResult.users
     plans.value = planResult.plans
@@ -351,6 +375,7 @@ async function loadAll() {
     proxies.value = proxyResult.proxies
     relayServers.value = relayServerResult.servers
     builtinMihomo.value = builtinResult
+    builtinShadowrocket.value = builtinShadowrocketResult
   }
 }
 
@@ -401,6 +426,7 @@ function openCreatePersonal() {
   personalClientName.value = ''
   personalRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
   personalMihomoTemplateID.value = 0
+  personalShadowrocketTemplateID.value = 0
   personalNodes.value = []
   personalRoutingBindings.value = {}
   personalSources.value = []
@@ -420,6 +446,7 @@ async function openEditPersonal(value: PersonalSubscription) {
     personalClientName.value = current.client_name
     personalRoutingPresetID.value = current.routing_preset_id
     personalMihomoTemplateID.value = current.mihomo_template_id ?? 0
+    personalShadowrocketTemplateID.value = current.shadowrocket_template_id ?? 0
     personalNodes.value = clonePersonalNodes(current.nodes)
     personalRoutingBindings.value = cloneRoutingBindings(current.routing_bindings)
     resetPersonalEditorUI()
@@ -565,6 +592,7 @@ async function savePersonal() {
       enabled: personalEnabled.value, client_name: personalClientName.value.trim(),
       routing_preset_id: personalRoutingPresetID.value,
       mihomo_template_id: personalMihomoTemplateID.value || null,
+      shadowrocket_template_id: personalShadowrocketTemplateID.value || null,
     }
     if (id !== undefined) {
       await api(`/api/personal-subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
@@ -644,6 +672,29 @@ async function deletePersonal(value: PersonalSubscription) {
 async function copyPersonalURL(value: PersonalSubscription) {
   await navigator.clipboard.writeText(value.subscription_auto_url)
   personalCopiedID.value = value.id
+}
+
+async function copyPersonalShadowrocketURL(value: PersonalSubscription) {
+  await run(async () => {
+    await navigator.clipboard.writeText(value.subscription_shadowrocket_url)
+    personalShadowrocketCopiedID.value = value.id
+  })
+}
+
+async function previewPersonalShadowrocket(value: PersonalSubscription) {
+  await run(async () => {
+    const response = await api<{ conf: string }>(`/api/personal-subscriptions/${value.id}/shadowrocket-preview`)
+    shadowrocketPreviewConf.value = response.conf
+    copiedShadowrocketPreview.value = false
+    shadowrocketPreviewOpen.value = true
+  })
+}
+
+async function copyShadowrocketPreview() {
+  await run(async () => {
+    await navigator.clipboard.writeText(shadowrocketPreviewConf.value)
+    copiedShadowrocketPreview.value = true
+  })
 }
 
 function showPersonalQR(value: PersonalSubscription) {
@@ -784,7 +835,8 @@ function openCreatePlan() {
   planNodeIDs.value = []
   planRoutingBindings.value = {}
   planRoutingPresetID.value = defaultRoutingPreset.value?.id ?? routingPresets.value.find((value) => value.enabled)?.id ?? 0
-  planTemplateID.value = 0
+  planMihomoTemplateID.value = 0
+  planShadowrocketTemplateID.value = 0
   planBindingEditorKey.value++
   planModalOpen.value = true
 }
@@ -798,7 +850,8 @@ function populatePlanForm(value: Plan) {
   planNodeIDs.value = value.nodes.map((node) => node.id)
   planRoutingBindings.value = cloneRoutingBindings(value.routing_bindings)
   planRoutingPresetID.value = value.routing_preset_id
-  planTemplateID.value = value.template_id ?? 0
+  planMihomoTemplateID.value = value.mihomo_template_id ?? 0
+  planShadowrocketTemplateID.value = value.shadowrocket_template_id ?? 0
 }
 
 function openEditPlan(value: Plan) {
@@ -859,7 +912,8 @@ function viewSelectedPlanRouting() {
 
 function viewBuiltinTemplate() {
   if (!builtinMihomo.value) return
-  templatePreviewYAML.value = builtinMihomo.value.yaml
+  templatePreviewTitle.value = '内置默认 Mihomo 模板'
+  templatePreviewContent.value = builtinMihomo.value.yaml
   templatePreviewOpen.value = true
 }
 
@@ -867,8 +921,9 @@ function copyBuiltinTemplate() {
   if (!builtinMihomo.value) return
   editingTemplate.value = null
   templateName.value = '内置默认 Mihomo 模板 - 副本'
+  templateType.value = 'mihomo'
   templateEnabled.value = true
-  templateYAML.value = builtinMihomo.value.yaml.trim()
+  templateContent.value = builtinMihomo.value.yaml.trim()
   templateFormError.value = ''
   templateModalOpen.value = true
 }
@@ -901,7 +956,8 @@ async function savePlan() {
     name, subscription_title: planSubscriptionTitle.value.trim(),
     enabled: planEnabled.value, traffic_limit_bytes: trafficLimit,
     routing_preset_id: planRoutingPresetID.value,
-    template_id: planTemplateID.value || null,
+    mihomo_template_id: planMihomoTemplateID.value || null,
+    shadowrocket_template_id: planShadowrocketTemplateID.value || null,
   }
 
   busy.value = true
@@ -1058,11 +1114,33 @@ async function deleteRoutingPreset(value: RoutingPreset) {
   })
 }
 
+function viewBuiltinShadowrocketTemplate() {
+  if (!builtinShadowrocket.value) return
+  templatePreviewTitle.value = builtinShadowrocket.value.name
+  templatePreviewContent.value = builtinShadowrocket.value.conf
+  templatePreviewOpen.value = true
+}
+
+function copyBuiltinShadowrocketTemplate() {
+  if (!builtinShadowrocket.value) return
+  openCreateTemplate()
+  templateName.value = '内置默认 Shadowrocket 模板 - 副本'
+  templateType.value = 'shadowrocket'
+  templateContent.value = builtinShadowrocket.value.conf
+}
+
+function resetTemplateContent() {
+  templateContent.value = templateType.value === 'shadowrocket'
+    ? builtinShadowrocket.value?.conf ?? ''
+    : 'dns:\n  enable: true'
+}
+
 function openCreateTemplate() {
   editingTemplate.value = null
   templateName.value = ''
+  templateType.value = 'mihomo'
   templateEnabled.value = true
-  templateYAML.value = 'dns:\n  enable: true'
+  templateContent.value = 'dns:\n  enable: true'
   templateFormError.value = ''
   templateModalOpen.value = true
 }
@@ -1071,22 +1149,23 @@ function openEditTemplate(value: SubscriptionTemplate) {
   editingTemplate.value = value
   templateName.value = value.name
   templateEnabled.value = value.enabled
-  templateYAML.value = value.config_yaml
+  templateType.value = value.type
+  templateContent.value = value.content
   templateFormError.value = ''
   templateModalOpen.value = true
 }
 
 async function saveTemplate() {
   templateFormError.value = ''
-  if (!templateName.value.trim() || !templateYAML.value.trim()) {
-    templateFormError.value = '名称和 YAML 不能为空'
+  if (!templateName.value.trim() || !templateContent.value.trim()) {
+    templateFormError.value = '名称和模板内容不能为空'
     return
   }
   await run(async () => {
     const id = editingTemplate.value?.id
     await api(id ? `/api/admin/subscription/templates/${id}` : '/api/admin/subscription/templates', {
       method: id ? 'PATCH' : 'POST',
-      body: JSON.stringify({ name: templateName.value.trim(), enabled: templateEnabled.value, config_yaml: templateYAML.value }),
+      body: JSON.stringify({ name: templateName.value.trim(), enabled: templateEnabled.value, type: templateType.value, content: templateContent.value }),
     })
     templateModalOpen.value = false
     await loadAll()
@@ -1238,9 +1317,11 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
         <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
         <p>Client：{{ value.client_name }}</p>
         <p>{{ value.nodes.length }} 个节点 · {{ value.routing_preset_name }}</p>
-        <p>Mihomo 模板：{{ value.mihomo_template_name || '内置默认 Mihomo 模板' }}</p>
+        <p>Mihomo：{{ value.mihomo_template_name || '内置默认' }} · Shadowrocket：{{ value.shadowrocket_template_name || '内置默认' }}</p>
         <div class="modal-actions">
           <n-button secondary @click="copyPersonalURL(value)">{{ personalCopiedID === value.id ? '已复制' : '复制链接' }}</n-button>
+          <n-button secondary @click="copyPersonalShadowrocketURL(value)">{{ personalShadowrocketCopiedID === value.id ? '已复制 Shadowrocket' : '复制 Shadowrocket URL' }}</n-button>
+          <n-button secondary @click="previewPersonalShadowrocket(value)">预览 Shadowrocket</n-button>
           <n-button secondary @click="showPersonalQR(value)">二维码</n-button>
           <n-button secondary @click="openEditPersonal(value)">编辑</n-button>
           <n-button type="error" secondary @click="deletePersonal(value)">删除</n-button>
@@ -1286,7 +1367,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
   </section>
 
   <section v-else class="subscription-section configuration-grid">
-    <p class="form-help">通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案与 Mihomo 模板。</p>
+    <p class="form-help">通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案，以及独立的 Mihomo、Shadowrocket 模板。</p>
     <n-card title="通用分流方案" :bordered="true">
       <p class="form-help">修改分流方案后，所有引用它的个人订阅和共享订阅会在客户端下一次刷新时使用最新内容。</p>
       <n-button type="primary" @click="openCreateRoutingPreset">新增分流方案</n-button>
@@ -1298,16 +1379,21 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
       </div>
     </n-card>
     <n-card title="客户端模板" :bordered="true">
-      <h3>Mihomo 模板</h3>
-      <p class="form-help">模板只负责 Mihomo 客户端基础配置，例如 DNS、sniffer、TUN、profile 等。proxies 由 Panel 动态生成，分流由所选分流方案提供。</p>
+      <h3>Mihomo / Shadowrocket</h3>
+      <p class="form-help">Mihomo 模板负责 DNS、sniffer、TUN、profile 等客户端基础配置。proxies 由 Panel 动态生成，分流由所选分流方案提供。</p>
+      <p class="form-help">Shadowrocket 使用完整 .conf 模板，动态区域由 Panel 注入；两种客户端模板不能混用。</p>
       <n-button type="primary" @click="openCreateTemplate">新增订阅模板</n-button>
       <div class="configuration-list">
         <div class="invitation-row builtin-configuration-row">
           <div><strong>内置默认 Mihomo 模板 <n-tag type="info" size="small">内置</n-tag></strong><span>完整客户端配置底稿</span></div>
           <div class="modal-actions"><n-button secondary size="small" @click="viewBuiltinTemplate">查看</n-button><n-button secondary size="small" @click="copyBuiltinTemplate">复制为自定义模板</n-button></div>
         </div>
+        <div class="invitation-row builtin-configuration-row">
+          <div><strong>内置默认 Shadowrocket 模板 <n-tag type="info" size="small">内置</n-tag></strong><span>完整 .conf 配置底稿</span></div>
+          <div class="modal-actions"><n-button secondary size="small" @click="viewBuiltinShadowrocketTemplate">查看</n-button><n-button secondary size="small" @click="copyBuiltinShadowrocketTemplate">复制为自定义模板</n-button></div>
+        </div>
         <div v-for="value in templates" :key="value.id" class="invitation-row">
-          <div><strong>{{ value.name }} <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong></div>
+          <div><strong>{{ value.name }} <n-tag size="small">{{ value.type === 'mihomo' ? 'Mihomo' : 'Shadowrocket' }}</n-tag> <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong></div>
           <div class="modal-actions"><n-button secondary size="small" @click="openEditTemplate(value)">编辑</n-button><n-button type="error" secondary size="small" @click="deleteTemplate(value)">删除</n-button></div>
         </div>
       </div>
@@ -1322,8 +1408,9 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <label><span>同名 Client</span><n-input v-model:value="personalClientName" maxlength="100" placeholder="admin" /><small class="form-help">在每个本地 Proxy 上实时精确匹配同名、当前用户可用且非订阅托管的 Client。</small></label>
     <div class="switch-row"><span>启用个人订阅</span><n-switch v-model:value="personalEnabled" /></div>
     <label><span>分流方案</span><select v-model.number="personalRoutingPresetID" class="settings-input"><option v-for="value in selectablePersonalRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select></label>
-    <h3>Mihomo 输出</h3>
+    <h3>客户端模板</h3>
     <label><span>Mihomo 模板</span><select v-model.number="personalMihomoTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in selectablePersonalTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
+    <label><span>Shadowrocket 模板</span><select v-model.number="personalShadowrocketTemplateID" class="settings-input"><option :value="0">内置默认 Shadowrocket 模板</option><option v-for="value in selectablePersonalShadowrocketTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
     <h3>节点</h3>
     <div class="modal-actions routing-add-actions">
       <n-button secondary attr-type="button" :aria-expanded="personalSourceAdderExpanded" @click="togglePersonalSourceAdder">{{ personalSourceAdderExpanded ? '收起添加' : '+ 添加节点' }}</n-button>
@@ -1407,16 +1494,16 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <h3>策略组</h3>
     <RoutingGroupEditor :model-value="routingPreviewGroups" readonly />
     <h3>远程规则集（Rule Providers）</h3>
-    <p class="form-help">这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。</p>
+    <p class="form-help">这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical / text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。</p>
     <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
     <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
-    <p class="form-help">Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。</p>
+    <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
     <div class="modal-actions"><n-button @click="routingPreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
-  <n-modal v-model:show="templatePreviewOpen"><n-card class="client-form-card subscription-form-card" title="内置默认 Mihomo 模板" closable @close="templatePreviewOpen = false">
+  <n-modal v-model:show="templatePreviewOpen"><n-card class="client-form-card subscription-form-card" :title="templatePreviewTitle" closable @close="templatePreviewOpen = false">
     <n-alert type="info">这里只包含客户端基础配置。真实 proxies 由 Panel 动态注入，策略组、规则源和 Rules 来自订阅选择的分流方案。</n-alert>
-    <n-input :value="templatePreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
+    <n-input :value="templatePreviewContent" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
     <div class="modal-actions"><n-button @click="templatePreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
@@ -1434,7 +1521,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <section class="routing-config-section">
       <div class="collapsible-section-header"><strong>远程规则集（Rule Providers）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingProvidersExpanded" @click="routingProvidersExpanded = !routingProvidersExpanded">{{ routingProvidersExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingProvidersExpanded" class="routing-config-scroll routing-config-scroll-providers">
-        <p class="form-help">这里只用于 RULE-SET 远程规则。DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP 等单条规则请直接写在 Rules 中。</p>
+        <p class="form-help">这里只用于 RULE-SET 远程规则。Shadowrocket 使用 classical / text 规则源；内置 Blackmatrix7 YAML 源会映射到对应 .list，其他 YAML 源不支持转换。</p>
         <div v-for="(provider, index) in routingProviders" :key="index" class="personal-node-editor">
           <label><span>名称</span><n-input :value="provider.name" placeholder="Google" @update:value="setRoutingProviderName(index, $event)" /></label>
           <label><span>URL</span><n-input v-model:value="provider.url" placeholder="https://example.com/rules.yaml" /></label>
@@ -1450,18 +1537,19 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <section class="routing-config-section">
       <div class="collapsible-section-header"><strong>规则（Rules）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingRulesExpanded" @click="routingRulesExpanded = !routingRulesExpanded">{{ routingRulesExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingRulesExpanded" class="routing-config-scroll routing-config-scroll-rules">
-        <p class="form-help">Rules 按从上到下顺序匹配，先命中先生效。支持 DOMAIN、DOMAIN-SUFFIX、GEOSITE、GEOIP、RULE-SET、MATCH 等规则。</p>
-        <label><span>Rules（一行一条 Mihomo rule）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
+        <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
+        <label><span>Rules（一行一条逻辑规则）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,OpenAI,🤖 AI&#10;GEOIP,CN,DIRECT,no-resolve&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
       </div>
     </section>
     <div class="modal-actions subscription-form-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="templateModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingTemplate ? '编辑 Mihomo 模板' : '新增 Mihomo 模板'" closable @close="templateModalOpen = false"><form class="auth-form" @submit.prevent="saveTemplate">
+  <n-modal v-model:show="templateModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingTemplate ? '编辑客户端模板' : '新增客户端模板'" closable @close="templateModalOpen = false"><form class="auth-form" @submit.prevent="saveTemplate">
     <n-alert v-if="templateFormError" type="error" closable @close="templateFormError = ''">{{ templateFormError }}</n-alert>
+    <label><span>模板类型</span><select v-model="templateType" class="settings-input" :disabled="Boolean(editingTemplate)" @change="resetTemplateContent"><option value="mihomo">Mihomo</option><option value="shadowrocket">Shadowrocket</option></select></label>
     <label><span>名称</span><n-input v-model:value="templateName" maxlength="100" /></label>
     <div class="switch-row"><span>启用模板</span><n-switch v-model:value="templateEnabled" /></div>
-    <label><span>Mihomo 基础配置 YAML</span><n-input v-model:value="templateYAML" type="textarea" :autosize="{ minRows: 12, maxRows: 24 }" /><small class="form-help">不能包含 proxies、proxy-groups、rule-providers 或 rules。</small></label>
+    <label><span>{{ templateType === 'mihomo' ? 'Mihomo 基础配置 YAML' : 'Shadowrocket 配置 .conf' }}</span><n-input v-model:value="templateContent" type="textarea" :autosize="{ minRows: 12, maxRows: 24 }" /><small v-if="templateType === 'mihomo'" class="form-help">不能包含 proxies、proxy-groups、rule-providers 或 rules。</small><small v-else class="form-help"><span v-pre>保留 [General]；[Proxy]、[Proxy Group]、[Rule] 分别只放 {{PROXIES}}、{{PROXY_GROUPS}}、{{RULES}}。可添加 [Host]、[URL Rewrite]。</span></small></label>
     <div class="modal-actions"><n-button @click="templateModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
@@ -1500,7 +1588,8 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <label><span>共享订阅名称</span><n-input v-model:value="planName" maxlength="100" /></label>
     <label><span>订阅显示名称</span><n-input v-model:value="planSubscriptionTitle" maxlength="100" /><small class="form-help">客户端导入订阅后显示的名称。留空则使用共享订阅名称。</small></label>
     <label><span>流量额度（GiB，留空不限）</span><input v-model="planTrafficGiB" class="settings-input" type="number" min="0" step="any" /></label>
-    <label><span>Mihomo 模板</span><select v-model.number="planTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in templates" :key="value.id" :value="value.id">{{ value.name }}</option></select><small class="form-help">模板只负责 DNS、sniffer 等客户端基础配置。</small></label>
+    <label><span>Mihomo 模板</span><select v-model.number="planMihomoTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in selectablePlanMihomoTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select><small class="form-help">模板只负责 DNS、sniffer 等客户端基础配置。</small></label>
+    <label><span>Shadowrocket 模板</span><select v-model.number="planShadowrocketTemplateID" class="settings-input"><option :value="0">内置默认 Shadowrocket 模板</option><option v-for="value in selectablePlanShadowrocketTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select><small class="form-help">模板配置 General、Host、URL Rewrite；节点和分流由 Panel 生成。</small></label>
     <label><span>分流方案</span><select v-model.number="planRoutingPresetID" class="settings-input"><option v-for="value in selectableRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select><small class="form-help">共享订阅直接引用分流方案，方案修改后无需重新保存共享订阅。</small></label>
     <div class="modal-actions"><n-button secondary attr-type="button" :disabled="!planRoutingPresetID" @click="viewSelectedPlanRouting">查看分流方案</n-button></div>
     <div class="switch-row"><span>启用共享订阅</span><n-switch v-model:value="planEnabled" /></div>
@@ -1532,6 +1621,11 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <div class="modal-actions"><n-button secondary attr-type="button" @click="copyUserURL">{{ copiedUserURL ? '已复制' : '复制订阅链接' }}</n-button><n-button secondary attr-type="button" @click="previewUserMihomo">预览 Mihomo</n-button><n-button secondary attr-type="button" @click="regenerateUserToken">重置订阅链接</n-button><n-button secondary attr-type="button" @click="resetUserTraffic">重置流量</n-button></div>
     <div class="modal-actions"><n-button @click="userModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
+
+  <n-modal v-model:show="shadowrocketPreviewOpen"><n-card class="client-form-card subscription-form-card" title="Shadowrocket 最终配置" closable @close="shadowrocketPreviewOpen = false">
+    <n-input :value="shadowrocketPreviewConf" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
+    <div class="modal-actions"><n-button secondary @click="copyShadowrocketPreview">{{ copiedShadowrocketPreview ? '已复制' : '复制 .conf' }}</n-button><n-button @click="shadowrocketPreviewOpen = false">关闭</n-button></div>
+  </n-card></n-modal>
 
   <n-modal v-model:show="mihomoPreviewOpen"><n-card class="client-form-card subscription-form-card" title="Mihomo 最终配置" closable @close="mihomoPreviewOpen = false">
     <n-input :value="mihomoPreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />

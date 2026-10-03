@@ -121,11 +121,53 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 		t.Fatalf("personal Mihomo preview = %d %s", preview.Code, preview.Body.String())
 	}
 
+	shadowrocketPath := personalPath(payload.Personal.SubscriptionShadowrocketURL)
+	rocket := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil)
+	if rocket.Code != http.StatusOK || !strings.Contains(rocket.Body.String(), "[General]") ||
+		!strings.Contains(rocket.Body.String(), "backup.example.com,8443") ||
+		rocket.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		rocket.Header().Get("Content-Disposition") != "inline; filename*=UTF-8''My%20Daily.conf" {
+		t.Fatalf("personal Shadowrocket status %d", rocket.Code)
+	}
+	rocketPreviewPath := "/api/personal-subscriptions/" + strconv.FormatInt(id, 10) + "/shadowrocket-preview"
+	rocketPreview := performRequest(t, handler, http.MethodGet, rocketPreviewPath, nil, adminCookie)
+	var rocketPayload map[string]string
+	if rocketPreview.Code != http.StatusOK || json.Unmarshal(rocketPreview.Body.Bytes(), &rocketPayload) != nil ||
+		rocketPayload["conf"] != rocket.Body.String() {
+		t.Fatal("Shadowrocket preview differs from public output")
+	}
+	for _, check := range []struct {
+		cookie *http.Cookie
+		status int
+	}{{nil, http.StatusUnauthorized}, {vipCookie, http.StatusNotFound}, {userCookie, http.StatusForbidden}} {
+		if response := performRequest(t, handler, http.MethodGet, rocketPreviewPath, nil, check.cookie); response.Code != check.status {
+			t.Fatalf("preview permission: %d want %d", response.Code, check.status)
+		}
+	}
+	rocketAuto := httptest.NewRecorder()
+	rocketRequest := httptest.NewRequest(http.MethodGet, personalPath(payload.Personal.SubscriptionAutoURL), nil)
+	rocketRequest.Header.Set("User-Agent", "Shadowrocket/2.2")
+	handler.ServeHTTP(rocketAuto, rocketRequest)
+	if rocketAuto.Code != http.StatusOK || rocketAuto.Body.String() != rocket.Body.String() {
+		t.Fatal("personal Shadowrocket auto detection")
+	}
+	if _, err := db.Exec(`UPDATE personal_subscription_groups SET enabled = 0 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if response := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); response.Code != http.StatusForbidden {
+		t.Fatal("disabled subscription is available")
+	}
+	if _, err := db.Exec(`UPDATE personal_subscription_groups SET enabled = 1 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
 	oldPath := personalPath(payload.Personal.SubscriptionBase64URL)
 	regenerated := performRequest(t, handler, http.MethodPost,
 		"/api/personal-subscriptions/"+strconv.FormatInt(id, 10)+"/token/regenerate", nil, adminCookie)
 	if regenerated.Code != http.StatusOK || json.Unmarshal(regenerated.Body.Bytes(), &payload) != nil {
 		t.Fatalf("regenerate personal token = %d %s", regenerated.Code, regenerated.Body.String())
+	}
+	if old := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); old.Code != http.StatusNotFound {
+		t.Fatal("old Shadowrocket token still available")
 	}
 	if old := performRequest(t, handler, http.MethodGet, oldPath, nil, nil); old.Code != http.StatusNotFound {
 		t.Fatalf("old personal token = %d %s", old.Code, old.Body.String())

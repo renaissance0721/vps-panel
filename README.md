@@ -15,7 +15,7 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
 | 外部节点 | 导入 VLESS / Shadowsocks 分享链接，管理 Landing 节点 |
 | Client 与流量 | 独立凭据、流量配额、到期控制、分享链接与二维码；Server / Client 流量统计 |
-| 订阅 | 个人订阅、订阅套餐与专用用户入口、Mihomo 配置、路由配置与绑定 |
+| 订阅 | 个人订阅、订阅套餐与专用用户入口、Mihomo / Shadowrocket 完整配置、路由配置与绑定 |
 | Agent | 一次性注册、自动重连、配置同步、诊断和官方 Agent 自升级 |
 | 管理 | 四种用户角色、列表拖拽排序、备份导入导出、审计日志 |
 
@@ -99,6 +99,25 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 
 Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有管理账号可见，私有仅对指定管理账号可见。
 `user` / `subscriber` 继续使用独立门户、Client 分配和订阅权限。
+
+## 订阅与客户端模板
+
+个人订阅地址前缀为 `/sub/personal/<token>`，共享订阅为 `/sub/<token>`；两者使用相同的输出后缀：
+
+| 后缀 | 输出 |
+| --- | --- |
+| 无后缀 | Base64 节点列表，保持原有兼容行为 |
+| `/mihomo` | Mihomo 完整 YAML 配置 |
+| `/shadowrocket` | Shadowrocket 完整 `.conf` 配置 |
+| `/auto` | 按 User-Agent 选择；Shadowrocket 返回 `.conf`，Clash / Mihomo / Clash Verge / FlClash / Stash 返回 YAML，其他客户端保留原有识别行为 |
+
+在个人订阅卡片中可复制 Shadowrocket 地址、预览最终配置。将该地址添加到 Shadowrocket 的配置文件 URL 导入入口；它包含节点、策略组和规则，不能按普通节点二维码导入。共享订阅用户可在自己的门户复制对应地址。
+
+管理员在现有“客户端模板”区域创建 Mihomo 或 Shadowrocket 模板。个人订阅与共享套餐分别选择两种模板，留空使用对应内置模板；停用模板的已有引用保留，生成时回退到对应内置模板。旧 Mihomo 模板与选择在升级时保留。
+
+Shadowrocket 模板保留 `[General]`，可添加 `[Host]`、`[URL Rewrite]`；`[Proxy]`、`[Proxy Group]`、`[Rule]` 必须分别包含唯一的独立行 `{{PROXIES}}`、`{{PROXY_GROUPS}}`、`{{RULES}}`，不能放入旧节点或规则。策略组和规则统一来自分流方案与节点绑定。
+
+当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组。Shadowrocket 的 `RULE-SET` 使用远程 URL；内置 Blackmatrix7 源映射到其对应 `.list`，自定义源应使用兼容的 classical / text 列表。未知 YAML 源、GEOSITE 等不兼容规则会返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
 
 ## 项目结构
 

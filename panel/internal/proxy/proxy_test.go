@@ -141,3 +141,22 @@ func TestProxyDeleteCascadesClientsAndServerDeleteCascadesProxy(t *testing.T) {
 	}
 	assertCounts(t, db, 0, 0)
 }
+
+func TestProxyDeleteCascadesUserProxyOrder(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	if _, err := db.Exec(`INSERT INTO users(id, username, password_hash, role, created_at, updated_at)
+		VALUES (1, 'admin', 'hash', 'admin', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	value := createRealityProxy(t, service, serverID, 443, "Ordered")
+	if _, err := db.Exec(`INSERT INTO user_proxy_order(user_id, proxy_id, position) VALUES (1, ?, 1)`, value.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Delete(t.Context(), value.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM user_proxy_order WHERE proxy_id = ?`, value.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("Proxy order rows after delete = %d, %v", count, err)
+	}
+}

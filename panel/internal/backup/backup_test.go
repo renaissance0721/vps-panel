@@ -63,6 +63,43 @@ func TestCreateUpgradeSnapshotIncludesCommittedWALWithoutMigrating(t *testing.T)
 	}
 }
 
+func TestUpgradeSnapshotRejectsForeignKeyViolationWithDetails(t *testing.T) {
+	dataDir := t.TempDir()
+	db, err := database.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users(id, username, password_hash, role, created_at, updated_at)
+		VALUES (1, 'admin', 'hash', 'admin', 1, 1)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_relay_order(rowid, user_id, relay_id, position) VALUES (10, 1, 11, 10)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "panel.db.pre-upgrade")
+	err = backup.CreateUpgradeSnapshot(t.Context(), dataDir, destination)
+	if err == nil {
+		t.Fatal("upgrade snapshot accepted foreign key violation")
+	}
+	for _, detail := range []string{"user_relay_order", "rowid: 10", "column: relay_id", "value: 11", "parent: relays(id)", "total violations: 1"} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("upgrade snapshot error %q does not include %q", err, detail)
+		}
+	}
+	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid snapshot remained: %v", statErr)
+	}
+}
+
 func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	sourceDir := filepath.Join(t.TempDir(), "var", "lib", "vps-panel", "panel")
 	source, err := database.Open(sourceDir)

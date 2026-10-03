@@ -17,6 +17,7 @@ readonly CONFIG_FILE="/etc/vps-panel/panel/environment"
 readonly LEGACY_CONFIG_FILE="${CONFIG_ROOT}/environment"
 readonly SERVICE_FILE="/etc/systemd/system/vps-panel.service"
 readonly COMMAND_PATH="/usr/local/bin/vp"
+readonly DB_TOOL_PATH="/opt/vps-panel/vps-panel-db-tool"
 readonly CADDY_FILE="/etc/caddy/Caddyfile"
 readonly CADDY_SNIPPET="/etc/caddy/vps-panel.caddy"
 readonly CADDY_IMPORT="import /etc/caddy/vps-panel.caddy"
@@ -504,7 +505,7 @@ done
 for directory in "$ROOT_DIR" "$INSTALL_DIR" "$DATA_ROOT" "$DATA_DIR" "$CONFIG_ROOT" "$CONFIG_DIR"; do
   [[ ! -L "$directory" ]] || fail "${directory} must not be a symbolic link"
 done
-for owned_file in "$CONFIG_FILE" "$LEGACY_CONFIG_FILE" "$SERVICE_FILE" "$COMMAND_PATH"; do
+for owned_file in "$CONFIG_FILE" "$LEGACY_CONFIG_FILE" "$SERVICE_FILE" "$COMMAND_PATH" "$DB_TOOL_PATH"; do
   [[ ! -L "$owned_file" ]] || fail "${owned_file} must not be a symbolic link"
 done
 if [[ -d "$INSTALL_DIR" && ! -f "$INSTALL_MARKER" ]]; then
@@ -579,7 +580,20 @@ migrate_legacy_native_data
 if [[ "$had_existing_install" -eq 1 && -f "${DATA_DIR}/panel.db" ]]; then
   upgrade_db_snapshot="${temporary_dir}/panel.db.pre-upgrade"
   log "Creating a consistent pre-upgrade SQLite snapshot..."
-  PANEL_DATA_DIR="$DATA_DIR" "${staged_dir}/vps-panel" database-backup-for-upgrade "$upgrade_db_snapshot"
+  snapshot_status=0
+  PANEL_DATA_DIR="$DATA_DIR" "${staged_dir}/vps-panel" database-backup-for-upgrade "$upgrade_db_snapshot" || snapshot_status=$?
+  if [[ "$snapshot_status" -ne 0 ]]; then
+    if [[ "$snapshot_status" -eq 2 ]]; then
+      log "Database foreign key or integrity check failed. The Panel release and database were not replaced."
+      install -d -m 0755 "$ROOT_DIR" /usr/local/bin
+      install -m 0755 "${staged_dir}/vps-panel" "$DB_TOOL_PATH"
+      install -m 0755 "${temporary_dir}/vp" "$COMMAND_PATH"
+      log "Installed the standalone database tool and updated vp command; the running Panel binary and database remain unchanged."
+      log "Run 'vp db check' to inspect database health."
+      log "Run 'vp db repair' for conservative orphan-order cleanup; business rows are never repaired automatically."
+    fi
+    fail "pre-upgrade database snapshot failed"
+  fi
 fi
 if [[ "$legacy_native_install" -eq 1 ]]; then
   install -d -m 0755 "$backup_dir"
@@ -613,6 +627,7 @@ fi
 
 install -d -m 0755 /usr/local/bin
 install -m 0755 "${temporary_dir}/vp" "$COMMAND_PATH"
+rm -f -- "$DB_TOOL_PATH"
 rollback_needed=0
 if [[ "$legacy_native_install" -eq 1 ]]; then
   rm -f -- "$LEGACY_CONFIG_FILE" || log "Could not remove the old Panel environment file"

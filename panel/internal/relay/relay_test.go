@@ -97,6 +97,38 @@ func TestRelayCRUDAndDesiredState(t *testing.T) {
 	}
 }
 
+func TestRelayDeleteCascadesUserRelayOrder(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	insertRelayTestServer(t, db, 1, "Source", "203.0.113.10")
+	if _, err := db.Exec(`INSERT INTO users(id, username, password_hash, role, created_at, updated_at)
+		VALUES (1, 'admin', 'hash', 'admin', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db)
+	created, _, err := service.Create(t.Context(), CreateInput{
+		ServerID: 1, Name: "Ordered relay", ListenPort: 9502,
+		TargetType: TargetManual, TargetHost: "example.com", TargetPort: 443,
+		Network: NetworkTCP, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_relay_order(user_id, relay_id, position) VALUES (1, ?, 1)`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Delete(t.Context(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM user_relay_order WHERE relay_id = ?`, created.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("Relay order rows after delete = %d, %v", count, err)
+	}
+}
+
 func TestRelayEntryHostChangesShareEndpointWithoutChangingDesiredTarget(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

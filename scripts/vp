@@ -10,6 +10,7 @@ readonly CONFIG_FILE="${CONFIG_DIR}/environment"
 readonly SERVICE_FILE="/etc/systemd/system/vps-panel.service"
 readonly SERVICE_NAME="vps-panel.service"
 readonly COMMAND_PATH="/usr/local/bin/vp"
+readonly DB_TOOL_PATH="/opt/vps-panel/vps-panel-db-tool"
 readonly CADDY_FILE="/etc/caddy/Caddyfile"
 readonly CADDY_SNIPPET="/etc/caddy/vps-panel.caddy"
 readonly CADDY_IMPORT="import /etc/caddy/vps-panel.caddy"
@@ -33,6 +34,22 @@ current_domain() {
     domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$CONFIG_FILE" | tail -n 1)"
   fi
   printf '%s\n' "${domain:-:80}"
+}
+
+panel_data_dir() {
+  local data_dir=""
+  if [[ -f "$CONFIG_FILE" ]]; then
+    data_dir="$(sed -n 's/^PANEL_DATA_DIR=//p' "$CONFIG_FILE" | tail -n 1)"
+  fi
+  printf '%s\n' "${data_dir:-$DATA_DIR}"
+}
+
+database_binary() {
+  if [[ -x "$DB_TOOL_PATH" ]]; then
+    printf '%s\n' "$DB_TOOL_PATH"
+    return
+  fi
+  printf '%s\n' "${INSTALL_DIR}/vps-panel"
 }
 
 wait_for_panel() {
@@ -110,6 +127,39 @@ restart_panel() {
   printf '[vps-panel] Panel restarted successfully.\n'
 }
 
+check_database() {
+  local binary=""
+  local data_dir=""
+  binary="$(database_binary)"
+  data_dir="$(panel_data_dir)"
+  PANEL_DATA_DIR="$data_dir" "$binary" database-health-check
+}
+
+repair_database() {
+  local binary=""
+  local data_dir=""
+  local repair_status=0
+  local was_active=0
+
+  binary="$(database_binary)"
+  data_dir="$(panel_data_dir)"
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    was_active=1
+    printf '[vps-panel] Stopping Panel for transactional database repair...\n'
+    systemctl stop "$SERVICE_NAME"
+  fi
+  PANEL_DATA_DIR="$data_dir" "$binary" database-health-repair || repair_status=$?
+  if [[ "$was_active" -eq 1 ]]; then
+    printf '[vps-panel] Starting Panel...\n'
+    systemctl start "$SERVICE_NAME"
+    if ! wait_for_panel; then
+      systemctl status "$SERVICE_NAME" --no-pager >&2 || true
+      fail "Panel did not become healthy after database repair"
+    fi
+  fi
+  return "$repair_status"
+}
+
 remove_caddy_configuration() {
   local filtered_caddyfile=""
 
@@ -171,6 +221,8 @@ Usage: vp [command]
 
 Commands:
   update      Download and install the latest GitHub Release
+  db check    Check SQLite integrity, foreign keys, and business references
+  db repair   Back up SQLite and repair safe orphan ordering rows
   domain      Change the Panel domain or switch to IP:8080 access
   status      Show systemd service status
   logs        Follow Panel logs from journald
@@ -242,6 +294,14 @@ require_installation
 case "${1:-menu}" in
   menu) menu ;;
   update) update_panel ;;
+  db)
+    [[ $# -eq 2 ]] || fail "usage: vp db check|repair"
+    case "$2" in
+      check) check_database ;;
+      repair) repair_database ;;
+      *) fail "usage: vp db check|repair" ;;
+    esac
+    ;;
   domain) change_domain ;;
   status) show_status ;;
   logs) show_logs ;;

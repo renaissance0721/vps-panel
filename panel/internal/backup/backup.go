@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/renaissance0721/vps-panel/panel/internal/databasehealth"
 	"github.com/renaissance0721/vps-panel/panel/internal/version"
 	_ "modernc.org/sqlite"
 )
@@ -56,8 +57,11 @@ func CreateUpgradeSnapshot(ctx context.Context, dataDir, destination string) err
 	if err != nil {
 		return fmt.Errorf("open upgrade database: %w", err)
 	}
-	db.SetMaxOpenConns(1)
 	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("configure upgrade snapshot: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("configure upgrade snapshot: %w", err)
 	}
@@ -427,6 +431,9 @@ func ValidateDatabase(ctx context.Context, path string) error {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
 		return err
 	}
@@ -470,25 +477,23 @@ func validateSQLiteIntegrity(ctx context.Context, path string) error {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
 		return err
 	}
-	var result string
-	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil || result != "ok" {
+	integrity, err := databasehealth.IntegrityCheck(ctx, db)
+	if err != nil || len(integrity) != 1 || integrity[0] != "ok" {
 		return fmt.Errorf("SQLite integrity_check failed: %w", ErrInvalidBackup)
 	}
-	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	foreignKeys, err := databasehealth.ForeignKeyCheck(ctx, db, databasehealth.MaxForeignKeyDetails)
 	if err != nil {
 		return err
 	}
-	if rows.Next() {
-		rows.Close()
-		return fmt.Errorf("SQLite foreign_key_check failed: %w", ErrInvalidBackup)
+	if foreignKeys.Total != 0 {
+		return fmt.Errorf("SQLite foreign_key_check failed:\n%s\n%w",
+			databasehealth.FormatForeignKeyViolations(foreignKeys), ErrInvalidBackup)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
 	return nil
 }

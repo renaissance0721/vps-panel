@@ -139,6 +139,8 @@ vps-panel/
 | 命令 | 用途 |
 | --- | --- |
 | `sudo vp update` | 更新到最新 Release |
+| `sudo vp db check` | 检查 SQLite 完整性、外键和关键业务引用，发现问题时返回非零状态 |
+| `sudo vp db repair` | 先创建一致快照，再事务化清理纯排序表 orphan；不修改 Proxy、Relay、订阅等业务数据 |
 | `sudo vp domain` | 修改 Panel 域名或切换为 IP 访问 |
 | `sudo vp status` | 查看 Panel 服务状态 |
 | `sudo vp logs` | 查看 Panel 日志 |

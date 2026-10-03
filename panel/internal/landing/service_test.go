@@ -91,6 +91,24 @@ func TestLandingServiceCreateNameSelection(t *testing.T) {
 	}
 }
 
+func TestLandingDeleteCascadesUserLandingOrder(t *testing.T) {
+	service, ownerID, _ := newLandingTestService(t)
+	value, err := service.Create(t.Context(), ownerID, CreateInput{URI: "vless://uuid@example.com:443#Ordered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`INSERT INTO user_landing_order(user_id, landing_id, position) VALUES (?, ?, 1)`, ownerID, value.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(t.Context(), value.ID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := service.db.QueryRow(`SELECT COUNT(*) FROM user_landing_order WHERE landing_id = ?`, value.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("Landing order rows after delete = %d, %v", count, err)
+	}
+}
+
 func TestLandingServiceUpdateProtocolReferencesAndEndpointChanges(t *testing.T) {
 	service, ownerID, _ := newLandingTestService(t)
 	value, err := service.Create(t.Context(), ownerID, CreateInput{

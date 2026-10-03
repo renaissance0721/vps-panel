@@ -259,6 +259,7 @@ Server 的公开可见性不赋予普通用户管理权限。具体敏感操作�
 ## 15. Database / Migration / Backup
 
 SQLite 使用单连接、外键和 WAL。schema 定义见 [schema.go](panel/internal/database/schema.go)，版本迁移入口见 [versioned_migrations.go](panel/internal/database/versioned_migrations.go)。
+`vp db check` 通过不执行 migration 的只读入口检查 SQLite 完整性、外键和关键业务引用；`vp db repair` 停止 Panel 后先用 `VACUUM INTO` 创建私有一致快照，只在事务内清理纯排序表 orphan，并在提交前复检完整性和外键。业务表异常必须人工处理。升级预检因数据库校验失败时，installer 保留独立诊断 binary 并更新 `vp`，使旧 Panel 回滚后仍可执行这两个命令；升级成功后删除该临时 binary。
 旧库兼容转换由现有迁移代码衔接；版本号以源码为准，不在文档维护迁移历史清单。
 
 数据库改动必须同时覆盖：

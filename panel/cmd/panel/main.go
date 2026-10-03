@@ -39,7 +39,36 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := backup.CreateUpgradeSnapshot(ctx, envOrDefault("PANEL_DATA_DIR", "data"), os.Args[2]); err != nil {
-			log.Printf("create upgrade database snapshot: %v", err)
+			fmt.Fprintf(os.Stderr, "create upgrade database snapshot: %v\n", err)
+			if errors.Is(err, backup.ErrInvalidBackup) {
+				os.Exit(2)
+			}
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "database-health-check" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		healthy, err := runDatabaseHealthCheck(ctx, envOrDefault("PANEL_DATA_DIR", "data"), os.Stdout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "database health check: %v\n", err)
+			os.Exit(2)
+		}
+		if !healthy {
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "database-health-repair" {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		healthy, err := runDatabaseRepair(ctx, envOrDefault("PANEL_DATA_DIR", "data"), os.Stdout, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "database repair: %v\n", err)
+			os.Exit(1)
+		}
+		if !healthy {
 			os.Exit(1)
 		}
 		return

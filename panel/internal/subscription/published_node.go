@@ -363,6 +363,38 @@ func (s *Service) reconcilePublishedNodeSubscribersTx(
 	return nil
 }
 
+// ReconcilePublishedNodesSubscribersTx reconciles subscribers after callers
+// disable published nodes inside an existing transaction. It deliberately does
+// not bump server versions so the caller can combine all dependency changes
+// into one mutation per affected server.
+func (s *Service) ReconcilePublishedNodesSubscribersTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeIDs []int64,
+	now time.Time,
+) ([]int64, error) {
+	affected := make(map[int64]struct{})
+	seen := make(map[int64]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		if nodeID <= 0 {
+			continue
+		}
+		if _, exists := seen[nodeID]; exists {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		if err := s.reconcilePublishedNodeSubscribersTx(ctx, tx, nodeID, now.UTC().Truncate(time.Second), affected); err != nil {
+			return nil, err
+		}
+	}
+	serverIDs := make([]int64, 0, len(affected))
+	for serverID := range affected {
+		serverIDs = append(serverIDs, serverID)
+	}
+	sort.Slice(serverIDs, func(i, j int) bool { return serverIDs[i] < serverIDs[j] })
+	return serverIDs, nil
+}
+
 func (s *Service) DeletePublishedNode(ctx context.Context, id int64) (*relay.Mutation, error) {
 	now := s.now().UTC().Truncate(time.Second)
 	tx, err := s.db.BeginTx(ctx, nil)

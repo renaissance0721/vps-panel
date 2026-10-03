@@ -41,6 +41,16 @@ test('中转支持选择外部节点并按协议推荐 Network', async () => {
   assert.doesNotMatch(view, />导入新落地</)
 })
 
+test('中转列表和详情显示目标不可用原因并保留处理入口', async () => {
+  const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
+  assert.match(view, /target_unavailable_reason/)
+  assert.match(view, /目标不可用/)
+  assert.match(view, /可编辑更换目标、保持禁用或删除该中转/)
+  assert.match(view, /openEdit\(value\)/)
+  assert.match(view, /toggleRelay\(value\)/)
+  assert.match(view, /removeRelay\(value\)/)
+})
+
 test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
   const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
   const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')

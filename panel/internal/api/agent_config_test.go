@@ -107,6 +107,177 @@ func TestAgentConfigIncludesOnlyEnabledTypedRelays(t *testing.T) {
 	}
 }
 
+func TestAgentConfigBuildFailureMarksSyncFailed(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	created, err := serverstore.NewService(db).Create(t.Context(), "Invalid desired state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), created.EnrollmentToken, "v0.79.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO proxies
+		(server_id, name, protocol, listen_port, enabled, config_json, created_at, updated_at)
+		VALUES (?, 'Invalid Proxy', 'vless', 443, 1, '{', 1, 1)`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewHandler(db, t.TempDir())
+	response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, registered.Token)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("GET invalid desired state = %d, %s", response.Code, response.Body.String())
+	}
+	var status, message string
+	if err := db.QueryRow(`SELECT config_sync_status, config_sync_error FROM agents WHERE id = ?`, registered.ID).Scan(&status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if status != agentcontrol.ConfigSyncFailed || message != "Panel 无法生成 desired state" {
+		t.Fatalf("config sync failure = status %q, message %q", status, message)
+	}
+}
+
+func TestAgentConfigAutoDisablesDirtyRelayToArchivedTargetWithoutReturningConflict(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	servers := serverstore.NewService(db)
+	source, err := servers.Create(t.Context(), "Dirty Relay Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := servers.Create(t.Context(), "Archived Target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), source.EnrollmentToken, "v0.79.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyResult, err := db.Exec(`INSERT INTO proxies
+		(server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		VALUES (?, 'Archived Proxy', 'vless', 443, 'manual', 'target.example.com', 1, '{}', 1, 1)`, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyID, _ := proxyResult.LastInsertId()
+	clientResult, err := db.Exec(`INSERT INTO clients (proxy_id, name, credential_json, created_at, updated_at)
+		VALUES (?, 'Client', '{}', 1, 1)`, proxyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID, _ := clientResult.LastInsertId()
+	if _, err := db.Exec(`INSERT INTO relays
+		(server_id, name, listen_address, listen_port, target_type, target_proxy_id, target_client_id, network, enabled, created_at, updated_at)
+		VALUES (?, 'Dirty Relay', '0.0.0.0', 9502, 'proxy', ?, ?, 'tcp', 1, 1, 1)`, source.ID, proxyID, clientID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE servers SET archived_at = 1, status = 'offline' WHERE id = ?`, target.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	response := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, agent.Token)
+	var state agentDesiredStateResponse
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil {
+		t.Fatalf("dirty Relay config = %d, %s", response.Code, response.Body.String())
+	}
+	if len(state.Realm.Relays) != 0 || state.Version != 2 {
+		t.Fatalf("dirty Relay desired state = %+v", state)
+	}
+	var enabled int
+	var syncStatus string
+	if err := db.QueryRow(`SELECT relays.enabled, agents.config_sync_status
+		FROM relays JOIN agents ON agents.server_id = relays.server_id WHERE relays.name = 'Dirty Relay'`).Scan(&enabled, &syncStatus); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 || syncStatus != agentcontrol.ConfigSyncPending {
+		t.Fatalf("dirty Relay reconciliation = enabled %d, status %q", enabled, syncStatus)
+	}
+}
+
+func TestForceArchiveNotifiesCrossServerRelaySource(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	servers := serverstore.NewService(db)
+	source, err := servers.Create(t.Context(), "Online Relay Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := servers.Create(t.Context(), "Offline Target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := agentcontrol.NewService(db, time.Now).RegisterAgent(t.Context(), source.EnrollmentToken, "v0.79.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyResult, err := db.Exec(`INSERT INTO proxies
+		(server_id, name, protocol, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
+		VALUES (?, 'Target', 'vless', 443, 'manual', 'target.example.com', 1, '{}', 1, 1)`, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyID, _ := proxyResult.LastInsertId()
+	clientResult, err := db.Exec(`INSERT INTO clients (proxy_id, name, credential_json, created_at, updated_at) VALUES (?, 'Client', '{}', 1, 1)`, proxyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID, _ := clientResult.LastInsertId()
+	if _, err := db.Exec(`INSERT INTO relays
+		(server_id, name, listen_address, listen_port, target_type, target_proxy_id, target_client_id, network, enabled, created_at, updated_at)
+		VALUES (?, 'Cross Relay', '0.0.0.0', 9502, 'proxy', ?, ?, 'tcp', 1, 1, 1)`, source.ID, proxyID, clientID); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, t.TempDir())
+	initialized := performRequest(t, handler, http.MethodPost, "/api/auth/initialize", map[string]string{
+		"username": "admin", "password": "strong-password",
+	}, nil)
+	if initialized.Code != http.StatusCreated {
+		t.Fatalf("initialize = %d, %s", initialized.Code, initialized.Body.String())
+	}
+	panel := httptest.NewServer(handler)
+	defer panel.Close()
+	connection, response, err := websocket.Dial(t.Context(), panel.URL+"/api/agent/ws", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + registered.Token}},
+	})
+	if err != nil {
+		t.Fatalf("connect source Agent: %v, response=%+v", err, response)
+	}
+	defer connection.CloseNow()
+	waitForServerStatus(t, servers, source.ID, serverstore.StatusOnline)
+	archived := performRequest(t, handler, http.MethodDelete,
+		"/api/servers/"+strconv.FormatInt(target.ID, 10)+"/force", nil, initialized.Result().Cookies()[0])
+	if archived.Code != http.StatusNoContent {
+		t.Fatalf("force archive target = %d, %s", archived.Code, archived.Body.String())
+	}
+	readContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, message, err := connection.Read(readContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notification struct {
+		Type    string `json:"type"`
+		Version int64  `json:"version"`
+	}
+	if json.Unmarshal(message, &notification) != nil || notification.Type != "config_changed" || notification.Version != 2 {
+		t.Fatalf("dependency notification = %s", message)
+	}
+	config := performAgentRequest(t, handler, http.MethodGet, "/api/agent/config", nil, registered.Token)
+	if config.Code != http.StatusOK || strings.Contains(config.Body.String(), `"id"`) {
+		t.Fatalf("source config after archive = %d, %s", config.Code, config.Body.String())
+	}
+}
+
 func TestAgentConfigPurgeUsesRowExistenceIncludingDisabledRows(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

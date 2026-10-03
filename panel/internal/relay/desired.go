@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -26,7 +27,8 @@ func (s *Service) ListDesired(ctx context.Context, query interface {
 	desired := make([]DesiredRelay, 0, len(values))
 	for _, value := range values {
 		if !value.TargetAddressReady {
-			return nil, fmt.Errorf("%w: relay %d", ErrTargetUnavailable, value.ID)
+			log.Printf("skip unavailable Relay %d (%s) on server %d: %s", value.ID, value.Name, serverID, value.TargetUnavailableReason)
+			continue
 		}
 		desired = append(desired, DesiredRelay{
 			ID: value.ID, ListenAddress: value.ListenAddress, ListenPort: value.ListenPort,
@@ -34,6 +36,61 @@ func (s *Service) ListDesired(ctx context.Context, query interface {
 		})
 	}
 	return desired, nil
+}
+
+type UnavailableRelay struct {
+	ID     int64
+	Name   string
+	Reason string
+}
+
+func (s *Service) ReconcileUnavailableDesiredTx(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) ([]UnavailableRelay, []int64, error) {
+	values, err := list(ctx, tx, `WHERE relays.server_id = ? AND relays.enabled = 1 AND source.archived_at IS NULL ORDER BY relays.id`, serverID)
+	if err != nil {
+		return nil, nil, err
+	}
+	now = now.UTC().Truncate(time.Second)
+	unavailable := make([]UnavailableRelay, 0)
+	publishedNodeIDs := make([]int64, 0)
+	for _, value := range values {
+		if value.TargetAddressReady {
+			continue
+		}
+		reason := value.TargetUnavailableReason
+		if reason == "" {
+			reason = ErrTargetUnavailable.Error()
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM subscription_published_nodes WHERE relay_id = ? AND enabled = 1 ORDER BY id`, value.ID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list unavailable Relay subscription nodes: %w", err)
+		}
+		for rows.Next() {
+			var nodeID int64
+			if err := rows.Scan(&nodeID); err != nil {
+				rows.Close()
+				return nil, nil, fmt.Errorf("scan unavailable Relay subscription node: %w", err)
+			}
+			publishedNodeIDs = append(publishedNodeIDs, nodeID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("iterate unavailable Relay subscription nodes: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, nil, fmt.Errorf("close unavailable Relay subscription nodes: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE relays SET enabled = 0, updated_at = ? WHERE id = ? AND enabled = 1`, now.Unix(), value.ID); err != nil {
+			return nil, nil, fmt.Errorf("disable unavailable Relay: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE subscription_published_nodes SET enabled = 0, updated_at = ? WHERE relay_id = ? AND enabled = 1`, now.Unix(), value.ID); err != nil {
+			return nil, nil, fmt.Errorf("disable unavailable Relay subscription node: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes SET enabled = 0, updated_at = ? WHERE source_type = 'relay' AND source_id = ? AND enabled = 1`, now.Unix(), value.ID); err != nil {
+			return nil, nil, fmt.Errorf("disable unavailable Relay personal subscription node: %w", err)
+		}
+		unavailable = append(unavailable, UnavailableRelay{ID: value.ID, Name: value.Name, Reason: reason})
+	}
+	return unavailable, publishedNodeIDs, nil
 }
 
 func (s *Service) BumpForProxyTarget(ctx context.Context, proxyID, excludeServerID int64) ([]Mutation, error) {

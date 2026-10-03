@@ -72,6 +72,7 @@ type Relay struct {
 	TargetHost              string
 	TargetPort              int
 	TargetAddressReady      bool
+	TargetUnavailableReason string
 	Network                 string
 	Enabled                 bool
 	CreatedAt               time.Time

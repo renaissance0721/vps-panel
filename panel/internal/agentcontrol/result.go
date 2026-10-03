@@ -72,3 +72,35 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 	}
 	return nil
 }
+
+func (s *Service) RecordDesiredStateFailure(ctx context.Context, agentID, serverID int64, message string) error {
+	if message == "" || len(message) > maxConfigSyncErrorBytes {
+		return ErrInvalidConfigResult
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin desired state failure: %w", err)
+	}
+	defer tx.Rollback()
+	var version int64
+	if err := tx.QueryRowContext(ctx, `SELECT servers.desired_state_version
+		FROM agents JOIN servers ON servers.id = agents.server_id
+		WHERE agents.id = ? AND agents.server_id = ? AND servers.archived_at IS NULL`, agentID, serverID).Scan(&version); errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidAgentToken
+	} else if err != nil {
+		return fmt.Errorf("read desired state failure version: %w", err)
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	if _, err := tx.ExecContext(ctx, `UPDATE agents
+		SET config_sync_status = ?, config_sync_error = ?, config_synced_at = ?, updated_at = ?
+		WHERE id = ? AND server_id = ?`, ConfigSyncFailed, message, now.Unix(), now.Unix(), agentID, serverID); err != nil {
+		return fmt.Errorf("save desired state failure: %w", err)
+	}
+	if err := operation.RecordReceiptTx(ctx, tx, serverID, version, ConfigSyncFailed, message, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit desired state failure: %w", err)
+	}
+	return nil
+}

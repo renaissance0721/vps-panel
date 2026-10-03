@@ -169,6 +169,7 @@ function diagnosticCheckTitle(check: DiagnosticCheck) {
     'agent.connected': 'Agent 在线',
     'config.version': '配置版本',
     'config.sync': '最近一次配置同步',
+    'config.desired_state': 'Desired State 获取',
     'xray.service': 'Xray service',
     'xray.config': 'Xray 当前配置',
     'realm.service': 'Realm service',

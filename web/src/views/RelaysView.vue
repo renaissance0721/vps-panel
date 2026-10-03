@@ -92,6 +92,7 @@ type RelayRecord = {
   target_host?: string
   target_port?: number
   target_address_ready: boolean
+  target_unavailable_reason?: string
   network: RelayNetwork
   enabled: boolean
   subscription_published: boolean
@@ -695,7 +696,9 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
             <td>{{ value.target_client_name || '—' }}</td>
             <td>{{ relayNetworkLabel(value.network) }}</td>
             <td>
-              <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
+              <n-tag v-if="!value.target_address_ready" type="error" size="small">目标不可用</n-tag>
+              <n-tag v-else :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
+              <small v-if="!value.target_address_ready" class="secondary-text">{{ value.target_unavailable_reason || '中转目标不可用' }}</small>
             </td>
             <td class="server-actions">
               <div class="server-action-buttons">
@@ -804,7 +807,8 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <div><dt>目标</dt><dd>{{ selectedRelay.owner_username && selectedRelay.target_type === 'manual' ? '自定义落地' : relayTargetLabel(selectedRelay) }}</dd></div><div><dt>Network</dt><dd>{{ relayNetworkLabel(selectedRelay.network) }}</dd></div>
         <div v-if="selectedRelay.target_type === 'landing'"><dt>外部节点</dt><dd>{{ selectedRelay.target_landing_name }}</dd></div><div v-if="selectedRelay.target_type === 'landing'"><dt>协议</dt><dd>{{ selectedRelay.target_landing_protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</dd></div>
         <div v-if="selectedRelay.target_type === 'landing'"><dt>可见性</dt><dd>{{ selectedRelay.target_landing_visibility === 'public' ? '公开' : '私有' }}</dd></div>
-        <div><dt>状态</dt><dd>{{ selectedRelay.enabled ? '启用' : '禁用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
+        <div><dt>状态</dt><dd>{{ selectedRelay.target_address_ready ? (selectedRelay.enabled ? '启用' : '禁用') : '目标不可用' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTime(selectedRelay.created_at) }}</dd></div>
+        <div v-if="!selectedRelay.target_address_ready"><dt>不可用原因</dt><dd>{{ selectedRelay.target_unavailable_reason || '中转目标不可用' }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ formatTime(selectedRelay.updated_at) }}</dd></div>
       </dl>
       <template v-if="!selectedRelay.subscription_published">
@@ -812,7 +816,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         <n-alert v-if="selectedRelay.target_type === 'manual'" type="info">手动目标不支持自动生成客户端节点链接</n-alert>
         <n-alert v-else-if="selectedRelay.target_type === 'proxy' && selectedRelay.target_client_id === null" type="info">尚未选择目标客户端，请编辑中转后选择</n-alert>
         <n-alert v-else-if="!selectedRelay.entry_address" type="warning">入口地址不可用，请填写手动入口地址或等待源服务器上报对应公网地址</n-alert>
-        <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">目标代理节点入口地址不可用</n-alert>
+        <n-alert v-else-if="!selectedRelay.target_address_ready" type="warning">{{ selectedRelay.target_unavailable_reason || '中转目标不可用' }}。可编辑更换目标、保持禁用或删除该中转。</n-alert>
         <n-alert v-else-if="relayShareError" type="error">{{ relayShareError }}</n-alert>
         <div v-else-if="relayClientsLoading" class="loading-row"><n-spin size="small" /><span>正在加载客户端节点…</span></div>
         <div v-else-if="selectedRelay.target_type === 'landing' && relayLandingShare" class="relay-client-list">

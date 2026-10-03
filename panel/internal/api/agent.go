@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -42,6 +43,9 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := s.agents.GetDesiredState(r.Context(), agent.ID, agent.ServerID)
 	if err != nil {
+		if recordErr := s.agents.RecordDesiredStateFailure(r.Context(), agent.ID, agent.ServerID, desiredStateFailureMessage()); recordErr != nil {
+			log.Printf("record desired state failure for server %d: %v", agent.ServerID, recordErr)
+		}
 		writeServerError(w, err)
 		return
 	}
@@ -61,6 +65,10 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 			Relays:  state.Relays,
 		},
 	})
+}
+
+func desiredStateFailureMessage() string {
+	return "Panel 无法生成 desired state"
 }
 
 func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +92,7 @@ func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, err)
 		return
 	}
-	finalized, err := s.servers.FinalizeDecommission(
+	finalized, mutations, err := s.servers.FinalizeDecommissionWithMutations(
 		r.Context(), agent.ServerID, request.Version, request.Status, request.Message,
 	)
 	if err != nil {
@@ -93,6 +101,7 @@ func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request)
 	}
 	if finalized {
 		s.agents.CloseConnections(agent.ServerID)
+		s.notifyServerMutations(mutations)
 	}
 	writeNoContent(w)
 }

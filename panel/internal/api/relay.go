@@ -78,6 +78,7 @@ type relayResponse struct {
 	TargetHost              string    `json:"target_host"`
 	TargetPort              int       `json:"target_port"`
 	TargetAddressReady      bool      `json:"target_address_ready"`
+	TargetUnavailableReason string    `json:"target_unavailable_reason,omitempty"`
 	Network                 string    `json:"network"`
 	Enabled                 bool      `json:"enabled"`
 	CreatedAt               time.Time `json:"created_at"`
@@ -453,7 +454,8 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 		TargetLandingName: value.TargetLandingName, TargetLandingProtocol: value.TargetLandingProtocol,
 		TargetLandingVisibility: value.TargetLandingVisibility,
 		TargetPort:              value.TargetPort, TargetAddressReady: value.TargetAddressReady,
-		Network: value.Network, Enabled: value.Enabled,
+		TargetUnavailableReason: value.TargetUnavailableReason,
+		Network:                 value.Network, Enabled: value.Enabled,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		SubscriptionPublished: value.SubscriptionPublished,
 		RedactPrivateTarget:   value.OwnerUserID != nil && value.TargetType == relaystore.TargetManual,

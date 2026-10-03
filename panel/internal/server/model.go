@@ -95,6 +95,26 @@ type CreatedServer struct {
 	EnrollmentExpiresAt time.Time
 }
 
+type DependencyRelay struct {
+	Name             string
+	SourceServerName string
+}
+
+type DependencySummary struct {
+	ProxyCount            int
+	ClientCount           int
+	OwnedRelayCount       int
+	PublishedNodeCount    int
+	PersonalNodeCount     int
+	SubscriberClientCount int
+	ReferencingRelays     []DependencyRelay
+}
+
+type ConfigMutation struct {
+	ServerID int64
+	Version  int64
+}
+
 type CreateServerInput struct {
 	Name                     string
 	BoundDomainIPv4          string

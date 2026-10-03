@@ -9,8 +9,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/diagnostic"
 )
@@ -161,6 +163,7 @@ func (s *configSynchronizer) diagnose(ctx context.Context, requestID string) dia
 	checks := make([]diagnostic.Check, 0)
 	if err != nil {
 		checks = append(checks,
+			diagnostic.Check{Code: "config.desired_state", Status: diagnostic.StatusFail, Detail: "无法读取当前 desired state：" + err.Error()},
 			diagnostic.Check{Code: "xray.service", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Xray 检查"},
 			diagnostic.Check{Code: "xray.config", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Xray 配置检查"},
 			diagnostic.Check{Code: "realm.service", Status: diagnostic.StatusSkipped, Detail: "无法读取当前 desired state，未执行 Realm 检查"},
@@ -264,7 +267,7 @@ func (s *configSynchronizer) fetch(ctx context.Context) (desiredState, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return desiredState{}, fmt.Errorf("Panel rejected Agent config request: %s", response.Status)
+		return desiredState{}, panelConfigResponseError(response, s.config.AgentToken)
 	}
 	var state desiredState
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&state); err != nil {
@@ -274,6 +277,48 @@ func (s *configSynchronizer) fetch(ctx context.Context) (desiredState, error) {
 		return desiredState{}, errors.New("Panel returned an invalid Agent config version")
 	}
 	return state, nil
+}
+
+func panelConfigResponseError(response *http.Response, agentToken string) error {
+	const maxBodyBytes = 4 << 10
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxBodyBytes+1))
+	if readErr != nil {
+		return fmt.Errorf("Panel rejected Agent config request: %s", response.Status)
+	}
+	truncated := len(body) > maxBodyBytes
+	if truncated {
+		body = body[:maxBodyBytes]
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) == nil {
+		if detail := safePanelErrorDetail(payload.Error, agentToken); detail != "" {
+			return fmt.Errorf("Panel rejected Agent config request: %s: %s", response.Status, detail)
+		}
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if !truncated && len(body) <= 512 && strings.HasPrefix(contentType, "text/plain") && utf8.Valid(body) {
+		detail := strings.Join(strings.Fields(string(body)), " ")
+		if !strings.ContainsAny(detail, "<>") {
+			if detail = safePanelErrorDetail(detail, agentToken); detail != "" {
+				return fmt.Errorf("Panel rejected Agent config request: %s: %s", response.Status, detail)
+			}
+		}
+	}
+	return fmt.Errorf("Panel rejected Agent config request: %s", response.Status)
+}
+
+func safePanelErrorDetail(value, agentToken string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" || (agentToken != "" && strings.Contains(value, agentToken)) {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) > 512 {
+		value = string(runes[:512]) + "…"
+	}
+	return value
 }
 
 func (s *configSynchronizer) report(ctx context.Context, result configResult) error {

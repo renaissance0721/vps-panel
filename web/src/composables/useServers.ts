@@ -89,6 +89,16 @@ type AgentUpgradeResponse = {
   version: string
 }
 
+type ServerDependencySummary = {
+  proxy_count: number
+  client_count: number
+  owned_relay_count: number
+  published_node_count: number
+  personal_node_count: number
+  subscriber_client_count: number
+  referencing_relays: Array<{ name: string; source_server_name: string }>
+}
+
 function isBulkAgentUpgradeActive(item: BulkAgentUpgradeItem): boolean {
   return item.status === 'starting' || item.status === 'upgrading'
 }
@@ -616,9 +626,11 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
 
   async function archiveServer(value: ServerRecord) {
     if (value.decommission_status || value.archived_at) return
+    const summary = await loadServerDependencySummary(value)
+    if (!summary) return
     if (
       !window.confirm(
-        `删除服务器“${value.name}”\n\nPanel 会先让 Agent 清理所有 VPS Panel 管理的代理服务、中转服务、防火墙和证书状态，然后 Agent 会自行卸载。清理成功后服务器才会进入“已移除”。\n\n确认后开始删除。`,
+        serverDeletionMessage(value, summary, false),
       )
     )
       return
@@ -631,14 +643,46 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
 
   async function forceRemoveServer(value: ServerRecord) {
     if (state.value?.user?.role !== 'admin' || value.archived_at) return
-    if (!window.confirm(`确定强制从 Panel 移除服务器“${value.name}”吗？`)) return
-    if (!window.confirm('强制移除不会清理远端 VPS。远端可能继续运行 Xray、Realm、Agent 和监听端口。\n\n仍然强制移除？')) return
+    const summary = await loadServerDependencySummary(value)
+    if (!summary) return
+    if (!window.confirm(serverDeletionMessage(value, summary, true))) return
     await submit(async () => {
       await api(`/api/servers/${value.id}/force`, { method: 'DELETE' })
       if (selectedServer.value?.id === value.id) selectedServer.value = null
       if (createdServer.value?.server.id === value.id) createdServer.value = null
       await loadServers()
     })
+  }
+
+  async function loadServerDependencySummary(value: ServerRecord): Promise<ServerDependencySummary | null> {
+    try {
+      return await api<ServerDependencySummary>(`/api/servers/${value.id}/dependencies`)
+    } catch (reason) {
+      error.value = reason instanceof Error ? reason.message : '无法读取服务器依赖关系'
+      return null
+    }
+  }
+
+  function serverDeletionMessage(value: ServerRecord, summary: ServerDependencySummary, force: boolean): string {
+    const lines = [
+      `${force ? '强制从 Panel 移除' : '删除'}服务器“${value.name}”`,
+      '',
+      `该服务器包含：${summary.proxy_count} 个 Proxy、${summary.client_count} 个 Client、${summary.owned_relay_count} 个 Relay。`,
+    ]
+    if (summary.referencing_relays.length > 0) {
+      lines.push('', `有 ${summary.referencing_relays.length} 个其他服务器 Relay 引用这里的 Proxy：`)
+      for (const relay of summary.referencing_relays) lines.push(`• ${relay.name}（来源：${relay.source_server_name}）`)
+    }
+    if (summary.published_node_count > 0 || summary.personal_node_count > 0 || summary.subscriber_client_count > 0) {
+      lines.push('', `相关订阅：${summary.published_node_count} 个发布节点、${summary.personal_node_count} 个个人订阅节点、${summary.subscriber_client_count} 个订阅客户端。`)
+    }
+    lines.push('', '删除后：', '• 本服务器的 Proxy 与 Relay 将停用。', '• 依赖此服务器的 Relay 和订阅节点将自动停用。', '• 其他服务器上的 Proxy 与外部节点不受影响。')
+    if (force) {
+      lines.push('', '无法确认该服务器上的实际 Xray / Realm runtime 已清理；此操作仅从 Panel 侧归档服务器并清理依赖关系。')
+    } else {
+      lines.push('', 'Panel 会先让 Agent 清理本机 Xray、Realm、防火墙和证书状态；清理成功后才会归档。')
+    }
+    return lines.join('\n')
   }
 
   async function regenerateEnrollment(value: ServerRecord) {

@@ -390,7 +390,7 @@ func list(ctx context.Context, query interface {
 		 relays.target_host, relays.target_port,
 		 relays.network, relays.enabled, relays.created_at, relays.updated_at,
 		 target_proxy.name, target_server.name, target_proxy.listen_family, target_proxy.listen_port, target_proxy.entry_host_mode,
-		 target_proxy.entry_host, COALESCE(target_info.public_ipv4, ''), COALESCE(target_info.public_ipv6, ''),
+		 target_proxy.entry_host, target_proxy.enabled, COALESCE(target_info.public_ipv4, ''), COALESCE(target_info.public_ipv6, ''),
 		 COALESCE(target_info.ipv6, '[]'), target_server.archived_at,
 		 EXISTS(SELECT 1 FROM subscription_published_nodes WHERE relay_id = relays.id)
 		 FROM relays
@@ -420,6 +420,7 @@ func list(ctx context.Context, query interface {
 		var sourcePublicIPv6, sourceIPv6JSON sql.NullString
 		var targetLandingHost, targetListenFamily, targetEntryMode, targetEntryHost, targetPublicIPv4, targetPublicIPv6, targetIPv6JSON sql.NullString
 		var enabled int
+		var targetProxyEnabled sql.NullInt64
 		var createdAt, updatedAt int64
 		if err := rows.Scan(
 			&value.ID, &value.ServerID, &ownerUserID, &ownerUsername, &sourceClientID, &sourceProxyName,
@@ -429,7 +430,7 @@ func list(ctx context.Context, query interface {
 			&targetLandingName, &targetLandingProtocol, &targetLandingVisibility, &targetLandingHost, &landingPort,
 			&value.TargetHost, &storedTargetPort,
 			&value.Network, &enabled, &createdAt, &updatedAt,
-			&targetProxyName, &targetServerName, &targetListenFamily, &proxyPort, &targetEntryMode, &targetEntryHost, &targetPublicIPv4, &targetPublicIPv6, &targetIPv6JSON, &targetArchived,
+			&targetProxyName, &targetServerName, &targetListenFamily, &proxyPort, &targetEntryMode, &targetEntryHost, &targetProxyEnabled, &targetPublicIPv4, &targetPublicIPv6, &targetIPv6JSON, &targetArchived,
 			&value.SubscriptionPublished,
 		); err != nil {
 			return nil, fmt.Errorf("scan relay: %w", err)
@@ -484,7 +485,7 @@ func list(ctx context.Context, query interface {
 			value.TargetHost = targetLandingHost.String
 			value.TargetPort = int(landingPort.Int64)
 			value.TargetAddressReady = true
-		} else if targetProxyID.Valid && proxyPort.Valid && !targetArchived.Valid {
+		} else if targetProxyID.Valid && proxyPort.Valid && !targetArchived.Valid && targetProxyEnabled.Int64 != 0 {
 			value.TargetProxyName = targetProxyName.String
 			value.TargetServerName = targetServerName.String
 			value.TargetPort = int(proxyPort.Int64)
@@ -498,6 +499,26 @@ func list(ctx context.Context, query interface {
 				value.TargetHost = targetPublicIPv4.String
 			}
 			value.TargetAddressReady = value.TargetHost != ""
+		}
+		if value.TargetType == TargetProxy {
+			value.TargetProxyName = targetProxyName.String
+			value.TargetServerName = targetServerName.String
+			switch {
+			case !targetProxyID.Valid || !proxyPort.Valid:
+				value.TargetUnavailableReason = "目标 Proxy 不存在"
+			case targetArchived.Valid:
+				if value.TargetServerName != "" {
+					value.TargetUnavailableReason = "目标服务器已删除：" + value.TargetServerName
+				} else {
+					value.TargetUnavailableReason = "目标服务器已删除"
+				}
+			case targetProxyEnabled.Int64 == 0:
+				value.TargetUnavailableReason = "目标 Proxy 已禁用：" + value.TargetProxyName
+			case !value.TargetAddressReady:
+				value.TargetUnavailableReason = "目标 Proxy 无有效入口地址：" + value.TargetProxyName
+			}
+		} else if !value.TargetAddressReady {
+			value.TargetUnavailableReason = "中转目标不可用"
 		}
 		values = append(values, value)
 	}

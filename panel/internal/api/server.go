@@ -460,6 +460,31 @@ func (s *server) deleteServer(w http.ResponseWriter, r *http.Request, user auth.
 	writeNoContent(w)
 }
 
+func (s *server) getServerDependencies(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
+	if !ok {
+		return
+	}
+	if !s.requireServerAccess(w, r, user, id) {
+		return
+	}
+	summary, err := s.servers.GetDependencySummary(r.Context(), id)
+	if err != nil {
+		writeServerError(w, err)
+		return
+	}
+	relays := make([]map[string]string, 0, len(summary.ReferencingRelays))
+	for _, value := range summary.ReferencingRelays {
+		relays = append(relays, map[string]string{"name": value.Name, "source_server_name": value.SourceServerName})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"proxy_count": summary.ProxyCount, "client_count": summary.ClientCount,
+		"owned_relay_count": summary.OwnedRelayCount, "published_node_count": summary.PublishedNodeCount,
+		"personal_node_count": summary.PersonalNodeCount, "subscriber_client_count": summary.SubscriberClientCount,
+		"referencing_relays": relays,
+	})
+}
+
 func (s *server) forceRemoveServer(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "服务器 ID 无效")
 	if !ok {
@@ -468,11 +493,13 @@ func (s *server) forceRemoveServer(w http.ResponseWriter, r *http.Request, user 
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
-	if err := s.servers.ForceArchive(r.Context(), id); err != nil {
+	mutations, err := s.servers.ForceArchiveWithMutations(r.Context(), id)
+	if err != nil {
 		writeServerError(w, err)
 		return
 	}
 	s.agents.CloseConnections(id)
+	s.notifyServerMutations(mutations)
 	s.recordAudit(r, user, "server.archive", "server", id, "强制归档服务器")
 	writeNoContent(w)
 }
@@ -485,13 +512,23 @@ func (s *server) permanentlyDeleteServer(w http.ResponseWriter, r *http.Request,
 	if !s.requireServerAccess(w, r, user, id) {
 		return
 	}
-	if err := s.servers.PermanentlyDelete(r.Context(), id); err != nil {
+	mutations, err := s.servers.PermanentlyDeleteWithMutations(r.Context(), id)
+	if err != nil {
 		writeServerError(w, err)
 		return
 	}
 	s.agents.CloseConnections(id)
+	s.notifyServerMutations(mutations)
 	s.recordAudit(r, user, "server.delete", "server", id, "永久删除服务器")
 	writeNoContent(w)
+}
+
+func (s *server) notifyServerMutations(mutations []serverstore.ConfigMutation) {
+	for _, mutation := range mutations {
+		if err := s.agents.NotifyConfigChanged(mutation.ServerID, mutation.Version); err != nil {
+			log.Printf("notify Agent for server %d dependency cleanup version %d: %v", mutation.ServerID, mutation.Version, err)
+		}
+	}
 }
 
 func writeServerError(w http.ResponseWriter, err error) {

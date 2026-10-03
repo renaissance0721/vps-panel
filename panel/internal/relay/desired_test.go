@@ -53,8 +53,9 @@ func TestRelayProxyTargetResolutionAndDependencies(t *testing.T) {
 	if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = '' WHERE server_id = 2`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ListDesired(t.Context(), db, 1); !errors.Is(err, ErrTargetUnavailable) {
-		t.Fatalf("missing public IPv4 error = %v", err)
+	desired, err = service.ListDesired(t.Context(), db, 1)
+	if err != nil || len(desired) != 0 {
+		t.Fatalf("unavailable Relay desired state = %+v, %v", desired, err)
 	}
 	if _, err := db.Exec(`UPDATE proxies SET entry_host_mode = 'manual', entry_host = 'node.example.com' WHERE id = 10`); err != nil {
 		t.Fatal(err)

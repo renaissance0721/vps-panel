@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -208,6 +209,51 @@ func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
 		if got := desiredStateErrorMessage(test.err); got != test.want {
 			t.Fatalf("desired state message = %q, want %q", got, test.want)
 		}
+	}
+}
+
+func TestConfigFetchIncludesBoundedSafePanelErrorDetail(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		contentType string
+		body        string
+		wantDetail  string
+		forbid      string
+	}{
+		{name: "json", contentType: "application/json", body: `{"error":"中转目标地址不可用"}`, wantDetail: "中转目标地址不可用"},
+		{name: "plain", contentType: "text/plain", body: "temporary configuration failure\n", wantDetail: "temporary configuration failure"},
+		{name: "html", contentType: "text/html", body: "<html>upstream error</html>", forbid: "upstream error"},
+		{name: "token", contentType: "application/json", body: `{"error":"token config-secret rejected"}`, forbid: "config-secret"},
+		{name: "large plain", contentType: "text/plain", body: strings.Repeat("x", 5000), forbid: strings.Repeat("x", 20)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", test.contentType)
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer panel.Close()
+			synchronizer := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "config-secret"}, panel.Client())
+			_, err := synchronizer.fetch(t.Context())
+			if err == nil || !strings.Contains(err.Error(), "409 Conflict") || (test.wantDetail != "" && !strings.Contains(err.Error(), test.wantDetail)) || (test.forbid != "" && strings.Contains(err.Error(), test.forbid)) {
+				t.Fatalf("fetch error = %q", err)
+			}
+		})
+	}
+}
+
+func TestDiagnosticShowsSpecificDesiredStateFetchError(t *testing.T) {
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"中转目标地址不可用"}`))
+	}))
+	defer panel.Close()
+	synchronizer := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "token"}, panel.Client())
+	result := synchronizer.diagnose(t.Context(), "request-1")
+	if len(result.Checks) == 0 || result.Checks[0].Code != "config.desired_state" || result.Checks[0].Status != "fail" ||
+		!strings.Contains(result.Checks[0].Detail, "中转目标地址不可用") {
+		t.Fatalf("diagnostic result = %+v", result)
 	}
 }
 

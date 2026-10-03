@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
 	"github.com/renaissance0721/vps-panel/panel/internal/operation"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
 func (s *Service) EnsureMutable(ctx context.Context, id int64) error {
@@ -334,9 +337,14 @@ func (s *Service) RequestDecommission(ctx context.Context, id int64) (int64, err
 }
 
 func (s *Service) FinalizeDecommission(ctx context.Context, id, version int64, status, message string) (bool, error) {
+	finalized, _, err := s.FinalizeDecommissionWithMutations(ctx, id, version, status, message)
+	return finalized, err
+}
+
+func (s *Service) FinalizeDecommissionWithMutations(ctx context.Context, id, version int64, status, message string) (bool, []ConfigMutation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin decommission result: %w", err)
+		return false, nil, fmt.Errorf("begin decommission result: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -347,13 +355,13 @@ func (s *Service) FinalizeDecommission(ctx context.Context, id, version int64, s
 		 WHERE id = ? AND archived_at IS NULL`, id,
 	).Scan(&desiredVersion, &decommissionStatus)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, ErrNotFound
+		return false, nil, ErrNotFound
 	}
 	if err != nil {
-		return false, fmt.Errorf("read decommission result state: %w", err)
+		return false, nil, fmt.Errorf("read decommission result state: %w", err)
 	}
 	if version != desiredVersion || (decommissionStatus != DecommissionPending && decommissionStatus != DecommissionFailed) {
-		return false, nil
+		return false, nil, nil
 	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	if status == agentcontrol.ConfigSyncFailed {
@@ -362,15 +370,15 @@ func (s *Service) FinalizeDecommission(ctx context.Context, id, version int64, s
 			`UPDATE servers SET decommission_status = ?, decommission_error = ?, updated_at = ? WHERE id = ?`,
 			DecommissionFailed, message, now, id,
 		); err != nil {
-			return false, fmt.Errorf("record decommission failure: %w", err)
+			return false, nil, fmt.Errorf("record decommission failure: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return false, fmt.Errorf("commit decommission failure: %w", err)
+			return false, nil, fmt.Errorf("commit decommission failure: %w", err)
 		}
-		return false, nil
+		return false, nil, nil
 	}
 	if status != agentcontrol.ConfigSyncSuccess {
-		return false, nil
+		return false, nil, nil
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE servers
@@ -379,20 +387,24 @@ func (s *Service) FinalizeDecommission(ctx context.Context, id, version int64, s
 		 WHERE id = ?`,
 		StatusOffline, now, now, id,
 	); err != nil {
-		return false, fmt.Errorf("archive decommissioned server: %w", err)
+		return false, nil, fmt.Errorf("archive decommissioned server: %w", err)
+	}
+	mutations, err := s.cleanupArchivedDependenciesTx(ctx, tx, id, time.Unix(now, 0))
+	if err != nil {
+		return false, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
-		return false, fmt.Errorf("revoke decommissioned server Agent: %w", err)
+		return false, nil, fmt.Errorf("revoke decommissioned server Agent: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
 	); err != nil {
-		return false, fmt.Errorf("remove decommissioned server enrollments: %w", err)
+		return false, nil, fmt.Errorf("remove decommissioned server enrollments: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit decommission completion: %w", err)
+		return false, nil, fmt.Errorf("commit decommission completion: %w", err)
 	}
-	return true, nil
+	return true, mutations, nil
 }
 
 func decommissionPublicError(message string) string {
@@ -411,9 +423,14 @@ func (s *Service) Archive(ctx context.Context, id int64) error {
 }
 
 func (s *Service) ForceArchive(ctx context.Context, id int64) error {
+	_, err := s.ForceArchiveWithMutations(ctx, id)
+	return err
+}
+
+func (s *Service) ForceArchiveWithMutations(ctx context.Context, id int64) ([]ConfigMutation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin server archive: %w", err)
+		return nil, fmt.Errorf("begin server archive: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -425,42 +442,313 @@ func (s *Service) ForceArchive(ctx context.Context, id int64) error {
 		StatusOffline, now, now, id,
 	)
 	if err != nil {
-		return fmt.Errorf("archive server: %w", err)
+		return nil, fmt.Errorf("archive server: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read archived server count: %w", err)
+		return nil, fmt.Errorf("read archived server count: %w", err)
 	}
 	if count == 0 {
-		return ErrNotFound
+		return nil, ErrNotFound
+	}
+	mutations, err := s.cleanupArchivedDependenciesTx(ctx, tx, id, time.Unix(now, 0))
+	if err != nil {
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE server_id = ?`, id); err != nil {
-		return fmt.Errorf("revoke archived server agent: %w", err)
+		return nil, fmt.Errorf("revoke archived server agent: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM agent_enrollments WHERE server_id = ? AND used_at IS NULL`, id,
 	); err != nil {
-		return fmt.Errorf("remove unused agent enrollments: %w", err)
+		return nil, fmt.Errorf("remove unused agent enrollments: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit server archive: %w", err)
+		return nil, fmt.Errorf("commit server archive: %w", err)
 	}
-	return nil
+	return mutations, nil
 }
 
 func (s *Service) PermanentlyDelete(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM servers WHERE id = ? AND archived_at IS NOT NULL`, id,
-	)
+	_, err := s.PermanentlyDeleteWithMutations(ctx, id)
+	return err
+}
+
+func (s *Service) PermanentlyDeleteWithMutations(ctx context.Context, id int64) ([]ConfigMutation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("permanently delete server: %w", err)
+		return nil, fmt.Errorf("begin permanent server deletion: %w", err)
+	}
+	defer tx.Rollback()
+	var archivedAt sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT archived_at FROM servers WHERE id = ?`, id).Scan(&archivedAt); errors.Is(err, sql.ErrNoRows) || !archivedAt.Valid {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("read permanently deleted server: %w", err)
+	}
+	mutations, err := s.cleanupArchivedDependenciesTx(ctx, tx, id, s.now().UTC().Truncate(time.Second))
+	if err != nil {
+		return nil, err
+	}
+	if err := deleteArchivedDependenciesTx(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM servers WHERE id = ? AND archived_at IS NOT NULL`, id)
+	if err != nil {
+		return nil, fmt.Errorf("delete archived server after unlinking dependencies: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read permanently deleted server count: %w", err)
+		return nil, fmt.Errorf("read permanently deleted server count: %w", err)
 	}
 	if count == 0 {
-		return ErrNotFound
+		return nil, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit permanent server deletion: %w", err)
+	}
+	return mutations, nil
+}
+
+func (s *Service) GetDependencySummary(ctx context.Context, id int64) (DependencySummary, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers WHERE id = ?)`, id).Scan(&exists); err != nil {
+		return DependencySummary{}, fmt.Errorf("check server dependency summary target: %w", err)
+	}
+	if !exists {
+		return DependencySummary{}, ErrNotFound
+	}
+	var summary DependencySummary
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM proxies WHERE server_id = ?),
+		(SELECT COUNT(*) FROM clients WHERE proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)),
+		(SELECT COUNT(*) FROM relays WHERE server_id = ?),
+		(SELECT COUNT(*) FROM subscription_published_nodes WHERE
+			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_server_id = ?
+			OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))),
+		(SELECT COUNT(*) FROM personal_subscription_nodes WHERE
+			(source_type = 'proxy' AND source_id IN (SELECT id FROM proxies WHERE server_id = ?))
+			OR (source_type = 'relay' AND source_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))),
+		(SELECT COUNT(*) FROM subscriber_clients WHERE proxy_id IN (SELECT id FROM proxies WHERE server_id = ?))`,
+		id, id, id, id, id, id, id, id, id, id, id, id, id,
+	).Scan(&summary.ProxyCount, &summary.ClientCount, &summary.OwnedRelayCount,
+		&summary.PublishedNodeCount, &summary.PersonalNodeCount, &summary.SubscriberClientCount)
+	if err != nil {
+		return DependencySummary{}, fmt.Errorf("read server dependency summary: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT relays.name, source.name
+		FROM relays
+		JOIN servers AS source ON source.id = relays.server_id
+		WHERE relays.server_id != ? AND relays.target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+		ORDER BY source.name, relays.name, relays.id`, id, id)
+	if err != nil {
+		return DependencySummary{}, fmt.Errorf("list server relay dependencies: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value DependencyRelay
+		if err := rows.Scan(&value.Name, &value.SourceServerName); err != nil {
+			return DependencySummary{}, fmt.Errorf("scan server relay dependency: %w", err)
+		}
+		summary.ReferencingRelays = append(summary.ReferencingRelays, value)
+	}
+	if err := rows.Err(); err != nil {
+		return DependencySummary{}, fmt.Errorf("iterate server relay dependencies: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *Service) cleanupArchivedDependenciesTx(ctx context.Context, tx *sql.Tx, serverID int64, now time.Time) ([]ConfigMutation, error) {
+	now = now.UTC().Truncate(time.Second)
+	affectedServers := make(map[int64]struct{})
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT relays.server_id
+		FROM relays
+		JOIN servers AS source ON source.id = relays.server_id
+		WHERE relays.enabled = 1 AND relays.server_id != ?
+		  AND source.archived_at IS NULL AND source.decommission_status = ''
+		  AND (relays.target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+		       OR relays.source_client_id IN (
+		          SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))
+		ORDER BY relays.server_id`, serverID, serverID, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("list cross-server relay dependencies: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan cross-server relay dependency: %w", err)
+		}
+		affectedServers[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate cross-server relay dependencies: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close cross-server relay dependencies: %w", err)
+	}
+
+	publishedNodeIDs, err := queryInt64s(ctx, tx, `SELECT id FROM subscription_published_nodes
+		WHERE enabled = 1 AND (
+			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_server_id = ?
+			OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))
+		ORDER BY id`, serverID, serverID, serverID, serverID, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("list affected subscription nodes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE proxies SET enabled = 0, updated_at = ? WHERE server_id = ? AND enabled = 1`, now.Unix(), serverID); err != nil {
+		return nil, fmt.Errorf("disable archived server proxies: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE relays SET enabled = 0, updated_at = ?
+		WHERE enabled = 1 AND (server_id = ?
+			OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))`,
+		now.Unix(), serverID, serverID, serverID); err != nil {
+		return nil, fmt.Errorf("disable archived server relay dependencies: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE subscription_published_nodes SET enabled = 0, updated_at = ?
+		WHERE enabled = 1 AND (
+			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_server_id = ?
+			OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))`,
+		now.Unix(), serverID, serverID, serverID, serverID, serverID); err != nil {
+		return nil, fmt.Errorf("disable archived server subscription nodes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes SET enabled = 0, updated_at = ?
+		WHERE enabled = 1 AND (
+			(source_type = 'proxy' AND source_id IN (SELECT id FROM proxies WHERE server_id = ?))
+			OR (source_type = 'relay' AND source_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))))`,
+		now.Unix(), serverID, serverID, serverID, serverID); err != nil {
+		return nil, fmt.Errorf("disable archived server personal subscription nodes: %w", err)
+	}
+
+	subscriptions := subscriptionstore.NewService(s.db, relaystore.NewService(s.db))
+	serverIDs, err := subscriptions.ReconcilePublishedNodesSubscribersTx(ctx, tx, publishedNodeIDs, now)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile affected published-node subscribers: %w", err)
+	}
+	for _, id := range serverIDs {
+		affectedServers[id] = struct{}{}
+	}
+	serverIDs, err = subscriptions.ReconcileServerSubscribersTx(ctx, tx, serverID, now)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile archived server subscribers: %w", err)
+	}
+	for _, id := range serverIDs {
+		affectedServers[id] = struct{}{}
+	}
+	delete(affectedServers, serverID)
+	return bumpDependencyServersTx(ctx, tx, affectedServers, serverID, now)
+}
+
+func bumpDependencyServersTx(ctx context.Context, tx *sql.Tx, serverIDs map[int64]struct{}, resourceID int64, now time.Time) ([]ConfigMutation, error) {
+	ordered := make([]int64, 0, len(serverIDs))
+	for serverID := range serverIDs {
+		ordered = append(ordered, serverID)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	mutations := make([]ConfigMutation, 0, len(ordered))
+	for _, serverID := range ordered {
+		result, err := tx.ExecContext(ctx, `UPDATE servers
+			SET desired_state_version = desired_state_version + 1, updated_at = ?
+			WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`, now.Unix(), serverID)
+		if err != nil {
+			return nil, fmt.Errorf("bump dependency source server version: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("read dependency source server update: %w", err)
+		}
+		if count == 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE agents
+			SET config_sync_status = 'pending', config_sync_error = '', updated_at = ? WHERE server_id = ?`,
+			now.Unix(), serverID); err != nil {
+			return nil, fmt.Errorf("mark dependency source Agent pending: %w", err)
+		}
+		var version int64
+		if err := tx.QueryRowContext(ctx, `SELECT desired_state_version FROM servers WHERE id = ?`, serverID).Scan(&version); err != nil {
+			return nil, fmt.Errorf("read dependency source version: %w", err)
+		}
+		if err := operation.RecordTx(ctx, tx, serverID, "server", resourceID, "reconcile", version, now); err != nil {
+			return nil, err
+		}
+		mutations = append(mutations, ConfigMutation{ServerID: serverID, Version: version})
+	}
+	return mutations, nil
+}
+
+func queryInt64s(ctx context.Context, tx *sql.Tx, statement string, arguments ...any) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, statement, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]int64, 0)
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func deleteArchivedDependenciesTx(ctx context.Context, tx *sql.Tx, serverID int64) error {
+	statements := []struct {
+		name string
+		sql  string
+	}{
+		{"unlink subscription plans", `DELETE FROM subscription_plan_nodes WHERE published_node_id IN (
+			SELECT id FROM subscription_published_nodes WHERE target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_server_id = ? OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))`},
+		{"remove personal subscription references", `DELETE FROM personal_subscription_nodes WHERE
+			(source_type = 'proxy' AND source_id IN (SELECT id FROM proxies WHERE server_id = ?))
+			OR (source_type = 'relay' AND source_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))`},
+		{"remove published subscription references", `DELETE FROM subscription_published_nodes WHERE
+			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?) OR source_server_id = ?
+			OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
+				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))`},
+		{"remove subscriber client references", `DELETE FROM subscriber_clients WHERE proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)`},
+		{"remove cross-server relay references", `DELETE FROM relays WHERE server_id != ? AND (
+			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
+			OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?))`},
+	}
+	for _, statement := range statements {
+		var args []any
+		switch statement.name {
+		case "unlink subscription plans", "remove published subscription references":
+			args = []any{serverID, serverID, serverID, serverID, serverID}
+		case "remove personal subscription references":
+			args = []any{serverID, serverID, serverID, serverID}
+		case "remove subscriber client references":
+			args = []any{serverID}
+		case "remove cross-server relay references":
+			args = []any{serverID, serverID, serverID}
+		}
+		if _, err := tx.ExecContext(ctx, statement.sql, args...); err != nil {
+			return fmt.Errorf("%s before permanent server deletion: %w", statement.name, err)
+		}
 	}
 	return nil
 }

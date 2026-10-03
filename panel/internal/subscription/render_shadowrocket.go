@@ -57,6 +57,10 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	for _, group := range routing.Groups {
 		names[group.Name] = true
 	}
+	nodes, nodeNames, err = shadowrocketNodeNames(nodes, nodeNames, names)
+	if err != nil {
+		return nil, err
+	}
 	proxyLines := make([]string, 0, len(nodes))
 	allNames := make([]string, 0, len(nodes))
 	for index, node := range nodes {
@@ -91,6 +95,90 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), nil
 }
 
+func shadowrocketNodeNames(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string, reserved map[string]bool) ([]ResolvedSubscriptionNode, map[int64]string, error) {
+	type namePart struct {
+		base, country string
+	}
+	parts := make([]namePart, len(nodes))
+	baseCount := make(map[string]int, len(nodes))
+	used := make(map[string]bool, len(reserved)+len(nodes))
+	for name := range reserved {
+		used[name] = true
+	}
+	originals := make(map[string]bool, len(nodes))
+	unflagged := make(map[string]bool, len(nodes))
+	for index, node := range nodes {
+		if !safeShadowrocketValue(node.Name) {
+			return nil, nil, fmt.Errorf("第 %d 个节点: %w", index+1, ErrUnsupportedShadowrocketProtocol)
+		}
+		if reserved[node.Name] || originals[node.Name] {
+			return nil, nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketProtocol)
+		}
+		originals[node.Name] = true
+		base, country := splitShadowrocketLeadingFlag(node.Name)
+		parts[index] = namePart{base, country}
+		baseCount[base]++
+		if country == "" {
+			used[base] = true
+			unflagged[base] = true
+		}
+	}
+	// Keep unique stripped names before assigning suffixes, so earlier nodes
+	// cannot take the name that a later node would otherwise keep unchanged.
+	for _, part := range parts {
+		if part.country != "" && baseCount[part.base] == 1 && !used[part.base] {
+			used[part.base] = true
+		}
+	}
+	resolved := append([]ResolvedSubscriptionNode(nil), nodes...)
+	byOriginal := make(map[string]string, len(nodes))
+	for index, part := range parts {
+		if part.country == "" {
+			continue
+		}
+		name := part.base
+		if baseCount[name] > 1 || reserved[name] || unflagged[name] {
+			if name == part.country {
+				for suffix := 2; ; suffix++ {
+					name = part.country + " " + strconv.Itoa(suffix)
+					if !used[name] {
+						break
+					}
+				}
+			} else {
+				name = part.base + " [" + part.country + "]"
+				for suffix := 2; used[name]; suffix++ {
+					name = part.base + " [" + part.country + " " + strconv.Itoa(suffix) + "]"
+				}
+			}
+		}
+		used[name] = true
+		resolved[index].Name = name
+		byOriginal[nodes[index].Name] = name
+	}
+	resolvedNames := make(map[int64]string, len(nodeNames))
+	for id, name := range nodeNames {
+		if updated, exists := byOriginal[name]; exists {
+			name = updated
+		}
+		resolvedNames[id] = name
+	}
+	return resolved, resolvedNames, nil
+}
+
+func splitShadowrocketLeadingFlag(name string) (string, string) {
+	runes := []rune(name)
+	if len(runes) < 2 || runes[0] < 0x1F1E6 || runes[0] > 0x1F1FF || runes[1] < 0x1F1E6 || runes[1] > 0x1F1FF {
+		return name, ""
+	}
+	code := string([]rune{'A' + runes[0] - 0x1F1E6, 'A' + runes[1] - 0x1F1E6})
+	clean := strings.TrimLeft(string(runes[2:]), " ")
+	if clean == "" {
+		clean = code
+	}
+	return clean, code
+}
+
 func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 	// Do not put credentials or raw node data in errors.
 	for _, value := range []string{node.Name, node.Address, node.UUID, node.ServerName, node.Flow,
@@ -102,14 +190,14 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 	if strings.TrimSpace(node.Name) == "" || node.Address == "" || node.Port < 1 || node.Port > 65535 {
 		return "", ErrUnsupportedShadowrocketProtocol
 	}
-	fields := []string{"", shadowrocketQuote(node.Address), strconv.Itoa(node.Port)}
+	fields := []string{"", shadowrocketValue(node.Address), strconv.Itoa(node.Port)}
 	switch node.Protocol {
 	case proxystore.ProtocolVLESS:
 		if node.UUID == "" || (node.Network != "" && node.Network != proxystore.TransportTCP) {
 			return "", ErrUnsupportedShadowrocketProtocol
 		}
 		fields[0] = "vless"
-		fields = append(fields, "encrypt-method=none", "password="+shadowrocketQuote(node.UUID), "obfs=none", "udp-relay=true")
+		fields = append(fields, "encrypt-method=none", "password="+shadowrocketValue(node.UUID), "obfs=none", "udp-relay=true")
 		if node.Security != "" && node.Security != "none" && node.Security != proxystore.SecurityTLS && node.Security != proxystore.SecurityReality {
 			return "", ErrUnsupportedShadowrocketProtocol
 		}
@@ -117,19 +205,19 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 			fields = append(fields, "tls=true")
 		}
 		if node.ServerName != "" {
-			fields = append(fields, "peer="+shadowrocketQuote(node.ServerName))
+			fields = append(fields, "peer="+shadowrocketValue(node.ServerName))
 		}
 		if node.Security == proxystore.SecurityReality {
 			if node.RealityPublicKey == "" || node.ServerName == "" {
 				return "", ErrUnsupportedShadowrocketProtocol
 			}
-			fields = append(fields, "reality=true", "pbk="+shadowrocketQuote(node.RealityPublicKey), "sid="+shadowrocketQuote(node.RealityShortID))
+			fields = append(fields, "reality=true", "pbk="+shadowrocketValue(node.RealityPublicKey), "sid="+shadowrocketValue(node.RealityShortID))
 		}
 		if flow := subscriptionVLESSFlow(node.Flow); flow != "" {
-			fields = append(fields, "flow="+shadowrocketQuote(flow))
+			fields = append(fields, "flow="+shadowrocketValue(flow))
 		}
 		if node.Fingerprint != "" {
-			fields = append(fields, "fp="+shadowrocketQuote(node.Fingerprint))
+			fields = append(fields, "fp="+shadowrocketValue(node.Fingerprint))
 		}
 	case proxystore.ProtocolShadowsocks:
 		if node.Method == "" || node.ShadowsocksPassword == "" {
@@ -137,11 +225,11 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 		}
 		fields[0] = "ss"
 		// SS2022's server:user key pair is already resolved by the source.
-		fields = append(fields, "encrypt-method="+shadowrocketQuote(node.Method), "password="+shadowrocketQuote(node.ShadowsocksPassword), "udp-relay=true")
+		fields = append(fields, "encrypt-method="+shadowrocketValue(node.Method), "password="+shadowrocketValue(node.ShadowsocksPassword), "udp-relay=true")
 	default:
 		return "", ErrUnsupportedShadowrocketProtocol
 	}
-	return shadowrocketQuote(node.Name) + " = " + strings.Join(fields, ","), nil
+	return shadowrocketIdent(node.Name) + " = " + strings.Join(fields, ","), nil
 }
 
 func renderShadowrocketProxyGroup(group resolvedRoutingGroup) (string, error) {
@@ -155,9 +243,9 @@ func renderShadowrocketProxyGroup(group resolvedRoutingGroup) (string, error) {
 		if !safeShadowrocketValue(member) {
 			return "", ErrInvalidRoutingBindings
 		}
-		fields = append(fields, shadowrocketQuote(member))
+		fields = append(fields, shadowrocketIdent(member))
 	}
-	return shadowrocketQuote(group.Name) + " = " + strings.Join(fields, ","), nil
+	return shadowrocketIdent(group.Name) + " = " + strings.Join(fields, ","), nil
 }
 
 func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvider) (string, error) {
@@ -172,7 +260,7 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 		}
 	}
 	if parts[0] == "MATCH" {
-		return "FINAL," + shadowrocketQuote(parts[1]), nil
+		return "FINAL," + shadowrocketIdent(parts[1]), nil
 	}
 	supportsNoResolve := false
 	switch parts[0] {
@@ -198,8 +286,8 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 	if len(parts) != 3 && !(len(parts) == 4 && supportsNoResolve && parts[3] == "no-resolve") {
 		return "", ErrUnsupportedShadowrocketRule
 	}
-	parts[1] = shadowrocketQuote(parts[1])
-	parts[2] = shadowrocketQuote(parts[2])
+	parts[1] = shadowrocketValue(parts[1])
+	parts[2] = shadowrocketIdent(parts[2])
 	return strings.Join(parts, ","), nil
 }
 
@@ -237,11 +325,22 @@ func safeShadowrocketValue(value string) bool {
 	}) < 0
 }
 
-func shadowrocketQuote(value string) string {
-	if value == "" || strings.ContainsAny(value, ",=\"\\#;[]") || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
-		return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+func shadowrocketIdent(value string) string {
+	if value == "" || strings.ContainsAny(value, ",=\"\\#;") || strings.HasPrefix(strings.TrimLeftFunc(value, unicode.IsSpace), "[") {
+		return shadowrocketEscaped(value)
 	}
 	return value
+}
+
+func shadowrocketValue(value string) string {
+	if value == "" || strings.ContainsAny(value, ",=\"\\#;[]") || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return shadowrocketEscaped(value)
+	}
+	return value
+}
+
+func shadowrocketEscaped(value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
 }
 
 var shadowrocketMarkers = map[string]string{

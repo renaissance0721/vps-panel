@@ -1,11 +1,14 @@
 package subscription
 
 import (
+	"encoding/base64"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	"gopkg.in/yaml.v3"
 )
 
 func shadowrocketTestRouting() *RoutingPreset {
@@ -31,7 +34,7 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 	for _, expected := range []string{"[General]", "[Proxy]", "[Proxy Group]", "[Rule]",
 		"US1 = vless,203.0.113.1,443,", "password=test-uuid", "tls=true", "reality=true",
 		"pbk=public-test-key", "sid=abcd", "fp=chrome", "peer=example.com", "flow=xtls-rprx-vision", "udp-relay=true",
-		"FINAL,\"🚀 默认代理\"", "/Surge/OpenAI/OpenAI.list"} {
+		"FINAL,🚀 默认代理", "/Surge/OpenAI/OpenAI.list"} {
 		if !strings.Contains(string(body), expected) {
 			t.Errorf("missing %q", expected)
 		}
@@ -100,6 +103,168 @@ func TestShadowrocketBindingsReferencesAndCustomSections(t *testing.T) {
 	}
 }
 
+func TestShadowrocketNamesAndBindingsUseOneNormalization(t *testing.T) {
+	originals := []string{"🇺🇸   Los Angeles Home", "🇯🇵 Tokyo", "🇸🇬 Singapore", "🇭🇰 Hong Kong", "⚡ US Premium", "🚀 🇺🇸 LA"}
+	wants := []string{"Los Angeles Home", "Tokyo", "Singapore", "Hong Kong", "⚡ US Premium", "🚀 🇺🇸 LA"}
+	nodes := make([]ResolvedSubscriptionNode, len(originals))
+	names := make(map[int64]string, len(originals))
+	for index, name := range originals {
+		nodes[index] = ResolvedSubscriptionNode{Name: name, Protocol: proxystore.ProtocolShadowsocks,
+			Address: "example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}
+		names[int64(index+1)] = name
+	}
+	routing := &RoutingPreset{Name: "Names", Groups: []RoutingGroup{
+		{Key: "grp_ai01", Name: "🤖 AI", Type: "select"},
+		{Key: "grp_us01", Name: "🇺🇸 美国", Type: "select", Proxies: []string{"DIRECT"}},
+		{Key: "grp_proxy", Name: "🚀 默认代理", Type: "select", Proxies: []string{"🤖 AI", "🇺🇸 美国"}, IncludeAll: true},
+	}, RuleProviders: shadowrocketTestRouting().RuleProviders,
+		Rules: []string{"RULE-SET,OpenAI,🤖 AI", "MATCH,🚀 默认代理"}}
+	data := PersonalSubscriptionData{Nodes: nodes, NodeNames: names, RoutingPreset: routing,
+		RoutingBindings: RoutingBindings{"grp_ai01": {1, 2}}}
+	body, err := RenderPersonalShadowrocketSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(body)
+	for _, name := range wants {
+		if !strings.Contains(output, "\n"+name+" = ss,example.com,8388,") {
+			t.Errorf("missing unquoted proxy %q", name)
+		}
+	}
+	for _, line := range []string{
+		"🤖 AI = select,Los Angeles Home,Tokyo",
+		"🇺🇸 美国 = select,DIRECT",
+		"🚀 默认代理 = select,🤖 AI,🇺🇸 美国,Los Angeles Home,Tokyo,Singapore,Hong Kong,⚡ US Premium,🚀 🇺🇸 LA",
+		"RULE-SET,https://example.com/OpenAI.list,🤖 AI",
+		"FINAL,🚀 默认代理",
+	} {
+		if !strings.Contains(output, "\n"+line+"\n") {
+			t.Errorf("missing unquoted line %q", line)
+		}
+	}
+	for _, old := range originals[:4] {
+		if strings.Contains(output, old) {
+			t.Errorf("old flagged node name remained: %q", old)
+		}
+	}
+	if !slices.EqualFunc(data.Nodes, originals, func(node ResolvedSubscriptionNode, original string) bool { return node.Name == original }) ||
+		data.NodeNames[1] != originals[0] {
+		t.Fatal("original personal names were mutated")
+	}
+	mihomo, err := RenderPersonalMihomoSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config mihomoConfig
+	if err := yaml.Unmarshal(mihomo, &config); err != nil || config.Proxies[0].Name != originals[0] || config.ProxyGroups[0].Proxies[0] != originals[0] {
+		t.Fatalf("Mihomo names changed: %v", err)
+	}
+}
+
+func TestShadowrocketNormalizedNameCollisions(t *testing.T) {
+	for _, check := range []struct {
+		name, group      string
+		originals, wants []string
+	}{
+		{"different flags", "Proxy", []string{"🇺🇸 Home", "🇯🇵 Home"}, []string{"Home [US]", "Home [JP]"}},
+		{"unflagged priority", "Proxy", []string{"🇺🇸 Home", "Home"}, []string{"Home [US]", "Home"}},
+		{"same country", "Proxy", []string{"🇺🇸 Home", "🇺🇸   Home"}, []string{"Home [US]", "Home [US 2]"}},
+		{"generated name reserved", "Proxy", []string{"🇺🇸 Home", "🇯🇵 Home", "Home [US]"}, []string{"Home [US 2]", "Home [JP]", "Home [US]"}},
+		{"later unique base", "Proxy", []string{"🇺🇸 Home", "🇯🇵 Home", "🇸🇬 Home [US]"}, []string{"Home [US 2]", "Home [JP]", "Home [US]"}},
+		{"flag only", "Proxy", []string{"🇺🇸", "🇯🇵"}, []string{"US", "JP"}},
+		{"flag only collision", "Proxy", []string{"🇺🇸", "US"}, []string{"US 2", "US"}},
+		{"reserved", "🤖 AI", []string{"🇺🇸 DIRECT", "🇯🇵 REJECT", "🇺🇸 🤖 AI"}, []string{"DIRECT [US]", "REJECT [JP]", "🤖 AI [US]"}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			nodes := make([]ResolvedSubscriptionNode, len(check.originals))
+			names := make(map[int64]string, len(nodes))
+			for index, name := range check.originals {
+				nodes[index] = ResolvedSubscriptionNode{Name: name, Protocol: proxystore.ProtocolShadowsocks,
+					Address: "example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}
+				names[int64(index+1)] = name
+			}
+			data := PersonalSubscriptionData{Nodes: nodes, NodeNames: names, RoutingPreset: &RoutingPreset{Name: "Collision",
+				Groups: []RoutingGroup{{Key: "grp_proxy", Name: check.group, Type: "select", IncludeAll: true}},
+				Rules:  []string{"MATCH," + check.group}}}
+			body, err := RenderPersonalShadowrocketSubscription(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range check.wants {
+				if !strings.Contains(string(body), "\n"+want+" = ss,") {
+					t.Errorf("missing proxy %q", want)
+				}
+			}
+			group := check.group + " = select," + strings.Join(check.wants, ",")
+			if !strings.Contains(string(body), "\n"+group+"\n") {
+				t.Errorf("group references differ: want %q", group)
+			}
+			if body2, err := RenderPersonalShadowrocketSubscription(data); err != nil || string(body2) != string(body) {
+				t.Fatal("non-deterministic names", err)
+			}
+		})
+	}
+}
+
+func TestShadowrocketOriginalNameCollisionsStillFail(t *testing.T) {
+	for _, check := range [][]string{{"🇺🇸 Home", "🇺🇸 Home"}, {"Proxy"}, {"DIRECT"}} {
+		nodes := make([]ResolvedSubscriptionNode, len(check))
+		for index, name := range check {
+			nodes[index] = ResolvedSubscriptionNode{Name: name, Protocol: proxystore.ProtocolShadowsocks,
+				Address: "example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}
+		}
+		_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{Nodes: nodes, RoutingPreset: &RoutingPreset{
+			Name: "Names", Groups: []RoutingGroup{{Key: "grp_proxy", Name: "Proxy", Type: "select", IncludeAll: true}}, Rules: []string{"MATCH,Proxy"}}})
+		if !errors.Is(err, ErrUnsupportedShadowrocketProtocol) {
+			t.Errorf("original collision %q: %v", check, err)
+		}
+	}
+}
+
+func TestShadowrocketFlagNormalizationKeepsNameValidation(t *testing.T) {
+	for _, name := range []string{"🇺🇸 \nBad", "🇺🇸 " + string([]byte{0xff})} {
+		_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{
+			Nodes: []ResolvedSubscriptionNode{{Name: name, Protocol: proxystore.ProtocolShadowsocks,
+				Address: "example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}},
+			RoutingPreset: &RoutingPreset{Name: "Names", Groups: []RoutingGroup{
+				{Key: "grp_proxy", Name: "Proxy", Type: "select", IncludeAll: true}}, Rules: []string{"MATCH,Proxy"}},
+		})
+		if !errors.Is(err, ErrUnsupportedShadowrocketProtocol) || strings.Contains(err.Error(), name) {
+			t.Errorf("unsafe name accepted or exposed: %v", err)
+		}
+	}
+}
+
+func TestShadowrocketSharedNamesDoNotChangeOtherFormats(t *testing.T) {
+	const original = "🇺🇸 Los Angeles Home"
+	uri := "ss://example#" + original
+	data := SubscriptionData{Nodes: []proxystore.ClientShare{{DisplayName: original, URI: uri,
+		Protocol: proxystore.ProtocolShadowsocks, Address: "example.com", Port: 8388,
+		Method: "aes-256-gcm", ShadowsocksPassword: "secret"}},
+		NodeNames:     map[int64]string{1: original},
+		RoutingPreset: &RoutingPreset{Name: "Shared", Groups: []RoutingGroup{{Key: "grp_proxy", Name: "Proxy", Type: "select", IncludeAll: true}}, Rules: []string{"MATCH,Proxy"}}}
+	shadowrocket, err := RenderShadowrocketSubscription(data)
+	if err != nil || !strings.Contains(string(shadowrocket), "\nLos Angeles Home = ss,") ||
+		!strings.Contains(string(shadowrocket), "\nProxy = select,Los Angeles Home\n") {
+		t.Fatalf("shared names not normalized: %v", err)
+	}
+	if data.Nodes[0].DisplayName != original || data.NodeNames[1] != original {
+		t.Fatal("shared source names mutated")
+	}
+	mihomo, err := RenderMihomoSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config mihomoConfig
+	if err := yaml.Unmarshal(mihomo, &config); err != nil || config.Proxies[0].Name != original {
+		t.Fatalf("shared Mihomo name changed: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(RenderBase64Subscription(data))
+	if err != nil || string(decoded) != uri {
+		t.Fatalf("Base64 URI changed: %v", err)
+	}
+}
+
 func TestShadowrocketEscapingAndInjectionRejection(t *testing.T) {
 	name := "🇺🇸 US, \"A\" \\ B"
 	node := ResolvedSubscriptionNode{Name: name, Protocol: proxystore.ProtocolShadowsocks,
@@ -124,6 +289,32 @@ func TestShadowrocketEscapingAndInjectionRejection(t *testing.T) {
 	}
 	if got := injectShadowrocketSections(builtinShadowrocketTemplate, []string{"{{RULES}} = ss,example.com,1"}, nil, []string{"FINAL,DIRECT"}); !strings.Contains(got, "{{RULES}} = ss") {
 		t.Fatal("node interpreted as a template")
+	}
+}
+
+func TestShadowrocketIdentifiersAndValuesEscapeSeparately(t *testing.T) {
+	node := ResolvedSubscriptionNode{Name: "US Los Angeles", Protocol: proxystore.ProtocolVLESS,
+		Address: "edge host", Port: 443, UUID: "id, with \"quote\"\\", Security: proxystore.SecurityReality,
+		ServerName: "peer with space", RealityPublicKey: "key,part", RealityShortID: "sid\"part",
+		Fingerprint: "chrome profile", Flow: proxystore.ServerFlow}
+	line, err := renderShadowrocketProxy(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`US Los Angeles = vless,"edge host",443,`, `password="id, with \"quote\"\\"`,
+		`peer="peer with space"`, `pbk="key,part"`, `sid="sid\"part"`,
+		`fp="chrome profile"`, `flow=xtls-rprx-vision`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("missing escaped value %q from %q", want, line)
+		}
+	}
+	if got, err := renderShadowrocketRule("DOMAIN,example.com,🚀 默认代理", nil); err != nil || got != "DOMAIN,example.com,🚀 默认代理" {
+		t.Fatalf("rule policy was quoted: %q, %v", got, err)
+	}
+	if shadowrocketIdent("Home [US]") != "Home [US]" || shadowrocketValue("home with space") != `"home with space"` {
+		t.Fatal("identifier and value quoting diverged")
 	}
 }
 

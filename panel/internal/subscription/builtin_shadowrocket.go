@@ -8,8 +8,6 @@ const builtinShadowrocketTemplate = `# Shadowrocket
 [General]
 bypass-system = true
 skip-proxy = 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local
-dns-server = 223.5.5.5, 119.29.29.29
-proxy-dns-server = https://223.5.5.5/dns-query
 ipv6 = true
 
 [Proxy]

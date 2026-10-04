@@ -24,7 +24,6 @@ tcp-concurrent: true
 
 profile:
   store-selected: true
-  store-fake-ip: true
 
 sniffer:
   enable: true
@@ -42,30 +41,6 @@ sniffer:
       ports:
         - 443
         - 8443
-
-dns:
-  enable: true
-  ipv6: true
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  fake-ip-filter:
-    - "*.lan"
-    - "*.local"
-    - "geosite:cn"
-    - "geosite:private"
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
-  nameserver-policy:
-    "geosite:cn":
-      - https://dns.alidns.com/dns-query
-      - https://doh.pub/dns-query
-  proxy-server-nameserver:
-    - https://223.5.5.5/dns-query
-    - https://doh.pub/dns-query
 `
 
 func BuildMihomoConfiguration(template *SubscriptionTemplate) (MihomoConfiguration, error) {

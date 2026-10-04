@@ -45,6 +45,11 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 			t.Errorf("unexpected %q", forbidden)
 		}
 	}
+	for _, forbidden := range []string{"dns-server =", "proxy-dns-server ="} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("rendered built-in Shadowrocket subscription contains %q", forbidden)
+		}
+	}
 	// The same resolved flow is used by Mihomo and Shadowrocket.
 	resolved := resolvedNodeFromClientShare(data.Nodes[0])
 	mihomo, err := renderMihomoProxy(resolved)
@@ -71,7 +76,9 @@ func TestShadowrocketBindingsReferencesAndCustomSections(t *testing.T) {
 		{Name: "US1", Protocol: proxystore.ProtocolShadowsocks, Address: "us1.example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "test-password"},
 		{Name: "US2", Protocol: proxystore.ProtocolShadowsocks, Address: "us2.example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "test-password"},
 	}
-	custom := strings.Replace(builtinShadowrocketTemplate, "ipv6 = true", "ipv6 = false", 1) + "\n[Host]\nexample.com = 127.0.0.1\n\n[URL Rewrite]\n^https://example.com/ - reject\n"
+	custom := strings.Replace(builtinShadowrocketTemplate, "ipv6 = true",
+		"dns-server = 1.1.1.1\nproxy-dns-server = https://example.com/dns-query\nipv6 = false", 1) +
+		"\n[Host]\nexample.com = 127.0.0.1\n\n[URL Rewrite]\n^https://example.com/ - reject\n"
 	data := PersonalSubscriptionData{Nodes: nodes, NodeNames: map[int64]string{1: "US1", 2: "US2"},
 		RoutingPreset: shadowrocketTestRouting(), RoutingBindings: RoutingBindings{"grp_ai1": {1, 2, 999}},
 		ShadowrocketTemplate: &SubscriptionTemplate{Type: TemplateTypeShadowrocket, Content: custom}}
@@ -81,7 +88,8 @@ func TestShadowrocketBindingsReferencesAndCustomSections(t *testing.T) {
 	}
 	for _, want := range []string{"AI = select,US1,US2", "Proxy = select,AI,DIRECT,REJECT",
 		"RULE-SET,https://example.com/OpenAI.list,AI", "GEOIP,CN,DIRECT,no-resolve", "FINAL,Proxy",
-		"ipv6 = false", "[Host]\nexample.com = 127.0.0.1", "[URL Rewrite]\n^https://example.com/ - reject"} {
+		"dns-server = 1.1.1.1", "proxy-dns-server = https://example.com/dns-query", "ipv6 = false",
+		"[Host]\nexample.com = 127.0.0.1", "[URL Rewrite]\n^https://example.com/ - reject"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("missing %q", want)
 		}

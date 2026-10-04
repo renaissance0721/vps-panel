@@ -122,10 +122,20 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 	if err := yaml.Unmarshal(body, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"mixed-port", "allow-lan", "mode", "log-level", "ipv6", "unified-delay", "tcp-concurrent", "profile", "sniffer", "dns"} {
+	for _, key := range []string{"mixed-port", "allow-lan", "mode", "log-level", "ipv6", "unified-delay", "tcp-concurrent", "profile", "sniffer"} {
 		if _, exists := raw[key]; !exists {
 			t.Fatalf("built-in Mihomo setting %q missing:\n%s", key, body)
 		}
+	}
+	if _, exists := raw["dns"]; exists {
+		t.Fatalf("rendered built-in Mihomo subscription manages DNS:\n%s", body)
+	}
+	profile, ok := raw["profile"].(map[string]any)
+	if !ok || profile["store-selected"] != true {
+		t.Fatalf("rendered built-in Mihomo profile = %#v", raw["profile"])
+	}
+	if _, exists := profile["store-fake-ip"]; exists {
+		t.Fatalf("rendered built-in Mihomo profile stores fake IP state: %#v", profile)
 	}
 	var settings struct {
 		MixedPort     int    `yaml:"mixed-port"`
@@ -137,7 +147,6 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 		TCPConcurrent bool   `yaml:"tcp-concurrent"`
 		Profile       struct {
 			StoreSelected bool `yaml:"store-selected"`
-			StoreFakeIP   bool `yaml:"store-fake-ip"`
 		} `yaml:"profile"`
 		Sniffer struct {
 			Enable bool `yaml:"enable"`
@@ -146,33 +155,15 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 				OverrideDestination bool  `yaml:"override-destination"`
 			} `yaml:"sniff"`
 		} `yaml:"sniffer"`
-		DNS struct {
-			Enable                bool                `yaml:"enable"`
-			IPv6                  bool                `yaml:"ipv6"`
-			EnhancedMode          string              `yaml:"enhanced-mode"`
-			FakeIPRange           string              `yaml:"fake-ip-range"`
-			FakeIPFilter          []string            `yaml:"fake-ip-filter"`
-			DefaultNameserver     []string            `yaml:"default-nameserver"`
-			Nameserver            []string            `yaml:"nameserver"`
-			NameserverPolicy      map[string][]string `yaml:"nameserver-policy"`
-			ProxyServerNameserver []string            `yaml:"proxy-server-nameserver"`
-		} `yaml:"dns"`
 	}
 	if err := yaml.Unmarshal(body, &settings); err != nil {
 		t.Fatal(err)
 	}
 	if settings.MixedPort != 7890 || settings.AllowLAN || settings.Mode != "rule" || settings.LogLevel != "info" ||
 		!settings.IPv6 || !settings.UnifiedDelay || !settings.TCPConcurrent ||
-		!settings.Profile.StoreSelected || !settings.Profile.StoreFakeIP || !settings.Sniffer.Enable ||
+		!settings.Profile.StoreSelected || !settings.Sniffer.Enable ||
 		len(settings.Sniffer.Sniff["HTTP"].Ports) != 2 || !settings.Sniffer.Sniff["HTTP"].OverrideDestination ||
-		len(settings.Sniffer.Sniff["TLS"].Ports) != 2 || len(settings.Sniffer.Sniff["QUIC"].Ports) != 2 ||
-		!settings.DNS.Enable || !settings.DNS.IPv6 || settings.DNS.EnhancedMode != "fake-ip" ||
-		settings.DNS.FakeIPRange != "198.18.0.1/16" ||
-		!slices.Equal(settings.DNS.FakeIPFilter, []string{"*.lan", "*.local", "geosite:cn", "geosite:private"}) ||
-		!slices.Equal(settings.DNS.DefaultNameserver, []string{"223.5.5.5", "119.29.29.29"}) ||
-		!slices.Equal(settings.DNS.Nameserver, []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}) ||
-		!slices.Equal(settings.DNS.NameserverPolicy["geosite:cn"], []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}) ||
-		!slices.Equal(settings.DNS.ProxyServerNameserver, []string{"https://223.5.5.5/dns-query", "https://doh.pub/dns-query"}) {
+		len(settings.Sniffer.Sniff["TLS"].Ports) != 2 || len(settings.Sniffer.Sniff["QUIC"].Ports) != 2 {
 		t.Fatalf("built-in Mihomo settings = %+v", settings)
 	}
 }
@@ -211,7 +202,14 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 			Address: "custom.example.com", Port: 443, Security: proxystore.SecurityTLS,
 			ServerName: "custom.example.com", Fingerprint: proxystore.Fingerprint,
 		}},
-		MihomoTemplate: &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: "dns:\n  enable: false\ntun:\n  enable: false"},
+		MihomoTemplate: &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: `dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query
+tun:
+  enable: false`},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -224,8 +222,11 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 	if err := yaml.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	dns := raw["dns"].(map[string]any)
-	if raw["mixed-port"] != 7890 || dns["enable"] != false || len(parsed.ProxyGroups) != 8 ||
+	dns, ok := raw["dns"].(map[string]any)
+	nameservers, nameserversOK := dns["nameserver"].([]any)
+	if !ok || dns["enable"] != true || dns["enhanced-mode"] != "fake-ip" ||
+		dns["fake-ip-range"] != "198.18.0.1/16" || !nameserversOK || len(nameservers) != 1 ||
+		nameservers[0] != "https://1.1.1.1/dns-query" || raw["mixed-port"] != 7890 || len(parsed.ProxyGroups) != 8 ||
 		parsed.ProxyGroups[0].Name != "🚀 默认代理" ||
 		!slices.Equal(parsed.ProxyGroups[0].Proxies, []string{"DIRECT", "Custom"}) ||
 		!slices.Equal(parsed.Rules, []string{

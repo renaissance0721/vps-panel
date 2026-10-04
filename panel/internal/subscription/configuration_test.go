@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestBuiltinMihomoConfigurationContainsOnlyClientBase(t *testing.T) {
+func TestBuiltinMihomoTemplateDoesNotManageDNS(t *testing.T) {
 	value, err := BuildMihomoConfiguration(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -25,24 +25,68 @@ func TestBuiltinMihomoConfigurationContainsOnlyClientBase(t *testing.T) {
 			t.Fatalf("built-in Mihomo base contains %q:\n%s", key, value.YAML)
 		}
 	}
-	for _, key := range []string{"mixed-port", "profile", "sniffer", "dns"} {
+	for _, key := range []string{"mixed-port", "profile", "sniffer"} {
 		if _, exists := root[key]; !exists {
 			t.Fatalf("built-in Mihomo base is missing %q", key)
 		}
 	}
+	if _, exists := root["dns"]; exists {
+		t.Fatalf("built-in Mihomo base manages DNS:\n%s", value.YAML)
+	}
+	profile, ok := root["profile"].(map[string]any)
+	if !ok || profile["store-selected"] != true {
+		t.Fatalf("built-in Mihomo profile = %#v", root["profile"])
+	}
+	if _, exists := profile["store-fake-ip"]; exists {
+		t.Fatalf("built-in Mihomo profile stores fake IP state: %#v", profile)
+	}
 }
 
 func TestBuildMihomoConfigurationAppliesOnlyBaseTemplateOverlay(t *testing.T) {
-	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{Type: TemplateTypeMihomo, Content: "dns:\n  enable: false\ntun:\n  enable: false"})
+	value, err := BuildMihomoConfiguration(&SubscriptionTemplate{Type: TemplateTypeMihomo, Content: `dns:
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query
+tun:
+  enable: false`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(value.YAML, "mixed-port: 7890") || !strings.Contains(value.YAML, "enable: false") {
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(value.YAML), &root); err != nil {
+		t.Fatal(err)
+	}
+	dns, ok := root["dns"].(map[string]any)
+	if !ok || dns["enable"] != true || dns["enhanced-mode"] != "fake-ip" ||
+		dns["fake-ip-range"] != "198.18.0.1/16" || !strings.Contains(value.YAML, "https://1.1.1.1/dns-query") ||
+		root["mixed-port"] != 7890 {
 		t.Fatalf("effective Mihomo base = %s", value.YAML)
 	}
 	for _, key := range []string{"proxies:", "proxy-groups:", "rule-providers:", "rules:"} {
 		if strings.Contains(value.YAML, key) {
 			t.Fatalf("effective Mihomo base contains routing key %q:\n%s", key, value.YAML)
+		}
+	}
+}
+
+func TestBuiltinShadowrocketTemplateDoesNotManageDNS(t *testing.T) {
+	value, err := BuildShadowrocketConfiguration(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"dns-server =", "proxy-dns-server ="} {
+		if strings.Contains(value, forbidden) {
+			t.Fatalf("built-in Shadowrocket base contains %q:\n%s", forbidden, value)
+		}
+	}
+	for _, required := range []string{
+		"bypass-system = true", "skip-proxy = 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, localhost, *.local",
+		"ipv6 = true", "[Proxy]", "[Proxy Group]", "[Rule]",
+	} {
+		if !strings.Contains(value, required) {
+			t.Fatalf("built-in Shadowrocket base is missing %q:\n%s", required, value)
 		}
 	}
 }

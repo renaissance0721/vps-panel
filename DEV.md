@@ -192,7 +192,7 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 节点解析继续统一使用 `ResolvedSubscriptionNode`。共享订阅由既有 ClientShare 转换，个人订阅沿用 Proxy / Relay / Landing 的解析结果；renderer 不查询节点或凭据。`render.go` 的策略组解析由 Mihomo 和 `render_shadowrocket.go` 共用，保留 RoutingBindings 的节点顺序、IncludeAll、DIRECT / REJECT 及组间引用。
 
-Shadowrocket renderer 直接生成原生节点：VLESS 的 UUID 写入 `password`，SNI 写入 `peer`，REALITY 写入 `reality=true`、`pbk`、`sid`、`fp`，flow 与 Mihomo 共用处理；SS / SS2022 使用 resolved password。名称和参数按配置值转义，拒绝控制字符，错误不回显凭据。现有组类型仅支持 `select`。规则支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOIP、RULE-SET；MATCH 转为 FINAL，IP / GEOIP / RULE-SET 保留可用的 no-resolve。对于 `IsDefault` 且末尾 MATCH 指向现有策略组的内置默认分流，Shadowrocket 不输出该 catch-all 组，并将规则及其他组对它的引用映射为原生 `PROXY`，使 `FINAL,PROXY` 跟随首页当前选择；Mihomo 和非默认方案保持原语义。Shadowrocket 单独保留大写 `PROXY` 名称，避免节点或自定义组与原生策略冲突。其他规则明确失败，不静默丢弃分流意图。
+Shadowrocket renderer 直接生成原生节点：VLESS 的 UUID 写入 `password`，SNI 写入 `peer`，REALITY 写入 `reality=true`、`pbk`、`sid`、`fp`，flow 与 Mihomo 共用处理；SS / SS2022 使用 resolved password。名称和参数按配置值转义，拒绝控制字符，错误不回显凭据。现有组类型仅支持 `select`。规则支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOIP、RULE-SET；MATCH 转为 FINAL，IP / GEOIP / RULE-SET 保留可用的 no-resolve。当末尾 MATCH 指向当前方案中 `include_all=true` 的 `select` 组时，Shadowrocket 按分流结构将其识别为 catch-all，不输出该组，并将规则及其他组对它的引用映射为原生 `PROXY`，使 `FINAL,PROXY` 跟随首页当前选择；识别不依赖 `RoutingPreset.IsDefault`。不满足该结构的普通自定义组保留原语义，Mihomo 始终保留原组和 MATCH。Shadowrocket 单独保留大写 `PROXY` 名称，避免节点或自定义组与原生策略冲突。其他规则明确失败，不静默丢弃分流意图。
 
 RoutingPreset 是客户端无关的逻辑分流配置。Rule Provider 推荐使用 http / classical / text：Mihomo 的 rule-providers 使用原 URL，RULE-SET 保留 provider 名称；Shadowrocket 直接将同一 URL 写入 RULE-SET，仅验证类型、行为、格式及安全的 http/https URL，不按名称、域名或后缀猜测和改写。YAML、mrs、非 classical 源及不兼容规则明确拒绝，错误包含规则序号、原文、provider 名和具体原因，上下文限制长度。renderer 不下载远程规则，text 源的实际内容兼容性由配置者确认。
 

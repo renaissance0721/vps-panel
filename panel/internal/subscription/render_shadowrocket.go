@@ -123,7 +123,7 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 }
 
 func shadowrocketDefaultProxyGroup(routing RoutingPreset) string {
-	if !routing.IsDefault || len(routing.Rules) == 0 {
+	if len(routing.Rules) == 0 {
 		return ""
 	}
 	parts := strings.Split(routing.Rules[len(routing.Rules)-1], ",")
@@ -132,7 +132,7 @@ func shadowrocketDefaultProxyGroup(routing RoutingPreset) string {
 	}
 	policy := strings.TrimSpace(parts[1])
 	for _, group := range routing.Groups {
-		if group.Name == policy {
+		if group.Name == policy && group.Type == "select" && group.IncludeAll {
 			return policy
 		}
 	}

@@ -133,7 +133,7 @@ Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有
 
 Shadowrocket 模板保留 `[General]`，可添加 `[Host]`、`[URL Rewrite]`；`[Proxy]`、`[Proxy Group]`、`[Rule]` 必须分别包含唯一的独立行 `{{PROXIES}}`、`{{PROXY_GROUPS}}`、`{{RULES}}`，不能放入旧节点或规则。策略组和规则统一来自分流方案与节点绑定。
 
-当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组。通用分流方案由两个客户端共用；内置默认分流在 Mihomo 中继续由默认代理策略组承接 `MATCH`，在 Shadowrocket 中映射为 `FINAL,PROXY`，默认节点跟随首页当前选择，专项策略组仍可独立选择。Rule Provider 推荐使用 http / classical / text 列表；默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
+当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组。通用分流方案由两个客户端共用；当末尾 `MATCH` 指向一个包含全部订阅节点的 `select` 策略组时，Mihomo 保留该组和 `MATCH`，Shadowrocket 将其按结构识别为 catch-all 并映射为 `FINAL,PROXY`，默认节点跟随首页当前选择，专项策略组仍可独立选择。Rule Provider 推荐使用 http / classical / text 列表；默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
 
 ## 项目结构
 

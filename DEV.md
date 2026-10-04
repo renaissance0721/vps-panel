@@ -312,7 +312,8 @@ Panel 更新、卸载和历史布局迁移不得跨越其资源边界删除同�
 Agent 清理也不得删除非本项目拥有的服务、目录和防火墙规则。
 
 Panel 本地运行读取 `PANEL_LISTEN_ADDR`、`PANEL_DATA_DIR`、`PANEL_WEB_DIR`；默认分别为 `127.0.0.1:8080`、`data`、`../web/dist`。
-生产域名模式使用 Caddy 反向代理；IP 模式和 Compose 的对外端口不同，以 README 的对应安装方式为准。
+原生安装另外保存公开地址 `PANEL_DOMAIN` 和代理管理方式 `PANEL_PROXY_MODE=caddy|external`。caddy 新安装默认监听 `127.0.0.1:8080`，external 新安装默认监听 `0.0.0.0:8080`；升级保留环境文件中的有效域名、监听地址和代理模式。
+只有 caddy 模式管理 `/etc/caddy/vps-panel.caddy` 及 Caddyfile 中对应的精确 import。缺少 `PANEL_PROXY_MODE` 的旧安装仅在两项所有权标记都存在时推断为 caddy，否则推断为 external。IP 模式和 Compose 的对外端口不同，以 README 的对应安装方式为准。
 
 Release workflow 对 `v*` tag 构建 Linux amd64 / arm64 的 Panel 和 Agent，版本由构建参数注入。
 Panel 压缩包带构建后的 Web；`SHA256SUMS` 当前覆盖 Agent 文件。手动 workflow dispatch 可构建，但发布 Release 的步骤以 tag 为条件。
@@ -354,6 +355,12 @@ cd web
 npm ci
 npm test
 npm run build
+```
+
+原生 Panel 安装、升级、回滚和 Caddy 资源隔离使用：
+
+```bash
+bash scripts/test-panel-layout.sh
 ```
 
 `npm run build` 包含 `vue-tsc --noEmit` 和 Vite 构建。项目没有 `npm run lint` 脚本。

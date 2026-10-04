@@ -26,22 +26,38 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 ### IP 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- --domain :80
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- \
+  --domain :80 \
+  --proxy-mode external
 ```
 
 安装后访问 `http://服务器IP:8080`，首次打开页面创建管理员账号。
 此处 `:80` 是脚本的无域名标记；原生安装的访问端口仍为 **8080**，请放行该端口。
 
-### 域名 + HTTPS
+### 域名 + Panel 自管 HTTPS
 
 先将域名解析到 Panel 所在 VPS，并确保 TCP 80 / 443 可从公网访问：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- --domain panel.example.com
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- \
+  --domain panel.example.com \
+  --proxy-mode caddy
 ```
 
 将 `panel.example.com` 替换为自己的域名。脚本配置 Caddy 和 HTTPS，完成后访问 `https://panel.example.com`。
 公网部署推荐此方式；Caddy 的自动安装适配 Debian / Ubuntu。
+
+### 已有外部反向代理
+
+已有 Nginx、Nginx Proxy Manager、Traefik 或 Cloudflare Tunnel 时使用 external 模式：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/renaissance0721/vps-panel/main/scripts/install-panel.sh | sudo bash -s -- \
+  --domain panel.example.com \
+  --proxy-mode external
+```
+
+external 模式默认写入 `PANEL_LISTEN_ADDR=0.0.0.0:8080`，由用户把外部反向代理指向该地址；可用 `--listen-addr HOST:PORT` 显式修改。此模式保留实际公网域名，但安装、更新、域名修改和卸载都不管理 Caddy。
 
 ### 系统与架构
 
@@ -141,14 +157,15 @@ vps-panel/
 | `sudo vp update` | 更新到最新 Release |
 | `sudo vp db check` | 检查 SQLite 完整性、外键和关键业务引用，发现问题时返回非零状态 |
 | `sudo vp db repair` | 先创建一致快照，再事务化清理纯排序表 orphan；不修改 Proxy、Relay、订阅等业务数据 |
-| `sudo vp domain` | 修改 Panel 域名或切换为 IP 访问 |
+| `sudo vp domain [DOMAIN]` | 修改 Panel 公网域名，保留当前代理模式和监听地址 |
+| `sudo vp proxy caddy\|external [LISTEN_ADDR]` | 切换代理模式，可同时指定新的监听地址 |
 | `sudo vp status` | 查看 Panel 服务状态 |
 | `sudo vp logs` | 查看 Panel 日志 |
 | `sudo vp restart` | 重启 Panel |
 | `sudo vp uninstall` | 卸载 Panel，交互选择是否删除数据 |
 | `vp help` | 查看命令帮助 |
 
-修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。
+修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。`vp update` 会保留当前 `PANEL_DOMAIN`、`PANEL_LISTEN_ADDR` 和 `PANEL_PROXY_MODE`。
 更新会保留业务数据；跨服务器迁移可使用管理员的备份导出 / 导入功能，并保持 Panel 访问域名一致。
 
 ## 🛠️ 本地开发

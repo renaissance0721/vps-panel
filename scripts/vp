@@ -36,6 +36,61 @@ current_domain() {
   printf '%s\n' "${domain:-:80}"
 }
 
+panel_owns_caddy_configuration() {
+  [[ -f "$CADDY_SNIPPET" && -f "$CADDY_FILE" ]] && grep -Fqx "$CADDY_IMPORT" "$CADDY_FILE"
+}
+
+current_proxy_mode() {
+  local domain=""
+  local proxy_mode=""
+
+  domain="$(current_domain)"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    proxy_mode="$(sed -n 's/^PANEL_PROXY_MODE=//p' "$CONFIG_FILE" | tail -n 1)"
+  fi
+  case "$proxy_mode" in
+    caddy | external) printf '%s\n' "$proxy_mode" ;;
+    "")
+      if [[ "$domain" != ":80" ]] && panel_owns_caddy_configuration; then
+        printf 'caddy\n'
+      else
+        printf 'external\n'
+      fi
+      ;;
+    *) fail "invalid PANEL_PROXY_MODE '${proxy_mode}' in ${CONFIG_FILE}" ;;
+  esac
+}
+
+current_listen_address() {
+  local listen_address=""
+  local proxy_mode=""
+
+  if [[ -f "$CONFIG_FILE" ]]; then
+    listen_address="$(sed -n 's/^PANEL_LISTEN_ADDR=//p' "$CONFIG_FILE" | tail -n 1)"
+  fi
+  if [[ -n "$listen_address" ]]; then
+    printf '%s\n' "$listen_address"
+    return
+  fi
+  proxy_mode="$(current_proxy_mode)"
+  if [[ "$proxy_mode" == "caddy" ]]; then
+    printf '127.0.0.1:8080\n'
+  else
+    printf '0.0.0.0:8080\n'
+  fi
+}
+
+listen_endpoint() {
+  local address="$1"
+
+  case "$address" in
+    0.0.0.0:*) printf '127.0.0.1:%s\n' "${address##*:}" ;;
+    :*) printf '127.0.0.1:%s\n' "${address#:}" ;;
+    \[::\]:*) printf '[::1]:%s\n' "${address##*:}" ;;
+    *) printf '%s\n' "$address" ;;
+  esac
+}
+
 panel_data_dir() {
   local data_dir=""
   if [[ -f "$CONFIG_FILE" ]]; then
@@ -54,9 +109,12 @@ database_binary() {
 
 wait_for_panel() {
   local response=""
+  local endpoint=""
+
+  endpoint="$(listen_endpoint "$(current_listen_address)")"
   for _ in {1..30}; do
     if response="$(curl -fsS --connect-timeout 2 --max-time 4 \
-      http://127.0.0.1:8080/api/health 2>/dev/null)"; then
+      "http://${endpoint}/api/health" 2>/dev/null)"; then
       if [[ "$response" == *'"status":"ok"'* ]]; then
         return 0
       fi
@@ -68,6 +126,8 @@ wait_for_panel() {
 
 run_latest_installer() {
   local domain="$1"
+  local proxy_mode="$2"
+  local listen_address="$3"
   local temporary_installer=""
   local exit_code=0
 
@@ -76,39 +136,73 @@ run_latest_installer() {
   curl --proto '=https' --tlsv1.2 -fL --retry 3 --retry-delay 2 \
     "$REMOTE_INSTALLER" \
     -o "$temporary_installer"
-  bash "$temporary_installer" --domain "$domain" || exit_code=$?
+  bash "$temporary_installer" \
+    --domain "$domain" \
+    --proxy-mode "$proxy_mode" \
+    --listen-addr "$listen_address" || exit_code=$?
   rm -f -- "$temporary_installer"
   return "$exit_code"
 }
 
 update_panel() {
   local domain=""
+  local proxy_mode=""
+  local listen_address=""
   domain="$(current_domain)"
+  proxy_mode="$(current_proxy_mode)"
+  listen_address="$(current_listen_address)"
   printf '[vps-panel] Updating Panel from the latest GitHub Release...\n'
-  run_latest_installer "$domain"
+  run_latest_installer "$domain" "$proxy_mode" "$listen_address"
 }
 
 change_domain() {
-  local domain=""
-  printf 'New domain, or :80 for IP:8080 access: '
-  IFS= read -r domain
+  local domain="${1:-}"
+  local proxy_mode=""
+  local listen_address=""
+  if [[ -z "$domain" ]]; then
+    printf 'New domain, or :80 for direct IP access: '
+    IFS= read -r domain
+  fi
   if [[ -z "$domain" ]]; then
     printf '[vps-panel] Domain was not changed.\n'
     return
   fi
-  run_latest_installer "$domain"
+  proxy_mode="$(current_proxy_mode)"
+  listen_address="$(current_listen_address)"
+  run_latest_installer "$domain" "$proxy_mode" "$listen_address"
+}
+
+change_proxy_mode() {
+  local proxy_mode="${1:-}"
+  local listen_address="${2:-}"
+
+  if [[ -z "$proxy_mode" ]]; then
+    printf 'Proxy mode (caddy or external): '
+    IFS= read -r proxy_mode
+  fi
+  case "$proxy_mode" in
+    caddy | external) ;;
+    *) fail "invalid proxy mode '${proxy_mode}'; use caddy or external" ;;
+  esac
+  if [[ -z "$listen_address" ]]; then
+    listen_address="$(current_listen_address)"
+  fi
+  run_latest_installer "$(current_domain)" "$proxy_mode" "$listen_address"
 }
 
 show_status() {
   local domain=""
+  local proxy_mode=""
   domain="$(current_domain)"
+  proxy_mode="$(current_proxy_mode)"
   if [[ "$domain" == ":80" ]]; then
     printf '[vps-panel] Access: http://YOUR_VPS_IP:8080\n'
   else
     printf '[vps-panel] Access: https://%s\n' "$domain"
   fi
+  printf '[vps-panel] Listen: %s; proxy mode: %s\n' "$(current_listen_address)" "$proxy_mode"
   systemctl status "$SERVICE_NAME" --no-pager
-  if [[ "$domain" != ":80" && -f "$CADDY_SNIPPET" ]]; then
+  if [[ "$proxy_mode" == "caddy" && -f "$CADDY_SNIPPET" ]]; then
     systemctl status caddy.service --no-pager
   fi
 }
@@ -180,6 +274,7 @@ remove_caddy_configuration() {
 uninstall_panel() {
   local confirmation=""
   local delete_data=""
+  local proxy_mode=""
   local shared_root=""
 
   printf 'Type uninstall to remove VPS Panel: '
@@ -199,8 +294,11 @@ uninstall_panel() {
   for shared_root in /opt/vps-panel /var/lib/vps-panel /etc/vps-panel; do
     [[ ! -L "$shared_root" ]] || fail "shared root must not be a symbolic link: $shared_root"
   done
+  proxy_mode="$(current_proxy_mode)"
   systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-  remove_caddy_configuration
+  if [[ "$proxy_mode" == "caddy" ]]; then
+    remove_caddy_configuration
+  fi
   rm -f -- "$SERVICE_FILE"
   systemctl daemon-reload
   rm -rf -- "$INSTALL_DIR" "$CONFIG_DIR"
@@ -223,7 +321,8 @@ Commands:
   update      Download and install the latest GitHub Release
   db check    Check SQLite integrity, foreign keys, and business references
   db repair   Back up SQLite and repair safe orphan ordering rows
-  domain      Change the Panel domain or switch to IP:8080 access
+  domain [DOMAIN]             Change only the public Panel domain
+  proxy MODE [LISTEN_ADDR]    Switch between caddy and external proxy mode
   status      Show systemd service status
   logs        Follow Panel logs from journald
   restart     Restart Panel and run a health check
@@ -248,13 +347,16 @@ menu() {
 VPS Panel Management
 ====================
 Domain: $(current_domain)
+Listen: $(current_listen_address)
+Proxy mode: $(current_proxy_mode)
 
 1) Update Panel
 2) Change domain
-3) Show status
-4) View logs
-5) Restart Panel
-6) Uninstall Panel
+3) Change proxy mode
+4) Show status
+5) View logs
+6) Restart Panel
+7) Uninstall Panel
 0) Exit
 EOF
     printf 'Select an option: '
@@ -263,19 +365,20 @@ EOF
     case "$selection" in
       1) update_panel ;;
       2) change_domain ;;
-      3)
+      3) change_proxy_mode ;;
+      4)
         show_status
         pause_menu
         ;;
-      4)
+      5)
         show_logs
         pause_menu
         ;;
-      5)
+      6)
         restart_panel
         pause_menu
         ;;
-      6) uninstall_panel ;;
+      7) uninstall_panel ;;
       0) exit 0 ;;
       *) printf '[vps-panel] Invalid option.\n' ;;
     esac
@@ -292,8 +395,14 @@ esac
 require_installation
 
 case "${1:-menu}" in
-  menu) menu ;;
-  update) update_panel ;;
+  menu)
+    [[ $# -eq 0 ]] || fail "usage: vp"
+    menu
+    ;;
+  update)
+    [[ $# -eq 1 ]] || fail "usage: vp update"
+    update_panel
+    ;;
   db)
     [[ $# -eq 2 ]] || fail "usage: vp db check|repair"
     case "$2" in
@@ -302,11 +411,30 @@ case "${1:-menu}" in
       *) fail "usage: vp db check|repair" ;;
     esac
     ;;
-  domain) change_domain ;;
-  status) show_status ;;
-  logs) show_logs ;;
-  restart) restart_panel ;;
-  uninstall) uninstall_panel ;;
+  domain)
+    [[ $# -le 2 ]] || fail "usage: vp domain [DOMAIN]"
+    change_domain "${2:-}"
+    ;;
+  proxy)
+    [[ $# -ge 2 && $# -le 3 ]] || fail "usage: vp proxy caddy|external [LISTEN_ADDR]"
+    change_proxy_mode "$2" "${3:-}"
+    ;;
+  status)
+    [[ $# -eq 1 ]] || fail "usage: vp status"
+    show_status
+    ;;
+  logs)
+    [[ $# -eq 1 ]] || fail "usage: vp logs"
+    show_logs
+    ;;
+  restart)
+    [[ $# -eq 1 ]] || fail "usage: vp restart"
+    restart_panel
+    ;;
+  uninstall)
+    [[ $# -eq 1 ]] || fail "usage: vp uninstall"
+    uninstall_panel
+    ;;
   *)
     usage >&2
     exit 1

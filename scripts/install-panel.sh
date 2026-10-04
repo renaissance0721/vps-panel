@@ -23,11 +23,16 @@ readonly CADDY_SNIPPET="/etc/caddy/vps-panel.caddy"
 readonly CADDY_IMPORT="import /etc/caddy/vps-panel.caddy"
 
 requested_domain=""
+requested_proxy_mode=""
+requested_listen_address=""
 temporary_dir=""
 staged_dir=""
 backup_dir=""
 architecture=""
 listen_address=""
+previous_listen_address=""
+previous_proxy_mode=""
+proxy_mode_explicit=0
 had_existing_install=0
 install_swapped=0
 legacy_docker_install=0
@@ -54,13 +59,16 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: install-panel.sh [--domain panel.example.com]
+Usage: install-panel.sh [--domain panel.example.com] [--proxy-mode caddy|external] [--listen-addr ADDRESS]
 
 Options:
-  --domain DOMAIN  Configure native Caddy automatic HTTPS for this domain.
-  -h, --help       Show this help message.
+  --domain DOMAIN       Set the public Panel domain.
+  --proxy-mode MODE     Manage HTTPS with caddy, or use an external reverse proxy.
+  --listen-addr ADDRESS Set the Panel backend listen address.
+  -h, --help            Show this help message.
 
-Without a domain, Panel listens publicly on port 8080 for direct IP access.
+New caddy installs listen on 127.0.0.1:8080. New external installs listen on
+0.0.0.0:8080. Existing valid settings are preserved unless explicitly changed.
 EOF
 }
 
@@ -73,25 +81,107 @@ validate_domain() {
   fi
 }
 
-current_domain() {
-  local domain=""
-
+current_environment_file() {
   if [[ -f "$CONFIG_FILE" ]]; then
-    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$CONFIG_FILE" | tail -n 1)"
+    printf '%s\n' "$CONFIG_FILE"
   elif [[ -f "$LEGACY_CONFIG_FILE" ]]; then
-    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "$LEGACY_CONFIG_FILE" | tail -n 1)"
+    printf '%s\n' "$LEGACY_CONFIG_FILE"
   elif [[ -f "${ROOT_DIR}/deploy/.env" ]]; then
-    domain="$(sed -n 's/^PANEL_DOMAIN=//p' "${ROOT_DIR}/deploy/.env" | tail -n 1)"
+    printf '%s\n' "${ROOT_DIR}/deploy/.env"
   fi
-
-  printf '%s\n' "$domain"
 }
 
-choose_domain() {
+current_setting() {
+  local key="$1"
+  local environment_file=""
+
+  environment_file="$(current_environment_file)"
+  if [[ -n "$environment_file" ]]; then
+    sed -n "s/^${key}=//p" "$environment_file" | tail -n 1
+  fi
+}
+
+has_existing_configuration() {
+  [[ -n "$(current_environment_file)" || -f "$INSTALL_MARKER" || -f "$LEGACY_INSTALL_MARKER" ]]
+}
+
+panel_owns_caddy_configuration() {
+  [[ -f "$CADDY_SNIPPET" && -f "$CADDY_FILE" ]] && grep -Fqx "$CADDY_IMPORT" "$CADDY_FILE"
+}
+
+validate_proxy_mode() {
+  case "$1" in
+    caddy | external) ;;
+    *) fail "invalid proxy mode '$1'; use caddy or external" ;;
+  esac
+}
+
+validate_listen_address() {
+  local value="$1"
+  local port=""
+
+  if [[ "$value" =~ ^\[([0-9A-Fa-f:.%]+)\]:([0-9]+)$ ]]; then
+    port="${BASH_REMATCH[2]}"
+  elif [[ "$value" =~ ^([A-Za-z0-9._-]*):([0-9]+)$ ]]; then
+    port="${BASH_REMATCH[2]}"
+  else
+    fail "invalid listen address '${value}'; use HOST:PORT such as 0.0.0.0:8080"
+  fi
+
+  if [[ ${#port} -gt 5 ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
+    fail "invalid listen port '${port}'; use a value from 1 to 65535"
+  fi
+}
+
+infer_legacy_proxy_mode() {
+  local domain="$1"
+
+  if [[ "$domain" != ":80" ]] && panel_owns_caddy_configuration; then
+    printf 'caddy\n'
+  else
+    printf 'external\n'
+  fi
+}
+
+current_domain() {
+  current_setting PANEL_DOMAIN
+}
+
+current_listen_address() {
+  current_setting PANEL_LISTEN_ADDR
+}
+
+current_proxy_mode() {
+  local domain="$1"
+  local proxy_mode=""
+
+  proxy_mode="$(current_setting PANEL_PROXY_MODE)"
+  if [[ -n "$proxy_mode" ]]; then
+    validate_proxy_mode "$proxy_mode"
+    printf '%s\n' "$proxy_mode"
+  elif has_existing_configuration; then
+    infer_legacy_proxy_mode "$domain"
+  fi
+}
+
+listen_endpoint() {
+  local address="$1"
+
+  case "$address" in
+    0.0.0.0:*) printf '127.0.0.1:%s\n' "${address##*:}" ;;
+    :*) printf '127.0.0.1:%s\n' "${address#:}" ;;
+    \[::\]:*) printf '[::1]:%s\n' "${address##*:}" ;;
+    *) printf '%s\n' "$address" ;;
+  esac
+}
+
+choose_configuration() {
   local existing_domain=""
   local entered_domain=""
 
   existing_domain="$(current_domain)"
+  previous_listen_address="$(current_listen_address)"
+  previous_proxy_mode="$(current_proxy_mode "$existing_domain")"
   if [[ -z "$requested_domain" && -t 1 && -r /dev/tty ]]; then
     if [[ -n "$existing_domain" ]]; then
       printf '[vps-panel] Panel domain [%s]: ' "$existing_domain" >/dev/tty
@@ -110,11 +200,30 @@ choose_domain() {
   fi
 
   validate_domain "$requested_domain"
-  if [[ "$requested_domain" == ":80" ]]; then
-    listen_address="0.0.0.0:8080"
-  else
-    listen_address="127.0.0.1:8080"
+  if [[ -z "$requested_proxy_mode" ]]; then
+    if [[ -n "$previous_proxy_mode" ]]; then
+      requested_proxy_mode="$previous_proxy_mode"
+    elif [[ "$requested_domain" == ":80" ]]; then
+      requested_proxy_mode="external"
+    else
+      requested_proxy_mode="caddy"
+    fi
   fi
+  validate_proxy_mode "$requested_proxy_mode"
+  if [[ "$requested_proxy_mode" == "caddy" && "$requested_domain" == ":80" ]]; then
+    fail "proxy mode caddy requires a real domain"
+  fi
+
+  if [[ -n "$requested_listen_address" ]]; then
+    listen_address="$requested_listen_address"
+  elif [[ -n "$previous_listen_address" ]]; then
+    listen_address="$previous_listen_address"
+  elif [[ "$requested_proxy_mode" == "caddy" ]]; then
+    listen_address="127.0.0.1:8080"
+  else
+    listen_address="0.0.0.0:8080"
+  fi
+  validate_listen_address "$listen_address"
 }
 
 detect_architecture() {
@@ -127,10 +236,14 @@ detect_architecture() {
 
 wait_for_panel() {
   local response=""
+  local endpoint=""
+  local health_listen_address="${1:-$listen_address}"
+
+  endpoint="$(listen_endpoint "$health_listen_address")"
 
   for _ in {1..30}; do
     if response="$(curl -fsS --connect-timeout 2 --max-time 4 \
-      http://127.0.0.1:8080/api/health 2>/dev/null)"; then
+      "http://${endpoint}/api/health" 2>/dev/null)"; then
       if [[ "$response" == *'"status":"ok"'* ]]; then
         return 0
       fi
@@ -249,7 +362,7 @@ rollback_install() {
     systemctl disable vps-panel.service >/dev/null 2>&1 || true
   fi
   if [[ "$had_existing_install" -eq 1 ]]; then
-    if wait_for_panel; then
+    if wait_for_panel "${previous_listen_address:-$listen_address}"; then
       log "Previous Panel binary and database are healthy after rollback."
     else
       log "Previous Panel did not become healthy after rollback; inspect the service logs."
@@ -351,6 +464,7 @@ write_service_configuration() {
   cat >"${temporary_dir}/environment" <<EOF
 PANEL_DOMAIN=${requested_domain}
 PANEL_LISTEN_ADDR=${listen_address}
+PANEL_PROXY_MODE=${requested_proxy_mode}
 PANEL_DATA_DIR=${DATA_DIR}
 PANEL_WEB_DIR=${INSTALL_DIR}/web
 EOF
@@ -441,7 +555,7 @@ configure_domain_proxy() {
   cat >"${temporary_dir}/vps-panel.caddy" <<EOF
 ${requested_domain} {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy $(listen_endpoint "$listen_address")
 
 	header {
 		X-Content-Type-Options nosniff
@@ -483,6 +597,17 @@ while [[ $# -gt 0 ]]; do
     --domain)
       [[ $# -ge 2 ]] || fail "--domain requires a value"
       requested_domain="$2"
+      shift 2
+      ;;
+    --proxy-mode)
+      [[ $# -ge 2 ]] || fail "--proxy-mode requires a value"
+      requested_proxy_mode="$2"
+      proxy_mode_explicit=1
+      shift 2
+      ;;
+    --listen-addr)
+      [[ $# -ge 2 ]] || fail "--listen-addr requires a value"
+      requested_listen_address="$2"
       shift 2
       ;;
     -h | --help)
@@ -531,7 +656,7 @@ if [[ -f "$LEGACY_INSTALL_MARKER" ]]; then
   legacy_native_install=1
 fi
 
-choose_domain
+choose_configuration
 detect_architecture
 
 temporary_dir="$(mktemp -d)"
@@ -614,15 +739,15 @@ if ! wait_for_panel; then
   fail "Panel did not become healthy within 60 seconds"
 fi
 
-if [[ "$requested_domain" == ":80" ]]; then
-  remove_domain_proxy
-else
+if [[ "$requested_proxy_mode" == "caddy" ]]; then
   configure_domain_proxy
   log "Waiting for HTTPS certificate and domain access..."
   if ! wait_for_https; then
     journalctl -u caddy.service -n 80 --no-pager >&2 || true
     fail "HTTPS is not ready; verify DNS and that ports 80/443 are open"
   fi
+elif [[ "$proxy_mode_explicit" -eq 1 && "$previous_proxy_mode" == "caddy" ]]; then
+  remove_domain_proxy
 fi
 
 install -d -m 0755 /usr/local/bin
@@ -639,6 +764,8 @@ if [[ "$legacy_docker_install" -eq 1 ]]; then
 fi
 if [[ "$requested_domain" == ":80" ]]; then
   log "Installation complete. Open http://YOUR_VPS_IP:8080"
-else
+elif [[ "$requested_proxy_mode" == "caddy" ]]; then
   log "Installation complete. Open https://${requested_domain}"
+else
+  log "Installation complete. Configure your external reverse proxy for ${requested_domain} to use ${listen_address}"
 fi

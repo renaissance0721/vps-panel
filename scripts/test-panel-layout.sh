@@ -17,6 +17,7 @@ export PATH="${mock_bin}:${PATH}"
 cat >"${mock_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
 output=""
+arguments="$*"
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "-o" ]]; then output="$2"; shift 2; else shift; fi
 done
@@ -28,6 +29,9 @@ if [[ -n "$output" ]]; then
   esac
 else
   [[ "${PANEL_TEST_HEALTH_FAIL:-0}" != 1 ]] || exit 22
+  if [[ "$arguments" == *"https://"* ]]; then
+    [[ "${PANEL_TEST_HTTPS_FAIL:-0}" != 1 ]] || exit 22
+  fi
   printf '{"status":"ok","database":"ok"}\n'
 fi
 EOF
@@ -68,9 +72,14 @@ if [[ "${1:-}" == "-u" && "${2:-}" == "vps-panel" ]]; then
 fi
 exec /usr/bin/id "$@"
 EOF
-for command_name in getent groupadd useradd chown journalctl caddy sleep; do
+for command_name in getent groupadd useradd chown journalctl sleep; do
   printf '#!/usr/bin/env bash\nexit 0\n' >"${mock_bin}/${command_name}"
 done
+cat >"${mock_bin}/caddy" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PANEL_TEST_CADDY_LOG"
+exit 0
+EOF
 chmod +x "${mock_bin}"/*
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -78,6 +87,8 @@ assert_exists() { [[ -e "$1" ]] || fail "missing $1"; }
 assert_absent() { [[ ! -e "$1" ]] || fail "unexpected $1"; }
 assert_content() { [[ "$(cat "$1")" == "$2" ]] || fail "unexpected contents in $1"; }
 assert_binary_version() { grep -Fqx "# $2" "$1" || fail "unexpected Panel binary in $1"; }
+assert_config() { grep -Fqx "$2=$3" "$1" || fail "$2 was not $3 in $1"; }
+assert_log_absent() { ! grep -Fq "$2" "$1" || fail "unexpected '$2' in $1"; }
 
 transform_script() {
   local source="$1" destination="$2"
@@ -113,10 +124,13 @@ new_fixture() {
   export PANEL_TEST_VP="${sandbox}/vp-${case_number}.sh"
   export PANEL_TEST_ARCHIVE="${sandbox}/archive-${case_number}.tar.gz"
   export PANEL_TEST_SYSTEMCTL_LOG="${sandbox}/systemctl-${case_number}.log"
+  export PANEL_TEST_CADDY_LOG="${sandbox}/caddy-${case_number}.log"
   export PANEL_TEST_HEALTH_FAIL=0
+  export PANEL_TEST_HTTPS_FAIL=0
   export PANEL_TEST_MUTATE_DB_ON_START=0
   mkdir -p "${PANEL_TEST_ROOT}/run/systemd/system" "${PANEL_TEST_ROOT}/etc/systemd/system"
   : >"$PANEL_TEST_SYSTEMCTL_LOG"
+  : >"$PANEL_TEST_CADDY_LOG"
   transform_script "${repo_root}/scripts/install-panel.sh" "$PANEL_TEST_INSTALLER"
   transform_script "${repo_root}/scripts/vp" "$PANEL_TEST_VP"
   make_archive version-one
@@ -147,6 +161,236 @@ assert_agent_files() {
 }
 
 run_install() { bash "$PANEL_TEST_INSTALLER" --domain "${1:-:80}" >/dev/null; }
+run_installer() { bash "$PANEL_TEST_INSTALLER" "$@" >/dev/null; }
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_config "$config" PANEL_DOMAIN panel.example.com
+assert_config "$config" PANEL_PROXY_MODE caddy
+assert_config "$config" PANEL_LISTEN_ADDR 127.0.0.1:8080
+assert_exists "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+grep -Fq 'reverse_proxy 127.0.0.1:8080' "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy" || \
+  fail 'Caddy upstream was not the Panel listen endpoint'
+printf 'ok: clean Caddy install uses the private listen default\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain www.yurucamp.vip --proxy-mode external
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_config "$config" PANEL_DOMAIN www.yurucamp.vip
+assert_config "$config" PANEL_PROXY_MODE external
+assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
+assert_absent "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external install invoked Caddy'
+printf 'ok: clean external install leaves Caddy untouched\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain www.yurucamp.vip --proxy-mode external --listen-addr 0.0.0.0:8080
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" update >/dev/null
+export PANEL_TEST_MUTATE_DB_ON_START=0
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-two
+assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" new-db
+assert_config "$config" PANEL_DOMAIN www.yurucamp.vip
+assert_config "$config" PANEL_PROXY_MODE external
+assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external update invoked Caddy'
+printf 'ok: external update preserves domain, listen address, and proxy mode\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" update >/dev/null
+export PANEL_TEST_MUTATE_DB_ON_START=0
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-two
+assert_config "$config" PANEL_PROXY_MODE caddy
+assert_config "$config" PANEL_LISTEN_ADDR 127.0.0.1:8080
+assert_exists "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+grep -Fq 'reload caddy.service' "$PANEL_TEST_SYSTEMCTL_LOG" || fail 'Caddy update did not reload Caddy'
+grep -Fq 'validate --config' "$PANEL_TEST_CADDY_LOG" || fail 'Caddy update was not validated'
+printf 'ok: Caddy update retains managed reverse proxy behavior\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain old.example.com --proxy-mode external
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" domain new.example.com >/dev/null
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_config "$config" PANEL_DOMAIN new.example.com
+assert_config "$config" PANEL_PROXY_MODE external
+assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external domain change invoked Caddy'
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+bash "$PANEL_TEST_VP" restart >/dev/null
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external restart invoked Caddy'
+printf 'ok: external domain change preserves proxy mode\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+bash "$PANEL_TEST_VP" proxy external 0.0.0.0:8080 >/dev/null
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_config "$config" PANEL_PROXY_MODE external
+assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
+assert_absent "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" 'other.example.com { respond OK }'
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" 'disable --now caddy.service'
+printf 'ok: Caddy to external removes only Panel Caddy configuration\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode external
+bash "$PANEL_TEST_VP" proxy caddy 127.0.0.1:8080 >/dev/null
+config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+assert_config "$config" PANEL_PROXY_MODE caddy
+assert_exists "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+grep -Fqx "import ${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy" \
+  "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" || fail 'external to Caddy did not add the managed import'
+printf 'ok: external to Caddy creates the managed reverse proxy\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode external
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+printf 'uninstall\nn\n' | bash "$PANEL_TEST_VP" uninstall >/dev/null
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external uninstall invoked Caddy'
+printf 'ok: external uninstall leaves Caddy untouched\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+printf 'uninstall\nn\n' | bash "$PANEL_TEST_VP" uninstall >/dev/null
+assert_absent "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" 'other.example.com { respond OK }'
+printf 'ok: Caddy uninstall removes only the Panel snippet and import\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain www.yurucamp.vip --proxy-mode external --listen-addr 0.0.0.0:8080
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+cp "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" "${sandbox}/external-environment.before"
+make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
+export PANEL_TEST_HEALTH_FAIL=1
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+if bash "$PANEL_TEST_VP" update >/dev/null; then fail 'failed external update unexpectedly succeeded'; fi
+export PANEL_TEST_HEALTH_FAIL=0
+export PANEL_TEST_MUTATE_DB_ON_START=0
+assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-one
+assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" old-db
+cmp -s "${sandbox}/external-environment.before" "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" || \
+  fail 'failed external update did not restore the environment'
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'failed external update invoked Caddy'
+printf 'ok: failed external update restores Panel and never touches Caddy\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
+printf 'old-managed-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
+cp "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" "${sandbox}/caddyfile.before"
+cp "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" "${sandbox}/caddy-environment.before"
+make_archive version-two
+export PANEL_TEST_MUTATE_DB_ON_START=1
+export PANEL_TEST_HTTPS_FAIL=1
+if bash "$PANEL_TEST_VP" update >/dev/null; then fail 'failed Caddy update unexpectedly succeeded'; fi
+export PANEL_TEST_HTTPS_FAIL=0
+export PANEL_TEST_MUTATE_DB_ON_START=0
+assert_binary_version "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel" version-one
+assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" old-db
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy" old-managed-caddy
+cmp -s "${sandbox}/caddyfile.before" "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" || \
+  fail 'failed Caddy update did not restore Caddyfile'
+cmp -s "${sandbox}/caddy-environment.before" "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" || \
+  fail 'failed Caddy update did not restore the environment'
+printf 'ok: failed Caddy update restores Panel, database, environment, and Caddy\n'
+
+new_fixture
+run_installer --domain :80 --proxy-mode external
+sed -i '/^PANEL_PROXY_MODE=/d' "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+make_archive version-two
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" update >/dev/null
+assert_config "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" PANEL_PROXY_MODE external
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'legacy :80 update invoked Caddy'
+printf 'ok: legacy :80 install is inferred as external\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'other.example.com { respond OK }\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain panel.example.com --proxy-mode caddy
+sed -i '/^PANEL_PROXY_MODE=/d' "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+make_archive version-two
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" update >/dev/null
+assert_config "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" PANEL_PROXY_MODE caddy
+grep -Fq 'validate --config' "$PANEL_TEST_CADDY_LOG" || fail 'legacy managed Caddy was not inferred'
+printf 'ok: legacy Panel-owned Caddy install is inferred as Caddy\n'
+
+new_fixture
+mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
+printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
+run_installer --domain legacy.example.com --proxy-mode external
+sed -i '/^PANEL_PROXY_MODE=/d' "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
+make_archive version-two
+: >"$PANEL_TEST_SYSTEMCTL_LOG"
+: >"$PANEL_TEST_CADDY_LOG"
+bash "$PANEL_TEST_VP" update >/dev/null
+assert_config "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" PANEL_PROXY_MODE external
+assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
+assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
+[[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'legacy external update invoked Caddy'
+printf 'ok: legacy real domain without Panel Caddy ownership is inferred as external\n'
+
+new_fixture
+if run_installer --domain panel.example.com --proxy-mode invalid; then
+  fail 'invalid proxy mode unexpectedly succeeded'
+fi
+if run_installer --domain panel.example.com --proxy-mode external --listen-addr invalid; then
+  fail 'invalid listen address unexpectedly succeeded'
+fi
+assert_absent "${PANEL_TEST_ROOT}/opt/vps-panel/panel/vps-panel"
+printf 'ok: invalid proxy mode and listen address are rejected\n'
 
 new_fixture
 run_install
@@ -234,6 +478,8 @@ assert_absent "${PANEL_TEST_ROOT}/opt/vps-panel/.vps-panel-install"
 assert_absent "${PANEL_TEST_ROOT}/etc/vps-panel/environment"
 grep -Fqx 'PANEL_DOMAIN=panel.example.com' "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" || \
   fail 'legacy domain was not retained'
+assert_config "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" PANEL_PROXY_MODE external
+assert_config "${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment" PANEL_LISTEN_ADDR 0.0.0.0:8080
 for name in panel.db panel.db-wal panel.db-shm; do
   assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/${name}" "old-${name}"
   assert_absent "${PANEL_TEST_ROOT}/var/lib/vps-panel/${name}"

@@ -34,13 +34,15 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 	for _, expected := range []string{"[General]", "[Proxy]", "[Proxy Group]", "[Rule]",
 		"US1 = vless,203.0.113.1,443,", "password=test-uuid", "tls=true", "reality=true",
 		"pbk=public-test-key", "sid=abcd", "fp=chrome", "peer=example.com", "flow=xtls-rprx-vision", "udp-relay=true",
-		"FINAL,🚀 默认代理", "/Surge/OpenAI/OpenAI.list", "/Surge/Lan/Lan.list,DIRECT",
+		"FINAL,PROXY", "🤖 AI = select,PROXY,US1", "🍎 Apple = select,DIRECT,PROXY,US1",
+		"/Surge/OpenAI/OpenAI.list", "/Surge/Lan/Lan.list,DIRECT",
 		"DOMAIN-SET,https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.list,DIRECT"} {
 		if !strings.Contains(string(body), expected) {
 			t.Errorf("missing %q", expected)
 		}
 	}
-	for _, forbidden := range []string{"public-key=", "short-id=", "client-fingerprint=", "udp443", "MATCH,", ".yaml"} {
+	for _, forbidden := range []string{"public-key=", "short-id=", "client-fingerprint=", "udp443", "MATCH,", ".yaml",
+		"FINAL,🚀 默认代理", "🚀 默认代理 = select,"} {
 		if strings.Contains(string(body), forbidden) {
 			t.Errorf("unexpected %q", forbidden)
 		}
@@ -55,6 +57,78 @@ func TestShadowrocketRealityUsesNativeFieldsAndManagedFlow(t *testing.T) {
 	mihomo, err := renderMihomoProxy(resolved)
 	if err != nil || !strings.Contains(string(body), "flow="+mihomo.Flow) {
 		t.Fatal("client flows differ", err)
+	}
+}
+
+func TestShadowrocketDefaultRoutingProjectionMatchesSharedAndPersonalSubscriptions(t *testing.T) {
+	preset := defaultRoutingPresetForTest(t)
+	sharedNode := proxystore.ClientShare{DisplayName: "Shared", Protocol: proxystore.ProtocolShadowsocks,
+		Address: "shared.example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}
+	personalNode := ResolvedSubscriptionNode{Name: "Personal", Protocol: proxystore.ProtocolShadowsocks,
+		Address: "personal.example.com", Port: 8388, Method: "aes-256-gcm", ShadowsocksPassword: "secret"}
+	outputs := map[string][]byte{}
+	var err error
+	outputs["shared"], err = RenderShadowrocketSubscription(SubscriptionData{RoutingPreset: preset, Nodes: []proxystore.ClientShare{sharedNode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs["personal"], err = RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: preset, Nodes: []ResolvedSubscriptionNode{personalNode}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range outputs {
+		output := string(body)
+		for _, want := range []string{"\nFINAL,PROXY\n", "\n🤖 AI = select,PROXY,", "\n🍎 Apple = select,DIRECT,PROXY,"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("%s output missing %q", name, want)
+			}
+		}
+		for _, forbidden := range []string{"\nFINAL,🚀 默认代理\n", "\n🚀 默认代理 = select,"} {
+			if strings.Contains(output, forbidden) {
+				t.Errorf("%s output contains %q", name, forbidden)
+			}
+		}
+	}
+}
+
+func TestShadowrocketDefaultRoutingProjectionUsesCatchAllGroupIdentity(t *testing.T) {
+	preset := &RoutingPreset{IsDefault: true, Name: "Renamed default", Groups: []RoutingGroup{
+		{Key: "grp_fallback", Name: "Fallback", Type: "select", Proxies: []string{"DIRECT"}, IncludeAll: true},
+		{Key: "grp_ai001", Name: "AI", Type: "select", Proxies: []string{"Fallback", "REJECT"}, IncludeAll: true},
+	}, Rules: []string{"DOMAIN,example.com,AI", "DOMAIN-SUFFIX,fallback.example,Fallback", "MATCH,Fallback"}}
+	body, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: preset, Nodes: []ResolvedSubscriptionNode{{
+		Name: "Node", Protocol: proxystore.ProtocolShadowsocks, Address: "example.com", Port: 8388,
+		Method: "aes-256-gcm", ShadowsocksPassword: "secret",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(body)
+	for _, want := range []string{"\nAI = select,PROXY,REJECT,Node\n", "\nDOMAIN-SUFFIX,fallback.example,PROXY\n", "\nFINAL,PROXY\n"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(output, "\nFallback = select,") {
+		t.Fatal("renamed catch-all group was emitted")
+	}
+	if preset.Groups[1].Proxies[0] != "Fallback" || preset.Rules[1] != "DOMAIN-SUFFIX,fallback.example,Fallback" {
+		t.Fatal("default routing preset was mutated")
+	}
+}
+
+func TestShadowrocketDefaultRoutingWithoutFinalMatchKeepsOriginalSemantics(t *testing.T) {
+	preset := &RoutingPreset{IsDefault: true, Name: "Edited default", Groups: []RoutingGroup{{
+		Key: "grp_fallback", Name: "Fallback", Type: "select", Proxies: []string{"DIRECT"}, IncludeAll: true,
+	}}, Rules: []string{"MATCH,DIRECT"}}
+	body, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: preset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(body)
+	if !strings.Contains(output, "\nFallback = select,DIRECT\n") || !strings.Contains(output, "\nFINAL,DIRECT\n") ||
+		strings.Contains(output, "FINAL,PROXY") {
+		t.Fatalf("edited default routing was guessed:\n%s", output)
 	}
 }
 
@@ -216,7 +290,7 @@ func TestShadowrocketNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestShadowrocketOriginalNameCollisionsStillFail(t *testing.T) {
-	for _, check := range [][]string{{"🇺🇸 Home", "🇺🇸 Home"}, {"Proxy"}, {"DIRECT"}} {
+	for _, check := range [][]string{{"🇺🇸 Home", "🇺🇸 Home"}, {"Proxy"}, {"DIRECT"}, {"PROXY"}} {
 		nodes := make([]ResolvedSubscriptionNode, len(check))
 		for index, name := range check {
 			nodes[index] = ResolvedSubscriptionNode{Name: name, Protocol: proxystore.ProtocolShadowsocks,
@@ -227,6 +301,19 @@ func TestShadowrocketOriginalNameCollisionsStillFail(t *testing.T) {
 		if !errors.Is(err, ErrUnsupportedShadowrocketProtocol) {
 			t.Errorf("original collision %q: %v", check, err)
 		}
+	}
+}
+
+func TestShadowrocketReservesNativeProxyGroupWithoutAffectingMihomo(t *testing.T) {
+	preset := &RoutingPreset{Name: "Native name", Groups: []RoutingGroup{{
+		Key: "grp_proxy", Name: "PROXY", Type: "select", Proxies: []string{"DIRECT"},
+	}}, Rules: []string{"MATCH,PROXY"}}
+	if _, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: preset}); !errors.Is(err, ErrInvalidRoutingPreset) {
+		t.Fatalf("Shadowrocket native PROXY group error = %v", err)
+	}
+	body, err := RenderPersonalMihomoSubscription(PersonalSubscriptionData{RoutingPreset: preset})
+	if err != nil || !strings.Contains(string(body), "name: PROXY") || !strings.Contains(string(body), "- MATCH,PROXY") {
+		t.Fatalf("Mihomo PROXY group changed: %v\n%s", err, body)
 	}
 }
 

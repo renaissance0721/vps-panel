@@ -11,6 +11,8 @@ import (
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
 
+const shadowrocketNativeProxy = "PROXY"
+
 func RenderShadowrocketSubscription(data SubscriptionData) ([]byte, error) {
 	nodes := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
@@ -51,10 +53,27 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
+	defaultProxyGroup := shadowrocketDefaultProxyGroup(routing)
+	if defaultProxyGroup != "" {
+		for index, rule := range routing.Rules {
+			policy, _, _ := parseRoutingRule(rule)
+			if policy != defaultProxyGroup {
+				continue
+			}
+			line, err := renderShadowrocketRuleWithDefaultProxy(rule, providers, defaultProxyGroup)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
+			}
+			ruleLines[index] = line
+		}
+	}
 	// A single namespace is used for declarations and references. Reject
 	// collisions instead of silently binding a group to a different node.
-	names := map[string]bool{"DIRECT": true, "REJECT": true}
+	names := map[string]bool{"DIRECT": true, "REJECT": true, shadowrocketNativeProxy: true}
 	for _, group := range routing.Groups {
+		if group.Name == shadowrocketNativeProxy && group.Name != defaultProxyGroup {
+			return nil, ErrInvalidRoutingPreset
+		}
 		names[group.Name] = true
 	}
 	nodes, nodeNames, err = shadowrocketNodeNames(nodes, nodeNames, names)
@@ -81,6 +100,14 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	}
 	groupLines := make([]string, 0, len(groups))
 	for _, group := range groups {
+		if group.Name == defaultProxyGroup {
+			continue
+		}
+		for index, member := range group.Proxies {
+			if member == defaultProxyGroup {
+				group.Proxies[index] = shadowrocketNativeProxy
+			}
+		}
 		for _, member := range group.Proxies {
 			if !names[member] {
 				return nil, ErrInvalidRoutingBindings
@@ -93,6 +120,23 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 		groupLines = append(groupLines, line)
 	}
 	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), nil
+}
+
+func shadowrocketDefaultProxyGroup(routing RoutingPreset) string {
+	if !routing.IsDefault || len(routing.Rules) == 0 {
+		return ""
+	}
+	parts := strings.Split(routing.Rules[len(routing.Rules)-1], ",")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) != "MATCH" {
+		return ""
+	}
+	policy := strings.TrimSpace(parts[1])
+	for _, group := range routing.Groups {
+		if group.Name == policy {
+			return policy
+		}
+	}
+	return ""
 }
 
 func shadowrocketNodeNames(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string, reserved map[string]bool) ([]ResolvedSubscriptionNode, map[int64]string, error) {
@@ -249,7 +293,12 @@ func renderShadowrocketProxyGroup(group resolvedRoutingGroup) (string, error) {
 }
 
 func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvider) (string, error) {
-	if _, _, err := parseRoutingRule(rule); err != nil {
+	return renderShadowrocketRuleWithDefaultProxy(rule, providers, "")
+}
+
+func renderShadowrocketRuleWithDefaultProxy(rule string, providers map[string]RoutingRuleProvider, defaultProxyGroup string) (string, error) {
+	policy, _, err := parseRoutingRule(rule)
+	if err != nil {
 		return "", ErrUnsupportedShadowrocketRule
 	}
 	parts := strings.Split(rule, ",")
@@ -259,8 +308,11 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 			return "", ErrUnsupportedShadowrocketRule
 		}
 	}
+	if defaultProxyGroup != "" && policy == defaultProxyGroup {
+		policy = shadowrocketNativeProxy
+	}
 	if parts[0] == "MATCH" {
-		return "FINAL," + shadowrocketIdent(parts[1]), nil
+		return "FINAL," + shadowrocketIdent(policy), nil
 	}
 	supportsNoResolve := false
 	switch parts[0] {
@@ -292,7 +344,7 @@ func renderShadowrocketRule(rule string, providers map[string]RoutingRuleProvide
 		return "", ErrUnsupportedShadowrocketRule
 	}
 	parts[1] = shadowrocketValue(parts[1])
-	parts[2] = shadowrocketIdent(parts[2])
+	parts[2] = shadowrocketIdent(policy)
 	return strings.Join(parts, ","), nil
 }
 

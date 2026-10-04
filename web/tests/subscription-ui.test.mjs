@@ -254,7 +254,7 @@ test('分流方案弹窗将策略组、远程规则集和 Rules 拆成可独立�
   assert.match(styleSource, /\.routing-config-scroll\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
   assert.match(managementSource, /远程规则集（Rule Providers）/)
   assert.match(managementSource, /Rule Provider 建议使用 http \/ classical \/ text 的 .list 规则源，可同时供 Mihomo 和 Shadowrocket 使用；URL 不要求 .list 后缀。Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider。/)
-  assert.match(managementSource, /Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。/)
+  assert.match(managementSource, /内置默认分流中，Shadowrocket 的默认流量使用首页当前选择的主代理，专项策略组仍可单独选择节点，Mihomo 继续使用默认代理策略组。其他 MATCH 在 Shadowrocket 中转为 FINAL/)
 })
 
 test('个人和共享订阅分别编辑自身节点 binding 并用拖拽排序', () => {
@@ -393,7 +393,7 @@ test('分流与模板页面展示数据库默认方案并解释产品语义', ()
   assert.match(managementSource, /<n-card title="客户端模板"/)
   assert.match(managementSource, /v-for="value in routingPresets"[\s\S]*value\.is_default[\s\S]*默认/)
   assert.match(managementSource, /内置默认 Mihomo 模板[\s\S]*复制为自定义模板/)
-  assert.doesNotMatch(managementSource, /内置默认分流|复制为预设/)
+  assert.doesNotMatch(managementSource, /复制为预设/)
 })
 
 test('分流方案可以在共享订阅中只读查看并统一到配置页编辑', () => {

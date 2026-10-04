@@ -1514,7 +1514,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <p class="form-help">Rule Provider 建议使用 http / classical / text 的 .list 规则源，可同时供 Mihomo 和 Shadowrocket 使用；URL 不要求 .list 后缀。Shadowrocket 不支持直接使用 Mihomo YAML Rule Provider。</p>
     <div v-for="provider in routingPreviewProviders" :key="provider.name" class="invitation-row"><div><strong>{{ provider.name }}</strong><span>{{ provider.type }} · {{ provider.behavior }} · {{ provider.format }} · {{ provider.interval }} 秒</span><small>{{ provider.url }}</small></div></div>
     <label><span>Rules</span><n-input :value="routingPreviewRules.join('\n')" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 18 }" /></label>
-    <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
+    <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；内置默认分流中，Shadowrocket 的默认流量使用首页当前选择的主代理，专项策略组仍可单独选择节点，Mihomo 继续使用默认代理策略组。其他 MATCH 在 Shadowrocket 中转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
     <div class="modal-actions"><n-button @click="routingPreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
@@ -1554,7 +1554,7 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
     <section class="routing-config-section">
       <div class="collapsible-section-header"><strong>规则（Rules）</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingRulesExpanded" @click="routingRulesExpanded = !routingRulesExpanded">{{ routingRulesExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingRulesExpanded" class="routing-config-scroll routing-config-scroll-rules">
-        <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；Shadowrocket 将 MATCH 转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
+        <p class="form-help">Rules 按从上到下顺序匹配。Mihomo 和 Shadowrocket 共用规则；内置默认分流中，Shadowrocket 的默认流量使用首页当前选择的主代理，专项策略组仍可单独选择节点，Mihomo 继续使用默认代理策略组。其他 MATCH 在 Shadowrocket 中转为 FINAL，GEOSITE 等不兼容规则会在预览时提示错误。</p>
         <label><span>Rules（一行一条逻辑规则）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,Lan,DIRECT&#10;RULE-SET,OpenAI,🤖 AI&#10;RULE-SET,ChinaDomain,DIRECT&#10;GEOIP,CN,DIRECT&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
       </div>
     </section>

@@ -235,3 +235,65 @@ test('新增规则源默认 text，编辑和预览使用数据库内容且保留
   assert.equal(state.routingProviders.value[1].format, 'yaml')
   assert.equal(state.routingProviders.value[1].url, providers[1].url)
 })
+
+test('复制分流方案直接创建并刷新，失败时保留原列表并显示现有错误', async t => {
+  const previousFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = previousFetch })
+  const preset = {
+    id: 42, name: '个人自用', is_default: false, enabled: true,
+    groups: [{ key: 'grp_original', name: '代理', type: 'select', proxies: ['DIRECT'], include_all: true }],
+    rule_providers: [{ name: 'OpenAI', type: 'http', behavior: 'classical', format: 'text', interval: 86400, url: 'https://example.com/openai.list' }],
+    rules: ['RULE-SET,OpenAI,代理', 'MATCH,代理'],
+  }
+  const { state } = await render(Subscriptions, state => {
+    state.routingPresets.value = [preset]
+  }, { role: 'admin' })
+  const requests = []
+  let copied
+  const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, options })
+    if (url === '/api/admin/subscription/routing-presets' && options.method === 'POST') {
+      const body = JSON.parse(options.body)
+      copied = { id: 43, is_default: false, ...body, groups: body.groups.map(group => ({ ...group, key: 'grp_copy' })) }
+      return response({ routing_preset: copied }, 201)
+    }
+    const bodies = {
+      '/api/personal-subscriptions': { personal_subscriptions: [] },
+      '/api/admin/subscription/routing-presets': { routing_presets: [preset, copied] },
+      '/api/admin/subscription/templates': { templates: [] },
+      '/api/admin/subscription/users': { users: [] },
+      '/api/admin/subscription/plans': { plans: [] },
+      '/api/admin/subscription/nodes': { nodes: [] },
+      '/api/admin/distributable-proxies': { proxies: [] },
+      '/api/admin/subscription/relay-servers': { servers: [] },
+      '/api/admin/subscription/builtin-mihomo': { name: '内置默认', yaml: 'dns:\n  enable: true' },
+      '/api/admin/subscription/builtin-shadowrocket': { name: '内置默认', conf: '[General]\n[Proxy]\n{{PROXIES}}\n[Proxy Group]\n{{PROXY_GROUPS}}\n[Rule]\n{{RULES}}' },
+    }
+    return response(bodies[url])
+  }
+
+  await state.copyRoutingPreset(preset)
+
+  const requestBody = JSON.parse(requests[0].options.body)
+  assert.equal(requests[0].url, '/api/admin/subscription/routing-presets')
+  assert.equal(requests[0].options.method, 'POST')
+  assert.equal(requestBody.name, '个人自用 - 副本')
+  assert.equal('id' in requestBody, false)
+  assert.equal('is_default' in requestBody, false)
+  assert.deepEqual(state.routingPresets.value.map(value => value.name), ['个人自用', '个人自用 - 副本'])
+  assert.equal(state.routingModalOpen.value, false)
+  state.openEditRoutingPreset(state.routingPresets.value[1])
+  assert.equal(state.routingName.value, '个人自用 - 副本')
+  assert.deepEqual(state.routingGroups.value, copied.groups)
+  assert.deepEqual(state.routingProviders.value, copied.rule_providers)
+  assert.equal(state.routingRulesText.value, copied.rules.join('\n'))
+
+  const beforeFailure = JSON.parse(JSON.stringify(state.routingPresets.value))
+  state.routingModalOpen.value = false
+  globalThis.fetch = async () => response({ error: '创建副本失败' }, 500)
+  await state.copyRoutingPreset(preset)
+  assert.deepEqual(state.routingPresets.value, beforeFailure)
+  assert.equal(state.routingModalOpen.value, false)
+  assert.equal(state.error.value, '创建副本失败')
+})

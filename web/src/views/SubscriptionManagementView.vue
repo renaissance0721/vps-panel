@@ -8,6 +8,13 @@ import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { beginDragPreview, endDragPreview } from '../drag'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
+import {
+  cloneRoutingGroups,
+  cloneRoutingProviders,
+  createRoutingPresetCopyPayload,
+  type RoutingPreset,
+  type RoutingRuleProvider,
+} from '../subscriptionRouting'
 import type { ProxyRecord } from '../types/proxy'
 
 const props = defineProps<{ role?: 'admin' | 'vip' }>()
@@ -46,23 +53,6 @@ type Plan = {
   shadowrocket_template_id: number | null
   nodes: PublishedNode[]
   routing_bindings: RoutingBindings
-}
-type RoutingPreset = {
-  id: number
-  name: string
-  enabled: boolean
-  is_default: boolean
-  groups: RoutingGroup[]
-  rule_providers: RoutingRuleProvider[]
-  rules: string[]
-}
-type RoutingRuleProvider = {
-  name: string
-  url: string
-  type: 'http'
-  behavior: string
-  format: string
-  interval: number
 }
 type TemplateType = 'mihomo' | 'shadowrocket'
 type SubscriptionTemplate = { id: number; name: string; type: TemplateType; enabled: boolean; content: string }
@@ -885,14 +875,6 @@ function routingLines(value: string) {
   return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 }
 
-function cloneRoutingGroups(values: RoutingGroup[]) {
-  return values.map((group) => ({ ...group, proxies: [...group.proxies] }))
-}
-
-function cloneRoutingProviders(values: RoutingRuleProvider[]) {
-  return values.map((provider) => ({ ...provider }))
-}
-
 function openRoutingPreview(title: string, groups: RoutingGroup[], rules: string[], providers: RoutingRuleProvider[], help: string) {
   routingPreviewTitle.value = title
   routingPreviewGroups.value = cloneRoutingGroups(groups)
@@ -1070,6 +1052,20 @@ async function saveRoutingPreset() {
       }),
     })
     routingModalOpen.value = false
+    await loadAll()
+  })
+}
+
+async function copyRoutingPreset(value: RoutingPreset) {
+  if (busy.value || value.is_default) return
+  await run(async () => {
+    await api('/api/admin/subscription/routing-presets', {
+      method: 'POST',
+      body: JSON.stringify(createRoutingPresetCopyPayload(
+        value,
+        routingPresets.value.map((preset) => preset.name),
+      )),
+    })
     await loadAll()
   })
 }
@@ -1375,8 +1371,8 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
       <n-button type="primary" @click="openCreateRoutingPreset">新增分流方案</n-button>
       <div class="configuration-list">
         <div v-for="value in routingPresets" :key="value.id" class="invitation-row">
-          <div><strong>{{ value.name }} <n-tag v-if="value.is_default" type="info" size="small">默认</n-tag> <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong><span>{{ value.groups.length }} 个分组 · {{ value.rules.length }} 条规则</span></div>
-          <div class="modal-actions"><n-button secondary size="small" @click="openEditRoutingPreset(value)">编辑</n-button><n-button v-if="!value.is_default" type="error" secondary size="small" @click="deleteRoutingPreset(value)">删除</n-button></div>
+          <div class="routing-preset-summary"><strong>{{ value.name }} <n-tag v-if="value.is_default" type="info" size="small">默认</n-tag> <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '已启用' : '已停用' }}</n-tag></strong><span>{{ value.groups.length }} 个分组 · {{ value.rules.length }} 条规则</span></div>
+          <div class="routing-preset-actions"><n-button secondary size="small" @click="openEditRoutingPreset(value)">编辑</n-button><n-button v-if="!value.is_default" secondary size="small" :disabled="busy" @click="copyRoutingPreset(value)">复制</n-button><n-button v-if="!value.is_default" type="error" secondary size="small" @click="deleteRoutingPreset(value)">删除</n-button></div>
         </div>
       </div>
     </n-card>
@@ -1646,6 +1642,19 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
 </template>
 
 <style scoped>
+.routing-preset-summary {
+  min-width: 0;
+}
+
+.routing-preset-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .personal-link-modal-card {
   width: min(380px, calc(100vw - 32px));
 }

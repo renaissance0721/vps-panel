@@ -57,7 +57,7 @@ test('中转导航和 CRUD 页面保持 Modal 交互', async () => {
   assert.match(app, /selectPage\('relays'\)/)
   assert.match(app, />\s*中转\s*<\/button>/)
   assert.match(app, /<RelaysView v-if="currentPage === 'relays'"/)
-  assert.match(view, /<th>名称<\/th><th>服务器<\/th><th>入口地址<\/th><th>监听端口<\/th><th>目标<\/th><th>客户端<\/th><th>Network<\/th><th>状态<\/th><th>操作<\/th>/)
+  assert.match(view, /<th>名称<\/th><th>服务器<\/th><th>入口地址<\/th><th>监听端口<\/th><th>目标<\/th><th>客户端<\/th><th>状态<\/th><th>操作<\/th>/)
   assert.match(view, /value\.target_client_name \|\| '—'/)
   assert.match(view, /value\.entry_address \|\| '入口地址不可用'/)
   assert.match(view, /value="tcp">TCP/)

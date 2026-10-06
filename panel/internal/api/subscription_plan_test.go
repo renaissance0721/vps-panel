@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -178,4 +179,104 @@ func TestRoutingPresetProtectionAPI(t *testing.T) {
 	if deleted.Code != http.StatusConflict {
 		t.Fatalf("delete referenced routing preset = %d %s", deleted.Code, deleted.Body.String())
 	}
+}
+
+func TestRoutingPresetCreatePayloadCanCopyAndEditAPI(t *testing.T) {
+	db, handler, adminCookie, _ := setupAccountTest(t)
+	defer db.Close()
+
+	created := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/routing-presets", map[string]any{
+		"name": "个人自用", "enabled": true,
+		"groups": []map[string]any{
+			{"name": "代理", "type": "select", "proxies": []string{"DIRECT", "REJECT"}, "include_all": true},
+			{"name": "AI", "type": "select", "proxies": []string{"代理"}, "include_all": false},
+		},
+		"rule_providers": []map[string]any{
+			{"name": "OpenAI", "url": "https://example.com/openai.list", "type": "http", "behavior": "classical", "format": "text", "interval": 86400},
+			{"name": "Lan", "url": "https://example.com/lan.list", "type": "http", "behavior": "classical", "format": "text", "interval": 3600},
+		},
+		"rules": []string{"RULE-SET,OpenAI,AI", "RULE-SET,Lan,DIRECT", "MATCH,代理"},
+	}, adminCookie)
+	var originalPayload struct {
+		RoutingPreset routingPresetResponse `json:"routing_preset"`
+	}
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &originalPayload) != nil {
+		t.Fatalf("create original routing preset = %d %s", created.Code, created.Body.String())
+	}
+	original := originalPayload.RoutingPreset
+
+	copied := performRequest(t, handler, http.MethodPost, "/api/admin/subscription/routing-presets", map[string]any{
+		"name": "个人自用 - 副本", "enabled": original.Enabled,
+		"groups": original.Groups, "rule_providers": original.RuleProviders, "rules": original.Rules,
+	}, adminCookie)
+	var copiedPayload struct {
+		RoutingPreset routingPresetResponse `json:"routing_preset"`
+	}
+	if copied.Code != http.StatusCreated || json.Unmarshal(copied.Body.Bytes(), &copiedPayload) != nil {
+		t.Fatalf("copy routing preset through create API = %d %s", copied.Code, copied.Body.String())
+	}
+	copyValue := copiedPayload.RoutingPreset
+	if copyValue.ID == original.ID || copyValue.IsDefault || copyValue.Name != "个人自用 - 副本" || copyValue.Enabled != original.Enabled {
+		t.Fatalf("copied routing preset identity = %+v", copyValue)
+	}
+	if len(copyValue.Groups) != len(original.Groups) {
+		t.Fatalf("copied routing groups = %+v", copyValue.Groups)
+	}
+	for index := range original.Groups {
+		originalGroup, copiedGroup := original.Groups[index], copyValue.Groups[index]
+		if copiedGroup.Key == "" || copiedGroup.Key == originalGroup.Key {
+			t.Fatalf("copied routing group key was not regenerated: original=%q copied=%q", originalGroup.Key, copiedGroup.Key)
+		}
+		originalGroup.Key, copiedGroup.Key = "", ""
+		if !reflect.DeepEqual(copiedGroup, originalGroup) {
+			t.Fatalf("copied routing group %d = %+v, want %+v", index, copiedGroup, originalGroup)
+		}
+	}
+	if !reflect.DeepEqual(copyValue.RuleProviders, original.RuleProviders) || !reflect.DeepEqual(copyValue.Rules, original.Rules) {
+		t.Fatalf("copied routing content = providers %+v rules %+v", copyValue.RuleProviders, copyValue.Rules)
+	}
+
+	editedGroups := []map[string]any{
+		{"key": copyValue.Groups[0].Key, "name": "主策略", "type": "select", "proxies": []string{"DIRECT"}, "include_all": false},
+		{"key": copyValue.Groups[1].Key, "name": "开发", "type": "select", "proxies": []string{"主策略"}, "include_all": true},
+	}
+	editedProviders := []map[string]any{
+		{"name": "Development", "url": "https://example.com/development.list", "type": "http", "behavior": "classical", "format": "text", "interval": 7200},
+	}
+	editedRules := []string{"RULE-SET,Development,开发", "MATCH,主策略"}
+	updated := performRequest(t, handler, http.MethodPatch,
+		"/api/admin/subscription/routing-presets/"+strconv.FormatInt(copyValue.ID, 10), map[string]any{
+			"name": "个人自用副本（已编辑）", "enabled": false,
+			"groups": editedGroups, "rule_providers": editedProviders, "rules": editedRules,
+		}, adminCookie)
+	var updatedPayload struct {
+		RoutingPreset routingPresetResponse `json:"routing_preset"`
+	}
+	if updated.Code != http.StatusOK || json.Unmarshal(updated.Body.Bytes(), &updatedPayload) != nil {
+		t.Fatalf("edit copied routing preset = %d %s", updated.Code, updated.Body.String())
+	}
+	updatedValue := updatedPayload.RoutingPreset
+	if updatedValue.Name != "个人自用副本（已编辑）" || updatedValue.Enabled || updatedValue.IsDefault ||
+		len(updatedValue.Groups) != 2 || updatedValue.Groups[0].Name != "主策略" || updatedValue.Groups[1].Name != "开发" ||
+		len(updatedValue.RuleProviders) != 1 || updatedValue.RuleProviders[0].Name != "Development" ||
+		!reflect.DeepEqual(updatedValue.Rules, editedRules) {
+		t.Fatalf("edited copied routing preset = %+v", updatedValue)
+	}
+
+	listed := performRequest(t, handler, http.MethodGet, "/api/admin/subscription/routing-presets", nil, adminCookie)
+	var listPayload struct {
+		RoutingPresets []routingPresetResponse `json:"routing_presets"`
+	}
+	if listed.Code != http.StatusOK || json.Unmarshal(listed.Body.Bytes(), &listPayload) != nil {
+		t.Fatalf("list routing presets after copy = %d %s", listed.Code, listed.Body.String())
+	}
+	for _, value := range listPayload.RoutingPresets {
+		if value.ID == original.ID {
+			if !reflect.DeepEqual(value, original) {
+				t.Fatalf("original routing preset changed after copying and editing: got %+v want %+v", value, original)
+			}
+			return
+		}
+	}
+	t.Fatal("original routing preset missing after copy")
 }

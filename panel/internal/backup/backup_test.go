@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/backup"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -165,6 +166,10 @@ func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	got := rowsByTable(t, restored)
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("database rows changed after restore\nwant: %#v\ngot: %#v", want, got)
+	}
+	verified, err := auth.NewService(restored).VerifyEmail(t.Context(), "email-verification-token")
+	if err != nil || verified.UserID != 12 || verified.Email != "pending@example.com" {
+		t.Fatalf("restored email verification = %+v, %v", verified, err)
 	}
 	if data, err := os.ReadFile(filepath.Join(acmeDir, "account")); err != nil || string(data) != "agent state" {
 		t.Fatalf("Agent ACME state changed: %q, %v", data, err)
@@ -426,6 +431,9 @@ func seedFullDatabase(t *testing.T, db *sql.DB) {
 	t.Helper()
 	for _, statement := range []string{
 		`INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES (11,'admin','password-hash','admin',100,101),(12,'vip','another-hash','vip',102,103)`,
+		`UPDATE users SET email='admin@example.com',email_verified_at=101 WHERE id=11`,
+		fmt.Sprintf(`INSERT INTO account_tokens(user_id,purpose,target,token_hash,expires_at,created_at) VALUES (12,'verify_email','pending@example.com','%s',%d,%d)`,
+			token.Hash("email-verification-token"), time.Now().Add(30*time.Minute).Unix(), time.Now().Unix()),
 		`INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES (21,11,'session-hash',900,110)`,
 		`INSERT INTO admin_invitations(id,token_hash,created_by,expires_at,created_at) VALUES (22,'invitation-hash',11,900,111)`,
 		`INSERT INTO servers(id,name,status,visibility,outbound_preference,desired_state_version,created_at,updated_at) VALUES (31,'server','offline','private','prefer_ipv6',7,120,121)`,

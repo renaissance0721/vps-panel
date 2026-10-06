@@ -5,7 +5,7 @@ import test from 'node:test'
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 const accountSource = await readFile(new URL('../src/components/AccountMenu.vue', import.meta.url), 'utf8')
 const overviewSource = await readFile(new URL('../src/views/OverviewView.vue', import.meta.url), 'utf8')
-const userPortalSource = await readFile(new URL('../src/views/UserPortalView.vue', import.meta.url), 'utf8')
+const carpoolPortalSource = await readFile(new URL('../src/views/CarpoolPortalView.vue', import.meta.url), 'utf8')
 const subscriberPortalSource = await readFile(new URL('../src/views/SubscriberPortalView.vue', import.meta.url), 'utf8')
 const htmlSource = await readFile(new URL('../index.html', import.meta.url), 'utf8')
 
@@ -23,7 +23,7 @@ test('初始化、邀请注册、修改密码和重置密码使用 6–72 UTF-8 
 test('管理端、用户门户和订阅门户共用右上角账户菜单', () => {
   assert.match(appSource, /import AccountMenu from '.\/components\/AccountMenu\.vue'/)
   assert.match(appSource, /<AccountMenu v-if="state\.user" :user="state\.user" @updated="updateCurrentUser" @logout="logout"/)
-  assert.match(userPortalSource, /<AccountMenu :user="props\.user" @updated="emit\('userUpdated', \$event\)" @logout="emit\('logout'\)"/)
+  assert.match(carpoolPortalSource, /<AccountMenu :user="props\.user" @updated="emit\('userUpdated', \$event\)" @logout="emit\('logout'\)"/)
   assert.match(subscriberPortalSource, /<AccountMenu :user="props\.user" @updated="emit\('userUpdated', \$event\)" @logout="emit\('logout'\)"/)
   assert.match(appSource, /function updateCurrentUser\(user: NonNullable<AuthState\['user'\]>\)[\s\S]*state\.value\.user = user/)
 })
@@ -54,7 +54,7 @@ test('管理员密码重置申请列表显示角色、时间和待审核状态',
 })
 
 test('所有可见产品品牌统一为夕凪云', () => {
-  for (const source of [appSource, userPortalSource, subscriberPortalSource, htmlSource]) {
+  for (const source of [appSource, carpoolPortalSource, subscriberPortalSource, htmlSource]) {
     assert.match(source, /夕凪云/)
     assert.doesNotMatch(source, />VPS Panel</)
   }

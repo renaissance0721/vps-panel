@@ -43,20 +43,24 @@ func (s *Service) Authenticate(ctx context.Context, tokenValue string) (User, er
 		return User{}, ErrUnauthenticated
 	}
 	var user User
+	var email sql.NullString
+	var emailVerifiedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT users.id, users.username, users.role, users.created_at, users.updated_at
+		SELECT users.id, users.username, users.role, users.email, users.email_verified_at,
+		       users.created_at, users.updated_at
 		FROM sessions
 		JOIN users ON users.id = sessions.user_id
 		WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
 		token.Hash(tokenValue), s.now().UTC().Unix(),
-	).Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt)
+	).Scan(&user.ID, &user.Username, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUnauthenticated
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("authenticate session: %w", err)
 	}
+	setUserOptionalEmail(&user, email, emailVerifiedAt)
 	user.CreatedAt = time.Unix(createdAt, 0).UTC()
 	user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return user, nil

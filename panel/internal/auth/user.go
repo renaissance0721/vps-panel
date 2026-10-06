@@ -63,11 +63,13 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 	username = strings.TrimSpace(username)
 	var user User
 	var passwordHash string
+	var email sql.NullString
+	var emailVerifiedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, password_hash, role, email, email_verified_at, created_at, updated_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &createdAt, &updatedAt)
+	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrInvalidCredentials
 	}
@@ -78,6 +80,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 		return User{}, ErrInvalidCredentials
 	}
 
+	setUserOptionalEmail(&user, email, emailVerifiedAt)
 	user.CreatedAt = time.Unix(createdAt, 0).UTC()
 	user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return user, nil
@@ -85,7 +88,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (User, e
 
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, role, created_at, updated_at FROM users ORDER BY username, id`,
+		`SELECT id, username, role, email, email_verified_at, created_at, updated_at FROM users ORDER BY username, id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -94,10 +97,13 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	users := make([]User, 0)
 	for rows.Next() {
 		var user User
+		var email sql.NullString
+		var emailVerifiedAt sql.NullInt64
 		var createdAt, updatedAt int64
-		if err := rows.Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
+		setUserOptionalEmail(&user, email, emailVerifiedAt)
 		user.CreatedAt = time.Unix(createdAt, 0).UTC()
 		user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		users = append(users, user)
@@ -110,16 +116,19 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 
 func (s *Service) GetUser(ctx context.Context, id int64) (User, error) {
 	var user User
+	var email sql.NullString
+	var emailVerifiedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, role, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&user.ID, &user.Username, &user.Role, &createdAt, &updatedAt)
+		`SELECT id, username, role, email, email_verified_at, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Username, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("get user: %w", err)
 	}
+	setUserOptionalEmail(&user, email, emailVerifiedAt)
 	user.CreatedAt = time.Unix(createdAt, 0).UTC()
 	user.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 	return user, nil
@@ -138,10 +147,12 @@ func (s *Service) RenameUser(ctx context.Context, id int64, currentPassword, use
 
 	var user User
 	var passwordHash string
+	var email sql.NullString
+	var emailVerifiedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &createdAt, &updatedAt)
+		`SELECT id, username, password_hash, role, email, email_verified_at, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
@@ -168,9 +179,20 @@ func (s *Service) RenameUser(ctx context.Context, id int64, currentPassword, use
 		return User{}, fmt.Errorf("commit user rename: %w", err)
 	}
 	user.Username = username
+	setUserOptionalEmail(&user, email, emailVerifiedAt)
 	user.CreatedAt = time.Unix(createdAt, 0).UTC()
 	user.UpdatedAt = now
 	return user, nil
+}
+
+func setUserOptionalEmail(user *User, email sql.NullString, verifiedAt sql.NullInt64) {
+	if email.Valid {
+		user.Email = email.String
+	}
+	if verifiedAt.Valid {
+		value := time.Unix(verifiedAt.Int64, 0).UTC()
+		user.EmailVerifiedAt = &value
+	}
 }
 
 func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {

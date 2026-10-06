@@ -39,6 +39,11 @@ func TestMailSettingsMigrationPreservesExistingData(t *testing.T) {
 	if err := db.QueryRow(`SELECT username FROM users WHERE id = 99`).Scan(&username); err != nil || username != "existing-admin" {
 		t.Fatalf("existing user = %q, %v", username, err)
 	}
+	for _, item := range migrations[24:] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)
 }

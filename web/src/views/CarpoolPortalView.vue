@@ -78,7 +78,7 @@ async function loadPortal() {
   const results = await Promise.allSettled([loadNodes(), loadRelaySources(), loadRelays()])
   const failed = results.find((result) => result.status === 'rejected')
   if (failed?.status === 'rejected') {
-    error.value = failed.reason instanceof Error ? failed.reason.message : '部分用户门户数据加载失败'
+    error.value = failed.reason instanceof Error ? failed.reason.message : '部分拼车门户数据加载失败'
   }
 }
 

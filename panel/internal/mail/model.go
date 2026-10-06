@@ -72,6 +72,7 @@ type Sender interface {
 var (
 	ErrDisabled              = errors.New("邮件服务未启用")
 	ErrInvalidSettings       = errors.New("邮件设置无效")
+	ErrInvalidMailbox        = errors.New("邮箱地址无效")
 	ErrCredentialUnavailable = errors.New("SMTP 凭据无法解密，请重新填写密码")
 )
 
@@ -187,6 +188,16 @@ func validMailbox(value string) bool {
 	}
 	parsed, err := stdmail.ParseAddress(value)
 	return err == nil && parsed.Name == "" && parsed.Address == value
+}
+
+// NormalizeMailbox returns the canonical mailbox form stored by account
+// features. Display names are deliberately rejected.
+func NormalizeMailbox(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if !validMailbox(value) {
+		return "", ErrInvalidMailbox
+	}
+	return value, nil
 }
 
 func validSMTPHost(value string) bool {

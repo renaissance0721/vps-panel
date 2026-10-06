@@ -36,8 +36,8 @@ func (s *server) listAdminUsers(w http.ResponseWriter, r *http.Request, _ auth.U
 	}
 	response := make([]accessUserResponse, 0)
 	for _, user := range users {
-		if user.Role == auth.RoleUser {
-			response = append(response, accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role})
+		if user.Role == auth.RoleCarpool {
+			response = append(response, toAccessUserResponse(user))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": response})
@@ -113,7 +113,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 		pendingPasswordRequest = &value
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":  accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role},
+		"user":  toAccessUserResponse(user),
 		"nodes": nodes, "relays": relayResponse, "password_request": pendingPasswordRequest,
 	})
 }
@@ -171,15 +171,15 @@ func (s *server) readManagedUser(w http.ResponseWriter, r *http.Request) (auth.U
 	}
 	user, err := s.authService.GetUser(r.Context(), id)
 	if errors.Is(err, auth.ErrUserNotFound) {
-		writeError(w, http.StatusNotFound, "普通用户不存在")
+		writeError(w, http.StatusNotFound, "拼车用户不存在")
 		return auth.User{}, false
 	}
 	if err != nil {
 		writeInternalError(w, err)
 		return auth.User{}, false
 	}
-	if user.Role != auth.RoleUser {
-		writeError(w, http.StatusBadRequest, "目标账号不是普通用户")
+	if user.Role != auth.RoleCarpool {
+		writeError(w, http.StatusBadRequest, "目标账号不是拼车用户")
 		return auth.User{}, false
 	}
 	return user, true

@@ -12,9 +12,9 @@ const clientSource = await readFile(new URL('../src/components/proxy/ClientList.
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
 test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数据', () => {
-  assert.match(appSource, /state\.value\.user\?\.role === 'user' \|\| state\.value\.user\?\.role === 'subscriber'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
+  assert.match(appSource, /state\.value\.user\?\.role === 'carpool' \|\| state\.value\.user\?\.role === 'subscriber'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
   assert.match(appSource, /<SubscriberPortalView[^>]*state\.user\?\.role === 'subscriber'/)
-  assert.doesNotMatch(portalSource, /<UserPortalView|sidebar|\/api\/(?:servers|proxies|relays|overview)/)
+  assert.doesNotMatch(portalSource, /<CarpoolPortalView|sidebar|\/api\/(?:servers|proxies|relays|overview)/)
   for (const endpoint of ['/api/subscriber/me', '/api/subscriber/subscription/regenerate']) {
     assert.match(portalSource, new RegExp(endpoint.replaceAll('/', '\\/')))
   }

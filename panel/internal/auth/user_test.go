@@ -102,7 +102,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 	})
 
 	t.Run("assigned client and cascaded client data", func(t *testing.T) {
-		service, db, _, user := newDeleteUserFixture(t, RoleUser)
+		service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 		insertDeletionServer(t, db, 10, nil)
 		insertDeletionProxy(t, db, 20, 10, 8443)
 		insertDeletionClient(t, db, 30, 20, user.ID)
@@ -121,7 +121,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 	})
 
 	t.Run("owned relay", func(t *testing.T) {
-		service, db, _, user := newDeleteUserFixture(t, RoleUser)
+		service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 		insertDeletionServer(t, db, 10, nil)
 		insertManualDeletionRelay(t, db, 40, 10, user.ID, nil)
 		mutations, err := service.DeleteUser(t.Context(), user.ID)
@@ -132,7 +132,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 	})
 
 	t.Run("landing referenced by another user's relay", func(t *testing.T) {
-		service, db, _, user := newDeleteUserFixture(t, RoleUser)
+		service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 		insertDeletionServer(t, db, 10, nil)
 		insertDeletionLanding(t, db, 50, user.ID)
 		mustExecDeleteTest(t, db, `INSERT INTO relays
@@ -147,7 +147,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 
 	for _, reference := range []string{"source", "target"} {
 		t.Run(reference+" client referenced by another user's relay", func(t *testing.T) {
-			service, db, _, user := newDeleteUserFixture(t, RoleUser)
+			service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 			insertDeletionServer(t, db, 10, nil)
 			insertDeletionServer(t, db, 11, nil)
 			insertDeletionProxy(t, db, 20, 10, 8443)
@@ -191,7 +191,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 	})
 
 	t.Run("session password request invitation access and orders", func(t *testing.T) {
-		service, db, _, user := newDeleteUserFixture(t, RoleUser)
+		service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 		insertDeletionServer(t, db, 10, nil)
 		insertDeletionProxy(t, db, 20, 10, 8443)
 		insertManualDeletionRelay(t, db, 40, 10, nil, nil)
@@ -221,7 +221,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 	})
 
 	t.Run("mixed resources on multiple servers bump once each", func(t *testing.T) {
-		service, db, _, user := newDeleteUserFixture(t, RoleUser)
+		service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 		insertDeletionServer(t, db, 10, user.ID)
 		insertDeletionServer(t, db, 11, nil)
 		insertDeletionProxy(t, db, 20, 10, 8443)
@@ -252,7 +252,7 @@ func TestDeleteUserResourceScenarios(t *testing.T) {
 		{"decommissioning", `UPDATE servers SET decommission_status = 'pending' WHERE id = 10`},
 	} {
 		t.Run("resources on "+unavailableServer.name+" server do not require mutation", func(t *testing.T) {
-			service, db, _, user := newDeleteUserFixture(t, RoleUser)
+			service, db, _, user := newDeleteUserFixture(t, RoleCarpool)
 			insertDeletionServer(t, db, 10, user.ID)
 			mustExecDeleteTest(t, db, unavailableServer.update)
 			insertDeletionProxy(t, db, 20, 10, 8443)

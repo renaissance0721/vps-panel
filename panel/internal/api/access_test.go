@@ -204,7 +204,7 @@ func TestServerAccessOnlyAcceptsManagementAccounts(t *testing.T) {
 	defer db.Close()
 	ids := map[string]int64{"admin": accounts.adminID, "vip": accounts.memberID}
 	cookies := map[string]*http.Cookie{}
-	for _, role := range []string{"user", "subscriber"} {
+	for _, role := range []string{"carpool", "subscriber"} {
 		result, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at)
 			VALUES (?, 'hash', ?, 1, 1)`, role, role)
 		if err != nil {
@@ -229,9 +229,9 @@ func TestServerAccessOnlyAcceptsManagementAccounts(t *testing.T) {
 	}{
 		{"admin", []int64{ids["admin"]}, true},
 		{"vip", []int64{ids["vip"]}, true},
-		{"user", []int64{ids["user"]}, false},
+		{"carpool", []int64{ids["carpool"]}, false},
 		{"subscriber", []int64{ids["subscriber"]}, false},
-		{"mixed user", []int64{ids["admin"], ids["vip"], ids["user"]}, false},
+		{"mixed carpool", []int64{ids["admin"], ids["vip"], ids["carpool"]}, false},
 		{"mixed subscriber", []int64{ids["admin"], ids["vip"], ids["subscriber"]}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {

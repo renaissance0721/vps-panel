@@ -18,7 +18,7 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	db, handler, adminCookie, adminID := setupAccountTest(t)
 	defer db.Close()
 	vipCookie, _ := registerAccount(t, db, handler, adminCookie, "vip", "vip-user")
-	userCookie, _ := registerAccount(t, db, handler, adminCookie, "user", "normal-user")
+	userCookie, _ := registerAccount(t, db, handler, adminCookie, "carpool", "normal-user")
 
 	forbidden := performRequest(t, handler, http.MethodGet, "/api/personal-subscriptions", nil, userCookie)
 	if forbidden.Code != http.StatusForbidden {

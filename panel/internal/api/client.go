@@ -76,7 +76,7 @@ func writeClientRelayPortError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrClientRelayPortsActive):
 		writeError(w, http.StatusConflict, "该客户端存在正在使用的用户中转，请先删除中转后调整端口")
 	case errors.Is(err, proxystore.ErrClientNotAssigned):
-		writeError(w, http.StatusConflict, "仅已分配给普通用户的客户端可配置用户中转端口")
+		writeError(w, http.StatusConflict, "仅已分配给拼车用户的客户端可配置用户中转端口")
 	default:
 		writeClientAssignmentError(w, err)
 	}
@@ -92,7 +92,7 @@ func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 		return
 	}
 	if request.UserID != nil && *request.UserID <= 0 {
-		writeError(w, http.StatusBadRequest, "普通用户账号无效")
+		writeError(w, http.StatusBadRequest, "拼车用户账号无效")
 		return
 	}
 	current, err := s.proxies.GetClient(r.Context(), id)
@@ -123,15 +123,15 @@ func (s *server) assignProxyClient(w http.ResponseWriter, r *http.Request, _ aut
 func writeClientAssignmentError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, proxystore.ErrAssignmentUserNotFound):
-		writeError(w, http.StatusBadRequest, "普通用户账号不存在")
+		writeError(w, http.StatusBadRequest, "拼车用户账号不存在")
 	case errors.Is(err, proxystore.ErrInvalidAssignmentRole):
-		writeError(w, http.StatusBadRequest, "客户端只能分配给普通用户账号")
+		writeError(w, http.StatusBadRequest, "客户端只能分配给拼车用户账号")
 	case errors.Is(err, proxystore.ErrInvalidBillingPeriod):
 		writeError(w, http.StatusBadRequest, "付款周期仅支持 1、3、6、12 个月或未设置")
 	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
 		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
 	case errors.Is(err, proxystore.ErrNotDistributable):
-		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
+		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给拼车用户")
 	default:
 		writeProxyError(w, err)
 	}

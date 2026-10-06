@@ -20,7 +20,7 @@ test('全局主题使用白色与淡蓝色 token 并统一柔和圆角', async (
 test('Sidebar 和 Portal 共用液态玻璃品牌语言', async () => {
   const [app, userPortal, subscriberPortal, style] = await Promise.all([
     source('App.vue'),
-    source('views/UserPortalView.vue'),
+    source('views/CarpoolPortalView.vue'),
     source('views/SubscriberPortalView.vue'),
     source('style.css'),
   ])

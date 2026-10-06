@@ -201,8 +201,8 @@ func TestOpenExpandsUserRoleConstraintWithoutBreakingReferences(t *testing.T) {
 			t.Fatalf("user %d role = %q, %v; want %q", id, role, err, want)
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('user', 'u', 'user', 50, 50)`); err != nil {
-		t.Fatalf("insert user role: %v", err)
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('carpool', 'u', 'carpool', 50, 50)`); err != nil {
+		t.Fatalf("insert carpool role: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES ('subscriber', 's', 'subscriber', 50, 50)`); err != nil {
 		t.Fatalf("insert subscriber role: %v", err)

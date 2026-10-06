@@ -38,8 +38,9 @@ import MonitorView from './views/MonitorView.vue'
 import ServersView from './views/ServersView.vue'
 import ProxiesView from './views/ProxiesView.vue'
 import RelaysView from './views/RelaysView.vue'
-import UserPortalView from './views/UserPortalView.vue'
+import CarpoolPortalView from './views/CarpoolPortalView.vue'
 import SubscriberPortalView from './views/SubscriberPortalView.vue'
+import VerifyEmailView from './views/VerifyEmailView.vue'
 import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
@@ -86,7 +87,7 @@ const error = ref('')
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
-const invitationRole = ref<'vip' | 'user' | 'subscriber' | null>(null)
+const invitationRole = ref<'vip' | 'carpool' | 'subscriber' | null>(null)
 const passwordResetOpen = ref(false)
 const passwordResetUsername = ref('')
 const passwordResetPassword = ref('')
@@ -105,27 +106,29 @@ const { loadOverview, loadInvitations, loadPasswordChangeRequests } = overviewSt
 let serverPollTimer: number | undefined
 
 const invitationToken = new URLSearchParams(window.location.search).get('token') ?? ''
+const emailVerificationToken = new URLSearchParams(window.location.search).get('token') ?? ''
 
 const isInvitationPage = computed(
   () => window.location.pathname === '/register' && invitationToken !== '',
 )
+const isVerifyEmailPage = computed(() => window.location.pathname === '/verify-email')
 
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
   if (!state.value.authenticated && isInvitationPage.value) {
-    const response = await api<{ invitation: { role: 'vip' | 'user' | 'subscriber' } }>(
+    const response = await api<{ invitation: { role: 'vip' | 'carpool' | 'subscriber' } }>(
       `/api/auth/invitation?token=${encodeURIComponent(invitationToken)}`,
     )
     invitationRole.value = response.invitation.role
   }
   if (state.value.authenticated) {
-	if (state.value.user?.role === 'user' || state.value.user?.role === 'subscriber') {
-	  stopServerPolling()
-	  return
-	}
+    if (state.value.user?.role === 'carpool' || state.value.user?.role === 'subscriber') {
+      stopServerPolling()
+      return
+    }
     const requests = [loadHealth(), loadServers(), loadUsers(), loadOverview()]
     if (state.value.user?.role === 'admin') {
-	  requests.push(loadInvitations(), loadPasswordChangeRequests())
+      requests.push(loadInvitations(), loadPasswordChangeRequests())
     }
     await Promise.all(requests)
     startServerPolling()
@@ -304,6 +307,7 @@ function selectPage(page: AdminPage) {
 }
 
 onMounted(async () => {
+  if (isVerifyEmailPage.value) return
   try {
     await loadState()
   } catch (reason) {
@@ -319,7 +323,9 @@ onUnmounted(stopServerPolling)
 <template>
 <n-config-provider :theme-overrides="themeOverrides">
     <div class="page-shell" :class="{ 'admin-shell': state?.authenticated }">
-      <n-card v-if="loading" class="auth-card" :bordered="true">
+      <VerifyEmailView v-if="isVerifyEmailPage" :token="emailVerificationToken" />
+
+      <n-card v-else-if="loading" class="auth-card" :bordered="true">
         <div class="loading-row">
           <n-spin size="small" />
           <span>正在连接管理面板…</span>
@@ -438,7 +444,7 @@ onUnmounted(stopServerPolling)
         </form>
       </n-card>
 
-      <UserPortalView v-else-if="state.user?.role === 'user'" :user="state.user" @user-updated="updateCurrentUser" @logout="logout" />
+      <CarpoolPortalView v-else-if="state.user?.role === 'carpool'" :user="state.user" @user-updated="updateCurrentUser" @logout="logout" />
       <SubscriberPortalView v-else-if="state.user?.role === 'subscriber'" :user="state.user" @user-updated="updateCurrentUser" @logout="logout" />
 
       <div v-else class="app-layout">

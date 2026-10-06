@@ -1261,7 +1261,7 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 	if roleColumnCount == 0 {
 		if _, err := db.ExecContext(ctx,
 			`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
-			 CHECK (role IN ('admin', 'vip', 'user', 'subscriber'))`,
+			 CHECK (role IN ('admin', 'vip', 'carpool', 'subscriber'))`,
 		); err != nil {
 			return fmt.Errorf("add user role column: %w", err)
 		}
@@ -1306,12 +1306,12 @@ func migrateUserRoles(ctx context.Context, db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'carpool', 'subscriber')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
 		`INSERT INTO users_new (id, username, password_hash, role, created_at, updated_at)
-		 SELECT id, username, password_hash, role, created_at, updated_at FROM users`,
+		 SELECT id, username, password_hash, CASE role WHEN 'user' THEN 'carpool' ELSE role END, created_at, updated_at FROM users`,
 		`DROP TABLE users`,
 		`ALTER TABLE users_new RENAME TO users`,
 	} {
@@ -1346,7 +1346,7 @@ func migrateInvitationRoles(ctx context.Context, db *sql.DB) error {
 	if count == 0 {
 		if _, err := db.ExecContext(ctx,
 			`ALTER TABLE admin_invitations ADD COLUMN role TEXT NOT NULL DEFAULT 'vip'
-			 CHECK (role IN ('vip', 'user', 'subscriber'))`,
+			 CHECK (role IN ('vip', 'carpool', 'subscriber'))`,
 		); err != nil {
 			return fmt.Errorf("add admin_invitations.role: %w", err)
 		}
@@ -1383,12 +1383,13 @@ func migrateInvitationRoles(ctx context.Context, db *sql.DB) error {
 			created_by INTEGER NOT NULL REFERENCES users(id),
 			expires_at INTEGER NOT NULL,
 			used_at INTEGER,
-			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user', 'subscriber')),
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'carpool', 'subscriber')),
 			created_at INTEGER NOT NULL
 		)`,
 		`INSERT INTO admin_invitations_new
 			(id, token_hash, created_by, expires_at, used_at, role, created_at)
-		 SELECT id, token_hash, created_by, expires_at, used_at, role, created_at
+		 SELECT id, token_hash, created_by, expires_at, used_at,
+		 CASE role WHEN 'user' THEN 'carpool' ELSE role END, created_at
 		 FROM admin_invitations`,
 		`DROP TABLE admin_invitations`,
 		`ALTER TABLE admin_invitations_new RENAME TO admin_invitations`,

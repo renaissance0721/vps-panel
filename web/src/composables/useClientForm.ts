@@ -39,7 +39,7 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
   const clientExpiresAt = ref('')
 	const assignedUserID = ref(0)
 	const billingPeriodMonths = ref(0)
-	const assignableUsers = computed(() => assignment.users.filter((user) => user.role === 'user'))
+	const assignableUsers = computed(() => assignment.users.filter((user) => user.role === 'carpool'))
 	const canAssignClient = computed(() => assignment.role === 'admin')
 
   function openCreateClient() {

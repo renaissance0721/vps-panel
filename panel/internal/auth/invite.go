@@ -42,7 +42,7 @@ func (s *Service) CreateInvitation(ctx context.Context, createdBy int64, roles .
 }
 
 func validInvitationRole(role string) bool {
-	return role == RoleVIP || role == RoleUser || role == RoleSubscriber
+	return role == RoleVIP || role == RoleCarpool || role == RoleSubscriber
 }
 
 func (s *Service) GetInvitation(ctx context.Context, tokenValue string) (Invitation, error) {

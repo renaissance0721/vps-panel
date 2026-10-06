@@ -67,10 +67,10 @@ func TestNotificationSettingsValidationMaskingAndAsyncTest(t *testing.T) {
 
 func TestNotificationAllEndpointsRequireAdmin(t *testing.T) {
 	db, handler, cookie := monitorTestAPI(t)
-	for _, role := range []string{"vip", "user", "subscriber", "anonymous"} {
+	for _, role := range []string{"vip", "carpool", "subscriber", "anonymous"} {
 		storedRole := role
 		if storedRole == "anonymous" {
-			storedRole = "user"
+			storedRole = "carpool"
 		}
 		if _, err := db.Exec(`UPDATE users SET role=? WHERE username='admin'`, storedRole); err != nil {
 			t.Fatal(err)

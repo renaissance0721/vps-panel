@@ -61,7 +61,7 @@ const { overview, isHealthy, health, state, submitting, createInvitation, genera
             <n-card v-if="state?.user?.role === 'admin'" title="邀请账号" :bordered="true">
               <p class="card-copy">生成 24 小时有效的一次性注册链接。</p>
 			  <div class="invitation-form">
-				<label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP用户</option><option value="user">拼车用户</option><option value="subscriber">订阅用户</option></select></label>
+				<label><span>账号等级</span><select v-model="invitationRole" class="settings-input"><option value="vip">VIP用户</option><option value="carpool">拼车用户</option><option value="subscriber">订阅用户</option></select></label>
                 <n-button type="primary" :loading="submitting" @click="createInvitation">
                   生成邀请链接
                 </n-button>

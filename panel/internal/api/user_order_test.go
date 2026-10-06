@@ -28,7 +28,7 @@ func TestUserOrderAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	vip, vipID := registerAccount(t, db, handler, admin, "vip", "member")
-	user, userID := registerAccount(t, db, handler, admin, "user", "alice")
+	user, userID := registerAccount(t, db, handler, admin, "carpool", "alice")
 	subscriber, subscriberID := registerAccount(t, db, handler, admin, "subscriber", "subscriber")
 	const path, key = "/api/users", "users"
 	expectOrderAPI(t, handler, admin, path, key, 1, userID, vipID, subscriberID, secondID)

@@ -30,7 +30,7 @@ async function mountSettings(prepare = () => {}) {
 }
 
 test('通知入口只向管理员显示，并在延迟探测旁；所有非管理员均不可见', async () => {
-  for (const role of ['admin', 'vip', 'user', 'subscriber', undefined]) {
+  for (const role of ['admin', 'vip', 'carpool', 'subscriber', undefined]) {
     const html = await renderToString(createSSRApp(MonitorView, { role, servers: [] }))
     if (role === 'admin') assert.match(html, /延迟探测[\s\S]+通知设置/)
     else assert.doesNotMatch(html, /通知设置/)

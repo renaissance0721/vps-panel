@@ -57,7 +57,7 @@ Release workflow 使用 Node.js 22；本地使用该系列最新维护版本，�
 | Server | 一台受管理 VPS 的业务记录；保存访问权限、归属、流量配置及 Agent 状态 |
 | Agent | Server 的执行端身份和连接；使用独立 Agent Token 认证 |
 | Proxy | Server 上的 Xray 入站及协议配置，不等于一个用户凭据 |
-| Client | Proxy 下的凭据、配额与生命周期，可分配给普通用户或由订阅系统管理 |
+| Client | Proxy 下的凭据、配额与生命周期，可分配给拼车用户或由订阅系统管理 |
 | Relay | Server 上的 Realm 转发规则，引用目标 Proxy / Landing 或手动地址 |
 | Landing | Panel 保存的外部节点，不会因此在远端安装 Agent |
 | Subscription | 将可用节点、路由和配置模板组织成用户可获取的订阅 |
@@ -105,8 +105,8 @@ API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 L
 
 Server 管理包含基本信息、分组、归属、访问范围、续期、流量配置和生命周期。
 Server 的公开 / 私有访问范围只针对 `admin` / `vip`：公开对所有管理账号可见，私有通过 `server_access` 授权指定管理账号。
-写入时拒绝 `user` / `subscriber`，读取授权和判断私有访问时也检查账号角色，历史无效授权由数据迁移清理。
-普通用户和订阅用户继续使用各自门户、Client 分配和订阅模型，不通过 `server_access` 授权。
+写入时拒绝 `carpool` / `subscriber`，读取授权和判断私有访问时也检查账号角色，历史无效授权由数据迁移清理。
+拼车用户和订阅用户继续使用各自门户、Client 分配和订阅模型，不通过 `server_access` 授权。
 管理员也受 Server 访问检查约束，不能把 admin 理解为自动绕过所有资源 ACL。
 
 Agent 连接时报告系统信息，并持续报告 CPU、内存、磁盘、uptime 和 NIC 累计计数。
@@ -161,7 +161,7 @@ Relay 描述入口 Server 的监听与目标，支持 TCP、UDP、TCP+UDP。
 分享链接的入口地址来自 Relay，协议及认证参数来自目标节点，不能因中转地址改变而丢失目标 TLS / REALITY 参数。
 监听端口与 Proxy 共用现有端口预留检查，避免跨模块冲突。
 
-普通用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
+拼车用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
 这些资源不能绕过其归属流程直接修改。最后一条 Relay 的删除沿用与 Proxy 相同的清理能力检查。
 
 Agent 在专属目录和服务中管理 Realm；清理只针对本项目拥有的运行时和防火墙资源。
@@ -171,7 +171,7 @@ Agent 在专属目录和服务中管理 Realm；清理只针对本项目拥有�
 ### Client
 
 Client 有独立凭据、启停状态、流量配额和到期时间，实际可用性由业务状态共同决定。
-普通 Client 可分配给 `user`；订阅系统创建的 Client 具有专门映射与生命周期，不应通过普通管理入口绕过约束。
+普通 Client 可分配给 `carpool`；订阅系统创建的 Client 具有专门映射与生命周期，不应通过普通管理入口绕过约束。
 Client 分享链接及二维码包含连接凭据，应按敏感信息处理。
 
 ### Landing
@@ -239,13 +239,19 @@ Panel watcher 使用当前在线连接和正式 Server 流量数据判断事件�
 
 ## Mail Service
 
-[mail](panel/internal/mail) 是独立于 Telegram 通知的通用邮件领域。后续邮箱验证、密码重置、安全通知或告警邮件必须通过该 Service 发送，业务 Handler 不直接连接 SMTP。
+[mail](panel/internal/mail) 是独立于 Telegram 通知的通用邮件领域。当前账号邮箱验证通过该 Service 发送；以后如增加密码重置、安全通知或告警邮件也必须复用它，业务 Handler 不直接连接 SMTP。
 
-管理员 API 为 `GET /api/admin/settings/mail`、`PUT /api/admin/settings/mail` 和 `POST /api/admin/settings/mail/test`。三者都由后端执行 admin 权限校验；测试接口使用当前请求中的未保存配置，表单密码留空时复用已保存凭据，并按管理员限制调用频率。SMTP host 是受信任管理员可配置的外连边界，不能向普通用户开放。
+管理员 API 为 `GET /api/admin/settings/mail`、`PUT /api/admin/settings/mail` 和 `POST /api/admin/settings/mail/test`。三者都由后端执行 admin 权限校验；测试接口使用当前请求中的未保存配置，表单密码留空时复用已保存凭据，并按管理员限制调用频率。SMTP host 是受信任管理员可配置的外连边界，不能向非管理员账号开放。
 
 SMTP 支持 implicit TLS、STARTTLS 和无 TLS。TLS 始终验证证书链与 SMTP 主机名，没有跳过验证的配置；连接、单次命令和整体发送均有超时并响应 context cancellation。正常业务发送在 `enabled=false` 时返回明确错误，但管理员测试不受启用开关限制。
 
 SMTP 密码使用 AES-256-GCM 加密后存入 SQLite；GET API、审计摘要和普通错误不返回密码或密文。随机 32 字节 master key 位于 `PANEL_DATA_DIR/mail.key`，首次保存密码时以 `0600` 创建，不与密文同库存储。原生升级和 Docker volume 都会保留整个 data dir；管理员 ZIP 备份会把密钥作为独立敏感文件纳入校验、暂存、恢复和失败回滚。数据库存在 SMTP 密文但备份缺少对应 key 时，导出或导入会明确失败，不会把解密失败当作空密码。
+
+账号邮箱的归属和 token 生命周期由 [auth](panel/internal/auth) 管理：`users.email` 只保存 TrimSpace 后转为小写的已验证地址，`email_verified_at` 保存验证时间；待验证地址保存在 `account_tokens.target`。原始 token 使用 `crypto/rand` 生成，邮件发送 raw token，数据库只保存 SHA-256；token 一次性使用、30 分钟过期，同账号重发至少间隔 60 秒并使旧 token 失效。首次绑定或更换都要求当前密码，验证完成前保留原邮箱，最终占用检查、邮箱更新和 token 消费在同一事务中完成。
+
+验证邮件的绝对链接只使用部署配置中的可信 `PANEL_DOMAIN`，不从请求 Host、Origin 或转发头推导。SMTP 未启用、域名不可用或发送失败时不会留下可用的新 token。四种角色通过共享的 `AccountEmailSettings` 使用同一组 Account API；当前不提供邮箱登录、解绑或邮箱找回密码。
+
+`GET /api/account/email` 返回当前邮箱、已验证状态和待验证邮箱；`POST /api/account/email/request` 接收 `email` / `current_password`，`POST /api/account/email/resend` 接收 `current_password`，均要求登录并执行既有 Session origin 校验。公共 `POST /api/auth/email/verify` 只凭一次性 token 验证对应账号，无需原 Session。邮箱由 `lower(email) WHERE email IS NOT NULL` 唯一索引保障；普通账号列表与审计只使用掩码邮箱。邮箱验证不撤销 Session，现有管理员审批密码重置流程保持独立。
 
 ## 14. Auth / Access Control
 
@@ -255,13 +261,13 @@ SMTP 密码使用 AES-256-GCM 加密后存入 SQLite；GET API、审计摘要和
 | --- | --- |
 | `admin` | 系统设置、账号、邀请、通知、探测任务、备份、订阅分发等；管理资源仍检查相应 ACL |
 | `vip` | 管理可访问的 Server / Proxy / Relay / Landing 和自己的个人订阅 |
-| `user` | 普通用户门户、分配的 Client 节点和授权的个人中转 |
+| `carpool` | 拼车用户门户、分配的 Client 节点和授权的个人中转 |
 | `subscriber` | 独立订阅门户和自己的套餐资源 |
 
-`requireManager` 对应 admin / vip；普通用户和订阅用户有分别受限的路由，不应仅用“已登录”代替这些门禁。
-Server 的公开可见性不赋予普通用户管理权限。具体敏感操作还会额外要求 admin。
+这里的 User / Account 表示四种角色的所有账号；Carpool 只表示 `carpool` 拼车角色。`requireManager` 对应 admin / vip；拼车用户和订阅用户有分别受限的路由，不应仅用“已登录”代替这些门禁。
+Server 的公开可见性不赋予拼车用户管理权限。具体敏感操作还会额外要求 admin。
 
-首次初始化只创建管理员。管理员可生成一次性、有效期 24 小时的邀请，角色为 vip / user / subscriber，默认 vip。
+首次初始化只创建管理员。管理员可生成一次性、有效期 24 小时的邀请，角色为 vip / carpool / subscriber，默认 vip。
 用户名去除首尾空白后使用 3–64 个 ASCII 字母、数字、点、下划线或连字符，数据库比较区分大小写。
 密码按 UTF-8 字节长度校验为 6–72 字节，使用 bcrypt；已有 Session 和密码变更 / 重置流程需一起考虑。
 
@@ -292,7 +298,7 @@ SQLite 使用单连接、外键和 WAL。schema 定义见 [schema.go](panel/inte
 ## 16. Frontend
 
 [App.vue](web/src/App.vue) 使用 Vue 状态切换页面，当前没有 Vue Router 或 Pinia。
-管理入口包括概览、探针、服务器、代理、中转、订阅、账号、拼车和审计等页面，按角色显示；user / subscriber 使用各自门户。
+管理入口包括概览、探针、服务器、代理、中转、订阅、账号、拼车和审计等页面，按角色显示；carpool / subscriber 使用各自门户。
 
 页面逻辑优先放在现有 views / composables，局部展示放在对应领域组件。
 API 访问复用 [api/client.ts](web/src/api/client.ts)，类型与后端 DTO 保持一致，格式化函数和 CSS 变量沿用现有实现。

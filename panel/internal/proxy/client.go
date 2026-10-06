@@ -356,7 +356,7 @@ func validateClientAssignment(ctx context.Context, query interface {
 	if err != nil {
 		return fmt.Errorf("find assignment user: %w", err)
 	}
-	if role != "user" {
+	if role != "carpool" {
 		return ErrInvalidAssignmentRole
 	}
 	return nil

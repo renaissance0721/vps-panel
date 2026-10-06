@@ -46,9 +46,10 @@ func TestUsernameMigrationPreservesUsersAndEveryForeignKey(t *testing.T) {
 	directory := t.TempDir()
 	db := openVersion13Users(t, directory)
 	for _, statement := range []string{
-		`INSERT INTO users VALUES (7,'refrain','original-hash','admin',123,456),(8,'member','member-hash','subscriber',234,567),(99,'deleted','hash','vip',1,1)`,
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (7,'refrain','original-hash','admin',123,456),(8,'member','member-hash','subscriber',234,567),(99,'deleted','hash','vip',1,1)`,
 		`DELETE FROM users WHERE id = 99`,
 		`INSERT INTO sessions (user_id,token_hash,expires_at,created_at) VALUES (7,'session-hash',9999999999,123)`,
+		`INSERT INTO account_tokens (user_id,purpose,target,token_hash,expires_at,created_at) VALUES (7,'verify_email','pending@example.com','email-token-hash',9999999999,123)`,
 		`INSERT INTO admin_invitations (token_hash,created_by,expires_at,role,created_at) VALUES ('invite-hash',7,9999999999,'vip',123)`,
 		`INSERT INTO password_change_requests (user_id,proposed_password_hash,status,created_at,reviewed_by,reviewed_at) VALUES (8,NULL,'approved',123,7,456)`,
 		`INSERT INTO servers (id,name,owner_user_id,created_by_user_id,created_by_role,status,created_at,updated_at) VALUES (1,'server',7,7,'admin','offline',123,456)`,
@@ -137,7 +138,11 @@ func TestUsernameMigrationPreservesUsersAndEveryForeignKey(t *testing.T) {
 
 func snapshotUserMigrationTable(t *testing.T, db *sql.DB, table string) [][]any {
 	t.Helper()
-	rows, err := db.Query(`SELECT * FROM "` + table + `" ORDER BY rowid`)
+	query := `SELECT * FROM "` + table + `" ORDER BY rowid`
+	if table == "users" {
+		query = `SELECT id, username, password_hash, role, created_at, updated_at FROM users ORDER BY rowid`
+	}
+	rows, err := db.Query(query)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +184,7 @@ func TestUsernameMigrationRollsBackAndRestoresForeignKeys(t *testing.T) {
 	for _, failure := range []string{"rebuild-error", "foreign-key-check"} {
 		t.Run(failure, func(t *testing.T) {
 			db := openVersion13Users(t, t.TempDir())
-			if _, err := db.Exec(`INSERT INTO users VALUES (7,'refrain','hash','admin',123,456)`); err != nil {
+			if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (7,'refrain','hash','admin',123,456)`); err != nil {
 				t.Fatal(err)
 			}
 			item := migrations[13]
@@ -227,7 +232,7 @@ func TestUserOrderFreshAndUpgradeConstraints(t *testing.T) {
 		}
 		t.Cleanup(func() { db.Close() })
 		for _, statement := range []string{
-			`INSERT INTO users VALUES (1,'admin','hash','admin',1,1),(2,'other','hash','admin',1,1),(3,'member','hash','vip',1,1)`,
+			`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (1,'admin','hash','admin',1,1),(2,'other','hash','admin',1,1),(3,'member','hash','vip',1,1)`,
 			`INSERT INTO user_account_order VALUES (1,3,1),(1,1,2),(2,3,1),(2,1,2)`,
 		} {
 			if _, err := db.Exec(statement); err != nil {

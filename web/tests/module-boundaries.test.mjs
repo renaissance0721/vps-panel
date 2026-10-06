@@ -70,7 +70,7 @@ function json(value, status = 200) { return new Response(JSON.stringify(value), 
 test('Server 私有访问仅渲染管理账号，保持当前账号及独立所有者选项', async () => {
   const users = ref([
     { id: 2, username: 'bob', role: 'vip' },
-    { id: 3, username: 'dave', role: 'user' },
+    { id: 3, username: 'dave', role: 'carpool' },
     { id: 1, username: 'alice', role: 'admin' },
     { id: 4, username: 'eve', role: 'subscriber' },
   ])

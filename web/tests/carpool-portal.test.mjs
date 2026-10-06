@@ -3,15 +3,15 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
-const portalSource = await readFile(new URL('../src/views/UserPortalView.vue', import.meta.url), 'utf8')
+const portalSource = await readFile(new URL('../src/views/CarpoolPortalView.vue', import.meta.url), 'utf8')
 const clientFormSource = await readFile(new URL('../src/components/proxy/ClientForm.vue', import.meta.url), 'utf8')
 const serverDetailSource = await readFile(new URL('../src/components/server/ServerDetail.vue', import.meta.url), 'utf8')
 const relayViewSource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
-test('普通 user 使用独立门户且登录初始化不加载管理数据', () => {
-  assert.match(appSource, /state\.value\.user\?\.role === 'user'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
-  assert.match(appSource, /<UserPortalView[^>]*state\.user\?\.role === 'user'/)
+test('carpool 使用独立门户且登录初始化不加载管理数据', () => {
+  assert.match(appSource, /state\.value\.user\?\.role === 'carpool'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
+  assert.match(appSource, /<CarpoolPortalView[^>]*state\.user\?\.role === 'carpool'/)
   assert.doesNotMatch(portalSource, /\/api\/(?:users|servers|overview|proxies|clients|landings)(?:[/'"`])/)
   for (const endpoint of ['/api/me/nodes', '/api/me/relay-sources', '/api/me/relays']) {
     assert.match(portalSource, new RegExp(endpoint.replaceAll('/', '\\/')))

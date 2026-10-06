@@ -109,7 +109,7 @@ onUnmounted(() => {
           @dragover="dragOver($event, account.id)" @dragleave="dropTargetID === account.id && (dropTargetID = null)" @drop.prevent="dropAccount(account.id)">
           <span class="drag-handle" :class="{ 'drag-handle--disabled': deleting || reorderingID !== null }" :draggable="!deleting && reorderingID === null"
             title="拖动排序" aria-label="拖动用户排序" @dragstart="startDrag($event, account.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
-          <div class="account-row-info"><strong>{{ account.username }}</strong><span>{{ userRoleLabel(account.role) }}</span></div>
+          <div class="account-row-info"><strong>{{ account.username }}</strong><span>{{ userRoleLabel(account.role) }}</span><span>邮箱：{{ account.email_masked || '未绑定' }}{{ account.email_verified ? ' · 已验证' : '' }}</span></div>
           <n-button v-if="account.role !== 'admin'" type="error" secondary size="small" :disabled="deleting || reorderingID !== null" @click="deleteAccount(account)">删除用户</n-button>
         </div>
       </div>

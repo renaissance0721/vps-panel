@@ -12,7 +12,9 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'carpool', 'subscriber')),
+			email TEXT CHECK (email IS NULL OR (email != '' AND email = trim(email) AND email = lower(email))),
+			email_verified_at INTEGER CHECK (email_verified_at IS NULL OR email IS NOT NULL),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -23,7 +25,7 @@ func schemaStatements() []string {
 			created_by INTEGER NOT NULL REFERENCES users(id),
 			expires_at INTEGER NOT NULL,
 			used_at INTEGER,
-			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'user', 'subscriber')),
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'carpool', 'subscriber')),
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_invitations_active
@@ -36,6 +38,9 @@ func schemaStatements() []string {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`,
+		accountTokensStatement,
+		accountTokensActiveStatement,
+		accountTokensExpiryStatement,
 		`CREATE TABLE IF NOT EXISTS password_change_requests (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

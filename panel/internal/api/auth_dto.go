@@ -39,9 +39,25 @@ type invitationResponse struct {
 }
 
 type accessUserResponse struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	ID            int64  `json:"id"`
+	Username      string `json:"username"`
+	Role          string `json:"role"`
+	EmailMasked   string `json:"email_masked,omitempty"`
+	EmailVerified bool   `json:"email_verified"`
+}
+
+func toAccessUserResponse(user auth.User) accessUserResponse {
+	return accessUserResponse{
+		ID: user.ID, Username: user.Username, Role: user.Role,
+		EmailMasked: maskEmailIfPresent(user.Email), EmailVerified: user.Email != "" && user.EmailVerifiedAt != nil,
+	}
+}
+
+func maskEmailIfPresent(value string) string {
+	if value == "" {
+		return ""
+	}
+	return maskEmail(value)
 }
 
 func toUserResponse(user auth.User) userResponse {

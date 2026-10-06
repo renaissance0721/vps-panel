@@ -122,7 +122,7 @@ func TestAllRolesChangePasswordDirectlyAndLoseExistingSessions(t *testing.T) {
 		username string
 	}{
 		{role: "vip", username: "vip-user"},
-		{role: "user", username: "normal-user"},
+		{role: "carpool", username: "normal-user"},
 		{role: "subscriber", username: "subscriber-user"},
 	} {
 		cookie, userID := registerAccount(t, db, handler, adminCookie, account.role, account.username)
@@ -151,7 +151,7 @@ func TestAllRolesChangePasswordDirectlyAndLoseExistingSessions(t *testing.T) {
 func TestPublicPasswordResetRequestIsOpaqueAndRateLimited(t *testing.T) {
 	db, handler, adminCookie, _ := setupAccountTest(t)
 	defer db.Close()
-	_, _ = registerAccount(t, db, handler, adminCookie, "user", "reset-user")
+	_, _ = registerAccount(t, db, handler, adminCookie, "carpool", "reset-user")
 
 	request := func(username, password string) *httptest.ResponseRecorder {
 		return performRequest(t, handler, http.MethodPost, "/api/auth/password-reset-request", map[string]string{

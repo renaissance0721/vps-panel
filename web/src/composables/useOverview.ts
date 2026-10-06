@@ -24,7 +24,7 @@ export function useOverview(state: Ref<AuthState | null>, health: Ref<Health | n
   const invitations = ref<Invitation[]>([])
   const overview = ref<Overview | null>(null)
   const generatedLink = ref('')
-	const invitationRole = ref<'vip' | 'user' | 'subscriber'>('vip')
+	const invitationRole = ref<'vip' | 'carpool' | 'subscriber'>('vip')
 	const passwordChangeRequests = ref<PasswordChangeRequest[]>([])
   const copied = ref(false)
   const backupFile = ref<File | null>(null)

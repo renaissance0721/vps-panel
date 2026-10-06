@@ -52,7 +52,7 @@ var (
 	ErrInvalidClientTrafficConfig     = errors.New("invalid client traffic configuration")
 	ErrInvalidClientExpiration        = errors.New("invalid client expiration")
 	ErrAssignmentUserNotFound         = errors.New("assigned user not found")
-	ErrInvalidAssignmentRole          = errors.New("client can only be assigned to a user account")
+	ErrInvalidAssignmentRole          = errors.New("client can only be assigned to a carpool account")
 	ErrInvalidBillingPeriod           = errors.New("billing period must be 1, 3, 6, 12, or null")
 	ErrAssignedClientExists           = errors.New("user already has a client on this proxy")
 	ErrInvalidClientRelayPortCount    = errors.New("client relay port count must be between 0 and 5")

@@ -3,12 +3,14 @@ import { computed, ref } from 'vue'
 import { NAlert, NButton, NCard, NDropdown, NInput, NModal, type DropdownOption } from 'naive-ui'
 import { api } from '../api/client'
 import type { User } from '../types/auth'
+import AccountEmailSettings from './AccountEmailSettings.vue'
 
 const props = defineProps<{ user: User }>()
 const emit = defineEmits<{ updated: [user: User]; logout: [] }>()
 
 const renameOpen = ref(false)
 const passwordOpen = ref(false)
+const emailOpen = ref(false)
 const resetOpen = ref(false)
 const busy = ref(false)
 const formError = ref('')
@@ -26,6 +28,7 @@ const menuOptions = computed<DropdownOption[]>(() => [
   { type: 'divider', key: 'divider' },
   { label: '更改用户名', key: 'rename' },
   { label: '更改密码', key: 'password' },
+  { label: '邮箱设置', key: 'email' },
   { label: '退出登录', key: 'logout' },
 ])
 
@@ -43,6 +46,8 @@ function handleSelect(key: string | number) {
     newPassword.value = ''
     confirmPassword.value = ''
     passwordOpen.value = true
+  } else if (key === 'email') {
+    emailOpen.value = true
   } else if (key === 'logout') {
     emit('logout')
   }
@@ -184,6 +189,12 @@ async function requestPasswordReset() {
         <label><span>确认新密码</span><n-input v-model:value="resetConfirmPassword" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
         <div class="modal-actions"><n-button @click="resetOpen = false">关闭</n-button><n-button type="primary" attr-type="submit" :loading="busy">提交申请</n-button></div>
       </form>
+    </n-card>
+  </n-modal>
+
+  <n-modal v-model:show="emailOpen">
+    <n-card class="account-modal-card" title="邮箱设置" closable @close="emailOpen = false">
+      <AccountEmailSettings v-if="emailOpen" />
     </n-card>
   </n-modal>
 </template>

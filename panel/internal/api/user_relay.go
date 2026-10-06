@@ -509,7 +509,7 @@ func isSpecialUseTarget(address netip.Addr) bool {
 func writeUserRelayError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errUserRelayLimit):
-		writeError(w, http.StatusConflict, "每个普通用户最多可创建 "+strconv.Itoa(maxUserRelays)+" 条中转")
+		writeError(w, http.StatusConflict, "每个拼车用户最多可创建 "+strconv.Itoa(maxUserRelays)+" 条中转")
 	case errors.Is(err, errUserRelayPortsFull):
 		writeError(w, http.StatusConflict, "该节点可用中转端口已用尽")
 	case errors.Is(err, errInvalidPublicIP):

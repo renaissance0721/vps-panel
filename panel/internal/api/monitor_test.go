@@ -316,7 +316,7 @@ func TestMonitorAPIPermissionsAndRanges(t *testing.T) {
 			t.Fatalf("range %q = %d", raw, response.Code)
 		}
 	}
-	for _, role := range []string{"vip", "user", "subscriber"} {
+	for _, role := range []string{"vip", "carpool", "subscriber"} {
 		if _, err := db.Exec(`UPDATE users SET role = ? WHERE username = 'admin'`, role); err != nil {
 			t.Fatal(err)
 		}

@@ -11,7 +11,7 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 服务器 | 系统信息、在线状态、分组、访问权限、到期与续期信息 |
 | 轻量探针 | CPU / RAM / Disk、网络速度、周期流量；TCPing / ICMP Ping 与 1h / 6h / 24h 延迟历史 |
 | Telegram | Server 离线、恢复和流量阈值通知 |
-| 邮件服务 | 可选的标准 SMTP 配置与管理员测试邮件，支持 TLS、STARTTLS 和无 TLS |
+| 邮件服务 | 可选的标准 SMTP 配置、管理员测试邮件与账号邮箱验证，支持 TLS、STARTTLS 和无 TLS |
 | 代理节点 | 受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
 | 外部节点 | 导入 VLESS / Shadowsocks 分享链接，管理 Landing 节点 |
@@ -109,6 +109,7 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 测试邮件直接使用当前表单内容，因此可以在保存前验证 `smtp.example.com`、`noreply@example.com` 等实际配置。
 
 邮件服务是可选功能。未配置或停用 SMTP 不影响现有服务器、Agent、代理、中转、订阅、探针和 Telegram 通知。
+启用 SMTP 且配置可信的 `PANEL_DOMAIN` 后，admin、vip、carpool、subscriber 均可从账户菜单绑定、验证或更换邮箱；验证完成前不会覆盖原邮箱。当前邮箱仅用于账号资料，本版本不支持邮箱登录或邮箱找回密码，忘记密码仍沿用管理员审批流程。
 
 ## 🔐 用户与权限
 
@@ -116,14 +117,14 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 | --- | --- |
 | `admin` | 系统管理、账号与邀请、探测任务、通知、订阅分发，以及有权访问的服务器资源 |
 | `vip` | 管理有权访问的服务器、代理和中转，维护自己的个人订阅 |
-| `user` | 使用分配给自己的节点，并在授权范围内管理个人中转 |
+| `carpool` | 使用分配给自己的节点，并在授权范围内管理个人中转（拼车用户） |
 | `subscriber` | 使用订阅套餐和专用订阅入口，查看自己的节点、流量及到期信息 |
 
 首次初始化创建管理员，后续账号通过管理员管理或邀请加入。
 用户名区分大小写。服务器访问权限由后端校验；完整权限边界见 [开发指南](DEV.md)。
 
 Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有管理账号可见，私有仅对指定管理账号可见。
-`user` / `subscriber` 继续使用独立门户、Client 分配和订阅权限。
+`carpool` / `subscriber` 继续使用独立门户、Client 分配和订阅权限。
 
 ## 订阅与客户端模板
 

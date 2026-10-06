@@ -191,7 +191,7 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request, viewer auth.U
 	sort.SliceStable(users, func(i, j int) bool { return ranks[users[i].ID] < ranks[users[j].ID] })
 	response := make([]accessUserResponse, 0, len(users))
 	for _, user := range users {
-		response = append(response, accessUserResponse{ID: user.ID, Username: user.Username, Role: user.Role})
+		response = append(response, toAccessUserResponse(user))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": response})
 }
@@ -254,19 +254,19 @@ func (s *server) requireManager(
 ) http.HandlerFunc {
 	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
 		if user.Role != auth.RoleAdmin && user.Role != auth.RoleVIP {
-			writeError(w, http.StatusForbidden, "普通用户无权访问管理 API")
+			writeError(w, http.StatusForbidden, "仅管理员和 VIP 可以访问管理 API")
 			return
 		}
 		next(w, r, user)
 	})
 }
 
-func (s *server) requireUser(
+func (s *server) requireCarpool(
 	next func(http.ResponseWriter, *http.Request, auth.User),
 ) http.HandlerFunc {
 	return s.requireAuthentication(func(w http.ResponseWriter, r *http.Request, user auth.User) {
-		if user.Role != auth.RoleUser {
-			writeError(w, http.StatusForbidden, "仅普通用户可以访问用户门户 API")
+		if user.Role != auth.RoleCarpool {
+			writeError(w, http.StatusForbidden, "仅拼车用户可以访问拼车门户 API")
 			return
 		}
 		next(w, r, user)
@@ -316,7 +316,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrInvitationNotFound):
 		writeError(w, http.StatusNotFound, "邀请不存在、已使用或已过期")
 	case errors.Is(err, auth.ErrInvalidInvitationRole):
-		writeError(w, http.StatusBadRequest, "邀请角色仅支持 VIP、普通用户或订阅用户")
+		writeError(w, http.StatusBadRequest, "邀请角色仅支持 VIP、拼车用户或订阅用户")
 	case errors.Is(err, auth.ErrInvalidUsername):
 		writeError(w, http.StatusBadRequest, "用户名需为 3–64 位字母、数字、点、下划线或连字符")
 	case errors.Is(err, auth.ErrInvalidPassword):

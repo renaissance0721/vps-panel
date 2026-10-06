@@ -46,7 +46,7 @@ func setupUserPortalFixture(t *testing.T) userPortalFixture {
 	}
 	adminCookie := initialized.Result().Cookies()[0]
 	registerUser := func(username string) *http.Cookie {
-		created := performRequest(t, handler, http.MethodPost, "/api/admin/invitations", map[string]string{"role": "user"}, adminCookie)
+		created := performRequest(t, handler, http.MethodPost, "/api/admin/invitations", map[string]string{"role": "carpool"}, adminCookie)
 		var invitation invitationResponse
 		if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &invitation) != nil {
 			t.Fatalf("create user invitation = %d, %s", created.Code, created.Body.String())
@@ -54,7 +54,7 @@ func setupUserPortalFixture(t *testing.T) userPortalFixture {
 		registered := performRequest(t, handler, http.MethodPost, "/api/auth/register", map[string]string{
 			"token": invitation.Token, "username": username, "password": "current-password",
 		}, nil)
-		if registered.Code != http.StatusCreated || !strings.Contains(registered.Body.String(), `"role":"user"`) {
+		if registered.Code != http.StatusCreated || !strings.Contains(registered.Body.String(), `"role":"carpool"`) {
 			t.Fatalf("register %s = %d, %s", username, registered.Code, registered.Body.String())
 		}
 		return registered.Result().Cookies()[0]
@@ -959,7 +959,7 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 		strings.Contains(users.Body.String(), `"username":"management-vip"`) {
 		t.Fatalf("admin users = %d, %s", users.Code, users.Body.String())
 	}
-	for name, cookie := range map[string]*http.Cookie{"vip": vipCookie, "user": fixture.userCookie} {
+	for name, cookie := range map[string]*http.Cookie{"vip": vipCookie, "carpool": fixture.userCookie} {
 		response := performRequest(t, fixture.handler, http.MethodGet, "/api/admin/users", nil, cookie)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("%s admin users = %d, %s", name, response.Code, response.Body.String())
@@ -1180,7 +1180,7 @@ func TestAdminUserManagementOnlyOffersAdminCreatedServersButKeepsLegacyAssignmen
 		"/api/admin/users/"+strconv.FormatInt(fixture.userID, 10)+"/nodes", map[string]any{
 			"proxy_id": vipProxyBody.Proxy.ID, "name": "blocked-client",
 		}, fixture.adminCookie)
-	if blocked.Code != http.StatusBadRequest || !strings.Contains(blocked.Body.String(), "仅管理员创建的服务器节点可分配给普通用户") {
+	if blocked.Code != http.StatusBadRequest || !strings.Contains(blocked.Body.String(), "仅管理员创建的服务器节点可分配给拼车用户") {
 		t.Fatalf("VIP-origin assignment = %d, %s", blocked.Code, blocked.Body.String())
 	}
 	blockedPublishedNode := performRequest(t, fixture.handler, http.MethodPost, "/api/admin/subscription/nodes", map[string]any{

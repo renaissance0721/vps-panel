@@ -352,7 +352,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrSubscriptionManagedClient):
 		writeError(w, http.StatusConflict, "该客户端由订阅系统管理，请在订阅管理中操作")
 	case errors.Is(err, proxystore.ErrNotDistributable):
-		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给普通用户")
+		writeError(w, http.StatusBadRequest, "仅管理员创建的服务器节点可分配给拼车用户")
 	default:
 		log.Printf("proxy API error: %v", err)
 		writeInternalError(w, err)

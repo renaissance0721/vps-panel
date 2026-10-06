@@ -259,7 +259,7 @@ func TestProxyDeleteReferenceHandling(t *testing.T) {
 		if _, err := fixture.db.Exec(`INSERT INTO users
 			(id, username, password_hash, role, created_at, updated_at)
 			VALUES (100, 'subscriber', 'hash', 'subscriber', 1, 1),
-			       (101, 'relay-user', 'hash', 'user', 1, 1)`); err != nil {
+			       (101, 'relay-user', 'hash', 'carpool', 1, 1)`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fixture.db.Exec(`INSERT INTO subscriber_profiles

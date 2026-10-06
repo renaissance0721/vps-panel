@@ -16,7 +16,7 @@ func TestServerPrivateAccessLifecycle(t *testing.T) {
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
 		 VALUES (3, 'carol', 'hash', 'vip', 1, 1)`,
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
-		 VALUES (4, 'dave', 'hash', 'user', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`,
+		 VALUES (4, 'dave', 'hash', 'carpool', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -133,7 +133,7 @@ func TestServerAccessIgnoresNonManagerRows(t *testing.T) {
 	service, db := newTestService(t)
 	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
 		VALUES (1, 'alice', 'hash', 'admin', 1, 1), (2, 'bob', 'hash', 'vip', 1, 1),
-		(4, 'dave', 'hash', 'user', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`); err != nil {
+		(4, 'dave', 'hash', 'carpool', 1, 1), (5, 'eve', 'hash', 'subscriber', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
 	created, err := service.CreateForUser(t.Context(), "Private", VisibilityPrivate, []int64{1}, 2)

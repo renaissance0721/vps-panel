@@ -11,7 +11,7 @@ func TestDistributableProxiesUseImmutableServerCreatorRole(t *testing.T) {
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES
 			(1, 'admin', 'hash', 'admin', 1, 1),
 			(2, 'vip', 'hash', 'vip', 1, 1),
-			(3, 'member', 'hash', 'user', 1, 1)`,
+			(3, 'member', 'hash', 'carpool', 1, 1)`,
 		`UPDATE servers SET visibility = 'private', owner_user_id = 2 WHERE id = 1`,
 		`INSERT INTO servers (id, name, owner_user_id, created_by_user_id, created_by_role, status, visibility, created_at, updated_at)
 			VALUES (2, 'VIP Public', 1, 2, 'vip', 'offline', 'public', 1, 1)`,

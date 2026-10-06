@@ -11,7 +11,7 @@ import (
 func insertRelayPortTestUser(t *testing.T, service *Service, username string) int64 {
 	t.Helper()
 	result, err := service.db.Exec(`INSERT INTO users (username, password_hash, role, created_at, updated_at)
-		VALUES (?, 'hash', 'user', 1, 1)`, username)
+		VALUES (?, 'hash', 'carpool', 1, 1)`, username)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,12 +15,13 @@ import (
 type mailCaptureSender struct {
 	config  mailservice.Config
 	message mailservice.Message
+	err     error
 	calls   int
 }
 
 func (s *mailCaptureSender) Send(_ context.Context, config mailservice.Config, message mailservice.Message) error {
 	s.config, s.message, s.calls = config, message, s.calls+1
-	return nil
+	return s.err
 }
 
 func setupMailAPI(t *testing.T) (*sql.DB, http.Handler, *http.Cookie, *mailCaptureSender) {
@@ -151,10 +152,10 @@ func TestMailSettingsValidationAndPermissions(t *testing.T) {
 		t.Fatalf("invalid test recipient = %d %s", response.Code, response.Body.String())
 	}
 
-	for _, role := range []string{"vip", "user", "subscriber", "anonymous"} {
+	for _, role := range []string{"vip", "carpool", "subscriber", "anonymous"} {
 		storedRole := role
 		if storedRole == "anonymous" {
-			storedRole = "user"
+			storedRole = "carpool"
 		}
 		if _, err := db.Exec(`UPDATE users SET role = ? WHERE username = 'admin'`, storedRole); err != nil {
 			t.Fatal(err)

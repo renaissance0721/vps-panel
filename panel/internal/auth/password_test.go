@@ -55,7 +55,7 @@ func TestPasswordResetRequestStoresOnlyHashAndHidesAccountState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invitation, err := service.CreateInvitation(t.Context(), admin.ID, RoleUser)
+	invitation, err := service.CreateInvitation(t.Context(), admin.ID, RoleCarpool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestPasswordResetReviewApprovalRejectionAndSelfReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invitation, err := service.CreateInvitation(t.Context(), admin.ID, RoleUser)
+	invitation, err := service.CreateInvitation(t.Context(), admin.ID, RoleCarpool)
 	if err != nil {
 		t.Fatal(err)
 	}

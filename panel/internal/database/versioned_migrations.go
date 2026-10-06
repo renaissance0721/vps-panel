@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 24
+const LatestSchemaVersion = 26
 
 type migration struct {
 	version            int
@@ -47,6 +47,94 @@ var migrations = []migration{
 	{version: 22, name: "dual_stack_entry_addresses", up: migrateDualStackEntryAddresses},
 	{version: 23, name: "improve_default_cn_routing", up: improveDefaultCNRouting},
 	{version: 24, name: "mail_settings", up: createMailSettings},
+	{version: 25, name: "rename_user_role_to_carpool", up: renameUserRoleToCarpool, disableForeignKeys: true},
+	{version: 26, name: "account_email_verification", up: createAccountEmailVerification},
+}
+
+const accountTokensStatement = `CREATE TABLE IF NOT EXISTS account_tokens (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	purpose TEXT NOT NULL CHECK (purpose IN ('verify_email', 'change_email')),
+	target TEXT NOT NULL CHECK (target != '' AND target = trim(target) AND target = lower(target)),
+	token_hash TEXT NOT NULL UNIQUE,
+	expires_at INTEGER NOT NULL,
+	used_at INTEGER,
+	created_at INTEGER NOT NULL
+)`
+
+const accountTokensActiveStatement = `CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tokens_active_email
+	ON account_tokens(user_id) WHERE used_at IS NULL`
+
+const accountTokensExpiryStatement = `CREATE INDEX IF NOT EXISTS idx_account_tokens_expires_at
+	ON account_tokens(expires_at)`
+
+func renameUserRoleToCarpool(ctx context.Context, tx *sql.Tx) error {
+	var userSequence, invitationSequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'users'), 0)`).Scan(&userSequence); err != nil {
+		return fmt.Errorf("read users sequence: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'admin_invitations'), 0)`).Scan(&invitationSequence); err != nil {
+		return fmt.Errorf("read admin invitations sequence: %w", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE users_v25 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'carpool', 'subscriber')),
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO users_v25 (id, username, password_hash, role, created_at, updated_at)
+		 SELECT id, username, password_hash, CASE role WHEN 'user' THEN 'carpool' ELSE role END, created_at, updated_at
+		 FROM users`,
+		`DROP TABLE users`,
+		`ALTER TABLE users_v25 RENAME TO users`,
+		`CREATE TABLE admin_invitations_v25 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_hash TEXT NOT NULL UNIQUE,
+			created_by INTEGER NOT NULL REFERENCES users(id),
+			expires_at INTEGER NOT NULL,
+			used_at INTEGER,
+			role TEXT NOT NULL DEFAULT 'vip' CHECK (role IN ('vip', 'carpool', 'subscriber')),
+			created_at INTEGER NOT NULL
+		)`,
+		`INSERT INTO admin_invitations_v25 (id, token_hash, created_by, expires_at, used_at, role, created_at)
+		 SELECT id, token_hash, created_by, expires_at, used_at,
+		 CASE role WHEN 'user' THEN 'carpool' ELSE role END, created_at FROM admin_invitations`,
+		`DROP TABLE admin_invitations`,
+		`ALTER TABLE admin_invitations_v25 RENAME TO admin_invitations`,
+		`CREATE INDEX idx_admin_invitations_active ON admin_invitations(used_at, expires_at)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rename user role to carpool: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'users'`, userSequence); err != nil {
+		return fmt.Errorf("restore users sequence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'admin_invitations'`, invitationSequence); err != nil {
+		return fmt.Errorf("restore admin invitations sequence: %w", err)
+	}
+	return nil
+}
+
+func createAccountEmailVerification(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE users ADD COLUMN email TEXT
+		 CHECK (email IS NULL OR (email != '' AND email = trim(email) AND email = lower(email)))`,
+		`ALTER TABLE users ADD COLUMN email_verified_at INTEGER
+		 CHECK (email_verified_at IS NULL OR email IS NOT NULL)`,
+		`CREATE UNIQUE INDEX idx_users_email_unique ON users(lower(email)) WHERE email IS NOT NULL`,
+		accountTokensStatement,
+		accountTokensActiveStatement,
+		accountTokensExpiryStatement,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create account email verification schema: %w", err)
+		}
+	}
+	return nil
 }
 
 const mailSettingsStatement = `CREATE TABLE IF NOT EXISTS mail_settings (
@@ -413,7 +501,7 @@ func migrateCaseSensitiveUsernames(ctx context.Context, tx *sql.Tx) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'subscriber')),
+			role TEXT NOT NULL CHECK (role IN ('admin', 'vip', 'user', 'carpool', 'subscriber')),
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,

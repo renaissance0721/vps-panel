@@ -91,7 +91,7 @@ func TestInvitationRoleControlsRegisteredUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{RoleVIP, RoleUser, RoleSubscriber} {
+	for _, role := range []string{RoleVIP, RoleCarpool, RoleSubscriber} {
 		created, err := service.CreateInvitation(ctx, owner.ID, role)
 		if err != nil {
 			t.Fatalf("CreateInvitation(%q): %v", role, err)
@@ -104,7 +104,7 @@ func TestInvitationRoleControlsRegisteredUser(t *testing.T) {
 			t.Fatalf("registered role = %q, %v; want %q", user.Role, err, role)
 		}
 	}
-	for _, role := range []string{RoleAdmin, "unknown", ""} {
+	for _, role := range []string{RoleAdmin, "user", "unknown", ""} {
 		if _, err := service.CreateInvitation(ctx, owner.ID, role); !errors.Is(err, ErrInvalidInvitationRole) {
 			t.Fatalf("CreateInvitation(%q) error = %v, want ErrInvalidInvitationRole", role, err)
 		}

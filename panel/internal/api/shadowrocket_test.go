@@ -15,7 +15,7 @@ func TestShadowrocketTemplateAPIAndIndependentSelections(t *testing.T) {
 	db, handler, admin, _ := setupAccountTest(t)
 	defer db.Close()
 	vip, _ := registerAccount(t, db, handler, admin, "vip", "vip")
-	user, _ := registerAccount(t, db, handler, admin, "user", "normal")
+	user, _ := registerAccount(t, db, handler, admin, "carpool", "normal")
 	path := "/api/admin/subscription/builtin-shadowrocket"
 	for _, check := range []struct {
 		cookie *http.Cookie

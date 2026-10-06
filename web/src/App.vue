@@ -41,6 +41,7 @@ import RelaysView from './views/RelaysView.vue'
 import CarpoolPortalView from './views/CarpoolPortalView.vue'
 import SubscriberPortalView from './views/SubscriberPortalView.vue'
 import VerifyEmailView from './views/VerifyEmailView.vue'
+import ResetPasswordView from './views/ResetPasswordView.vue'
 import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
@@ -89,6 +90,7 @@ const password = ref('')
 const confirmPassword = ref('')
 const invitationRole = ref<'vip' | 'carpool' | 'subscriber' | null>(null)
 const passwordResetOpen = ref(false)
+const passwordResetMode = ref<'email' | 'admin'>('email')
 const passwordResetUsername = ref('')
 const passwordResetPassword = ref('')
 const passwordResetConfirm = ref('')
@@ -112,6 +114,7 @@ const isInvitationPage = computed(
   () => window.location.pathname === '/register' && invitationToken !== '',
 )
 const isVerifyEmailPage = computed(() => window.location.pathname === '/verify-email')
+const isResetPasswordPage = computed(() => window.location.pathname === '/reset-password')
 
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
@@ -196,6 +199,7 @@ async function login() {
 }
 
 function openPasswordReset() {
+  passwordResetMode.value = 'email'
   passwordResetUsername.value = username.value
   passwordResetPassword.value = ''
   passwordResetConfirm.value = ''
@@ -205,6 +209,24 @@ function openPasswordReset() {
 }
 
 async function requestPasswordReset() {
+  if (passwordResetBusy.value) return
+  if (passwordResetMode.value === 'email') {
+    passwordResetBusy.value = true
+    passwordResetError.value = ''
+    passwordResetStatus.value = ''
+    try {
+      await api('/api/auth/password-reset/email/request', {
+        method: 'POST',
+        body: JSON.stringify({ identifier: passwordResetUsername.value }),
+      })
+      passwordResetStatus.value = '如果该账号存在且已绑定验证邮箱，我们已经发送密码重置邮件，请检查邮箱。'
+    } catch (reason) {
+      passwordResetError.value = reason instanceof Error ? reason.message : '密码重置邮件申请失败'
+    } finally {
+      passwordResetBusy.value = false
+    }
+    return
+  }
   const passwordBytes = new TextEncoder().encode(passwordResetPassword.value).length
   if (passwordBytes < 6 || passwordBytes > 72) {
     passwordResetError.value = '新密码长度需为 6–72 字节'
@@ -307,7 +329,7 @@ function selectPage(page: AdminPage) {
 }
 
 onMounted(async () => {
-  if (isVerifyEmailPage.value) return
+  if (isVerifyEmailPage.value || isResetPasswordPage.value) return
   try {
     await loadState()
   } catch (reason) {
@@ -324,6 +346,7 @@ onUnmounted(stopServerPolling)
 <n-config-provider :theme-overrides="themeOverrides">
     <div class="page-shell" :class="{ 'admin-shell': state?.authenticated }">
       <VerifyEmailView v-if="isVerifyEmailPage" :token="emailVerificationToken" />
+      <ResetPasswordView v-else-if="isResetPasswordPage" :token="emailVerificationToken" />
 
       <n-card v-else-if="loading" class="auth-card" :bordered="true">
         <div class="loading-row">
@@ -425,8 +448,8 @@ onUnmounted(stopServerPolling)
         <n-alert v-if="error" class="form-alert" type="error">{{ error }}</n-alert>
         <form class="auth-form" @submit.prevent="login">
           <label>
-            <span>用户名</span>
-            <n-input v-model:value="username" :input-props="{ autocomplete: 'username' }" />
+            <span>用户名或邮箱</span>
+            <n-input v-model:value="username" :input-props="{ autocomplete: 'username' }" placeholder="用户名 / 已验证邮箱" />
           </label>
           <label>
             <span>密码</span>
@@ -571,15 +594,22 @@ onUnmounted(stopServerPolling)
       </div>
     </div>
     <n-modal v-model:show="passwordResetOpen">
-      <n-card class="account-modal-card" title="申请重置密码" closable @close="passwordResetOpen = false">
+      <n-card class="account-modal-card" title="忘记密码" closable @close="passwordResetOpen = false">
+        <div class="modal-actions">
+          <n-button :type="passwordResetMode === 'email' ? 'primary' : 'default'" :disabled="passwordResetBusy" @click="passwordResetMode = 'email'; passwordResetError = ''; passwordResetStatus = ''">邮箱找回</n-button>
+          <n-button :type="passwordResetMode === 'admin' ? 'primary' : 'default'" :disabled="passwordResetBusy" @click="passwordResetMode = 'admin'; passwordResetError = ''; passwordResetStatus = ''">管理员审核</n-button>
+        </div>
         <form class="auth-form" @submit.prevent="requestPasswordReset">
-          <n-alert type="info">提交后当前密码不会立即改变。管理员审核通过后，新密码才会生效。为保护账号信息，系统不会确认用户名是否存在。</n-alert>
+          <n-alert v-if="passwordResetMode === 'email'" type="info">系统只会向账号已经验证的邮箱发送邮件。如果邮件服务不可用或没有可用的已验证邮箱，请使用管理员审核。</n-alert>
+          <n-alert v-else type="info">提交后当前密码不会立即改变。管理员审核通过后，新密码才会生效。为保护账号信息，系统不会确认用户名是否存在。</n-alert>
           <n-alert v-if="passwordResetError" type="error">{{ passwordResetError }}</n-alert>
           <n-alert v-if="passwordResetStatus" type="success">{{ passwordResetStatus }}</n-alert>
-          <label><span>用户名</span><n-input v-model:value="passwordResetUsername" :input-props="{ autocomplete: 'username' }" /></label>
-          <label><span>新密码</span><n-input v-model:value="passwordResetPassword" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
-          <label><span>确认新密码</span><n-input v-model:value="passwordResetConfirm" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
-          <div class="modal-actions"><n-button @click="passwordResetOpen = false">关闭</n-button><n-button type="primary" attr-type="submit" :loading="passwordResetBusy">提交申请</n-button></div>
+          <label><span>{{ passwordResetMode === 'email' ? '用户名或邮箱' : '用户名' }}</span><n-input v-model:value="passwordResetUsername" :input-props="{ autocomplete: 'username' }" /></label>
+          <template v-if="passwordResetMode === 'admin'">
+            <label><span>新密码</span><n-input v-model:value="passwordResetPassword" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
+            <label><span>确认新密码</span><n-input v-model:value="passwordResetConfirm" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" /></label>
+          </template>
+          <div class="modal-actions"><n-button @click="passwordResetOpen = false">关闭</n-button><n-button type="primary" attr-type="submit" :loading="passwordResetBusy">{{ passwordResetMode === 'email' ? '发送密码重置邮件' : '提交管理员审核' }}</n-button></div>
         </form>
       </n-card>
     </n-modal>

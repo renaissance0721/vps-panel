@@ -41,6 +41,7 @@ type server struct {
 	backupMu             sync.Mutex
 	loginLimiter         *loginLimiter
 	passwordResetLimiter *loginLimiter
+	emailResetLimiter    *loginLimiter
 	mailTestLimiter      *mailTestLimiter
 }
 
@@ -94,9 +95,11 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		backup:               backupConfig,
 		loginLimiter:         newLoginLimiter(),
 		passwordResetLimiter: newLoginLimiter(),
+		emailResetLimiter:    newLoginLimiter(),
 		mailTestLimiter:      newMailTestLimiter(),
 	}
 	s.notifications = notification.NewService(db, s.servers, s.agents)
+	s.emailResetLimiter.pairLimit = 1
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/notifications/settings", s.requireAdmin(s.getNotificationSettings))
 	mux.HandleFunc("PUT /api/notifications/settings", s.requireAdmin(s.saveNotificationSettings))
@@ -111,6 +114,8 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("POST /api/auth/initialize", s.initialize)
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.HandleFunc("POST /api/auth/password-reset-request", s.requestPasswordReset)
+	mux.HandleFunc("POST /api/auth/password-reset/email/request", s.requestEmailPasswordReset)
+	mux.HandleFunc("POST /api/auth/password-reset/email/confirm", s.confirmEmailPasswordReset)
 	mux.HandleFunc("POST /api/auth/email/verify", s.verifyAccountEmail)
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("GET /api/auth/invitation", s.getInvitation)

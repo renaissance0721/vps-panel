@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 26
+const LatestSchemaVersion = 27
 
 type migration struct {
 	version            int
@@ -49,6 +49,35 @@ var migrations = []migration{
 	{version: 24, name: "mail_settings", up: createMailSettings},
 	{version: 25, name: "rename_user_role_to_carpool", up: renameUserRoleToCarpool, disableForeignKeys: true},
 	{version: 26, name: "account_email_verification", up: createAccountEmailVerification},
+	{version: 27, name: "account_email_password_reset", up: extendAccountTokensForPasswordReset},
+}
+
+func extendAccountTokensForPasswordReset(ctx context.Context, tx *sql.Tx) error {
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'account_tokens'), 0)`).Scan(&sequence); err != nil {
+		return fmt.Errorf("read account token sequence: %w", err)
+	}
+	statement := strings.Replace(accountTokensStatement, "IF NOT EXISTS account_tokens", "account_tokens_v27", 1)
+	statement = strings.Replace(statement, "'verify_email', 'change_email'", "'verify_email', 'change_email', 'reset_password'", 1)
+	for _, statement := range []string{
+		statement,
+		`INSERT INTO account_tokens_v27 SELECT id, user_id, purpose, target, token_hash, expires_at, used_at, created_at FROM account_tokens`,
+		`DROP TABLE account_tokens`,
+		`ALTER TABLE account_tokens_v27 RENAME TO account_tokens`,
+		`CREATE UNIQUE INDEX idx_account_tokens_active_email ON account_tokens(user_id)
+		 WHERE used_at IS NULL AND purpose IN ('verify_email', 'change_email')`,
+		`CREATE UNIQUE INDEX idx_account_tokens_active_password_reset ON account_tokens(user_id)
+		 WHERE used_at IS NULL AND purpose = 'reset_password'`,
+		accountTokensExpiryStatement,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("extend account tokens for password reset: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'account_tokens'`, sequence); err != nil {
+		return fmt.Errorf("restore account token sequence: %w", err)
+	}
+	return nil
 }
 
 const accountTokensStatement = `CREATE TABLE IF NOT EXISTS account_tokens (

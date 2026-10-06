@@ -193,6 +193,11 @@ func (s *Service) VerifyEmail(ctx context.Context, rawToken string) (EmailVerifi
 		WHERE user_id = ? AND purpose IN (?, ?) AND used_at IS NULL`, now.Unix(), userID, emailPurposeVerify, emailPurposeChange); err != nil {
 		return EmailVerificationResult{}, fmt.Errorf("invalidate remaining email verification tokens: %w", err)
 	}
+	if currentEmail.Valid && currentEmail.String != target {
+		if err := invalidatePasswordResetTokensTx(ctx, tx, userID, now.Unix()); err != nil {
+			return EmailVerificationResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return EmailVerificationResult{}, fmt.Errorf("commit email verification: %w", err)
 	}

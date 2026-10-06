@@ -164,6 +164,9 @@ func (s *Service) ReviewPasswordChangeRequest(ctx context.Context, requestID, ad
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
 			return fmt.Errorf("invalidate approved password sessions: %w", err)
 		}
+		if err := invalidatePasswordResetTokensTx(ctx, tx, userID, now.Unix()); err != nil {
+			return err
+		}
 		status = "approved"
 	}
 	result, err := tx.ExecContext(ctx,

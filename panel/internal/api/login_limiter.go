@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 )
 
 const (
@@ -31,18 +33,35 @@ type loginLimiter struct {
 	mu           sync.Mutex
 	pairFailures map[loginAttemptKey]loginFailure
 	ipFailures   map[string]loginFailure
+	pairLimit    int
 }
 
 func newLoginLimiter() *loginLimiter {
 	return &loginLimiter{
 		pairFailures: make(map[loginAttemptKey]loginFailure),
 		ipFailures:   make(map[string]loginFailure),
+		pairLimit:    loginPairFailureLimit,
 	}
 }
 
 func (l *loginLimiter) Allow(ip, username string, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.allowLocked(ip, username, now)
+}
+
+// Take counts public reset attempts atomically, including unknown accounts.
+func (l *loginLimiter) Take(ip, identifier string, now time.Time) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	allowed, retry := l.allowLocked(ip, identifier, now)
+	if allowed {
+		l.recordFailureLocked(ip, identifier, now)
+	}
+	return allowed, retry
+}
+
+func (l *loginLimiter) allowLocked(ip, username string, now time.Time) (bool, time.Duration) {
 	l.pruneExpired(now)
 
 	pairKey := loginAttemptKey{ip: ip, username: normalizeLoginUsername(username)}
@@ -52,7 +71,7 @@ func (l *loginLimiter) Allow(ip, username string, now time.Time) (bool, time.Dur
 	if !hasPair && len(l.pairFailures) >= maxLoginPairEntries {
 		retryAfter = loginFailureWindow
 	}
-	if pair.count >= loginPairFailureLimit {
+	if pair.count >= l.pairLimit {
 		retryAfter = remainingLoginWindow(pair, now)
 	}
 	if !hasIP && len(l.ipFailures) >= maxLoginIPEntries {
@@ -67,6 +86,10 @@ func (l *loginLimiter) Allow(ip, username string, now time.Time) (bool, time.Dur
 func (l *loginLimiter) RecordFailure(ip, username string, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.recordFailureLocked(ip, username, now)
+}
+
+func (l *loginLimiter) recordFailureLocked(ip, username string, now time.Time) {
 	l.pruneExpired(now)
 
 	key := loginAttemptKey{ip: ip, username: normalizeLoginUsername(username)}
@@ -113,7 +136,7 @@ func remainingLoginWindow(failure loginFailure, now time.Time) time.Duration {
 }
 
 func normalizeLoginUsername(username string) string {
-	return strings.TrimSpace(username)
+	return auth.NormalizeLoginIdentifier(username)
 }
 
 func clientIP(r *http.Request) string {

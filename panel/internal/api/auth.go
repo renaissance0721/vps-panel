@@ -310,7 +310,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrAlreadyInitialized):
 		writeError(w, http.StatusConflict, "Panel 已完成初始化")
 	case errors.Is(err, auth.ErrInvalidCredentials):
-		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
+		writeError(w, http.StatusUnauthorized, "账号或密码错误")
 	case errors.Is(err, auth.ErrInvalidInvitation):
 		writeError(w, http.StatusBadRequest, "邀请链接无效、已使用或已过期")
 	case errors.Is(err, auth.ErrInvitationNotFound):

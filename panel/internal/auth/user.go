@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -59,16 +60,37 @@ func (s *Service) Initialize(ctx context.Context, username, password string) (Us
 	return User{ID: id, Username: username, Role: RoleAdmin, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-func (s *Service) Login(ctx context.Context, username, password string) (User, error) {
-	username = strings.TrimSpace(username)
+// NormalizeLoginIdentifier preserves username case and canonicalizes email keys.
+func NormalizeLoginIdentifier(identifier string) string {
+	identifier = strings.TrimSpace(identifier)
+	if strings.Contains(identifier, "@") {
+		return strings.ToLower(identifier)
+	}
+	return identifier
+}
+
+func loginIdentifierLookup(identifier string) (string, string, bool) {
+	identifier = NormalizeLoginIdentifier(identifier)
+	if strings.Contains(identifier, "@") {
+		address, err := mailservice.NormalizeMailbox(identifier)
+		return "lower(email) = ? AND email_verified_at IS NOT NULL", address, err == nil
+	}
+	return "username = ?", identifier, true
+}
+
+func (s *Service) Login(ctx context.Context, identifier, password string) (User, error) {
+	condition, identifier, valid := loginIdentifierLookup(identifier)
+	if !valid {
+		return User{}, ErrInvalidCredentials
+	}
 	var user User
 	var passwordHash string
 	var email sql.NullString
 	var emailVerifiedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, role, email, email_verified_at, created_at, updated_at FROM users WHERE username = ?`,
-		username,
+		`SELECT id, username, password_hash, role, email, email_verified_at, created_at, updated_at FROM users WHERE `+condition,
+		identifier,
 	).Scan(&user.ID, &user.Username, &passwordHash, &user.Role, &email, &emailVerifiedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrInvalidCredentials
@@ -233,6 +255,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, currentPassw
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("invalidate changed password sessions: %w", err)
+	}
+	if err := invalidatePasswordResetTokensTx(ctx, tx, userID, s.now().UTC().Unix()); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit password change: %w", err)

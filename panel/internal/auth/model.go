@@ -36,6 +36,7 @@ var (
 	ErrEmailUnchanged            = errors.New("new email address must differ from current email")
 	ErrEmailVerificationInvalid  = errors.New("email verification token is invalid or expired")
 	ErrPendingEmailNotFound      = errors.New("pending email verification not found")
+	ErrPasswordResetTokenInvalid = errors.New("invalid or expired password reset token")
 
 	usernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,64}$`)
 )
@@ -71,6 +72,15 @@ type EmailVerificationResult struct {
 	Email      string
 	Changed    bool
 	VerifiedAt time.Time
+}
+
+type PasswordResetEmailRequest struct {
+	ID        int64
+	UserID    int64
+	Username  string
+	Target    string
+	Token     string
+	ExpiresAt time.Time
 }
 
 type EmailRateLimitError struct {

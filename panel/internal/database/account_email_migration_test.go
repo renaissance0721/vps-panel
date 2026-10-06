@@ -99,6 +99,11 @@ func TestRoleAndAccountEmailMigrationsPreserveAccountsAndReferences(t *testing.T
 	if err := applyMigration(t.Context(), db, migrations[25]); err != nil {
 		t.Fatal(err)
 	}
+	for _, item := range migrations[26:] {
+		if err := applyMigration(t.Context(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)
 	authenticated, err := auth.NewService(db).Authenticate(t.Context(), "migration-session")

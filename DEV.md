@@ -239,7 +239,7 @@ Panel watcher 使用当前在线连接和正式 Server 流量数据判断事件�
 
 ## Mail Service
 
-[mail](panel/internal/mail) 是独立于 Telegram 通知的通用邮件领域。当前账号邮箱验证通过该 Service 发送；以后如增加密码重置、安全通知或告警邮件也必须复用它，业务 Handler 不直接连接 SMTP。
+[mail](panel/internal/mail) 是独立于 Telegram 通知的通用邮件领域。当前账号邮箱验证和邮箱密码重置通过该 Service 发送；以后如增加安全通知或告警邮件也必须复用它，业务 Handler 不直接连接 SMTP。
 
 管理员 API 为 `GET /api/admin/settings/mail`、`PUT /api/admin/settings/mail` 和 `POST /api/admin/settings/mail/test`。三者都由后端执行 admin 权限校验；测试接口使用当前请求中的未保存配置，表单密码留空时复用已保存凭据，并按管理员限制调用频率。SMTP host 是受信任管理员可配置的外连边界，不能向非管理员账号开放。
 
@@ -249,7 +249,7 @@ SMTP 密码使用 AES-256-GCM 加密后存入 SQLite；GET API、审计摘要和
 
 账号邮箱的归属和 token 生命周期由 [auth](panel/internal/auth) 管理：`users.email` 只保存 TrimSpace 后转为小写的已验证地址，`email_verified_at` 保存验证时间；待验证地址保存在 `account_tokens.target`。原始 token 使用 `crypto/rand` 生成，邮件发送 raw token，数据库只保存 SHA-256；token 一次性使用、30 分钟过期，同账号重发至少间隔 60 秒并使旧 token 失效。首次绑定或更换都要求当前密码，验证完成前保留原邮箱，最终占用检查、邮箱更新和 token 消费在同一事务中完成。
 
-验证邮件的绝对链接只使用部署配置中的可信 `PANEL_DOMAIN`，不从请求 Host、Origin 或转发头推导。SMTP 未启用、域名不可用或发送失败时不会留下可用的新 token。四种角色通过共享的 `AccountEmailSettings` 使用同一组 Account API；当前不提供邮箱登录、解绑或邮箱找回密码。
+验证邮件和密码重置邮件的绝对链接只使用部署配置中的可信 `PANEL_DOMAIN`，不从请求 Host、Origin 或转发头推导。SMTP 未启用、域名不可用或发送失败时不会留下可用的新 token。四种角色通过共享的 `AccountEmailSettings` 使用同一组 Account API；当前不提供邮箱解绑。
 
 `GET /api/account/email` 返回当前邮箱、已验证状态和待验证邮箱；`POST /api/account/email/request` 接收 `email` / `current_password`，`POST /api/account/email/resend` 接收 `current_password`，均要求登录并执行既有 Session origin 校验。公共 `POST /api/auth/email/verify` 只凭一次性 token 验证对应账号，无需原 Session。邮箱由 `lower(email) WHERE email IS NOT NULL` 唯一索引保障；普通账号列表与审计只使用掩码邮箱。邮箱验证不撤销 Session，现有管理员审批密码重置流程保持独立。
 
@@ -270,6 +270,14 @@ Server 的公开可见性不赋予拼车用户管理权限。具体敏感操作�
 首次初始化只创建管理员。管理员可生成一次性、有效期 24 小时的邀请，角色为 vip / carpool / subscriber，默认 vip。
 用户名去除首尾空白后使用 3–64 个 ASCII 字母、数字、点、下划线或连字符，数据库比较区分大小写。
 密码按 UTF-8 字节长度校验为 6–72 字节，使用 bcrypt；已有 Session 和密码变更 / 重置流程需一起考虑。
+
+登录 API 继续接收 `username` / `password`，其中 `username` 可填写用户名或已验证邮箱。identifier 去首尾空白后，含 `@` 时复用 Mail 的邮箱解析和小写规范化，否则按原有大小写敏感用户名查询；不会使用模糊的 username/email OR 查询。邮箱登录要求 `email_verified_at IS NOT NULL`。登录限频按 IP 和规范化 identifier 工作，所有凭据错误使用相同响应。
+
+公开 `POST /api/auth/password-reset/email/request` 接收 `identifier`，只向账号当前已验证邮箱发送链接；账号不存在、无验证邮箱、账号级限频或 SMTP 发送失败均返回相同的 202 accepted，不创建伪审计。SMTP 关闭或可信域名缺失可作为全局不可用状态返回。请求按 IP / 规范化 identifier 原子计数，同账号 token 创建间隔至少 60 秒；发送失败使该 token 失效且保留限频时间，日志不输出上游消息内容。
+
+邮箱找回复用 `account_tokens` 的 `reset_password` purpose、`token.New()` / `token.Hash()` 和 Mail Service；数据库只保存 SHA-256，target 为发送时的已验证邮箱。链接一次性使用、30 分钟过期，重发使旧 reset token 失效，邮箱验证与密码重置的 active 索引独立。公共 `/reset-password` 页清除 URL query 并仅在内存保留 token，`POST /api/auth/password-reset/email/confirm` 接收 token / new_password，不自动登录。
+
+确认重置时重新检查当前已验证邮箱仍等于 token.target，在同一事务内更新密码、消费所有 reset token、删除全部 Session 和 pending 管理员密码申请，避免旧批准覆盖新密码。正常 ChangePassword、管理员批准和已验证邮箱更换也通过共享事务 helper 使旧 reset token 失效；未批准的审核不会撤销邮箱 reset。原管理员审核 API、表和权限保持兼容，作为无可用邮箱或邮件服务不可用时的备用方式。
 
 隐藏按钮只是 UI 行为。新增读写 API、分享、导出或订阅来源时，后端必须独立校验对应角色与资源权限。
 

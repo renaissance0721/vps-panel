@@ -171,6 +171,10 @@ func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	if err != nil || verified.UserID != 12 || verified.Email != "pending@example.com" {
 		t.Fatalf("restored email verification = %+v, %v", verified, err)
 	}
+	resetUser, err := auth.NewService(restored).ResetPasswordByEmail(t.Context(), "password-reset-token", "restored-password")
+	if err != nil || resetUser.ID != 11 {
+		t.Fatalf("restored email password reset: %v", err)
+	}
 	if data, err := os.ReadFile(filepath.Join(acmeDir, "account")); err != nil || string(data) != "agent state" {
 		t.Fatalf("Agent ACME state changed: %q, %v", data, err)
 	}
@@ -434,6 +438,8 @@ func seedFullDatabase(t *testing.T, db *sql.DB) {
 		`UPDATE users SET email='admin@example.com',email_verified_at=101 WHERE id=11`,
 		fmt.Sprintf(`INSERT INTO account_tokens(user_id,purpose,target,token_hash,expires_at,created_at) VALUES (12,'verify_email','pending@example.com','%s',%d,%d)`,
 			token.Hash("email-verification-token"), time.Now().Add(30*time.Minute).Unix(), time.Now().Unix()),
+		fmt.Sprintf(`INSERT INTO account_tokens(user_id,purpose,target,token_hash,expires_at,created_at) VALUES (11,'reset_password','admin@example.com','%s',%d,%d)`,
+			token.Hash("password-reset-token"), time.Now().Add(30*time.Minute).Unix(), time.Now().Unix()),
 		`INSERT INTO sessions(id,user_id,token_hash,expires_at,created_at) VALUES (21,11,'session-hash',900,110)`,
 		`INSERT INTO admin_invitations(id,token_hash,created_by,expires_at,created_at) VALUES (22,'invitation-hash',11,900,111)`,
 		`INSERT INTO servers(id,name,status,visibility,outbound_preference,desired_state_version,created_at,updated_at) VALUES (31,'server','offline','private','prefer_ipv6',7,120,121)`,

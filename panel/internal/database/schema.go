@@ -3,6 +3,8 @@ package database
 // schemaStatements defines the current schema without altering migration order.
 func schemaStatements() []string {
 	return []string{
+		mailSettingsStatement,
+		mailSettingsDefaultsStatement,
 		notificationSettingsStatement,
 		notificationStateStatement,
 		notificationDefaultsStatement,

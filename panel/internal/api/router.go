@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	"github.com/renaissance0721/vps-panel/panel/internal/notification"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -33,11 +35,13 @@ type server struct {
 	agents               *agentcontrol.Service
 	monitor              *monitor.Service
 	notifications        *notification.Service
+	mail                 *mailservice.Service
 	probeMu              sync.Mutex
 	backup               BackupConfig
 	backupMu             sync.Mutex
 	loginLimiter         *loginLimiter
 	passwordResetLimiter *loginLimiter
+	mailTestLimiter      *mailTestLimiter
 }
 
 type BackupConfig struct {
@@ -64,7 +68,15 @@ type Handler struct {
 func (h *Handler) RunNotifications(ctx context.Context) { h.notifications.Run(ctx) }
 
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) *Handler {
+	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil)
+}
+
+func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender) *Handler {
 	relays := relaystore.NewService(db)
+	keyPath := ""
+	if backupConfig.DataDir != "" {
+		keyPath = filepath.Join(backupConfig.DataDir, mailservice.KeyFileName)
+	}
 	s := &server{
 		db:                   db,
 		authService:          auth.NewService(db),
@@ -78,9 +90,11 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 		panelVersion:         panelVersion,
 		agents:               agentcontrol.NewService(db, time.Now),
 		monitor:              monitor.NewService(db),
+		mail:                 mailservice.NewService(db, keyPath, sender),
 		backup:               backupConfig,
 		loginLimiter:         newLoginLimiter(),
 		passwordResetLimiter: newLoginLimiter(),
+		mailTestLimiter:      newMailTestLimiter(),
 	}
 	s.notifications = notification.NewService(db, s.servers, s.agents)
 	mux := http.NewServeMux()
@@ -88,6 +102,9 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	mux.HandleFunc("PUT /api/notifications/settings", s.requireAdmin(s.saveNotificationSettings))
 	mux.HandleFunc("POST /api/notifications/test", s.requireAdmin(s.testNotification))
 	mux.HandleFunc("GET /api/notifications/test/{id}", s.requireAdmin(s.getNotificationTest))
+	mux.HandleFunc("GET /api/admin/settings/mail", s.requireAdmin(s.getMailSettings))
+	mux.HandleFunc("PUT /api/admin/settings/mail", s.requireAdmin(s.saveMailSettings))
+	mux.HandleFunc("POST /api/admin/settings/mail/test", s.requireAdmin(s.testMailSettings))
 	mux.HandleFunc("GET /sub/{rest...}", s.getPublicSubscriptionPath)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)

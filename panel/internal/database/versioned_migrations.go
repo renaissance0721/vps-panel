@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 23
+const LatestSchemaVersion = 24
 
 type migration struct {
 	version            int
@@ -46,6 +46,33 @@ var migrations = []migration{
 	{version: 21, name: "server_bound_domain", up: addServerBoundDomain},
 	{version: 22, name: "dual_stack_entry_addresses", up: migrateDualStackEntryAddresses},
 	{version: 23, name: "improve_default_cn_routing", up: improveDefaultCNRouting},
+	{version: 24, name: "mail_settings", up: createMailSettings},
+}
+
+const mailSettingsStatement = `CREATE TABLE IF NOT EXISTS mail_settings (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+	host TEXT NOT NULL DEFAULT '',
+	port INTEGER NOT NULL DEFAULT 587 CHECK (port BETWEEN 1 AND 65535),
+	security TEXT NOT NULL DEFAULT 'starttls' CHECK (security IN ('tls', 'starttls', 'none')),
+	username TEXT NOT NULL DEFAULT '',
+	password_ciphertext TEXT NOT NULL DEFAULT '',
+	from_address TEXT NOT NULL DEFAULT '',
+	from_name TEXT NOT NULL DEFAULT 'VPS Panel',
+	reply_to TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+)`
+
+const mailSettingsDefaultsStatement = `INSERT OR IGNORE INTO mail_settings (id, created_at, updated_at) VALUES (1, 0, 0)`
+
+func createMailSettings(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{mailSettingsStatement, mailSettingsDefaultsStatement} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const (

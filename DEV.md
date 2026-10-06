@@ -23,7 +23,7 @@ Panel 保存业务状态，Agent 执行目标 VPS 操作。受管服务通过 de
 | 图表 / 分享 | ECharts、qrcode |
 | 受管服务 | Xray、Realm；acme.sh 用于自动 TLS |
 | 网络探测 | TCP connect、pro-bing ICMP |
-| 通知 | Panel 直接调用 Telegram Bot API |
+| 通知 | Panel 直接调用 Telegram Bot API；独立 Mail Service 连接标准 SMTP Server |
 | 部署 | 原生 systemd；Agent 也支持 OpenRC；可选 Docker Compose |
 
 Go 工具链要求见 [go.mod](panel/go.mod)。前端依赖及实际命令见 [package.json](web/package.json)，安装使用锁文件。
@@ -42,6 +42,7 @@ Release workflow 使用 Node.js 22；本地使用该系列最新维护版本，�
 | [panel/internal/proxy](panel/internal/proxy) / [relay](panel/internal/relay) / [landing](panel/internal/landing) | 代理、Client、中转、外部节点 |
 | [panel/internal/subscription](panel/internal/subscription) | 个人订阅、套餐分发、订阅用户、路由与输出 |
 | [panel/internal/monitor](panel/internal/monitor) / [notification](panel/internal/notification) | 探测任务与历史、Telegram 通知 |
+| [panel/internal/mail](panel/internal/mail) | SMTP 设置、凭据加解密、邮件组装与发送 |
 | [panel/internal/auth](panel/internal/auth) / [listorder](panel/internal/listorder) | 用户与会话、按用户保存的列表顺序 |
 | [panel/internal/database](panel/internal/database) / [backup](panel/internal/backup) | schema、迁移、数据库备份与恢复 |
 | [web/src](web/src) | 页面、组件、composables、类型与共享样式 |
@@ -236,6 +237,16 @@ Panel watcher 使用当前在线连接和正式 Server 流量数据判断事件�
 目前没有 CPU、内存、磁盘或 Probe 延迟阈值通知，也没有其他通知渠道。
 具体发送重试和错误处理维护在源码与测试中，不在本指南重复参数。
 
+## Mail Service
+
+[mail](panel/internal/mail) 是独立于 Telegram 通知的通用邮件领域。后续邮箱验证、密码重置、安全通知或告警邮件必须通过该 Service 发送，业务 Handler 不直接连接 SMTP。
+
+管理员 API 为 `GET /api/admin/settings/mail`、`PUT /api/admin/settings/mail` 和 `POST /api/admin/settings/mail/test`。三者都由后端执行 admin 权限校验；测试接口使用当前请求中的未保存配置，表单密码留空时复用已保存凭据，并按管理员限制调用频率。SMTP host 是受信任管理员可配置的外连边界，不能向普通用户开放。
+
+SMTP 支持 implicit TLS、STARTTLS 和无 TLS。TLS 始终验证证书链与 SMTP 主机名，没有跳过验证的配置；连接、单次命令和整体发送均有超时并响应 context cancellation。正常业务发送在 `enabled=false` 时返回明确错误，但管理员测试不受启用开关限制。
+
+SMTP 密码使用 AES-256-GCM 加密后存入 SQLite；GET API、审计摘要和普通错误不返回密码或密文。随机 32 字节 master key 位于 `PANEL_DATA_DIR/mail.key`，首次保存密码时以 `0600` 创建，不与密文同库存储。原生升级和 Docker volume 都会保留整个 data dir；管理员 ZIP 备份会把密钥作为独立敏感文件纳入校验、暂存、恢复和失败回滚。数据库存在 SMTP 密文但备份缺少对应 key 时，导出或导入会明确失败，不会把解密失败当作空密码。
+
 ## 14. Auth / Access Control
 
 [auth](panel/internal/auth) 负责初始化、账号、邀请、密码和会话；API Handler 执行角色及资源访问校验。
@@ -271,7 +282,7 @@ SQLite 使用单连接、外键和 WAL。schema 定义见 [schema.go](panel/inte
 仅修改 `CREATE TABLE IF NOT EXISTS` 无法升级已有表。重建表时需验证外键引用、索引及自增序列等原有约束。
 不要用删除用户数据库来替代 migration。
 
-管理员备份导出通过 SQLite 快照生成 ZIP，并包含 manifest、校验信息及相关部署配置。
+管理员备份导出通过 SQLite 快照生成 ZIP，并包含 manifest、校验信息及相关部署配置；存在邮件加密 key 时也会作为独立敏感文件一起备份。
 导入验证归档和数据库后暂存，Panel 重启时替换数据库；迁移成功后提交，否则尝试回滚旧库。
 备份域名必须与当前 Panel 匹配，不能把它当作自动重写所有 Agent 地址的工具。
 

@@ -44,6 +44,7 @@ import AccountManagementView from './views/AccountManagementView.vue'
 import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AuditLogView from './views/AuditLogView.vue'
+import MailSettingsView from './views/MailSettingsView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 import { userRoleLabel } from './format'
 
@@ -65,7 +66,7 @@ const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'monitor' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'audit'
+type AdminPage = 'overview' | 'monitor' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'settings' | 'audit'
 const pageTitles: Record<AdminPage, string> = {
   overview: '概览',
   monitor: '探针',
@@ -75,6 +76,7 @@ const pageTitles: Record<AdminPage, string> = {
   subscriptions: '订阅管理',
   accounts: '用户管理',
   carpool: '拼车面板',
+  settings: '系统设置',
   audit: '操作日志',
 }
 const currentPage = ref<AdminPage>('overview')
@@ -505,6 +507,14 @@ onUnmounted(stopServerPolling)
             <button
               v-if="state.user?.role === 'admin'"
               type="button"
+              :class="{ active: currentPage === 'settings' }"
+              @click="selectPage('settings')"
+            >
+              系统设置
+            </button>
+            <button
+              v-if="state.user?.role === 'admin'"
+              type="button"
               :class="{ active: currentPage === 'audit' }"
               @click="selectPage('audit')"
             >
@@ -545,6 +555,7 @@ onUnmounted(stopServerPolling)
                 />
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
+                <MailSettingsView v-if="currentPage === 'settings' && state.user?.role === 'admin'" />
                 <AuditLogView v-if="currentPage === 'audit' && state.user?.role === 'admin'" />
                 <ServersView :active="currentPage === 'servers'" :model="serverView" />
               </div>

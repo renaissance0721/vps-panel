@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 )
 
 type pendingMarker struct {
 	DatabaseSHA256 string `json:"database_sha256"`
+	MailKeySHA256  string `json:"mail_key_sha256,omitempty"`
 }
 
 // RestoreAttempt retains the previous SQLite files until the caller verifies
@@ -20,6 +23,7 @@ type pendingMarker struct {
 type RestoreAttempt struct {
 	dataDir    string
 	restoreDir string
+	restoreKey bool
 }
 
 func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
@@ -27,6 +31,7 @@ func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
 	markerPath := filepath.Join(restoreDir, "pending.json")
 	if _, err := os.Stat(markerPath); os.IsNotExist(err) {
 		_ = removeIfExists(filepath.Join(restoreDir, "panel.db"))
+		_ = removeIfExists(filepath.Join(restoreDir, mailservice.KeyFileName))
 		_ = removeIfExists(filepath.Join(restoreDir, "pending.json.tmp"))
 		_ = os.RemoveAll(filepath.Join(restoreDir, "rollback.tmp"))
 		_ = os.RemoveAll(filepath.Join(restoreDir, "rollback"))
@@ -34,7 +39,19 @@ func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("read restore marker: %w", err)
 	}
+	markerBytes, err := os.ReadFile(markerPath)
+	if err != nil {
+		return nil, err
+	}
+	var marker pendingMarker
 	attempt := &RestoreAttempt{dataDir: dataDir, restoreDir: restoreDir}
+	staged := filepath.Join(restoreDir, "panel.db")
+	if err := json.Unmarshal(markerBytes, &marker); err != nil || len(marker.DatabaseSHA256) != 64 ||
+		(marker.MailKeySHA256 != "" && len(marker.MailKeySHA256) != 64) {
+		_ = attempt.discardPending()
+		return nil, fmt.Errorf("invalid restore marker: %w", ErrInvalidBackup)
+	}
+	attempt.restoreKey = marker.MailKeySHA256 != ""
 	rollbackDir := filepath.Join(restoreDir, "rollback")
 	if _, err := os.Stat(rollbackDir); err == nil {
 		if err := attempt.Rollback(); err != nil {
@@ -44,20 +61,19 @@ func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	markerBytes, err := os.ReadFile(markerPath)
-	if err != nil {
-		return nil, err
-	}
-	var marker pendingMarker
-	staged := filepath.Join(restoreDir, "panel.db")
-	if err := json.Unmarshal(markerBytes, &marker); err != nil || len(marker.DatabaseSHA256) != 64 {
-		_ = attempt.discardPending()
-		return nil, fmt.Errorf("invalid restore marker: %w", ErrInvalidBackup)
-	}
 	actual, err := fileSHA256(staged)
 	if err != nil || actual != marker.DatabaseSHA256 {
 		_ = attempt.discardPending()
 		return nil, fmt.Errorf("staged database checksum failed: %w", ErrInvalidBackup)
+	}
+	if attempt.restoreKey {
+		keyPath := filepath.Join(restoreDir, mailservice.KeyFileName)
+		keyHash, err := fileSHA256(keyPath)
+		key, readErr := os.ReadFile(keyPath)
+		if err != nil || readErr != nil || keyHash != marker.MailKeySHA256 || len(key) != 32 {
+			_ = attempt.discardPending()
+			return nil, fmt.Errorf("staged mail encryption key checksum failed: %w", ErrInvalidBackup)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -81,6 +97,13 @@ func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
 			return nil, fmt.Errorf("save rollback: %w", err)
 		}
 	}
+	if attempt.restoreKey {
+		if err := copyIfExists(filepath.Join(dataDir, mailservice.KeyFileName), filepath.Join(rollbackTemp, mailservice.KeyFileName)); err != nil {
+			_ = os.RemoveAll(rollbackTemp)
+			_ = attempt.discardPending()
+			return nil, fmt.Errorf("save mail key rollback: %w", err)
+		}
+	}
 	if err := os.Rename(rollbackTemp, rollbackDir); err != nil {
 		_ = os.RemoveAll(rollbackTemp)
 		_ = attempt.discardPending()
@@ -93,6 +116,14 @@ func ApplyPendingRestore(dataDir string) (*RestoreAttempt, error) {
 	}
 	if err := os.Rename(staged, filepath.Join(dataDir, "panel.db")); err != nil {
 		return nil, attempt.rollbackOnError(err)
+	}
+	if attempt.restoreKey {
+		if err := removeIfExists(filepath.Join(dataDir, mailservice.KeyFileName)); err != nil {
+			return nil, attempt.rollbackOnError(err)
+		}
+		if err := os.Rename(filepath.Join(restoreDir, mailservice.KeyFileName), filepath.Join(dataDir, mailservice.KeyFileName)); err != nil {
+			return nil, attempt.rollbackOnError(err)
+		}
 	}
 	return attempt, nil
 }
@@ -122,8 +153,18 @@ func (a *RestoreAttempt) Rollback() error {
 			return err
 		}
 	}
+	if a.restoreKey {
+		if err := removeIfExists(filepath.Join(a.dataDir, mailservice.KeyFileName)); err != nil {
+			return err
+		}
+	}
 	for _, name := range sqliteFiles {
 		if err := copyIfExists(filepath.Join(rollbackDir, name), filepath.Join(a.dataDir, name)); err != nil {
+			return err
+		}
+	}
+	if a.restoreKey {
+		if err := copyIfExists(filepath.Join(rollbackDir, mailservice.KeyFileName), filepath.Join(a.dataDir, mailservice.KeyFileName)); err != nil {
 			return err
 		}
 	}
@@ -141,7 +182,7 @@ func (a *RestoreAttempt) rollbackOnError(cause error) error {
 }
 
 func (a *RestoreAttempt) discardPending() error {
-	for _, name := range []string{"pending.json", "panel.db"} {
+	for _, name := range []string{"pending.json", "panel.db", mailservice.KeyFileName} {
 		if err := removeIfExists(filepath.Join(a.restoreDir, name)); err != nil {
 			return err
 		}

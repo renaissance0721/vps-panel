@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/databasehealth"
+	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	"github.com/renaissance0721/vps-panel/panel/internal/version"
 	_ "modernc.org/sqlite"
 )
@@ -132,6 +133,23 @@ func CreateArchive(ctx context.Context, db *sql.DB, dataDir, panelVersion, panel
 		return fail(fmt.Errorf("encode backup manifest: %w", err))
 	}
 	contents := map[string][]byte{"manifest.json": append(meta, '\n')}
+	mailKeyPath := filepath.Join(dataDir, mailservice.KeyFileName)
+	mailKey, mailKeyErr := os.ReadFile(mailKeyPath)
+	if mailKeyErr == nil {
+		if info, err := os.Lstat(mailKeyPath); err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || len(mailKey) != 32 {
+			return fail(errors.New("mail encryption key is invalid"))
+		}
+		contents["data/"+mailservice.KeyFileName] = mailKey
+	} else if !errors.Is(mailKeyErr, os.ErrNotExist) {
+		return fail(fmt.Errorf("read mail encryption key: %w", mailKeyErr))
+	}
+	needsMailKey, err := databaseHasMailPassword(snapshot)
+	if err != nil {
+		return fail(fmt.Errorf("inspect mail settings: %w", err))
+	}
+	if needsMailKey && len(mailKey) != 32 {
+		return fail(errors.New("SMTP password is configured but the mail encryption key is unavailable"))
+	}
 	for name, source := range map[string]string{
 		"deployment/environment":     environmentFile,
 		"deployment/vps-panel.caddy": caddyFile,
@@ -176,7 +194,7 @@ func CreateArchive(ctx context.Context, db *sql.DB, dataDir, panelVersion, panel
 		return fail(fmt.Errorf("create backup ZIP: %w", err))
 	}
 	writer := zip.NewWriter(archive)
-	for _, name := range []string{"manifest.json", "data/panel.db", "deployment/environment", "deployment/vps-panel.caddy", "SHA256SUMS"} {
+	for _, name := range []string{"manifest.json", "data/panel.db", "data/" + mailservice.KeyFileName, "deployment/environment", "deployment/vps-panel.caddy", "SHA256SUMS"} {
 		data, present := contents[name]
 		if name != "data/panel.db" && !present {
 			continue
@@ -243,7 +261,8 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	}
 	defer reader.Close()
 	allowed := map[string]int64{"manifest.json": 64 << 10, "SHA256SUMS": 4 << 10, "data/panel.db": maxExtractSize,
-		"deployment/environment": 1 << 20, "deployment/vps-panel.caddy": 1 << 20}
+		"data/" + mailservice.KeyFileName: 64,
+		"deployment/environment":          1 << 20, "deployment/vps-panel.caddy": 1 << 20}
 	entries := make(map[string]*zip.File)
 	var declared uint64
 	for _, entry := range reader.File {
@@ -266,7 +285,7 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	}
 	actual := make(map[string]string)
 	var meta manifest
-	for _, name := range []string{"manifest.json", "deployment/environment", "deployment/vps-panel.caddy", "data/panel.db"} {
+	for _, name := range []string{"manifest.json", "deployment/environment", "deployment/vps-panel.caddy", "data/panel.db", "data/" + mailservice.KeyFileName} {
 		entry := entries[name]
 		if entry == nil {
 			continue
@@ -274,8 +293,12 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 		var output io.Writer
 		var outputFile *os.File
 		var buffer bytes.Buffer
-		if name == "data/panel.db" {
-			file, err := os.OpenFile(filepath.Join(tempDir, "panel.db"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if name == "data/panel.db" || name == "data/"+mailservice.KeyFileName {
+			outputName := "panel.db"
+			if name != "data/panel.db" {
+				outputName = mailservice.KeyFileName
+			}
+			file, err := os.OpenFile(filepath.Join(tempDir, outputName), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
 				return fmt.Errorf("stage imported database: %w", err)
 			}
@@ -358,11 +381,25 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	if err := ValidateDatabase(ctx, staged); err != nil {
 		return fmt.Errorf("备份数据库校验失败: %w", ErrInvalidBackup)
 	}
+	needsMailKey, err := databaseHasMailPassword(staged)
+	if err != nil {
+		return fmt.Errorf("无法检查备份邮件设置: %w", ErrInvalidBackup)
+	}
+	keyEntryName := "data/" + mailservice.KeyFileName
+	keyHash := actual[keyEntryName]
+	if keyHash != "" {
+		key, err := os.ReadFile(filepath.Join(tempDir, mailservice.KeyFileName))
+		if err != nil || len(key) != 32 {
+			return fmt.Errorf("备份邮件加密密钥无效: %w", ErrInvalidBackup)
+		}
+	} else if needsMailKey {
+		return fmt.Errorf("备份缺少 SMTP 密码加密密钥: %w", ErrInvalidBackup)
+	}
 	restoreDir := filepath.Join(dataDir, "restore")
 	if err := os.MkdirAll(restoreDir, 0o700); err != nil {
 		return fmt.Errorf("prepare restore directory: %w", err)
 	}
-	for _, name := range []string{"pending.json", "panel.db"} {
+	for _, name := range []string{"pending.json", "panel.db", mailservice.KeyFileName} {
 		if _, err := os.Stat(filepath.Join(restoreDir, name)); err == nil {
 			return ErrPendingRestore
 		} else if !os.IsNotExist(err) {
@@ -372,10 +409,17 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	if err := os.Rename(staged, filepath.Join(restoreDir, "panel.db")); err != nil {
 		return fmt.Errorf("stage restore database: %w", err)
 	}
-	pendingData, _ := json.Marshal(pendingMarker{DatabaseSHA256: actual["data/panel.db"]})
+	if keyHash != "" {
+		if err := os.Rename(filepath.Join(tempDir, mailservice.KeyFileName), filepath.Join(restoreDir, mailservice.KeyFileName)); err != nil {
+			_ = os.Remove(filepath.Join(restoreDir, "panel.db"))
+			return fmt.Errorf("stage mail encryption key: %w", err)
+		}
+	}
+	pendingData, _ := json.Marshal(pendingMarker{DatabaseSHA256: actual["data/panel.db"], MailKeySHA256: keyHash})
 	marker, err := os.OpenFile(filepath.Join(restoreDir, "pending.json.tmp"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		os.Remove(filepath.Join(restoreDir, "panel.db"))
+		os.Remove(filepath.Join(restoreDir, mailservice.KeyFileName))
 		return fmt.Errorf("stage restore marker: %w", err)
 	}
 	_, writeErr := marker.Write(pendingData)
@@ -383,11 +427,13 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	closeErr := marker.Close()
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		os.Remove(filepath.Join(restoreDir, "panel.db"))
+		os.Remove(filepath.Join(restoreDir, mailservice.KeyFileName))
 		os.Remove(marker.Name())
 		return errors.New("write restore marker failed")
 	}
 	if err := os.Rename(marker.Name(), filepath.Join(restoreDir, "pending.json")); err != nil {
 		os.Remove(filepath.Join(restoreDir, "panel.db"))
+		os.Remove(filepath.Join(restoreDir, mailservice.KeyFileName))
 		os.Remove(marker.Name())
 		return fmt.Errorf("publish restore marker: %w", err)
 	}
@@ -418,6 +464,26 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func databaseHasMailPassword(path string) (bool, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var tableCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'mail_settings'`).Scan(&tableCount); err != nil {
+		return false, err
+	}
+	if tableCount == 0 {
+		return false, nil
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM mail_settings WHERE password_ciphertext <> ''`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // ValidateDatabase reads a database without modifying its schema or rows.

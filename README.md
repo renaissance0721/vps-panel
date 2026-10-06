@@ -11,6 +11,7 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 服务器 | 系统信息、在线状态、分组、访问权限、到期与续期信息 |
 | 轻量探针 | CPU / RAM / Disk、网络速度、周期流量；TCPing / ICMP Ping 与 1h / 6h / 24h 延迟历史 |
 | Telegram | Server 离线、恢复和流量阈值通知 |
+| 邮件服务 | 可选的标准 SMTP 配置与管理员测试邮件，支持 TLS、STARTTLS 和无 TLS |
 | 代理节点 | 受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
 | 外部节点 | 导入 VLESS / Shadowsocks 分享链接，管理 Landing 节点 |
@@ -100,6 +101,14 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 
 管理员在探针页面配置 Telegram Bot Token 和 Chat ID，并可发送测试通知。
 支持离线宽限、恢复提醒、流量首次阈值、后续提醒步进和用尽提醒。
+
+### 邮件服务
+
+管理员可在“系统设置”中配置任意标准 SMTP 服务；SMTP 服务器可以与 Panel 部署在不同主机，也不要求使用相同域名。
+支持 implicit TLS（通常为 465）、STARTTLS（通常为 587）以及无 TLS；无 TLS 可能明文传输认证信息和邮件内容，不推荐使用。
+测试邮件直接使用当前表单内容，因此可以在保存前验证 `smtp.example.com`、`noreply@example.com` 等实际配置。
+
+邮件服务是可选功能。未配置或停用 SMTP 不影响现有服务器、Agent、代理、中转、订阅、探针和 Telegram 通知。
 
 ## 🔐 用户与权限
 

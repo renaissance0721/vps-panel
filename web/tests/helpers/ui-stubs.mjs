@@ -17,6 +17,7 @@ export const NRadio = container('NRadio')
 export const NRadioGroup = container('NRadioGroup')
 export const NProgress = container('NProgress')
 export const NConfigProvider = container('NConfigProvider')
+export const NDropdown = container('NDropdown')
 export const NModal = defineComponent({
   inheritAttrs: false,
   props: { show: Boolean },

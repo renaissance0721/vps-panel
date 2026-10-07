@@ -15,3 +15,11 @@ export type AuthState = {
   authenticated: boolean
   user?: User
 }
+
+export type EmailStatus = {
+  email: string
+  verified: boolean
+  pending_email: string
+  available: boolean
+  unavailable_reason?: string
+}

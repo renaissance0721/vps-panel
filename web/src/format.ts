@@ -1,5 +1,11 @@
 import type { User } from './types/auth'
 
+export function maskEmail(value: string) {
+  const separator = value.indexOf('@')
+  if (separator <= 0 || separator === value.length - 1) return '***'
+  return `${Array.from(value)[0]}***${value.slice(separator)}`
+}
+
 export function formatTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',

@@ -2,14 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { NAlert, NButton, NInput, NSpin, NTag } from 'naive-ui'
 import { api } from '../api/client'
-
-type EmailStatus = {
-  email: string
-  verified: boolean
-  pending_email: string
-  available: boolean
-  unavailable_reason?: string
-}
+import type { EmailStatus } from '../types/auth'
 
 const status = ref<EmailStatus | null>(null)
 const loading = ref(true)

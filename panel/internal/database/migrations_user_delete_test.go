@@ -48,6 +48,8 @@ func TestLegacySchemaMigrationPreservesUserDeletionForeignKeys(t *testing.T) {
 		{"relays", "target_client_id", "clients", "SET NULL"},
 		{"relays", "target_landing_id", "landing_nodes", "RESTRICT"},
 		{"user_relay_order", "user_id", "users", "CASCADE"},
+		{"user_personal_subscription_order", "user_id", "users", "CASCADE"},
+		{"user_published_node_order", "user_id", "users", "CASCADE"},
 		{"clients", "assigned_user_id", "users", "SET NULL"},
 		{"client_relay_ports", "client_id", "clients", "CASCADE"},
 		{"subscriber_profiles", "user_id", "users", "CASCADE"},

@@ -8,6 +8,7 @@ import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { beginDragPreview, endDragPreview } from '../drag'
 import { formatTime } from '../format'
 import { formatClientExpirationInput, formatClientTrafficBytes } from '../proxy'
+import { moveRow, persistMove } from '../reorder'
 import {
   cloneRoutingGroups,
   cloneRoutingProviders,
@@ -245,6 +246,12 @@ const personalSourceSearch = ref('')
 const personalBindingEditorKey = ref(0)
 const planBindingEditorKey = ref(0)
 const expandedPersonalNodeIDs = ref<Set<number>>(new Set())
+const draggedPersonalSubscriptionID = ref<number | null>(null)
+const personalSubscriptionDropTargetID = ref<number | null>(null)
+const reorderingPersonalSubscriptionID = ref<number | null>(null)
+const draggedPublishedNodeID = ref<number | null>(null)
+const publishedNodeDropTargetID = ref<number | null>(null)
+const reorderingPublishedNodeID = ref<number | null>(null)
 const draggedPersonalNodeID = ref<number | null>(null)
 const personalDropTargetID = ref<number | null>(null)
 let nextPersonalNodeID = -1
@@ -370,6 +377,16 @@ async function loadAll() {
   }
 }
 
+async function loadPersonalSubscriptions() {
+  const response = await api<{ personal_subscriptions: PersonalSubscription[] }>('/api/personal-subscriptions')
+  personalSubscriptions.value = response.personal_subscriptions
+}
+
+async function loadPublishedNodes() {
+  const response = await api<{ nodes: PublishedNode[] }>('/api/admin/subscription/nodes')
+  nodes.value = response.nodes
+}
+
 async function run(action: () => Promise<void>) {
   busy.value = true
   error.value = ''
@@ -379,6 +396,84 @@ async function run(action: () => Promise<void>) {
     error.value = reason instanceof Error ? reason.message : '操作失败'
   } finally {
     busy.value = false
+  }
+}
+
+function startPersonalSubscriptionDrag(event: DragEvent, id: number) {
+  if (busy.value || reorderingPersonalSubscriptionID.value !== null || !event.dataTransfer) return
+  const source = (event.currentTarget as HTMLElement | null)?.closest('.personal-subscription-card') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
+  draggedPersonalSubscriptionID.value = id
+}
+
+function endPersonalSubscriptionDrag() {
+  endDragPreview()
+  draggedPersonalSubscriptionID.value = null
+  personalSubscriptionDropTargetID.value = null
+}
+
+function dragOverPersonalSubscription(event: DragEvent, id: number) {
+  if (draggedPersonalSubscriptionID.value === null || draggedPersonalSubscriptionID.value === id ||
+    reorderingPersonalSubscriptionID.value !== null) return
+  event.preventDefault()
+  personalSubscriptionDropTargetID.value = id
+}
+
+async function dropPersonalSubscription(id: number) {
+  const sourceID = draggedPersonalSubscriptionID.value
+  endPersonalSubscriptionDrag()
+  if (sourceID === null || reorderingPersonalSubscriptionID.value !== null) return
+  const move = moveRow(personalSubscriptions.value, sourceID, id)
+  if (!move) return
+  reorderingPersonalSubscriptionID.value = sourceID
+  error.value = ''
+  try {
+    await persistMove(move, (direction) => api(`/api/personal-subscriptions/${sourceID}/reorder`, {
+      method: 'POST', body: JSON.stringify({ direction }),
+    }), loadPersonalSubscriptions)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '调整个人订阅顺序失败'
+  } finally {
+    reorderingPersonalSubscriptionID.value = null
+  }
+}
+
+function startPublishedNodeDrag(event: DragEvent, id: number) {
+  if (busy.value || reorderingPublishedNodeID.value !== null || !event.dataTransfer) return
+  const source = (event.currentTarget as HTMLElement | null)?.closest('.published-node-card') as HTMLElement | null
+  if (!source || !beginDragPreview(event, source, String(id))) return
+  draggedPublishedNodeID.value = id
+}
+
+function endPublishedNodeDrag() {
+  endDragPreview()
+  draggedPublishedNodeID.value = null
+  publishedNodeDropTargetID.value = null
+}
+
+function dragOverPublishedNode(event: DragEvent, id: number) {
+  if (draggedPublishedNodeID.value === null || draggedPublishedNodeID.value === id ||
+    reorderingPublishedNodeID.value !== null) return
+  event.preventDefault()
+  publishedNodeDropTargetID.value = id
+}
+
+async function dropPublishedNode(id: number) {
+  const sourceID = draggedPublishedNodeID.value
+  endPublishedNodeDrag()
+  if (sourceID === null || reorderingPublishedNodeID.value !== null) return
+  const move = moveRow(nodes.value, sourceID, id)
+  if (!move) return
+  reorderingPublishedNodeID.value = sourceID
+  error.value = ''
+  try {
+    await persistMove(move, (direction) => api(`/api/admin/subscription/nodes/${sourceID}/reorder`, {
+      method: 'POST', body: JSON.stringify({ direction }),
+    }), loadPublishedNodes)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '调整发布节点顺序失败'
+  } finally {
+    reorderingPublishedNodeID.value = null
   }
 }
 
@@ -1299,7 +1394,11 @@ onMounted(async () => {
     loading.value = false
   }
 })
-onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDrag() })
+onUnmounted(() => {
+  if (draggedPersonalSubscriptionID.value !== null) endPersonalSubscriptionDrag()
+  if (draggedPublishedNodeID.value !== null) endPublishedNodeDrag()
+  if (draggedPersonalNodeID.value !== null) endPersonalNodeDrag()
+})
 </script>
 
 <template>
@@ -1310,22 +1409,49 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
   <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅管理…</span></div>
 
   <section v-else-if="currentTab === 'personal'" class="subscription-section">
-    <div class="section-heading"><span></span><n-button type="primary" @click="openCreatePersonal">新增个人订阅</n-button></div>
+    <div class="section-heading"><span></span><n-button type="primary" :disabled="reorderingPersonalSubscriptionID !== null" @click="openCreatePersonal">新增个人订阅</n-button></div>
     <n-empty v-if="personalSubscriptions.length === 0" description="暂无个人订阅" />
-    <div v-else class="user-management-grid">
-      <n-card v-for="value in personalSubscriptions" :key="value.id" :title="value.name">
+    <TransitionGroup v-else tag="div" class="personal-subscription-grid" name="subscription-card-order">
+      <n-card
+        v-for="value in personalSubscriptions"
+        :key="value.id"
+        class="personal-subscription-card subscription-sort-card"
+        :class="{
+          'subscription-card-dragging': draggedPersonalSubscriptionID === value.id,
+          'subscription-card-drop-target': personalSubscriptionDropTargetID === value.id,
+        }"
+        @dragover="dragOverPersonalSubscription($event, value.id)"
+        @dragleave="personalSubscriptionDropTargetID === value.id && (personalSubscriptionDropTargetID = null)"
+        @drop.prevent="dropPersonalSubscription(value.id)"
+      >
+        <template #header>
+          <div class="personal-subscription-header">
+            <span
+              class="drag-handle"
+              :class="{ 'drag-handle--disabled': reorderingPersonalSubscriptionID !== null }"
+              :draggable="reorderingPersonalSubscriptionID === null"
+              title="拖动排序"
+              aria-label="拖动个人订阅排序"
+              @dragstart="startPersonalSubscriptionDrag($event, value.id)"
+              @dragend="endPersonalSubscriptionDrag"
+            ><span></span><span></span><span></span></span>
+            <div><strong>{{ value.name }}</strong><span>Client：{{ value.client_name }}</span></div>
+          </div>
+        </template>
         <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
-        <p>Client：{{ value.client_name }}</p>
-        <p>{{ value.nodes.length }} 个节点 · {{ value.routing_preset_name }}</p>
-        <p>Mihomo：{{ value.mihomo_template_name || '内置默认' }} · Shadowrocket：{{ value.shadowrocket_template_name || '内置默认' }}</p>
-        <div class="modal-actions">
-          <n-button secondary @click="openPersonalLinkModal(value)">复制链接</n-button>
-          <n-button secondary @click="showPersonalQR(value)">二维码</n-button>
-          <n-button secondary @click="openEditPersonal(value)">编辑</n-button>
-          <n-button type="error" secondary @click="deletePersonal(value)">删除</n-button>
+        <div class="personal-subscription-summary">
+          <div><span>节点 / 分流</span><strong>{{ value.nodes.length }} 个节点 · {{ value.routing_preset_name }}</strong></div>
+          <div><span>Mihomo 模板</span><strong>{{ value.mihomo_template_name || '内置默认' }}</strong></div>
+          <div><span>Shadowrocket 模板</span><strong>{{ value.shadowrocket_template_name || '内置默认' }}</strong></div>
+        </div>
+        <div class="personal-subscription-actions">
+          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="openPersonalLinkModal(value)">复制链接</n-button>
+          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="showPersonalQR(value)">二维码</n-button>
+          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="openEditPersonal(value)">编辑</n-button>
+          <n-button size="small" type="error" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="deletePersonal(value)">删除</n-button>
         </div>
       </n-card>
-    </div>
+    </TransitionGroup>
   </section>
 
   <section v-else-if="currentTab === 'users'" class="subscription-section">
@@ -1349,19 +1475,47 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
   </section>
 
   <section v-else-if="currentTab === 'nodes'" class="subscription-section">
-    <div class="section-heading"><span></span><n-button type="primary" :disabled="proxies.length === 0" @click="openCreateNode">新增发布节点</n-button></div>
+    <div class="section-heading"><span></span><n-button type="primary" :disabled="proxies.length === 0 || reorderingPublishedNodeID !== null" @click="openCreateNode">新增发布节点</n-button></div>
     <n-empty v-if="nodes.length === 0" description="暂无发布节点" />
-    <div v-else class="user-management-grid">
-      <n-card v-for="value in nodes" :key="value.id" :title="nodeDisplayName(value)">
-        <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
-        <p v-if="value.mode === 'direct'">单一节点</p><p v-else>中转 + 落地</p>
-        <p v-if="value.mode === 'relay'">{{ value.source_server_name }} · Realm → {{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
-        <p v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</p>
-        <p>入口：{{ value.entry_address }}:{{ value.entry_port }}</p>
-        <p>所属共享订阅：{{ nodePlanNames(value.id) || '未加入共享订阅' }}</p>
-        <div class="modal-actions"><n-button secondary @click="openEditNode(value)">编辑</n-button><n-button type="error" secondary @click="deleteNode(value)">删除</n-button></div>
+    <TransitionGroup v-else tag="div" class="published-node-list" name="subscription-card-order">
+      <n-card
+        v-for="value in nodes"
+        :key="value.id"
+        class="published-node-card subscription-sort-card"
+        :class="{
+          'subscription-card-dragging': draggedPublishedNodeID === value.id,
+          'subscription-card-drop-target': publishedNodeDropTargetID === value.id,
+        }"
+        @dragover="dragOverPublishedNode($event, value.id)"
+        @dragleave="publishedNodeDropTargetID === value.id && (publishedNodeDropTargetID = null)"
+        @drop.prevent="dropPublishedNode(value.id)"
+      >
+        <div class="published-node-row">
+          <span
+            class="drag-handle"
+            :class="{ 'drag-handle--disabled': reorderingPublishedNodeID !== null }"
+            :draggable="reorderingPublishedNodeID === null"
+            title="拖动排序"
+            aria-label="拖动发布节点排序"
+            @dragstart="startPublishedNodeDrag($event, value.id)"
+            @dragend="endPublishedNodeDrag"
+          ><span></span><span></span><span></span></span>
+          <div class="published-node-identity">
+            <div><strong>{{ nodeDisplayName(value) }}</strong><n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '停用' }}</n-tag></div>
+            <span>{{ value.mode === 'direct' ? '单一节点' : '中转 + 落地' }}</span>
+          </div>
+          <dl class="published-node-details">
+            <div><dt>入口</dt><dd>{{ value.entry_address }}:{{ value.entry_port }}</dd></div>
+            <div><dt>所属共享订阅</dt><dd>{{ nodePlanNames(value.id) || '未加入共享订阅' }}</dd></div>
+            <div class="published-node-route"><dt>链路</dt><dd v-if="value.mode === 'relay'">{{ value.source_server_name }} · Realm → {{ value.target_server_name }} · {{ value.target_proxy_name }}</dd><dd v-else>{{ value.target_server_name }} · {{ value.target_proxy_name }}</dd></div>
+          </dl>
+          <div class="published-node-actions">
+            <n-button size="small" secondary :disabled="reorderingPublishedNodeID !== null" @click="openEditNode(value)">编辑</n-button>
+            <n-button size="small" type="error" secondary :disabled="reorderingPublishedNodeID !== null" @click="deleteNode(value)">删除</n-button>
+          </div>
+        </div>
       </n-card>
-    </div>
+    </TransitionGroup>
   </section>
 
   <section v-else class="subscription-section configuration-grid">
@@ -1642,6 +1796,179 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
 </template>
 
 <style scoped>
+.personal-subscription-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 16px;
+}
+
+.subscription-sort-card {
+  min-width: 0;
+  height: 100%;
+  transition:
+    box-shadow var(--motion-fast) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.subscription-sort-card:not(.subscription-card-dragging):hover {
+  box-shadow: 0 6px 18px rgba(34, 73, 105, 0.08);
+}
+
+.subscription-sort-card.subscription-card-dragging {
+  opacity: 0.38;
+}
+
+.subscription-sort-card.subscription-card-drop-target {
+  box-shadow: inset 4px 0 0 var(--color-primary), 0 0 0 1px var(--color-primary);
+  transform: translateY(2px);
+}
+
+.subscription-card-order-move {
+  transition: transform var(--motion-base) var(--ease-standard) !important;
+}
+
+.personal-subscription-card :deep(.n-card__content) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.personal-subscription-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.personal-subscription-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.personal-subscription-header strong,
+.personal-subscription-header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-subscription-header > div > span {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.personal-subscription-summary {
+  display: grid;
+  flex: 1;
+  gap: 0;
+}
+
+.personal-subscription-summary > div {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.personal-subscription-summary > div:last-child {
+  border-bottom: 0;
+}
+
+.personal-subscription-summary span,
+.published-node-details dt {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.personal-subscription-summary strong,
+.published-node-details dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.personal-subscription-actions,
+.published-node-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.published-node-list {
+  display: grid;
+  gap: 12px;
+}
+
+.published-node-card :deep(.n-card__content) {
+  padding: 14px 16px;
+}
+
+.published-node-row {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 0.7fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.published-node-identity {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.published-node-identity > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.published-node-identity strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.published-node-identity > span {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.published-node-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  min-width: 0;
+  margin: 0;
+}
+
+.published-node-details > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.published-node-details .published-node-route {
+  grid-column: 1 / -1;
+}
+
+.published-node-details dd {
+  margin: 0;
+}
+
+.published-node-actions {
+  margin-top: 0;
+}
+
 .routing-preset-summary {
   min-width: 0;
 }
@@ -1666,5 +1993,52 @@ onUnmounted(() => { if (draggedPersonalNodeID.value !== null) endPersonalNodeDra
 
 .personal-link-formats :deep(.n-radio) {
   display: inline-flex;
+}
+
+@media (max-width: 900px) {
+  .personal-subscription-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .published-node-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 10px 12px;
+  }
+
+  .published-node-row > .drag-handle {
+    grid-row: 1 / span 3;
+    align-self: center;
+  }
+
+  .published-node-details,
+  .published-node-actions {
+    grid-column: 2;
+  }
+
+  .published-node-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .personal-subscription-summary > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .personal-subscription-actions,
+  .published-node-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .published-node-details {
+    grid-template-columns: 1fr;
+  }
+
+  .published-node-details .published-node-route {
+    grid-column: auto;
+  }
 }
 </style>

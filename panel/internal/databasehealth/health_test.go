@@ -218,6 +218,43 @@ func TestDatabaseRepairRemovesRelayOrderOrphan(t *testing.T) {
 	}
 }
 
+func TestDatabaseRepairRemovesSubscriptionOrderOrphans(t *testing.T) {
+	path := createHealthDatabase(t)
+	db := openRawDatabase(t, path)
+	for _, statement := range []string{
+		`PRAGMA foreign_keys = OFF`,
+		`INSERT INTO user_personal_subscription_order(user_id, personal_subscription_id, position) VALUES (1, 101, 0)`,
+		`INSERT INTO user_published_node_order(user_id, published_node_id, position) VALUES (1, 202, 0)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := databasehealth.Repair(t.Context(), path, time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || !result.After.Healthy() ||
+		repairedCount(result, "user_personal_subscription_order") != 1 ||
+		repairedCount(result, "user_published_node_order") != 1 {
+		t.Fatalf("repair result = %+v", result)
+	}
+
+	db = openRawDatabase(t, path)
+	defer db.Close()
+	for _, table := range []string{"user_personal_subscription_order", "user_published_node_order"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s rows after repair = %d, %v", table, count, err)
+		}
+	}
+}
+
 func TestDatabaseRepairDoesNotDeleteBusinessRows(t *testing.T) {
 	path := createHealthDatabase(t)
 	db := openRawDatabase(t, path)

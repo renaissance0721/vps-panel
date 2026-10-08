@@ -88,7 +88,7 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
 
 test('个人订阅卡片只保留四个操作，复制入口打开格式弹窗', () => {
   const personalSection = managementSource.slice(managementSource.indexOf("currentTab === 'personal'"), managementSource.indexOf("currentTab === 'users'"))
-  const actions = personalSection.match(/<div class="modal-actions">([\s\S]*?)<\/div>/)?.[1] ?? ''
+  const actions = personalSection.match(/<div class="personal-subscription-actions">([\s\S]*?)<\/div>/)?.[1] ?? ''
   assert.deepEqual([...actions.matchAll(/<n-button[^>]*>([^<]+)<\/n-button>/g)].map(match => match[1]), ['复制链接', '二维码', '编辑', '删除'])
   assert.match(actions, /@click="openPersonalLinkModal\(value\)"/)
   assert.match(managementSource, /<n-modal v-model:show="personalLinkModalOpen">[\s\S]*title="复制订阅链接"/)
@@ -150,7 +150,7 @@ test('发布节点可手动输入倍率且管理端统一显示最终名称', ()
   assert.match(managementSource, /traffic_multiplier: multiplier/)
   assert.match(managementSource, /function nodeDisplayName\(value: PublishedNode\)/)
   assert.match(managementSource, /`\$\{value\.name\} \[\$\{Number\(value\.traffic_multiplier\.toFixed\(2\)\)\}×\]`/)
-  assert.match(managementSource, /:title="nodeDisplayName\(value\)"/)
+  assert.match(managementSource, /<strong>\{\{ nodeDisplayName\(value\) \}\}<\/strong>/)
   assert.match(managementSource, /<span>\{\{ nodeDisplayName\(node\) \}\}<\/span>/)
   assert.match(managementSource, /function openEditNode\(value: PublishedNode\)[\s\S]*nodeName\.value = value\.name/)
   assert.doesNotMatch(portalSource, /traffic_multiplier|multiplierLabel/)
@@ -165,7 +165,7 @@ test('发布节点创建和编辑一次提交所属套餐并在列表展示关�
   assert.match(managementSource, /method: 'POST'[\s\S]*plan_ids: nodePlanIDs\.value/)
   assert.match(managementSource, /editingNode \? '所属共享订阅' : '加入共享订阅'/)
   assert.match(managementSource, /v-for="plan in plans"[\s\S]*nodePlanIDs\.includes\(plan\.id\)/)
-  assert.match(managementSource, /所属共享订阅：\{\{ nodePlanNames\(value\.id\) \|\| '未加入共享订阅' \}\}/)
+  assert.match(managementSource, /<dt>所属共享订阅<\/dt><dd>\{\{ nodePlanNames\(value\.id\) \|\| '未加入共享订阅' \}\}<\/dd>/)
   assert.match(managementSource, /nodeModalOpen\.value = false\s*await loadAll\(\)/)
 })
 
@@ -184,6 +184,20 @@ test('发布节点入口地址和 Relay 端口支持继承、候选复制与自�
   assert.match(managementSource, /entry_port: nodeMode\.value === 'relay'/)
   assert.match(managementSource, /value\.entry_address \}\}:\{\{ value\.entry_port/)
   assert.doesNotMatch(managementSource, /entry_source_proxy_id|entry_port\s*:\s*nodeMode\.value === 'direct'/)
+})
+
+test('个人订阅和发布节点使用响应式卡片布局及共享持久化拖拽机制', () => {
+  assert.match(managementSource, /import \{ moveRow, persistMove \} from '\.\.\/reorder'/)
+  assert.match(managementSource, /class="personal-subscription-grid" name="subscription-card-order"/)
+  assert.match(managementSource, /class="published-node-list" name="subscription-card-order"/)
+  assert.match(managementSource, /aria-label="拖动个人订阅排序"/)
+  assert.match(managementSource, /aria-label="拖动发布节点排序"/)
+  assert.match(managementSource, /persistMove\(move,[\s\S]*\/api\/personal-subscriptions\/\$\{sourceID\}\/reorder[\s\S]*loadPersonalSubscriptions/)
+  assert.match(managementSource, /persistMove\(move,[\s\S]*\/api\/admin\/subscription\/nodes\/\$\{sourceID\}\/reorder[\s\S]*loadPublishedNodes/)
+  assert.match(managementSource, /\.personal-subscription-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s)
+  assert.match(managementSource, /\.published-node-row\s*\{[^}]*grid-template-columns:\s*auto minmax\(150px, 0\.7fr\) minmax\(0, 2fr\) auto/s)
+  assert.match(managementSource, /@media \(max-width: 900px\)[\s\S]*\.personal-subscription-grid\s*\{[^}]*grid-template-columns:\s*1fr/s)
+  assert.match(managementSource, /\.subscription-sort-card\.subscription-card-drop-target\s*\{[^}]*var\(--color-primary\)[^}]*transform:/s)
 })
 
 test('生命周期字段只在订阅用户表单管理', () => {

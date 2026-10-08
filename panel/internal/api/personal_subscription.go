@@ -5,10 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
@@ -107,6 +109,16 @@ func (s *server) listPersonalSubscriptions(w http.ResponseWriter, r *http.Reques
 		writePersonalSubscriptionError(w, err)
 		return
 	}
+	ids := make([]int64, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.PersonalSubscriptions, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	sort.SliceStable(values, func(i, j int) bool { return ranks[values[i].ID] < ranks[values[j].ID] })
 	baseURL, ok := s.panelBaseURL(r)
 	if !ok {
 		writeInternalError(w, errPanelBaseURL)

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 27
+const LatestSchemaVersion = 28
 
 type migration struct {
 	version            int
@@ -50,6 +50,32 @@ var migrations = []migration{
 	{version: 25, name: "rename_user_role_to_carpool", up: renameUserRoleToCarpool, disableForeignKeys: true},
 	{version: 26, name: "account_email_verification", up: createAccountEmailVerification},
 	{version: 27, name: "account_email_password_reset", up: extendAccountTokensForPasswordReset},
+	{version: 28, name: "subscription_list_order", up: createSubscriptionListOrder},
+}
+
+const userPersonalSubscriptionOrderStatement = `CREATE TABLE IF NOT EXISTS user_personal_subscription_order (
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	personal_subscription_id INTEGER NOT NULL REFERENCES personal_subscription_groups(id) ON DELETE CASCADE,
+	position INTEGER NOT NULL,
+	PRIMARY KEY (user_id, personal_subscription_id),
+	UNIQUE (user_id, position)
+)`
+
+const userPublishedNodeOrderStatement = `CREATE TABLE IF NOT EXISTS user_published_node_order (
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	published_node_id INTEGER NOT NULL REFERENCES subscription_published_nodes(id) ON DELETE CASCADE,
+	position INTEGER NOT NULL,
+	PRIMARY KEY (user_id, published_node_id),
+	UNIQUE (user_id, position)
+)`
+
+func createSubscriptionListOrder(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{userPersonalSubscriptionOrderStatement, userPublishedNodeOrderStatement} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func extendAccountTokensForPasswordReset(ctx context.Context, tx *sql.Tx) error {

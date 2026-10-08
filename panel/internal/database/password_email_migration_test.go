@@ -38,7 +38,6 @@ func TestPasswordEmailMigrationPreservesTokensAndSeparatesActivePurposes(t *test
 	if err := applyMigration(t.Context(), db, migrations[26]); err != nil {
 		t.Fatal(err)
 	}
-	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)
 	var target, hash string
 	var used sql.NullInt64
@@ -69,6 +68,7 @@ func TestPasswordEmailMigrationPreservesTokensAndSeparatesActivePurposes(t *test
 	if err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
+	assertLatestMigrationHistory(t, db)
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id=1`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("migration lost session")

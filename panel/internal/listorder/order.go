@@ -11,11 +11,13 @@ import (
 type Kind string
 
 const (
-	Servers  Kind = "servers"
-	Proxies  Kind = "proxies"
-	Relays   Kind = "relays"
-	Landings Kind = "landings"
-	Users    Kind = "users"
+	Servers               Kind = "servers"
+	Proxies               Kind = "proxies"
+	Relays                Kind = "relays"
+	Landings              Kind = "landings"
+	Users                 Kind = "users"
+	PersonalSubscriptions Kind = "personal_subscriptions"
+	PublishedNodes        Kind = "published_nodes"
 )
 
 var (
@@ -39,6 +41,10 @@ func tableAndColumn(kind Kind) (string, string) {
 		return "user_landing_order", "landing_id"
 	case Users:
 		return "user_account_order", "account_user_id"
+	case PersonalSubscriptions:
+		return "user_personal_subscription_order", "personal_subscription_id"
+	case PublishedNodes:
+		return "user_published_node_order", "published_node_id"
 	default:
 		panic("unknown list order kind")
 	}
@@ -95,6 +101,11 @@ func visibleQuery(kind Kind, archived bool) string {
 	switch kind {
 	case Users:
 		return `SELECT id FROM users ORDER BY username, id`
+	case PersonalSubscriptions:
+		return `SELECT id FROM personal_subscription_groups WHERE owner_user_id = ?
+			ORDER BY created_at DESC, id DESC`
+	case PublishedNodes:
+		return `SELECT id FROM subscription_published_nodes ORDER BY created_at DESC, id DESC`
 	case Landings:
 		return `SELECT id FROM landing_nodes WHERE owner_user_id = ? OR visibility = 'public'
 			ORDER BY created_at DESC, id DESC`
@@ -132,6 +143,17 @@ func visibleQuery(kind Kind, archived bool) string {
 	}
 }
 
+func visibleArguments(kind Kind, userID int64) []any {
+	switch kind {
+	case Users, PublishedNodes:
+		return nil
+	case Relays:
+		return []any{userID, userID}
+	default:
+		return []any{userID}
+	}
+}
+
 func (s *Store) Move(ctx context.Context, userID int64, kind Kind, archived bool, resourceID int64, direction string) error {
 	if direction != "up" && direction != "down" {
 		return ErrInvalidDirection
@@ -146,13 +168,7 @@ func (s *Store) Move(ctx context.Context, userID int64, kind Kind, archived bool
 	}
 	defer tx.Rollback()
 	query := visibleQuery(kind, archived)
-	arguments := []any{userID}
-	if kind == Users {
-		arguments = nil
-	}
-	if kind == Relays {
-		arguments = append(arguments, userID)
-	}
+	arguments := visibleArguments(kind, userID)
 	rows, err := tx.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return fmt.Errorf("list visible resources for reorder: %w", err)

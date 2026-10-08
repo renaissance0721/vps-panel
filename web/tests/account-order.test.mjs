@@ -35,6 +35,15 @@ const accounts = () => [
   { id: 2, username: 'refrain', role: 'vip' },
   { id: 3, username: 'Refrain', role: 'subscriber' },
 ]
+const personalSubscriptions = () => [1, 2, 3].map(id => ({
+  id, name: `Personal ${id}`, enabled: true, client_name: `client-${id}`, nodes: [], routing_preset_name: '默认分流',
+  mihomo_template_name: '', shadowrocket_template_name: '',
+}))
+const publishedNodes = () => [1, 2, 3].map(id => ({
+  id, name: `Published ${id}`, enabled: true, mode: id === 2 ? 'relay' : 'direct', traffic_multiplier: 1,
+  entry_address: 'node.example.com', entry_port: 443, target_server_name: 'Target', target_proxy_name: `Proxy ${id}`,
+  source_server_name: 'Source',
+}))
 async function render(component, populate, props = {}) {
   const setup = component.setup
   let state
@@ -106,6 +115,54 @@ test('dragover 只提示目标，失败后恢复持久化顺序并显示错误',
   assert.equal(state.draggedID.value, null)
   assert.equal(state.dropTargetID.value, null)
   assert.equal(state.reorderingID.value, null)
+})
+
+test('个人订阅网格拖动后乐观排序、逐步持久化并刷新', async () => {
+  const { html, state } = await render(Subscriptions, state => {
+    state.loading.value = false
+    state.personalSubscriptions.value = personalSubscriptions()
+  }, { role: 'vip' })
+  assert.equal((html.match(/aria-label="拖动个人订阅排序"/g) ?? []).length, 3)
+  assert.match(html, /personal-subscription-grid/)
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push([url, options.method, options.body])
+    if (options.method === 'POST') return { ok: true, status: 204 }
+    return { ok: true, status: 200, json: async () => ({ personal_subscriptions: [personalSubscriptions()[2], personalSubscriptions()[0], personalSubscriptions()[1]] }) }
+  }
+  state.draggedPersonalSubscriptionID.value = 3
+  await state.dropPersonalSubscription(1)
+  assert.deepEqual(calls.map(call => call[0]), [
+    '/api/personal-subscriptions/3/reorder',
+    '/api/personal-subscriptions/3/reorder',
+    '/api/personal-subscriptions',
+  ])
+  assert.deepEqual(calls.slice(0, 2).map(call => JSON.parse(call[2])), [{ direction: 'up' }, { direction: 'up' }])
+  assert.deepEqual(state.personalSubscriptions.value.map(value => value.id), [3, 1, 2])
+  assert.equal(state.reorderingPersonalSubscriptionID.value, null)
+})
+
+test('发布节点条状卡片拖动持久化，失败时刷新回服务端顺序', async () => {
+  const { html, state } = await render(Subscriptions, state => {
+    state.loading.value = false
+    state.currentTab.value = 'nodes'
+    state.nodes.value = publishedNodes()
+  }, { role: 'admin' })
+  assert.equal((html.match(/aria-label="拖动发布节点排序"/g) ?? []).length, 3)
+  assert.match(html, /published-node-list/)
+  assert.match(html, /中转 \+ 落地/)
+  const calls = []
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push(url)
+    if (options.method === 'POST') return { ok: false, status: 500, json: async () => ({ error: '发布节点排序保存失败' }) }
+    return { ok: true, status: 200, json: async () => ({ nodes: publishedNodes() }) }
+  }
+  state.draggedPublishedNodeID.value = 3
+  await state.dropPublishedNode(1)
+  assert.deepEqual(calls, ['/api/admin/subscription/nodes/3/reorder', '/api/admin/subscription/nodes'])
+  assert.deepEqual(state.nodes.value.map(value => value.id), [1, 2, 3])
+  assert.equal(state.error.value, '发布节点排序保存失败')
+  assert.equal(state.reorderingPublishedNodeID.value, null)
 })
 
 test('个人订阅卡片保留四个主要操作并移除独立 Shadowrocket 操作', async () => {

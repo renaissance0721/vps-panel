@@ -43,11 +43,14 @@ func TestOpenCreatesUsableDatabase(t *testing.T) {
 		"client_relay_ports",
 		"client_metrics",
 		"subscription_published_nodes",
+		"user_published_node_order",
 		"subscription_plans",
 		"subscription_plan_nodes",
 		"subscriber_profiles",
 		"subscriber_clients",
 		"subscriber_usage",
+		"personal_subscription_groups",
+		"user_personal_subscription_order",
 	} {
 		var name string
 		if err := db.QueryRow(

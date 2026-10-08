@@ -5,11 +5,13 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
@@ -90,12 +92,22 @@ func (s *server) listSubscriptionRelayServers(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"servers": response})
 }
 
-func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) listSubscriptionPublishedNodes(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.subscriptions.ListPublishedNodes(r.Context())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	ids := make([]int64, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	ranks, err := s.orderRanks(r.Context(), user.ID, listorder.PublishedNodes, ids)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	sort.SliceStable(values, func(i, j int) bool { return ranks[values[i].ID] < ranks[values[j].ID] })
 	response := make([]subscriptionPublishedNodeResponse, 0, len(values))
 	for _, value := range values {
 		response = append(response, toSubscriptionPublishedNodeResponse(value))

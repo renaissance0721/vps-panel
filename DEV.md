@@ -313,7 +313,7 @@ API 访问复用 [api/client.ts](web/src/api/client.ts)，类型与后端 DTO �
 Naive UI 提供表单、表格、对话框等基础 UI；响应式布局在共享样式和组件中维护。
 
 [drag.ts](web/src/drag.ts) 统一拖拽预览、边缘自动滚动和清理；[reorder.ts](web/src/reorder.ts) 提供顺序移动、持久化和失败恢复。
-Server / Proxy / Relay / Landing / 用户列表复用后端 listorder，顺序是当前用户的偏好，不应递增 Agent 配置版本。
+Server / Proxy / Relay / Landing / 用户 / 个人订阅 / 发布节点列表复用后端 listorder，顺序是当前用户的偏好，不应递增 Agent 配置版本。
 个人订阅节点和路由编辑器的顺序属于其自身配置数组，不能机械改用全局列表顺序表。
 
 轮询和拖拽需要协调，避免刷新覆盖正在调整的顺序。组件卸载应清理监听器、计时器及未完成请求。

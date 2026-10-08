@@ -46,6 +46,14 @@ func (s *server) reorderUser(w http.ResponseWriter, r *http.Request, user auth.U
 	s.reorder(w, r, user, listorder.Users)
 }
 
+func (s *server) reorderPersonalSubscription(w http.ResponseWriter, r *http.Request, user auth.User) {
+	s.reorder(w, r, user, listorder.PersonalSubscriptions)
+}
+
+func (s *server) reorderSubscriptionPublishedNode(w http.ResponseWriter, r *http.Request, user auth.User) {
+	s.reorder(w, r, user, listorder.PublishedNodes)
+}
+
 func (s *server) reorder(w http.ResponseWriter, r *http.Request, user auth.User, kind listorder.Kind) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "资源 ID 无效")
 	if !ok {

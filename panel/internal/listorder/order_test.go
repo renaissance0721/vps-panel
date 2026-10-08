@@ -46,10 +46,7 @@ func orderTestDB(t *testing.T) (*sql.DB, string) {
 func visibleOrder(t *testing.T, db *sql.DB, userID int64, kind Kind, archived bool) []int64 {
 	t.Helper()
 	query := visibleQuery(kind, archived)
-	args := []any{userID}
-	if kind == Relays {
-		args = append(args, userID)
-	}
+	args := visibleArguments(kind, userID)
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +68,47 @@ func visibleOrder(t *testing.T, db *sql.DB, userID int64, kind Kind, archived bo
 		t.Fatal(err)
 	}
 	return ordered
+}
+
+func TestSubscriptionOrdersAreScopedAndIndependent(t *testing.T) {
+	db, _ := orderTestDB(t)
+	defer db.Close()
+	var routingID int64
+	if err := db.QueryRow(`SELECT id FROM subscription_routing_presets WHERE is_default = 1`).Scan(&routingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO personal_subscription_groups
+		(id, owner_user_id, name, token, enabled, client_name, routing_preset_id, created_at, updated_at)
+		VALUES (1, 1, 'A', 'token-a', 1, 'admin', ?, 1, 1),
+		       (2, 1, 'B', 'token-b', 1, 'admin', ?, 2, 2),
+		       (3, 2, 'C', 'token-c', 1, 'vip', ?, 3, 3)`, routingID, routingID, routingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO subscription_published_nodes
+		(id, name, mode, target_proxy_id, enabled, created_at, updated_at)
+		VALUES (1, 'A', 'direct', 1, 1, 1, 1),
+		       (2, 'B', 'direct', 3, 1, 2, 2)`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db)
+	wantOrder(t, db, 1, PersonalSubscriptions, false, 2, 1)
+	wantOrder(t, db, 2, PersonalSubscriptions, false, 3)
+	if err := store.Move(t.Context(), 1, PersonalSubscriptions, false, 1, "up"); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 1, PersonalSubscriptions, false, 1, 2)
+	wantOrder(t, db, 2, PersonalSubscriptions, false, 3)
+	if err := store.Move(t.Context(), 2, PersonalSubscriptions, false, 1, "up"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-owner personal subscription reorder = %v", err)
+	}
+
+	wantOrder(t, db, 1, PublishedNodes, false, 2, 1)
+	wantOrder(t, db, 2, PublishedNodes, false, 2, 1)
+	if err := store.Move(t.Context(), 1, PublishedNodes, false, 1, "up"); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 1, PublishedNodes, false, 1, 2)
+	wantOrder(t, db, 2, PublishedNodes, false, 2, 1)
 }
 
 func wantOrder(t *testing.T, db *sql.DB, userID int64, kind Kind, archived bool, want ...int64) {

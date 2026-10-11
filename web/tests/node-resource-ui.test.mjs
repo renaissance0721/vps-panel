@@ -27,7 +27,7 @@ const proxy = (id, node_role = 'direct') => ({ id, node_role, name: `managed-${i
   protocol: 'vless', enabled: true, config: { security: 'reality', server_name: 'example.com', reality_target: 'example.com:443' } })
 const external = (id, node_role = 'direct') => ({ id, node_role, name: `external-${id}`, host: 'example.com', port: 443,
   protocol: 'vless', visibility: 'private', owned_by_me: true })
-const relay = (id, subscription_published = false) => ({ id, subscription_published, name: `relay-${id}`, server_name: 'server',
+const relay = (id, subscription_published = false) => ({ id, server_id: 1, subscription_published, name: `relay-${id}`, server_name: 'server',
   entry_address: 'relay.example.com', target_type: 'manual', target_host: 'example.com', target_port: 443,
   target_address_ready: true, target_client_name: '', enabled: true })
 async function withState(component, seed, props = {}) {
@@ -145,4 +145,42 @@ test('中转默认本地分类，发布分类仅查看且不提供新增或拖�
   assert.match(published.html, /订阅管理 → 发布节点/)
   assert.match(published.html, /relay-4/); assert.doesNotMatch(published.html, /relay-3/)
   assert.doesNotMatch(published.html, /新增中转|>编辑<|>删除<|>禁用<|aria-label="拖动中转排序"/)
+})
+
+test('受管节点配置开关独立于离线和公网 IP 状态，恢复不改手动禁用', async () => {
+  const servers = [{ id: 1, status: 'offline', system_info: { public_ipv4: '203.0.113.1' } }]
+  const model = useProxies({ servers, users: [] })
+  model.proxies.value = [proxy(1)]; model.loading.value = false
+  const render = () => renderToString(createSSRApp(ProxyList, { model: reactive(model) }))
+  let html = await render()
+  assert.match(html, />启用<.*服务器离线/s)
+  assert.equal(model.proxies.value[0].enabled, true)
+  servers[0].status = 'online'; servers[0].system_info.public_ipv4 = ''
+  html = await render()
+  assert.match(html, />启用<.*入口地址不可用/s)
+  servers[0].system_info.public_ipv4 = '203.0.113.1'
+  model.proxies.value[0].enabled = false
+  html = await render()
+  assert.match(html, />禁用<.*服务器在线 · 地址可用/s)
+  assert.equal(model.proxies.value[0].enabled, false)
+})
+
+test('本地和发布中转目标不可用时仍显示配置启用，地址恢复自动更新提示', async () => {
+  const servers = [{ id: 1, status: 'online', system_info: { public_ipv4: '203.0.113.1' } },
+    { id: 2, status: 'online', system_info: { public_ipv4: '' } }]
+  const target = { ...proxy(1), server_id: 2 }
+  const local = { ...relay(1), target_type: 'proxy', target_proxy_id: 1, target_address_ready: false }
+  for (const published of [false, true]) {
+    const { state, html } = await withState(Relays, state => {
+      state.relays.value = [{ ...local, subscription_published: published }]
+      state.proxies.value = [target]; state.loading.value = false; state.category.value = published ? 'published' : 'local'
+    }, { servers })
+    assert.match(html, />启用<.*目标：入口地址不可用/s)
+    servers[1].system_info.public_ipv4 = '203.0.113.2'
+    assert.equal(state.relayAvailability(local), '服务器在线 · 地址可用')
+    assert.equal(state.relays.value[0].enabled, true)
+    servers[1].status = 'offline'
+    assert.match(state.relayAvailability(local), /目标：服务器离线/)
+    servers[1].status = 'online'; servers[1].system_info.public_ipv4 = ''
+  }
 })

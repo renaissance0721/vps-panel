@@ -10,7 +10,7 @@ import type {
 import type { ServerRecord } from './server'
 
 export type ServerOption = Pick<ServerRecord,
-  'id' | 'name' | 'bound_domain_ipv4' | 'bound_domain_ipv6' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+  'id' | 'name' | 'status' | 'bound_domain_ipv4' | 'bound_domain_ipv6' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
 >
 
 export type ProxyConfig = {

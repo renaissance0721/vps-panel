@@ -141,7 +141,7 @@ func TestAgentConfigBuildFailureMarksSyncFailed(t *testing.T) {
 	}
 }
 
-func TestAgentConfigAutoDisablesDirtyRelayToArchivedTargetWithoutReturningConflict(t *testing.T) {
+func TestAgentConfigSkipsDirtyRelayToArchivedTargetWithoutChangingEnabled(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestAgentConfigAutoDisablesDirtyRelayToArchivedTargetWithoutReturningConfli
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &state) != nil {
 		t.Fatalf("dirty Relay config = %d, %s", response.Code, response.Body.String())
 	}
-	if len(state.Realm.Relays) != 0 || state.Version != 2 {
+	if len(state.Realm.Relays) != 0 || state.Version != 1 {
 		t.Fatalf("dirty Relay desired state = %+v", state)
 	}
 	var enabled int
@@ -196,7 +196,7 @@ func TestAgentConfigAutoDisablesDirtyRelayToArchivedTargetWithoutReturningConfli
 		FROM relays JOIN agents ON agents.server_id = relays.server_id WHERE relays.name = 'Dirty Relay'`).Scan(&enabled, &syncStatus); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 0 || syncStatus != agentcontrol.ConfigSyncPending {
+	if enabled != 1 || syncStatus != agentcontrol.ConfigSyncPending {
 		t.Fatalf("dirty Relay reconciliation = enabled %d, status %q", enabled, syncStatus)
 	}
 }

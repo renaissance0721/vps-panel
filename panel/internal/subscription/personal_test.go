@@ -15,6 +15,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestPersonalEndpointOverrideRemainsReadyWhenPublicIPv4IsMissing(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertPersonalTestUser(t, db, 100, "admin", "admin")
+	insertSubscriptionTestServer(t, db, 1, "target", "")
+	proxy := createSubscriptionTestRealityProxy(t, db, 1, "direct", 443)
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+	group, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{Name: "personal", ClientName: "default", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "fallback.example.com"
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceProxy, SourceID: proxy.ID, DisplayName: "auto", Enabled: true},
+		{SourceType: PersonalSourceProxy, SourceID: proxy.ID, DisplayName: "manual", EntryHost: &host, Enabled: true},
+		{SourceType: PersonalSourceProxy, SourceID: proxy.ID, DisplayName: "disabled", EntryHost: &host, Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.Nodes[0].Status != PersonalNodeEndpointUnavailable || group.Nodes[1].Status != PersonalNodeReady {
+		t.Fatalf("entry availability: auto=%s manual=%s", group.Nodes[0].Status, group.Nodes[1].Status)
+	}
+	data, err := service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
+	if err != nil || len(data.Nodes) != 1 || data.Nodes[0].Name != "manual" || data.Nodes[0].Address != host {
+		t.Fatalf("manual fallback output: nodes=%d, error=%v", len(data.Nodes), err)
+	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM personal_subscription_nodes WHERE group_id = ? AND enabled = 1`, 2, group.ID)
+}
+
 func TestPersonalSubscriptionCRUDOwnerAndToken(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertPersonalTestUser(t, db, 100, "admin-a", "admin")

@@ -162,7 +162,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	s.notifyProxyMutation(mutation)
-	if previous.ListenFamily != value.ListenFamily || previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
+	if previous.Enabled != value.Enabled || previous.ListenFamily != value.ListenFamily || previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost {
 		mutations, err := s.relays.BumpForProxyTarget(r.Context(), value.ID, value.ServerID)
 		if err != nil {
 			writeInternalError(w, err)

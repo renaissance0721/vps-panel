@@ -13,6 +13,23 @@ export const renewalPeriodOptions: Array<{ label: string; value: RenewalPeriodMo
   { label: '三年付', value: 36 },
 ]
 
+export function serverResourceAvailability(server: Pick<ServerRecord, 'status'> | undefined, endpointReady: boolean) {
+  if (server?.status === 'offline') return { ready: false, label: '服务器离线' }
+  if (server?.status === 'pending') return { ready: false, label: '等待 Agent 连接' }
+  if (!endpointReady) return { ready: false, label: '入口地址不可用' }
+  if (server?.status !== 'online') return { ready: false, label: '服务器状态未知' }
+  return { ready: true, label: '服务器在线 · 地址可用' }
+}
+
+export function proxyResourceAvailability(value: {
+  listen_family: 'ipv4' | 'ipv6'; entry_host_mode: 'auto' | 'manual'; entry_address: string
+}, server: Pick<ServerRecord, 'status' | 'system_info'> | undefined) {
+  const address = value.entry_host_mode === 'auto' && server?.system_info
+    ? (value.listen_family === 'ipv6' ? server.system_info.public_ipv6 : server.system_info.public_ipv4)
+    : value.entry_address
+  return serverResourceAvailability(server, !!address)
+}
+
 export type ServerIPv6State = 'unknown' | 'none' | 'stack' | 'public'
 
 export function serverIPv6State(server: Pick<ServerRecord, 'system_info'> | null | undefined): ServerIPv6State {

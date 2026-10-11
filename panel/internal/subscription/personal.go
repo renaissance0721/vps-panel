@@ -574,11 +574,11 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		allowed, err := s.personalCanAccessServer(ctx, actor.UserID, value.ServerID)
+		serverStatus, err := s.personalAccessibleServerStatus(ctx, actor.UserID, value.ServerID)
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		if !allowed {
+		if serverStatus == "" {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Proxy 不存在或不可访问"), nil
 		}
 		if value.NodeRole != noderole.Direct {
@@ -595,16 +595,23 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			return personalSourceState{}, err
 		}
 		state.status, state.statusDetail = status, detail
-		if status != PersonalNodeReady || !resolve {
+		if status != PersonalNodeReady {
 			return state, nil
 		}
-		share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName, nil, entryHost, entryPort)
+		if serverStatus != "online" {
+			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Proxy 服务器当前离线或尚未连接"
+			return state, nil
+		}
+		share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName,
+			proxystore.ShareEndpoint{Address: value.EntryAddress, Port: value.ListenPort}, entryHost, entryPort)
 		if err != nil {
 			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Proxy 入口地址不可用"
 			return state, nil
 		}
-		resolved := resolvedNodeFromClientShare(share)
-		state.resolved = &resolved
+		if resolve {
+			resolved := resolvedNodeFromClientShare(share)
+			state.resolved = &resolved
+		}
 		return state, nil
 
 	case PersonalSourceRelay:
@@ -618,11 +625,11 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if value.OwnerUserID != nil && actor.Role != "admin" {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
 		}
-		allowed, err := s.personalCanAccessServer(ctx, actor.UserID, value.ServerID)
+		serverStatus, err := s.personalAccessibleServerStatus(ctx, actor.UserID, value.ServerID)
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		if !allowed {
+		if serverStatus == "" {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
 		}
 		if value.SubscriptionPublished {
@@ -634,10 +641,6 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		state := personalSourceState{
 			name: value.Name, detail: value.ServerName + " · " + value.Name,
 			accessible: true, requiresClient: value.TargetType == relaystore.TargetProxy,
-		}
-		if strings.TrimSpace(value.EntryAddress) == "" || value.ListenPort <= 0 {
-			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
-			return state, nil
 		}
 		endpoint := &proxystore.ShareEndpoint{Address: value.EntryAddress, Port: value.ListenPort}
 		if !value.Enabled {
@@ -658,11 +661,11 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			if err != nil {
 				return personalSourceState{}, err
 			}
-			allowed, err = s.personalCanAccessServer(ctx, actor.UserID, proxyValue.ServerID)
+			targetStatus, err := s.personalAccessibleServerStatus(ctx, actor.UserID, proxyValue.ServerID)
 			if err != nil {
 				return personalSourceState{}, err
 			}
-			if !allowed {
+			if targetStatus == "" {
 				return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
 			}
 			state.detail = value.ServerName + " · " + value.Name + " → " + proxyValue.ServerName + " · " + proxyValue.Name
@@ -675,16 +678,26 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 				return personalSourceState{}, err
 			}
 			state.status, state.statusDetail = status, statusDetail
-			if status != PersonalNodeReady || !resolve {
+			if status != PersonalNodeReady {
 				return state, nil
 			}
-			share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName, endpoint, entryHost, entryPort)
+			if serverStatus != "online" || targetStatus != "online" {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 源或目标服务器当前离线或尚未连接"
+				return state, nil
+			}
+			if !value.TargetAddressReady {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 目标地址不可用"
+				return state, nil
+			}
+			share, err := s.resolvePersonalClientShare(ctx, client.ID, displayName, *endpoint, entryHost, entryPort)
 			if err != nil {
 				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
 				return state, nil
 			}
-			resolved := resolvedNodeFromClientShare(share)
-			state.resolved = &resolved
+			if resolve {
+				resolved := resolvedNodeFromClientShare(share)
+				state.resolved = &resolved
+			}
 			return state, nil
 
 		case relaystore.TargetLanding:
@@ -701,7 +714,12 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			}
 			state.detail = value.ServerName + " · " + value.Name + " → " + landingValue.Name
 			state.status, state.statusDetail = PersonalNodeReady, "目标外部节点自带凭据"
-			if !resolve {
+			if serverStatus != "online" {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 源服务器当前离线或尚未连接"
+				return state, nil
+			}
+			if !value.TargetAddressReady {
+				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 目标地址不可用"
 				return state, nil
 			}
 			raw, err := s.landings.GetURI(ctx, landingValue.ID, actor.UserID)
@@ -714,7 +732,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 				state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "Relay 入口地址不可用"
 				return state, nil
 			}
-			state.resolved = &resolved
+			if resolve {
+				state.resolved = &resolved
+			}
 			return state, nil
 		default:
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不提供可用订阅凭据"), nil
@@ -735,9 +755,6 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			name: value.Name, detail: fmt.Sprintf("%s · %s:%d", value.Protocol, value.Host, value.Port),
 			status: PersonalNodeReady, statusDetail: "节点自带凭据", accessible: true,
 		}
-		if !resolve {
-			return state, nil
-		}
 		raw, err := s.landings.GetURI(ctx, sourceID, actor.UserID)
 		if err != nil {
 			state.status, state.statusDetail = PersonalNodeUnavailable, "外部节点不可用"
@@ -748,7 +765,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			state.status, state.statusDetail = PersonalNodeEndpointUnavailable, "外部节点入口地址不可用"
 			return state, nil
 		}
-		state.resolved = &resolved
+		if resolve {
+			state.resolved = &resolved
+		}
 		return state, nil
 	default:
 		return personalSourceState{}, ErrInvalidPersonalNodes
@@ -817,30 +836,16 @@ func (s *Service) matchPersonalClient(ctx context.Context, actor PersonalSubscri
 }
 
 func (s *Service) resolvePersonalClientShare(ctx context.Context, clientID int64, displayName string,
-	defaultEndpoint *proxystore.ShareEndpoint, entryHost *string, entryPort *int,
+	endpoint proxystore.ShareEndpoint, entryHost *string, entryPort *int,
 ) (proxystore.ClientShare, error) {
 	options := proxystore.ShareOptions{DisplayName: displayName}
-	share, err := s.proxies.GetClientShareWithOptions(ctx, clientID, options)
-	if err != nil {
-		return proxystore.ClientShare{}, err
-	}
-	address, port := share.Address, share.Port
-	if defaultEndpoint != nil {
-		address, port = defaultEndpoint.Address, defaultEndpoint.Port
-	}
 	if entryHost != nil {
-		address = *entryHost
+		endpoint.Address = *entryHost
 	}
 	if entryPort != nil {
-		port = *entryPort
+		endpoint.Port = *entryPort
 	}
-	if address == share.Address && port == share.Port {
-		return share, nil
-	}
-	return s.proxies.GetClientShareAtEndpointWithOptions(ctx, clientID, proxystore.ShareEndpoint{
-		Address: address,
-		Port:    port,
-	}, options)
+	return s.proxies.GetClientShareAtEndpointWithOptions(ctx, clientID, endpoint, options)
 }
 
 func resolvePersonalLandingNode(raw, displayName string, defaultEndpoint *proxystore.ShareEndpoint,
@@ -884,15 +889,19 @@ func resolvePersonalLandingNode(raw, displayName string, defaultEndpoint *proxys
 	}, nil
 }
 
-func (s *Service) personalCanAccessServer(ctx context.Context, userID, serverID int64) (bool, error) {
-	var allowed bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers
+func (s *Service) personalAccessibleServerStatus(ctx context.Context, userID, serverID int64) (string, error) {
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT status FROM servers
 		WHERE id = ? AND archived_at IS NULL AND (visibility = 'public' OR EXISTS (
-			SELECT 1 FROM server_access WHERE server_access.server_id = servers.id AND server_access.user_id = ?)))`,
-		serverID, userID).Scan(&allowed); err != nil {
-		return false, fmt.Errorf("check personal subscription server access: %w", err)
+			SELECT 1 FROM server_access WHERE server_access.server_id = servers.id AND server_access.user_id = ?))`,
+		serverID, userID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	return allowed, nil
+	if err != nil {
+		return "", fmt.Errorf("check personal subscription server access: %w", err)
+	}
+	return status, nil
 }
 
 func personalSourceResponse(sourceType string, sourceID int64, defaultName string,

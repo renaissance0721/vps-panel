@@ -63,18 +63,6 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	if ordinaryChanged {
 		affectedServerIDs = append(affectedServerIDs, serverID)
 	}
-	unavailableRelays, publishedNodeIDs, err := relays.ReconcileUnavailableDesiredTx(ctx, tx, serverID, now)
-	if err != nil {
-		return DesiredState{}, err
-	}
-	if len(unavailableRelays) > 0 {
-		affectedServerIDs = append(affectedServerIDs, serverID)
-		subscriberServerIDs, err := subscriptions.ReconcilePublishedNodesSubscribersTx(ctx, tx, publishedNodeIDs, now)
-		if err != nil {
-			return DesiredState{}, err
-		}
-		affectedServerIDs = append(affectedServerIDs, subscriberServerIDs...)
-	}
 	mutations, err := proxystore.BumpServerVersionsTx(ctx, tx, affectedServerIDs, now)
 	if err != nil {
 		return DesiredState{}, err
@@ -107,9 +95,6 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 	}
 	if err := tx.Commit(); err != nil {
 		return DesiredState{}, fmt.Errorf("commit desired state read: %w", err)
-	}
-	for _, value := range unavailableRelays {
-		log.Printf("auto-disabled unavailable Relay %d (%s) on server %d: %s", value.ID, value.Name, serverID, value.Reason)
 	}
 	for _, mutation := range mutations {
 		if mutation.ServerID == serverID {

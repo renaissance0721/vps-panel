@@ -18,6 +18,7 @@ import type {
   ProxiesViewState,
 } from '../../composables/useProxies'
 import { proxyAddressLines } from '../../proxy'
+import { proxyResourceAvailability } from '../../server'
 import { beginDragPreview, endDragPreview } from '../../drag'
 
 const props = defineProps<{
@@ -134,6 +135,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).flow }}</td>
             <td>
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
+              <small class="secondary-text" title="当前连接与地址信息，不代表连通性探测结果">{{ proxyResourceAvailability(value, servers.find(server => server.id === value.server_id)).label }}</small>
             </td>
             <td class="server-actions">
               <div class="server-action-buttons">

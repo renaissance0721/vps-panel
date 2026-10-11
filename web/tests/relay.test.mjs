@@ -45,7 +45,7 @@ test('中转列表和详情显示目标不可用原因并保留处理入口', as
   const view = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
   assert.match(view, /target_unavailable_reason/)
   assert.match(view, /目标不可用/)
-  assert.match(view, /可编辑更换目标、保持禁用或删除该中转/)
+  assert.match(view, /配置开关保持不变，目标恢复后会重新生成中转配置/)
   assert.match(view, /openEdit\(value\)/)
   assert.match(view, /toggleRelay\(value\)/)
   assert.match(view, /removeRelay\(value\)/)

@@ -22,7 +22,7 @@ func TestNodeRoleMigrationAndOldBackupPreserveBehavior(t *testing.T) {
 	}
 	for _, statement := range []string{
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (1, 'admin', 'hash', 'admin', 1, 1)`,
-		`INSERT INTO servers (id, name, visibility, created_by_role, status, created_at, updated_at) VALUES (1, 'server', 'public', 'admin', 'offline', 1, 1)`,
+		`INSERT INTO servers (id, name, visibility, created_by_role, status, created_at, updated_at) VALUES (1, 'server', 'public', 'admin', 'online', 1, 1)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)

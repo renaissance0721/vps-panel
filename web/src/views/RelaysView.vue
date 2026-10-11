@@ -140,6 +140,7 @@ const draggedID = ref<number | null>(null)
 const dropTargetID = ref<number | null>(null)
 const error = ref('')
 const search = ref('')
+const category = ref<'local' | 'published'>('local')
 const formOpen = ref(false)
 const formMode = ref<'create' | 'edit'>('create')
 const editingID = ref<number | null>(null)
@@ -197,8 +198,9 @@ const relayCapabilityWarning = computed(() => selectedServerSupportsRealm.value 
 
 const filteredRelays = computed(() => {
   const keyword = search.value.trim().toLowerCase()
-  if (!keyword) return relays.value
-  return relays.value.filter((value) =>
+  const rows = relays.value.filter(value => value.subscription_published === (category.value === 'published'))
+  if (!keyword) return rows
+  return rows.filter((value) =>
     [value.name, value.server_name, value.entry_address, relayTargetLabel(value), value.target_client_name]
       .some((field) => field.toLowerCase().includes(keyword)),
   )
@@ -230,7 +232,8 @@ async function loadRelays() {
 }
 
 async function reorderRelay(value: RelayRecord, targetID: number) {
-  if (reorderingID.value !== null || search.value.trim()) return
+  if (reorderingID.value !== null || search.value.trim() || value.subscription_published ||
+      category.value !== 'local' || !filteredRelays.value.some(row => row.id === targetID)) return
   const move = moveRow(relays.value, value.id, targetID)
   if (!move) return
   reorderingID.value = value.id
@@ -251,7 +254,7 @@ async function reorderRelay(value: RelayRecord, targetID: number) {
 }
 
 function startDrag(event: DragEvent, id: number) {
-  if (reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
+  if (category.value !== 'local' || reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
   const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
   if (!source || !beginDragPreview(event, source, String(id))) return
   draggedID.value = id
@@ -651,6 +654,7 @@ import {
 import {
   formatTime,
 } from '../format'
+watch(category, endDrag)
 onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
@@ -659,24 +663,26 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
     {{ error }}
   </n-alert>
 
-  <div class="relay-toolbar">
-    <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或目标" />
-    <div class="relay-toolbar-actions">
-      <n-button type="primary" :disabled="!hasRelayServer" :title="hasRelayServer ? undefined : '当前没有支持 Realm 中转的服务器'" @click="openCreate">
-        新增中转
-      </n-button>
+  <n-card title="中转" :bordered="true">
+    <div class="subscription-tabs" role="tablist" aria-label="中转分类">
+      <n-button role="tab" :aria-selected="category === 'local'" :type="category === 'local' ? 'primary' : 'default'" :disabled="reorderingID !== null" @click="category = 'local'">本地中转 {{ relays.filter(value => !value.subscription_published).length }}</n-button>
+      <n-button role="tab" :aria-selected="category === 'published'" :type="category === 'published' ? 'primary' : 'default'" :disabled="reorderingID !== null" @click="category = 'published'">订阅发布 {{ relays.filter(value => value.subscription_published).length }}</n-button>
     </div>
-  </div>
-
-  <n-card :bordered="true">
+    <n-alert v-if="category === 'published'" class="page-alert" type="info">此类中转由订阅管理中的发布节点自动创建和维护，请前往「订阅管理 → 发布节点」修改。</n-alert>
+    <div class="relay-toolbar">
+      <n-input v-model:value="search" clearable placeholder="搜索名称、服务器、入口地址或目标" />
+      <div v-if="category === 'local'" class="relay-toolbar-actions">
+        <n-button type="primary" :disabled="!hasRelayServer" :title="hasRelayServer ? undefined : '当前没有支持 Realm 中转的服务器'" @click="openCreate">新增中转</n-button>
+      </div>
+    </div>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载中转规则…</span></div>
     <n-empty v-else-if="filteredRelays.length === 0" description="当前没有中转规则" />
     <div v-else class="server-table-wrap">
       <table class="server-table relay-table">
-        <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>客户端</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th v-if="category === 'local'" class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>客户端</th><th>状态</th><th>操作</th></tr></thead>
         <TransitionGroup tag="tbody" name="table-row-order">
           <tr v-for="value in filteredRelays" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropRelay(value.id)">
-            <td class="reorder-cell">
+            <td v-if="category === 'local'" class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
             </td>
             <td>

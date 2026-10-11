@@ -18,7 +18,7 @@ before(async () => {
 })
 after(async () => { globalThis.fetch = originalFetch; await loader?.close() })
 
-const nodes = () => [3, 2, 1].map(id => ({ id, name: `Node ${id}`, visibility: 'public', protocol: 'vless', host: 'example.com', port: 443, owned_by_me: false }))
+const nodes = () => [3, 2, 1].map(id => ({ id, node_role: 'direct', name: `Node ${id}`, visibility: 'public', protocol: 'vless', host: 'example.com', port: 443, owned_by_me: false }))
 async function render() {
   const setup = Manager.setup
   let state

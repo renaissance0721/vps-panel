@@ -304,7 +304,7 @@ test('Relay 在 ULA IPv6 上保留 IPv6 listener 并只禁用自动入口', asyn
 
 test('外部节点按需加载原始 URI，可复制并按协议生成二维码参数', async t => {
   const owner = {
-    id: 1, name: 'Owner VLESS', visibility: 'private', protocol: 'vless', host: 'owner.example.com', port: 443,
+    id: 1, node_role: 'direct', name: 'Owner VLESS', visibility: 'private', protocol: 'vless', host: 'owner.example.com', port: 443,
     owned_by_me: true, created_at: '2026-09-25T00:00:00Z', updated_at: '2026-09-25T00:00:00Z',
   }
   const shared = { ...owner, id: 2, name: 'Public VLESS', visibility: 'public', owned_by_me: false }

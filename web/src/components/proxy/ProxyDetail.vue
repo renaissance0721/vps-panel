@@ -12,6 +12,7 @@ import type {
   ProxiesViewState,
 } from '../../composables/useProxies'
 import ClientList from './ClientList.vue'
+import { nodeRoleLabel } from '../../node'
 type ClientListModel = InstanceType<typeof ClientList>['$props']['model']
 const props = defineProps<{
   model: ClientListModel & Pick<ProxiesViewState,
@@ -35,6 +36,7 @@ const {
       <n-alert v-if="error" type="error">{{ error }}</n-alert>
       <h3>基础</h3>
       <dl class="server-details">
+        <div><dt>节点用途</dt><dd>{{ nodeRoleLabel(selectedProxy.node_role) }}</dd></div>
         <div><dt>名称</dt><dd>{{ selectedProxy.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedProxy.server_name }}</dd></div>
         <div><dt>入口模式</dt><dd>{{ selectedProxy.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>入口地址</dt><dd>{{ selectedProxy.entry_address || '未检测' }}</dd></div>
         <div><dt>监听地址</dt><dd>0.0.0.0:{{ selectedProxy.listen_port }}</dd></div><div><dt>状态</dt><dd>{{ selectedProxy.enabled ? '启用' : '禁用' }}</dd></div>

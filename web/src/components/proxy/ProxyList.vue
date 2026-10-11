@@ -2,6 +2,7 @@
 import {
   onUnmounted,
   ref,
+  watch,
   toRefs,
 } from 'vue'
 import {
@@ -23,6 +24,7 @@ const props = defineProps<{
   model: Pick<ProxiesViewState,
     | 'error'
     | 'search'
+    | 'nodeRole'
     | 'servers'
     | 'openCreateProxy'
     | 'loading'
@@ -40,6 +42,7 @@ const props = defineProps<{
 const {
   error,
   search,
+  nodeRole,
   servers,
   openCreateProxy,
   loading,
@@ -80,6 +83,7 @@ async function dropProxy(id: number) {
   endDrag()
   if (source && !search.value.trim()) await reorderProxy.value(source, id)
 }
+watch(nodeRole, endDrag)
 onUnmounted(() => { if (draggedID.value !== null) endDrag() })
 </script>
 
@@ -97,6 +101,10 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
         </n-button>
       </div>
     </template>
+    <div class="subscription-tabs" role="tablist" aria-label="受管节点用途">
+      <n-button role="tab" :aria-selected="nodeRole === 'direct'" :type="nodeRole === 'direct' ? 'primary' : 'default'" :disabled="reorderingID !== null" @click="nodeRole = 'direct'">直连节点 {{ proxies.filter(value => value.node_role === 'direct').length }}</n-button>
+      <n-button role="tab" :aria-selected="nodeRole === 'landing'" :type="nodeRole === 'landing' ? 'primary' : 'default'" :disabled="reorderingID !== null" @click="nodeRole = 'landing'">落地节点 {{ proxies.filter(value => value.node_role === 'landing').length }}</n-button>
+    </div>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载代理节点…</span></div>
     <n-empty v-else-if="filteredProxies.length === 0" description="当前没有代理节点" />
     <div v-else class="server-table-wrap">

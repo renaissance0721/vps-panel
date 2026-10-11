@@ -6,20 +6,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/listener"
 	"github.com/renaissance0721/vps-panel/panel/internal/netutil"
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 	"github.com/renaissance0721/vps-panel/panel/internal/operation"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 type preparedCreate struct {
-	protocol, name, clientName, listenFamily, entryHostMode, entryHost string
-	configJSON, credentialJSON                                         []byte
+	protocol, name, clientName, listenFamily, entryHostMode, entryHost, nodeRole string
+	configJSON, credentialJSON                                                   []byte
 }
 
 func prepareCreateInput(input CreateInput) (preparedCreate, error) {
+	if input.NodeRole == "" {
+		input.NodeRole = noderole.Direct
+	}
+	if err := noderole.Validate(input.NodeRole); err != nil {
+		return preparedCreate{}, err
+	}
 	protocol, err := normalizeProtocol(input.Protocol)
 	if err != nil {
 		return preparedCreate{}, err
@@ -75,7 +83,7 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 		return preparedCreate{}, fmt.Errorf("encode client credential: %w", err)
 	}
 	return preparedCreate{
-		protocol: protocol, name: name, clientName: clientName, listenFamily: listenFamily,
+		protocol: protocol, name: name, clientName: clientName, listenFamily: listenFamily, nodeRole: input.NodeRole,
 		entryHostMode: entryHostMode, entryHost: entryHost,
 		configJSON: configJSON, credentialJSON: credentialJSON,
 	}, nil
@@ -121,10 +129,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
-		 (server_id, name, protocol, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (server_id, name, protocol, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at, node_role)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		input.ServerID, prepared.name, prepared.protocol, prepared.listenFamily, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
-		string(prepared.configJSON), now.Unix(), now.Unix(),
+		string(prepared.configJSON), now.Unix(), now.Unix(), prepared.nodeRole,
 	)
 	if isUniqueConstraint(err) || listener.IsConflict(err) {
 		return Proxy{}, Mutation{}, ErrPortConflict
@@ -174,7 +182,7 @@ func (s *Service) list(ctx context.Context, originCondition string) ([]Proxy, er
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -223,7 +231,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -255,6 +263,13 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	value, config, err := getProxyForMutation(ctx, query, id)
 	if err != nil {
 		return Proxy{}, storedConfig{}, err
+	}
+	previous := value
+	if input.NodeRole != nil {
+		if err := noderole.Validate(*input.NodeRole); err != nil {
+			return Proxy{}, storedConfig{}, err
+		}
+		value.NodeRole = *input.NodeRole
 	}
 	if input.Protocol != nil {
 		protocol, protocolErr := normalizeProtocol(*input.Protocol)
@@ -297,7 +312,8 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	if err := validateEntryHostFamily(value.ListenFamily, value.EntryHost); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
-	if value.ListenFamily == ListenFamilyIPv6 {
+	if value.ListenFamily == ListenFamilyIPv6 && (value.ListenFamily != previous.ListenFamily || value.EntryHostMode != previous.EntryHostMode ||
+		value.EntryHost != previous.EntryHost || value.ListenPort != previous.ListenPort || (input.Enabled != nil && *input.Enabled != value.Enabled)) {
 		state, stateErr := readServerIPv6State(ctx, query, value.ServerID)
 		if stateErr != nil {
 			return Proxy{}, storedConfig{}, stateErr
@@ -349,6 +365,13 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	return value, config, nil
 }
 
+// ProxyRuntimeChanged preserves existing configuration update behavior while excluding node role.
+func ProxyRuntimeChanged(previous, value Proxy) bool {
+	return previous.Name != value.Name || previous.ListenFamily != value.ListenFamily || previous.ListenPort != value.ListenPort ||
+		previous.EntryHostMode != value.EntryHostMode || previous.EntryHost != value.EntryHost ||
+		previous.Enabled != value.Enabled || previous.Config != value.Config
+}
+
 func (s *Service) ValidateUpdate(ctx context.Context, id int64, input UpdateInput) (Proxy, error) {
 	value, _, err := prepareUpdate(ctx, s.db, id, input)
 	return value, err
@@ -361,31 +384,39 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Prox
 		return Proxy{}, Mutation{}, fmt.Errorf("begin proxy update: %w", err)
 	}
 	defer tx.Rollback()
+	previous, previousConfig, err := getProxyForMutation(ctx, tx, id)
+	if err != nil {
+		return Proxy{}, Mutation{}, err
+	}
 	value, config, err := prepareUpdate(ctx, tx, id, input)
 	if err != nil {
 		return Proxy{}, Mutation{}, err
 	}
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
-	}
-	_, err = tx.ExecContext(ctx,
-		`UPDATE proxies SET name = ?, listen_family = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?
-		 WHERE id = ?`,
-		value.Name, value.ListenFamily, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), id,
-	)
-	if isUniqueConstraint(err) || listener.IsConflict(err) {
-		return Proxy{}, Mutation{}, ErrPortConflict
-	}
-	if err != nil {
-		return Proxy{}, Mutation{}, fmt.Errorf("update proxy: %w", err)
-	}
-	version, err := bumpVersion(ctx, tx, value.ServerID, now)
-	if err != nil {
-		return Proxy{}, Mutation{}, err
-	}
-	if err := operation.RecordTx(ctx, tx, value.ServerID, "proxy", id, "update", version, now); err != nil {
-		return Proxy{}, Mutation{}, err
+	var version int64
+	if ProxyRuntimeChanged(previous, value) || !reflect.DeepEqual(previousConfig, config) {
+		configJSON, err := json.Marshal(config)
+		if err != nil {
+			return Proxy{}, Mutation{}, fmt.Errorf("encode proxy config: %w", err)
+		}
+		_, err = tx.ExecContext(ctx,
+			`UPDATE proxies SET name = ?, listen_family = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, config_json = ?, updated_at = ?, node_role = ? WHERE id = ?`,
+			value.Name, value.ListenFamily, value.ListenPort, value.EntryHostMode, value.EntryHost, value.Enabled, string(configJSON), now.Unix(), value.NodeRole, id,
+		)
+		if isUniqueConstraint(err) || listener.IsConflict(err) {
+			return Proxy{}, Mutation{}, ErrPortConflict
+		}
+		if err != nil {
+			return Proxy{}, Mutation{}, fmt.Errorf("update proxy: %w", err)
+		}
+		version, err = bumpVersion(ctx, tx, value.ServerID, now)
+		if err != nil {
+			return Proxy{}, Mutation{}, err
+		}
+		if err := operation.RecordTx(ctx, tx, value.ServerID, "proxy", id, "update", version, now); err != nil {
+			return Proxy{}, Mutation{}, err
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE proxies SET node_role = ?, updated_at = ? WHERE id = ?`, value.NodeRole, now.Unix(), id); err != nil {
+		return Proxy{}, Mutation{}, fmt.Errorf("update proxy node role: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Proxy{}, Mutation{}, fmt.Errorf("commit proxy update: %w", err)
@@ -474,7 +505,7 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.ServerID, &value.ServerName, &ipv4JSON, &ipv6JSON,
 		&publicIPv4, &publicIPv6, &value.Name, &value.Protocol, &value.ListenFamily, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &enabled,
-		&configJSON, &createdAt, &updatedAt); err != nil {
+		&configJSON, &createdAt, &updatedAt, &value.NodeRole); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
 	entryHostMode, entryHost, err := normalizeEntryHost(value.EntryHostMode, value.EntryHost)
@@ -532,7 +563,7 @@ func getProxyForMutation(ctx context.Context, query interface {
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
 		 FROM proxies JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 WHERE proxies.id = ? AND servers.archived_at IS NULL`, id,

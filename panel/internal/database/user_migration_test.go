@@ -142,6 +142,10 @@ func snapshotUserMigrationTable(t *testing.T, db *sql.DB, table string) [][]any 
 	if table == "users" {
 		query = `SELECT id, username, password_hash, role, created_at, updated_at FROM users ORDER BY rowid`
 	}
+	// Compare the original columns; later migrations append business metadata.
+	if table == "landing_nodes" {
+		query = `SELECT id, owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at FROM landing_nodes ORDER BY rowid`
+	}
 	rows, err := db.Query(query)
 	if err != nil {
 		t.Fatal(err)

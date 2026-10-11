@@ -7,6 +7,7 @@ import (
 )
 
 type createProxyRequest struct {
+	NodeRole          string `json:"node_role"`
 	ServerID          int64  `json:"server_id"`
 	Name              string `json:"name"`
 	ListenPort        int    `json:"listen_port"`
@@ -27,6 +28,7 @@ type createProxyRequest struct {
 }
 
 type updateProxyRequest struct {
+	NodeRole      *string `json:"node_role"`
 	Name          *string `json:"name"`
 	ListenPort    *int    `json:"listen_port"`
 	ListenFamily  *string `json:"listen_family"`
@@ -44,6 +46,7 @@ type updateProxyRequest struct {
 }
 
 type proxyResponse struct {
+	NodeRole         string                  `json:"node_role"`
 	ID               int64                   `json:"id"`
 	ServerID         int64                   `json:"server_id"`
 	ServerName       string                  `json:"server_name"`
@@ -80,7 +83,7 @@ type proxyConfigResponse struct {
 
 func toProxyResponse(value proxystore.Proxy) proxyResponse {
 	response := proxyResponse{
-		ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
+		NodeRole: value.NodeRole, ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
 		ServerIPv4: value.ServerIPv4, ServerIPv6: value.ServerIPv6, Name: value.Name,
 		ServerPublicIPv4: value.ServerPublicIPv4, ServerPublicIPv6: value.ServerPublicIPv6,
 		Protocol: value.Protocol, ListenFamily: value.ListenFamily, ListenPort: value.ListenPort,

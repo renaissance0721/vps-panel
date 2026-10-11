@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
@@ -236,7 +237,7 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 			return PersonalSubscription{}, err
 		}
 		if !state.accessible {
-			if input.ID == nil {
+			if input.ID == nil || existing[*input.ID].SourceType != input.SourceType || existing[*input.ID].SourceID != input.SourceID {
 				return PersonalSubscription{}, ErrPersonalSourceNotFound
 			}
 		}
@@ -382,6 +383,9 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range proxies {
+		if value.NodeRole != noderole.Direct {
+			continue
+		}
 		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceProxy, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -395,6 +399,9 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range relays {
+		if value.SubscriptionPublished {
+			continue
+		}
 		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceRelay, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -408,6 +415,9 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range landings {
+		if value.NodeRole != noderole.Direct {
+			continue
+		}
 		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceLanding, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -571,6 +581,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if !allowed {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Proxy 不存在或不可访问"), nil
 		}
+		if value.NodeRole != noderole.Direct {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "落地节点不能用于个人订阅，请更换为直连节点。"), nil
+		}
 		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name,
 			accessible: true, requiresClient: true}
 		if !value.Enabled {
@@ -611,6 +624,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		}
 		if !allowed {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Relay 不存在或不可访问"), nil
+		}
+		if value.SubscriptionPublished {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "订阅发布中转不能用于个人订阅，请改用本地中转。"), nil
 		}
 		if value.TargetType == relaystore.TargetManual {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "手动目标 Relay 不提供订阅凭据"), nil
@@ -711,6 +727,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		}
 		if err != nil {
 			return personalSourceState{}, err
+		}
+		if value.NodeRole != noderole.Direct {
+			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "落地节点不能用于个人订阅，请更换为直连节点。"), nil
 		}
 		state := personalSourceState{
 			name: value.Name, detail: fmt.Sprintf("%s · %s:%d", value.Protocol, value.Host, value.Port),

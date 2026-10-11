@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 )
 
 type Service struct {
@@ -26,7 +28,7 @@ func NewService(db *sql.DB) *Service {
 
 func (s *Service) List(ctx context.Context, userID int64) ([]Landing, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, owner_user_id, name, visibility, protocol, host, port, created_at, updated_at
+		`SELECT id, owner_user_id, name, visibility, protocol, host, port, created_at, updated_at, node_role
 		 FROM landing_nodes WHERE owner_user_id = ? OR visibility = 'public'
 		 ORDER BY created_at DESC, id DESC`, userID)
 	if err != nil {
@@ -49,7 +51,7 @@ func (s *Service) List(ctx context.Context, userID int64) ([]Landing, error) {
 
 func (s *Service) Get(ctx context.Context, id, userID int64) (Landing, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, owner_user_id, name, visibility, protocol, host, port, created_at, updated_at
+		`SELECT id, owner_user_id, name, visibility, protocol, host, port, created_at, updated_at, node_role
 		 FROM landing_nodes WHERE id = ? AND (owner_user_id = ? OR visibility = 'public')`, id, userID)
 	value, err := scanLanding(row, userID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -73,6 +75,12 @@ func (s *Service) GetURI(ctx context.Context, id, userID int64) (string, error) 
 }
 
 func (s *Service) Create(ctx context.Context, userID int64, input CreateInput) (Landing, error) {
+	if input.NodeRole == "" {
+		input.NodeRole = noderole.Direct
+	}
+	if err := noderole.Validate(input.NodeRole); err != nil {
+		return Landing{}, err
+	}
 	parsed, err := ParseURI(input.URI)
 	if err != nil {
 		return Landing{}, err
@@ -98,9 +106,9 @@ func (s *Service) Create(ctx context.Context, userID int64, input CreateInput) (
 	now := s.now().UTC().Truncate(time.Second)
 	result, err := s.db.ExecContext(ctx,
 		`INSERT INTO landing_nodes
-		 (owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		userID, name, visibility, parsed.Protocol, parsed.Host, parsed.Port, strings.TrimSpace(input.URI), now.Unix(), now.Unix())
+		 (owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at, node_role)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, name, visibility, parsed.Protocol, parsed.Host, parsed.Port, strings.TrimSpace(input.URI), now.Unix(), now.Unix(), input.NodeRole)
 	if err != nil {
 		return Landing{}, fmt.Errorf("create landing: %w", err)
 	}
@@ -120,6 +128,13 @@ func (s *Service) Update(ctx context.Context, id, userID int64, input UpdateInpu
 	current, err := getOwned(ctx, tx, id, userID)
 	if err != nil {
 		return Landing{}, false, err
+	}
+	nodeRole := current.NodeRole
+	if input.NodeRole != nil {
+		if err := noderole.Validate(*input.NodeRole); err != nil {
+			return Landing{}, false, err
+		}
+		nodeRole = *input.NodeRole
 	}
 	name, visibility, uri := current.Name, current.Visibility, current.URI
 	protocol, host, port := current.Protocol, current.Host, current.Port
@@ -157,9 +172,9 @@ func (s *Service) Update(ctx context.Context, id, userID int64, input UpdateInpu
 	endpointChanged := host != current.Host || port != current.Port
 	now := s.now().UTC().Truncate(time.Second)
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE landing_nodes SET name = ?, visibility = ?, protocol = ?, host = ?, port = ?, uri = ?, updated_at = ?
+		`UPDATE landing_nodes SET name = ?, visibility = ?, protocol = ?, host = ?, port = ?, uri = ?, updated_at = ?, node_role = ?
 		 WHERE id = ? AND owner_user_id = ?`,
-		name, visibility, protocol, host, port, uri, now.Unix(), id, userID,
+		name, visibility, protocol, host, port, uri, now.Unix(), nodeRole, id, userID,
 	); err != nil {
 		return Landing{}, false, fmt.Errorf("update landing: %w", err)
 	}
@@ -201,10 +216,10 @@ func getOwned(ctx context.Context, query interface {
 	var value storedLanding
 	var createdAt, updatedAt int64
 	err := query.QueryRowContext(ctx,
-		`SELECT id, owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at
+		`SELECT id, owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at, node_role
 		 FROM landing_nodes WHERE id = ? AND owner_user_id = ?`, id, userID,
 	).Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.Visibility, &value.Protocol,
-		&value.Host, &value.Port, &value.URI, &createdAt, &updatedAt)
+		&value.Host, &value.Port, &value.URI, &createdAt, &updatedAt, &value.NodeRole)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedLanding{}, ErrNotFound
 	}
@@ -237,7 +252,7 @@ func scanLanding(row rowScanner, userID int64) (Landing, error) {
 	var value Landing
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.Visibility, &value.Protocol,
-		&value.Host, &value.Port, &createdAt, &updatedAt); err != nil {
+		&value.Host, &value.Port, &createdAt, &updatedAt, &value.NodeRole); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Landing{}, err
 		}

@@ -1,3 +1,4 @@
+import type { NodeRole } from '../node'
 import {
   computed,
   ref,
@@ -32,6 +33,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyFormMode = ref<'create' | 'edit'>('create')
   const editingProxyID = ref<number | null>(null)
   const proxyName = ref('')
+  const proxyNodeRole = ref<NodeRole>('direct')
   const proxyServerID = ref<number | null>(null)
   const proxyPort = ref(443)
 	const proxyListenFamily = ref<ProxyListenFamily>('ipv4')
@@ -48,6 +50,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyRealityTarget = ref('')
   const firstClientName = ref('默认客户端')
   const firstClientUDP443 = ref(false)
+  const originalRuntimeFields = ref('')
 
   const selectedServer = computed(() => props.servers.find((server) => server.id === proxyServerID.value) ?? null)
   const selectedServerPublicIPv4 = computed(() => selectedServer.value?.system_info?.public_ipv4 ?? '')
@@ -68,6 +71,13 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyVLESSSupported = computed(() => proxyVLESSRealitySupported.value || proxyTLSACMESupported.value || proxyTLSManualSupported.value)
   const proxyTLSSupported = computed(() => proxyTLSACMESupported.value || proxyTLSManualSupported.value)
   const proxyShadowsocksSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyShadowsocks))
+  const runtimeFields = computed(() => JSON.stringify([
+    proxyName.value, proxyServerID.value, proxyPort.value, proxyListenFamily.value,
+    proxyEntryHostMode.value, proxyEntryHost.value, selectedServerBoundDomain.value, proxyEnabled.value,
+    proxyProtocol.value, proxyMethod.value, proxySecurity.value, proxyTLSMode.value,
+    proxyServerName.value, proxyCertificate.value, proxyPrivateKey.value, proxyRealityTarget.value,
+  ]))
+  const proxyRoleOnlyUpdate = computed(() => proxyFormMode.value === 'edit' && runtimeFields.value === originalRuntimeFields.value)
   const proxyCapabilityWarning = computed(() => {
     if (proxyProtocol.value === 'shadowsocks') {
       return proxyShadowsocksSupported.value ? '' : '当前 Agent 不支持 Shadowsocks'
@@ -127,6 +137,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyFormMode.value = 'edit'
     editingProxyID.value = value.id
     proxyName.value = value.name
+    proxyNodeRole.value = value.node_role
     proxyServerID.value = value.server_id
     proxyPort.value = value.listen_port
 	proxyListenFamily.value = value.listen_family
@@ -143,12 +154,15 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyCertificate.value = ''
     proxyPrivateKey.value = ''
     proxyRealityTarget.value = value.config.reality_target ?? ''
+    originalRuntimeFields.value = runtimeFields.value
     proxyFormOpen.value = true
   }
 
   function resetProxyForm() {
     editingProxyID.value = null
+    originalRuntimeFields.value = ''
     proxyName.value = ''
+    proxyNodeRole.value = 'direct'
     proxyPort.value = 443
 	proxyListenFamily.value = 'ipv4'
     proxyEntryHostMode.value = 'auto'
@@ -167,7 +181,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   }
 
   async function saveProxy() {
-	if (proxyEnabled.value && proxyCapabilityWarning.value) {
+	if (!proxyRoleOnlyUpdate.value && proxyEnabled.value && proxyCapabilityWarning.value) {
 	  error.value = proxyCapabilityWarning.value
 	  return
 	}
@@ -183,11 +197,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       error.value = '请选择服务器'
       return
     }
-	if (proxyListenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
+	if (!proxyRoleOnlyUpdate.value && proxyListenFamily.value === 'ipv6' && !selectedServerSupportsIPv6Listener.value) {
 	  error.value = '当前服务器未检测到 IPv6 地址'
 	  return
 	}
-	if (proxyListenFamily.value === 'ipv6' && proxyEntryHostMode.value === 'auto' && !selectedServerHasAutoPublicIPv6.value) {
+	if (!proxyRoleOnlyUpdate.value && proxyListenFamily.value === 'ipv6' && proxyEntryHostMode.value === 'auto' && !selectedServerHasAutoPublicIPv6.value) {
 	  error.value = '无法自动检测公网 IPv6，请使用绑定域名或手动填写'
 	  return
 	}
@@ -212,6 +226,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
           : ''
       const common = {
         name: proxyName.value,
+        node_role: proxyNodeRole.value,
 		listen_family: proxyListenFamily.value,
         listen_port: proxyPort.value,
         entry_host_mode: entryHostMode,
@@ -247,7 +262,7 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
       } else {
         const response = await api<{ proxy: ProxyRecord }>(`/api/proxies/${editingProxyID.value}`, {
           method: 'PATCH',
-          body: JSON.stringify({ ...common, ...protocolConfig }),
+          body: JSON.stringify(proxyRoleOnlyUpdate.value ? { node_role: proxyNodeRole.value } : { ...common, ...protocolConfig }),
         })
         value = response.proxy
       }
@@ -263,6 +278,8 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyFormMode,
     editingProxyID,
     proxyName,
+    proxyNodeRole,
+    proxyRoleOnlyUpdate,
     proxyServerID,
     proxyPort,
 	proxyListenFamily,

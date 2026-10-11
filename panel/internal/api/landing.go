@@ -9,21 +9,25 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 )
 
 type createLandingRequest struct {
+	NodeRole   string `json:"node_role"`
 	Name       string `json:"name"`
 	Visibility string `json:"visibility"`
 	URI        string `json:"uri"`
 }
 
 type updateLandingRequest struct {
+	NodeRole   *string `json:"node_role"`
 	Name       *string `json:"name"`
 	Visibility *string `json:"visibility"`
 	URI        *string `json:"uri"`
 }
 
 type landingResponse struct {
+	NodeRole   string    `json:"node_role"`
 	ID         int64     `json:"id"`
 	Name       string    `json:"name"`
 	Visibility string    `json:"visibility"`
@@ -69,7 +73,7 @@ func (s *server) createLanding(w http.ResponseWriter, r *http.Request, user auth
 		return
 	}
 	value, err := s.landings.Create(r.Context(), user.ID, landingstore.CreateInput{
-		Name: request.Name, Visibility: request.Visibility, URI: request.URI,
+		NodeRole: request.NodeRole, Name: request.Name, Visibility: request.Visibility, URI: request.URI,
 	})
 	if err != nil {
 		writeLandingError(w, err)
@@ -119,7 +123,7 @@ func (s *server) updateLanding(w http.ResponseWriter, r *http.Request, user auth
 		return
 	}
 	value, endpointChanged, err := s.landings.Update(r.Context(), id, user.ID, landingstore.UpdateInput{
-		Name: request.Name, Visibility: request.Visibility, URI: request.URI,
+		NodeRole: request.NodeRole, Name: request.Name, Visibility: request.Visibility, URI: request.URI,
 	})
 	if err != nil {
 		writeLandingError(w, err)
@@ -150,7 +154,7 @@ func (s *server) deleteLanding(w http.ResponseWriter, r *http.Request, user auth
 
 func toLandingResponse(value landingstore.Landing) landingResponse {
 	return landingResponse{
-		ID: value.ID, Name: value.Name, Visibility: value.Visibility, Protocol: value.Protocol,
+		NodeRole: value.NodeRole, ID: value.ID, Name: value.Name, Visibility: value.Visibility, Protocol: value.Protocol,
 		Host: value.Host, Port: value.Port, OwnedByMe: value.OwnedByMe,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
@@ -158,6 +162,8 @@ func toLandingResponse(value landingstore.Landing) landingResponse {
 
 func writeLandingError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, noderole.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "节点用途仅支持直连节点或落地节点")
 	case errors.Is(err, landingstore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "外部节点不存在")
 	case errors.Is(err, landingstore.ErrInvalidName):

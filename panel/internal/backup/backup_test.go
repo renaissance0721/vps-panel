@@ -109,6 +109,8 @@ func TestFullSnapshotRoundTripAndReplace(t *testing.T) {
 	}
 	defer source.Close()
 	seedFullDatabase(t, source)
+	mustExec(t, source, `UPDATE proxies SET node_role = 'landing' WHERE id = 41`)
+	mustExec(t, source, `UPDATE landing_nodes SET node_role = 'landing'`)
 	want := rowsByTable(t, source)
 	var journal string
 	if err := source.QueryRow(`PRAGMA journal_mode`).Scan(&journal); err != nil || journal != "wal" {

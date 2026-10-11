@@ -68,6 +68,7 @@ var (
 )
 
 type Proxy struct {
+	NodeRole         string
 	ID               int64
 	ServerID         int64
 	ServerName       string
@@ -160,6 +161,7 @@ type Client struct {
 }
 
 type CreateInput struct {
+	NodeRole          string
 	ServerID          int64
 	Name              string
 	ListenPort        int
@@ -180,6 +182,7 @@ type CreateInput struct {
 }
 
 type UpdateInput struct {
+	NodeRole      *string
 	Name          *string
 	ListenPort    *int
 	ListenFamily  *string

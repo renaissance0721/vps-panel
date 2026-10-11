@@ -34,6 +34,7 @@ import {
   formatTime,
 } from '../format'
 import { moveRow, persistMove } from '../reorder'
+import type { NodeRole } from '../node'
 import {
   useProxyForm,
 } from './useProxyForm'
@@ -47,6 +48,7 @@ export function useProxies(props: { servers: ServerOption[]; users: import('../t
   const reorderingID = ref<number | null>(null)
   const error = ref('')
   const search = ref('')
+  const nodeRole = ref<NodeRole>('direct')
   const proxyDetailOpen = ref(false)
   const selectedProxy = ref<ProxyRecord | null>(null)
   const clientDetailOpen = ref(false)
@@ -65,8 +67,9 @@ export function useProxies(props: { servers: ServerOption[]; users: import('../t
 
   const filteredProxies = computed(() => {
     const keyword = search.value.trim().toLowerCase()
-    if (!keyword) return proxies.value
-    return proxies.value.filter((value) =>
+    const category = proxies.value.filter((value) => value.node_role === nodeRole.value)
+    if (!keyword) return category
+    return category.filter((value) =>
       [value.name, value.server_name, value.entry_address, value.entry_host, value.config.security ?? '', value.config.method ?? '']
         .some((field) => field.toLowerCase().includes(keyword)),
     )
@@ -100,7 +103,8 @@ export function useProxies(props: { servers: ServerOption[]; users: import('../t
   }
 
   async function reorderProxy(value: ProxyRecord, targetID: number) {
-    if (reorderingID.value !== null || search.value.trim()) return
+    if (reorderingID.value !== null || search.value.trim() || value.node_role !== nodeRole.value ||
+      !filteredProxies.value.some((row) => row.id === targetID)) return
     const move = moveRow(proxies.value, value.id, targetID)
     if (!move) return
     reorderingID.value = value.id
@@ -272,6 +276,6 @@ export function useProxies(props: { servers: ServerOption[]; users: import('../t
       loading.value = false
     }
   })
-  return { proxies, loading, submitting, reorderingID, error, search, proxyDetailOpen, selectedProxy, clientDetailOpen, selectedShare, copiedShareURI, copiedClientID, qrOpen, qrURI, qrTitle, qrSubtitle, setQRCodeOpen, showClientQRCode, showSelectedShareQRCode, filteredProxies, run, loadProxies, reorderProxy, showProxy, refreshSelectedProxy, toggleProxy, removeProxy, resetClientTraffic, toggleClient, removeClient, loadShare, showClient, copyClientURI, copyShareURI, ...proxyForm, ...clientForm, servers: computed(() => props.servers), clientTrafficCycleLabel, clientTrafficUsageLabel, clientTrafficUsagePercentLabel, clientStatusLabel, clientStatusTagType, formatClientExpiration, formatClientTrafficBytes, proxyListProtocolFields, shadowsocksMethods, showsVLESSClientFields, formatTime }
+  return { proxies, loading, submitting, reorderingID, error, search, nodeRole, proxyDetailOpen, selectedProxy, clientDetailOpen, selectedShare, copiedShareURI, copiedClientID, qrOpen, qrURI, qrTitle, qrSubtitle, setQRCodeOpen, showClientQRCode, showSelectedShareQRCode, filteredProxies, run, loadProxies, reorderProxy, showProxy, refreshSelectedProxy, toggleProxy, removeProxy, resetClientTraffic, toggleClient, removeClient, loadShare, showClient, copyClientURI, copyShareURI, ...proxyForm, ...clientForm, servers: computed(() => props.servers), clientTrafficCycleLabel, clientTrafficUsageLabel, clientTrafficUsagePercentLabel, clientStatusLabel, clientStatusTagType, formatClientExpiration, formatClientTrafficBytes, proxyListProtocolFields, shadowsocksMethods, showsVLESSClientFields, formatTime }
 }
 export type ProxiesViewState = UnwrapNestedRefs<ReturnType<typeof useProxies>>

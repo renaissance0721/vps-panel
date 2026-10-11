@@ -1,7 +1,10 @@
+import type { NodeRole } from './node'
+
 export type LandingVisibility = 'private' | 'public'
 export type LandingProtocol = 'vless' | 'shadowsocks'
 
 export type LandingRecord = {
+  node_role: NodeRole
   id: number
   name: string
   visibility: LandingVisibility

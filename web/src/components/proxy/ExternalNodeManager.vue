@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NSpin, NTag } from 'naive-ui'
 
 import { api } from '../../api/client'
+import { nodeRoleLabel, type NodeRole } from '../../node'
 import { beginDragPreview, endDragPreview } from '../../drag'
 import { moveRow, persistMove } from '../../reorder'
 import { relayEndpointLabel } from '../../relay'
@@ -21,6 +22,9 @@ type ExternalNodeShare = {
 }
 
 const landings = ref<LandingRecord[]>([])
+const category = ref<NodeRole>('direct')
+const nodeRole = ref<NodeRole>('direct')
+const filteredLandings = computed(() => landings.value.filter(value => value.node_role === category.value))
 const draggedID = ref<number | null>(null)
 const dropTargetID = ref<number | null>(null)
 const reorderingID = ref<number | null>(null)
@@ -48,6 +52,7 @@ function resetForm() {
   editingID.value = null
   name.value = ''
   visibility.value = 'private'
+  nodeRole.value = 'direct'
   uri.value = ''
 }
 
@@ -61,6 +66,7 @@ function openEdit(value: LandingRecord) {
   editingID.value = value.id
   name.value = value.name
   visibility.value = value.visibility
+  nodeRole.value = value.node_role
   uri.value = ''
   error.value = ''
   formOpen.value = true
@@ -155,6 +161,7 @@ async function saveExternalNode() {
     const payload = {
       name: name.value,
       visibility: visibility.value,
+      node_role: nodeRole.value,
       ...((creating || uri.value.trim()) ? { uri: uri.value } : {}),
     }
     await api(creating ? '/api/landings' : `/api/landings/${editingID.value}`, {
@@ -222,6 +229,7 @@ async function dropExternalNode(id: number) {
   const sourceID = draggedID.value
   endDrag()
   if (sourceID === null || reorderingID.value !== null) return
+  if (!filteredLandings.value.some(row => row.id === sourceID) || !filteredLandings.value.some(row => row.id === id)) return
   const move = moveRow(landings.value, sourceID, id)
   if (!move) return
   reorderingID.value = sourceID
@@ -237,6 +245,8 @@ async function dropExternalNode(id: number) {
   }
 }
 
+watch(category, endDrag)
+
 onUnmounted(() => {
   clearCopiedState()
   if (draggedID.value !== null) endDrag()
@@ -249,14 +259,17 @@ onUnmounted(() => {
       <n-button type="primary" @click="openCreate">导入外部节点</n-button>
     </template>
 
+    <div class="subscription-tabs" role="tablist" aria-label="外部节点用途">
+      <n-button v-for="role in (['direct', 'landing'] as const)" :key="role" role="tab" :aria-selected="category === role" :type="category === role ? 'primary' : 'default'" :disabled="reorderingID !== null" @click="category = role">{{ nodeRoleLabel(role) }} {{ landings.filter(value => value.node_role === role).length }}</n-button>
+    </div>
     <n-alert v-if="error" class="external-node-alert" type="error" closable @close="error = ''">{{ error }}</n-alert>
     <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载外部节点…</span></div>
-    <n-empty v-else-if="landings.length === 0" description="当前没有外部节点" />
+    <n-empty v-else-if="filteredLandings.length === 0" description="当前没有外部节点" />
     <div v-else class="server-table-wrap">
       <table class="server-table external-node-table">
         <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>协议</th><th>地址</th><th>端口</th><th>可见性</th><th>所有者状态</th><th>操作</th></tr></thead>
         <TransitionGroup tag="tbody" name="table-row-order">
-          <tr v-for="value in landings" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropExternalNode(value.id)">
+          <tr v-for="value in filteredLandings" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropExternalNode(value.id)">
             <td class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null }" :draggable="reorderingID === null" title="拖动排序" aria-label="拖动外部节点排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
             </td>
@@ -291,6 +304,10 @@ onUnmounted(() => {
         </label>
         <label><span>名称</span><n-input v-model:value="name" maxlength="100" placeholder="可留空，将从链接名称自动读取" /></label>
         <label>
+          <span>节点用途</span>
+          <select v-model="nodeRole" class="settings-input"><option value="direct">直连节点</option><option value="landing">落地节点</option></select>
+        </label>
+        <label>
           <span>可见性</span>
           <select v-model="visibility" class="settings-input">
             <option value="private">私有（仅自己可见和使用）</option>
@@ -313,6 +330,7 @@ onUnmounted(() => {
       <template v-if="selectedShare">
         <dl class="server-details">
           <div><dt>名称</dt><dd>{{ selectedShare.landing.name }}</dd></div>
+          <div><dt>节点用途</dt><dd>{{ nodeRoleLabel(selectedShare.landing.node_role) }}</dd></div>
           <div><dt>协议</dt><dd>{{ landingProtocolLabel(selectedShare.landing.protocol) }}</dd></div>
           <div><dt>地址</dt><dd>{{ relayEndpointLabel(selectedShare.landing.host, selectedShare.landing.port) }}</dd></div>
           <div><dt>可见性</dt><dd>{{ landingVisibilityLabel(selectedShare.landing.visibility) }}</dd></div>

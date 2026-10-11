@@ -10,6 +10,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
 
@@ -74,7 +75,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		request.EntryHostMode = proxystore.EntryHostAuto
 	}
 	input := proxystore.CreateInput{
-		ServerID: request.ServerID, Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort,
+		ServerID: request.ServerID, NodeRole: request.NodeRole, Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort,
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
@@ -133,7 +134,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		return
 	}
 	input := proxystore.UpdateInput{
-		Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
+		NodeRole: request.NodeRole, Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 		Protocol: request.Protocol, Method: request.Method,
@@ -143,7 +144,7 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		writeProxyError(w, err)
 		return
 	}
-	if validated.Enabled {
+	if validated.Enabled && (proxystore.ProxyRuntimeChanged(previous, validated) || (request.Certificate != nil && strings.TrimSpace(*request.Certificate) != "") || (request.PrivateKey != nil && strings.TrimSpace(*request.PrivateKey) != "")) {
 		capability, message := requiredProxyCapability(validated)
 		supported, err := s.serverSupportsCapability(r, validated.ServerID, capability)
 		if err != nil {
@@ -291,6 +292,8 @@ func (s *server) notifyProxyMutations(mutations []proxystore.Mutation) {
 
 func writeProxyError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, noderole.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "节点用途仅支持直连节点或落地节点")
 	case errors.Is(err, proxystore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "代理节点不存在")
 	case errors.Is(err, proxystore.ErrClientNotFound):

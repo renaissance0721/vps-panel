@@ -791,7 +791,8 @@ function showPersonalQR(value: PersonalSubscription) {
   personalQROpen.value = true
 }
 
-function personalSourceLabel(value: string) {
+function personalSourceLabel(value: string, candidate = false) {
+  if (candidate) return value === 'proxy' ? '受管直连节点' : value === 'relay' ? '本地中转' : '外部直连节点'
   return value === 'proxy' ? '本地 Proxy' : value === 'relay' ? '中转 Relay' : '外部节点 Landing'
 }
 
@@ -1569,6 +1570,7 @@ onUnmounted(() => {
       <n-button secondary attr-type="button" :loading="personalSourcesLoading" :disabled="!personalClientName.trim()" @click="addAllPersonalSources">添加全部可用节点</n-button>
     </div>
     <section v-if="personalSourceAdderExpanded" class="subscription-node-picker personal-source-adder">
+      <p class="form-help">可添加受管直连节点、外部直连节点和本地中转。已有的不可用来源会保留，生成订阅时跳过。</p>
       <div class="collapsible-section-header"><strong>添加节点</strong><n-button size="tiny" secondary attr-type="button" @click="personalSourceAdderExpanded = false">收起</n-button></div>
       <div class="personal-source-toolbar">
         <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" />
@@ -1576,7 +1578,7 @@ onUnmounted(() => {
       </div>
       <div class="personal-source-scroll">
         <div v-for="sourceType in personalSourceTypes" :key="sourceType" class="personal-source-group">
-          <strong>{{ personalSourceLabel(sourceType) }}</strong>
+          <strong>{{ personalSourceLabel(sourceType, true) }}</strong>
           <span v-if="filteredPersonalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无匹配的可访问来源</span>
           <div v-for="source in filteredPersonalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
             <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>

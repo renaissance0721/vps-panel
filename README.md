@@ -12,9 +12,9 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 轻量探针 | CPU / RAM / Disk、网络速度、周期流量；TCPing / ICMP Ping 与 1h / 6h / 24h 延迟历史 |
 | Telegram | Server 离线、恢复和流量阈值通知 |
 | 邮件服务 | 可选的标准 SMTP 配置、管理员测试邮件与账号邮箱验证，支持 TLS、STARTTLS 和无 TLS |
-| 代理节点 | 受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
+| 代理节点 | 直连 / 落地分类；受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
-| 外部节点 | 导入 VLESS / Shadowsocks 分享链接，管理 Landing 节点 |
+| 外部节点 | 导入 VLESS / Shadowsocks 分享链接，支持直连 / 落地用途分类 |
 | Client 与流量 | 独立凭据、流量配额、到期控制、分享链接与二维码；Server / Client 流量统计 |
 | 订阅 | 个人订阅、订阅套餐与专用用户入口、Mihomo / Shadowrocket 完整配置、路由配置与绑定 |
 | Agent | 一次性注册、自动重连、配置同步、诊断和官方 Agent 自升级 |
@@ -129,6 +129,10 @@ Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有
 `carpool` / `subscriber` 继续使用独立门户、Client 分配和订阅权限。
 
 ## 订阅与客户端模板
+
+受管节点和外部节点各自在原卡片内切换“直连节点 / 落地节点”，新增、导入和历史节点默认直连，可在编辑表单修改用途。用途分类不改变节点协议、连接配置或中转目标选择。
+
+个人订阅可添加受管直连节点、外部直连节点和本地中转；改为落地用途的已有引用保留并显示不可用，生成时跳过。中转页面的“订阅发布”分类只供查看，此类中转由「订阅管理 → 发布节点」统一维护。
 
 个人订阅地址前缀为 `/sub/personal/<token>`，共享订阅为 `/sub/<token>`；两者使用相同的输出后缀：
 

@@ -24,6 +24,8 @@ const props = defineProps<{
     | 'proxyFormMode'
     | 'saveProxy'
     | 'proxyName'
+    | 'proxyNodeRole'
+    | 'proxyRoleOnlyUpdate'
     | 'proxyServerID'
     | 'servers'
     | 'proxyProtocol'
@@ -57,6 +59,8 @@ const {
   proxyFormMode,
   saveProxy,
   proxyName,
+  proxyNodeRole,
+  proxyRoleOnlyUpdate,
   proxyServerID,
   servers,
   proxyProtocol,
@@ -90,6 +94,7 @@ const {
     <n-card class="proxy-form-card" :title="proxyFormMode === 'create' ? '新增代理节点' : '编辑代理节点'" :bordered="false" closable @close="proxyFormOpen = false">
       <form class="proxy-form" @submit.prevent="saveProxy">
         <label><span>名称</span><n-input v-model:value="proxyName" maxlength="100" /></label>
+        <label><span>节点用途</span><select v-model="proxyNodeRole" class="settings-input"><option value="direct">直连节点</option><option value="landing">落地节点</option></select></label>
         <label>
           <span>服务器</span>
           <select v-model.number="proxyServerID" class="settings-input" :disabled="proxyFormMode === 'edit'" @change="onProxyServerChange">
@@ -143,7 +148,7 @@ const {
 			<p>客户端凭据由系统安全生成。</p>
 			<div v-if="proxyProtocol === 'vless'" class="switch-row"><span>允许 UDP/443 / QUIC</span><n-switch v-model:value="firstClientUDP443" /></div>
         </fieldset>
-        <div class="modal-actions"><n-button @click="proxyFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="proxyEnabled && !!proxyCapabilityWarning">保存</n-button></div>
+        <div class="modal-actions"><n-button @click="proxyFormOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="submitting" :disabled="!proxyRoleOnlyUpdate && proxyEnabled && !!proxyCapabilityWarning">保存</n-button></div>
       </form>
     </n-card>
   </n-modal>

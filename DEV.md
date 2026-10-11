@@ -140,6 +140,11 @@ Agent 执行 TCP connect 或 ICMP Echo，Panel 验证当前连接、任务状态
 ## 9. Proxy / Xray
 
 Proxy 保存服务端入站配置，Client 保存其下独立凭据。当前支持 VLESS over TCP 的 TLS / REALITY，以及 Shadowsocks 2022。
+
+节点来源与用途是两个维度：受管来源为 Proxy，外部来源为 Landing；两者各自支持 `node_role=direct|landing`（直连节点 / 落地节点）。字段保存在 `proxies`、`landing_nodes`，只表示 Panel 业务用途，不改变协议、凭据或网络能力。新增及历史节点默认 direct，以保留既有个人订阅分发行为，不根据名称、协议或拓扑推断用途。
+
+Proxy / Landing 的 Create、Get、List、Update API 均包含 `node_role`；创建省略时使用 direct，PATCH 省略时保留，非法值由 Service 拒绝。修改权限沿用 Server ACL 或外部节点所有权。仅修改用途不会写入运行配置、递增 Agent desired-state version 或触发配置通知。受管节点和外部节点分别在原卡片内展示直连 / 落地分类，搜索与拖拽作用于当前分类；排序沿用全量列表及既有 listorder。
+
 配置校验、分享参数和实际下发应使用相同业务来源，避免 UI、分享链接与 Agent 配置出现三套规则。
 
 TLS 可以使用手动证书，或由 Agent 通过受管 acme.sh 申请 Let's Encrypt HTTP-01 证书并续期。
@@ -164,6 +169,8 @@ Relay 描述入口 Server 的监听与目标，支持 TCP、UDP、TCP+UDP。
 拼车用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
 这些资源不能绕过其归属流程直接修改。最后一条 Relay 的删除沿用与 Proxy 相同的清理能力检查。
 
+中转页面复用只读 `subscription_published` 分类：false 为本地中转，true 为订阅发布中转；不增加分类字段。发布分类只提供查看和排障，创建、修改、启停及删除仍由「订阅管理 → 发布节点」和 `CreateSubscriptionRelayTx` 等专用生命周期负责。节点用途不限制 Relay target 或 Published Node target，direct 与 landing 仍遵循原有目标规则。
+
 Agent 在专属目录和服务中管理 Realm；清理只针对本项目拥有的运行时和防火墙资源。
 
 ## 11. Subscription / Client / Landing
@@ -185,6 +192,11 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 ### 订阅
 
 管理用户的个人订阅按 owner 隔离，组织可访问的节点来源、节点实例及路由绑定。
+
+个人订阅只直接分发受管直连节点、外部直连节点和本地中转；受管 / 外部落地节点及订阅发布中转从后端候选列表排除，并由 `inspectPersonalSource` 在保存及生成时再次校验。Relay 的目标用途不改变本地中转自身的分发资格，其余权限、凭据和状态检查保持原有规则。
+
+用途改为 landing 或历史误引用订阅发布中转时，已有个人订阅节点保留并显示来源不可用，生成时跳过。保存其他节点可保留原 ID 和原来源；不能新增非法来源，也不能借已有 ID 将来源改为非法节点。
+
 管理员的订阅分发维护发布节点、套餐、subscriber 资料及相应 Client / Relay；subscriber 通过独立门户访问自己的资源。
 
 模板、路由配置及绑定由现有 subscription 模块校验，输出 Base64 节点列表、Mihomo YAML 或 Shadowrocket `.conf`。

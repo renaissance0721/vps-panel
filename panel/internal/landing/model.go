@@ -27,6 +27,7 @@ var (
 )
 
 type Landing struct {
+	NodeRole    string
 	ID          int64
 	OwnerUserID int64
 	Name        string
@@ -57,12 +58,14 @@ type ParsedURI struct {
 }
 
 type CreateInput struct {
+	NodeRole   string
 	Name       string
 	Visibility string
 	URI        string
 }
 
 type UpdateInput struct {
+	NodeRole   *string
 	Name       *string
 	Visibility *string
 	URI        *string

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 28
+const LatestSchemaVersion = 29
 
 type migration struct {
 	version            int
@@ -51,6 +51,17 @@ var migrations = []migration{
 	{version: 26, name: "account_email_verification", up: createAccountEmailVerification},
 	{version: 27, name: "account_email_password_reset", up: extendAccountTokensForPasswordReset},
 	{version: 28, name: "subscription_list_order", up: createSubscriptionListOrder},
+	{version: 29, name: "node_roles", up: addNodeRoles},
+}
+
+// The baseline remains historical; fresh databases also run this migration.
+func addNodeRoles(ctx context.Context, tx *sql.Tx) error {
+	for _, table := range []string{"proxies", "landing_nodes"} {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN node_role TEXT NOT NULL DEFAULT 'direct' CHECK (node_role IN ('direct', 'landing'))"); err != nil {
+			return fmt.Errorf("add %s node role: %w", table, err)
+		}
+	}
+	return nil
 }
 
 const userPersonalSubscriptionOrderStatement = `CREATE TABLE IF NOT EXISTS user_personal_subscription_order (

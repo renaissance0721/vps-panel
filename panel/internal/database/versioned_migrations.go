@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 29
+const LatestSchemaVersion = 30
 
 type migration struct {
 	version            int
@@ -52,6 +52,21 @@ var migrations = []migration{
 	{version: 27, name: "account_email_password_reset", up: extendAccountTokensForPasswordReset},
 	{version: 28, name: "subscription_list_order", up: createSubscriptionListOrder},
 	{version: 29, name: "node_roles", up: addNodeRoles},
+	{version: 30, name: "server_network_metadata", up: addServerNetworkMetadata},
+}
+
+func addServerNetworkMetadata(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE servers ADD COLUMN bandwidth_mbps INTEGER
+		 CHECK (bandwidth_mbps IS NULL OR (typeof(bandwidth_mbps) = 'integer' AND bandwidth_mbps BETWEEN 1 AND 10000000))`,
+		`ALTER TABLE servers ADD COLUMN network_stack TEXT
+		 CHECK (network_stack IS NULL OR network_stack IN ('ipv4', 'ipv6', 'dual'))`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add server network metadata: %w", err)
+		}
+	}
+	return nil
 }
 
 // The baseline remains historical; fresh databases also run this migration.

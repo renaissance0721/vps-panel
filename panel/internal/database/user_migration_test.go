@@ -164,13 +164,13 @@ func snapshotUserMigrationTable(t *testing.T, db *sql.DB, table string) [][]any 
 		if err := rows.Scan(pointers...); err != nil {
 			t.Fatal(err)
 		}
-		// v19 adds a nullable client-template reference after the v13 snapshot.
-		// Check its default separately while comparing every original column.
+		// Later migrations append nullable metadata after the v13 snapshot.
+		// Check defaults while comparing every original column.
 		original := make([]any, 0, len(values))
 		for i, column := range columns {
-			if column == "shadowrocket_template_id" {
+			if column == "shadowrocket_template_id" || column == "bandwidth_mbps" || column == "network_stack" {
 				if values[i] != nil {
-					t.Fatal("new template reference must default to NULL")
+					t.Fatalf("new %s must default to NULL", column)
 				}
 				continue
 			}

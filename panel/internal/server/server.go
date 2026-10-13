@@ -35,6 +35,9 @@ func (s *Service) CreateForUser(
 }
 
 func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInput) (CreatedServer, error) {
+	if err := validateNetworkMetadata(input.BandwidthMbps, input.NetworkStack); err != nil {
+		return CreatedServer{}, err
+	}
 	var err error
 	input.Name, err = normalizeServerName(input.Name)
 	if err != nil {
@@ -144,12 +147,12 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO servers
-		 (name, bound_domain_ipv4, bound_domain_ipv6, owner_user_id, created_by_user_id, created_by_role, status, visibility,
+		 (name, bandwidth_mbps, network_stack, bound_domain_ipv4, bound_domain_ipv6, owner_user_id, created_by_user_id, created_by_role, status, visibility,
 		  expires_at, renewal_period_months, auto_renew, renewal_anchor_day,
 		  monthly_traffic_limit_bytes, traffic_count_mode, traffic_reset_day, traffic_reset_time,
 		  created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.Name, input.BoundDomainIPv4, input.BoundDomainIPv6, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.Name, input.BandwidthMbps, input.NetworkStack, input.BoundDomainIPv4, input.BoundDomainIPv6, ownerValue, creatorValue, createdByRole, StatusPending, input.Visibility,
 		expiresAt, renewalPeriod, input.AutoRenew, renewalAnchorDay,
 		monthlyTrafficLimit, input.TrafficCountMode, input.TrafficResetDay, input.TrafficResetTime,
 		now.Unix(), now.Unix(),
@@ -194,6 +197,8 @@ func (s *Service) CreateWithSettings(ctx context.Context, input CreateServerInpu
 		Server: Server{
 			ID:                       serverID,
 			Name:                     input.Name,
+			BandwidthMbps:            input.BandwidthMbps,
+			NetworkStack:             input.NetworkStack,
 			BoundDomainIPv4:          input.BoundDomainIPv4,
 			BoundDomainIPv6:          input.BoundDomainIPv6,
 			OwnerUserID:              ownerUserID,
@@ -290,7 +295,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		arguments = append(arguments, userID)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT servers.id, servers.name, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -339,7 +344,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 
 func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
-		`SELECT servers.id, servers.name, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
+		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
 		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
@@ -401,7 +406,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var nicRX, nicTX, cycleRX, cycleTX, trafficAdjustment, cycleStartedAt, metricsUpdatedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&value.ID, &value.Name, &value.BoundDomainIPv4, &value.BoundDomainIPv6, &ownerUserID, &ownerUsername,
+		&value.ID, &value.Name, &value.BandwidthMbps, &value.NetworkStack, &value.BoundDomainIPv4, &value.BoundDomainIPv6, &ownerUserID, &ownerUsername,
 		&createdByUserID, &createdByUsername, &value.CreatedByRole,
 		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
 		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,

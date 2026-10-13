@@ -94,6 +94,7 @@ func (s *server) createServer(w http.ResponseWriter, r *http.Request, user auth.
 	s.probeMu.Lock()
 	created, err := s.servers.CreateWithSettings(r.Context(), serverstore.CreateServerInput{
 		Name: request.Name, BoundDomainIPv4: request.BoundDomainIPv4, BoundDomainIPv6: request.BoundDomainIPv6,
+		BandwidthMbps: request.BandwidthMbps, NetworkStack: request.NetworkStack,
 		Visibility: request.Visibility, UserIDs: request.UserIDs, CreatorID: user.ID,
 		ExpiresAt: expiresAt, RenewalPeriodMonths: renewalPeriod, AutoRenew: request.AutoRenew,
 		MonthlyTrafficLimitBytes: monthlyLimit, TrafficCountMode: traffic.CountMode,
@@ -208,6 +209,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAutoRenew := request.AutoRenew != nil
 	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
 	hasName := request.Name != nil
+	hasNetworkMetadata := len(request.BandwidthMbps) != 0 || len(request.NetworkStack) != 0
 	hasBoundDomain := request.BoundDomainIPv4 != nil || request.BoundDomainIPv6 != nil
 	hasOwner := len(request.OwnerUserID) != 0
 	hasOutboundPreference := request.OutboundPreference != nil
@@ -215,13 +217,36 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasBoundDomain, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
+	for _, present := range []bool{hasName, hasNetworkMetadata, hasBoundDomain, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
 	}
 	if settingCount != 1 {
 		writeError(w, http.StatusBadRequest, "服务器设置格式无效")
+		return
+	}
+	if hasNetworkMetadata {
+		bandwidth, err := parseOptionalInt64(request.BandwidthMbps)
+		if err != nil {
+			writeServerError(w, serverstore.ErrInvalidBandwidth)
+			return
+		}
+		var networkStack *string
+		if len(request.NetworkStack) != 0 && json.Unmarshal(request.NetworkStack, &networkStack) != nil {
+			writeServerError(w, serverstore.ErrInvalidNetworkStack)
+			return
+		}
+		updated, err := s.servers.UpdateNetworkMetadata(r.Context(), id, serverstore.UpdateNetworkMetadataInput{
+			BandwidthMbps: bandwidth, NetworkStack: networkStack,
+			SetBandwidthMbps: len(request.BandwidthMbps) != 0, SetNetworkStack: len(request.NetworkStack) != 0,
+		})
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器带宽和网络栈信息")
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
 	if hasName {
@@ -537,6 +562,10 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeMonitorError(w, err)
 	case errors.Is(err, serverstore.ErrInvalidName):
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
+	case errors.Is(err, serverstore.ErrInvalidBandwidth):
+		writeError(w, http.StatusBadRequest, "带宽必须为 1–10000000 Mbps 的整数或留空")
+	case errors.Is(err, serverstore.ErrInvalidNetworkStack):
+		writeError(w, http.StatusBadRequest, "网络栈必须为 ipv4、ipv6、dual 或留空")
 	case errors.Is(err, serverstore.ErrInvalidBoundDomain):
 		writeError(w, http.StatusBadRequest, "服务器绑定域名格式无效")
 	case errors.Is(err, serverstore.ErrIPv6Unavailable):

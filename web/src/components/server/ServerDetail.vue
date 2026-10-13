@@ -32,6 +32,7 @@ import {
   agentImplementationLabel,
   agentSupportsCapability,
   serverIPv6StatusLabel,
+  networkStackLabel,
 } from '../../server'
 import ServerTraffic from './ServerTraffic.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
@@ -225,6 +226,8 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 </div>
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
+              <div><dt>带宽</dt><dd>{{ selectedServer.bandwidth_mbps == null ? '未设置' : `${selectedServer.bandwidth_mbps} Mbps` }}</dd></div>
+              <div><dt>网络栈</dt><dd>{{ networkStackLabel(selectedServer.network_stack) }}</dd></div>
 			  <div><dt>IPv4 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv4 || '未设置' }}</dd></div>
 			  <div><dt>IPv6 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv6 || '未设置' }}</dd></div>
 			  <div><dt>IPv6 状态</dt><dd>{{ serverIPv6StatusLabel(selectedServer) }}</dd></div>
@@ -255,16 +258,6 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
               </div>
             </dl>
-            <div class="server-detail-setting">
-              <span class="server-detail-setting-label">当前出站</span>
-              <span class="outbound-preference-buttons">
-                <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="serverReadOnly || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
-                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
-                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
-              </span>
-              <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
-              <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
-            </div>
               </section>
 
               <section class="server-detail-section">
@@ -316,8 +309,22 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
             </div>
 
             <section class="server-detail-section server-detail-section--wide">
+              <h3 class="system-info-title">出入站管理</h3>
+              <h4>出站</h4>
+            <div class="server-outbound-setting">
+              <span class="server-detail-setting-label">当前出站策略</span>
+              <span class="outbound-preference-buttons">
+                <n-button size="small" :type="selectedServer.outbound_preference === 'auto' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'auto'" :disabled="serverReadOnly || submitting" @click="setOutboundPreference(selectedServer, 'auto')">系统默认</n-button>
+                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv4' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv4'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv4')">优先 IPv4</n-button>
+                <n-button size="small" :type="selectedServer.outbound_preference === 'prefer_ipv6' ? 'primary' : 'default'" :secondary="selectedServer.outbound_preference === 'prefer_ipv6'" :disabled="serverReadOnly || submitting || !outboundPreferenceSupported" @click="setOutboundPreference(selectedServer, 'prefer_ipv6')">优先 IPv6</n-button>
+              </span>
+              <small v-if="!outboundPreferenceSupported" class="outbound-preference-note">当前 Agent 不支持出站 IPv4 / IPv6 偏好。</small>
+              <small v-else-if="!selectedServer.archived_at && selectedServer.status !== 'online'" class="outbound-preference-note">设置会保存，待 Agent 下次上线自动应用。</small>
+            </div>
+              <div class="server-detail-setting">
+              <h4>入站</h4>
               <div class="section-heading">
-                <h3 class="system-info-title">中国 IP 入站限制</h3>
+                <strong>中国 IP 入站限制</strong>
                 <n-switch
                   :value="selectedServer.block_china_inbound"
                   :disabled="chinaInboundSwitchDisabled"
@@ -352,6 +359,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               <small class="secondary-text">
                 仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。支持 IPv4 和 IPv6。数据来源：APNIC。SSH 和其他服务不受影响。
               </small>
+              </div>
             </section>
 
             <section class="server-detail-section server-detail-section--wide"><ServerTraffic :model="model" /></section>

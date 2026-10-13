@@ -27,7 +27,7 @@ test('服务器创建、编辑和详情都提供 IPv4 与 IPv6 绑定域名且�
 
 test('服务器详情移除重复监控展示并保留设置与运维能力', async () => {
   const detail = await source('components/server/ServerDetail.vue')
-  for (const title of ['基本信息', 'Agent', '中国 IP 入站限制']) {
+  for (const title of ['基本信息', 'Agent', '出入站管理']) {
     assert.match(detail, new RegExp(`<h3[^>]*>${title}<\\/h3>`))
   }
 	assert.match(detail, /<dt>IPv4 已绑定域名<\/dt>/)

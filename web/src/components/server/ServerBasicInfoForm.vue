@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { toRefs, watch } from 'vue'
-import { NAlert, NButton, NCard, NInput, NModal, NSelect, NSwitch } from 'naive-ui'
+import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NSelect, NSwitch } from 'naive-ui'
 import type { ServersViewState } from '../../composables/useServers'
 import { userRoleLabel } from '../../format'
-import { renewalPeriodOptions, serverIPv6State, serverIPv6StatusMessage } from '../../server'
+import { networkStackOptions, renewalPeriodOptions, serverIPv6State, serverIPv6StatusMessage } from '../../server'
 
 const props = defineProps<{
   model: Pick<ServersViewState,
@@ -12,6 +12,8 @@ const props = defineProps<{
     | 'submitting'
 	| 'selectedServer'
     | 'nameInput'
+    | 'bandwidthMbpsInput'
+    | 'networkStackInput'
 	| 'boundDomainIPv4Input'
 	| 'boundDomainIPv6Input'
     | 'ownerUserID'
@@ -34,6 +36,8 @@ const {
   basicInfoFormError,
   submitting,
   nameInput,
+  bandwidthMbpsInput,
+  networkStackInput,
 	boundDomainIPv4Input,
 	boundDomainIPv6Input,
   ownerUserID,
@@ -74,6 +78,19 @@ watch(expirationInput, (value) => {
         </n-alert>
 
         <label><span>名称</span><n-input v-model:value="nameInput" maxlength="100" :disabled="submitting" /></label>
+
+        <label>
+          <span>带宽大小</span>
+          <n-input-number v-model:value="bandwidthMbpsInput" :min="1" :max="10000000" :precision="0" placeholder="未设置" :disabled="submitting">
+            <template #suffix>Mbps</template>
+          </n-input-number>
+          <small class="form-help">填写 VPS 套餐标称网络带宽；留空表示未知。</small>
+        </label>
+        <label>
+          <span>网络栈</span>
+          <n-select v-model:value="networkStackInput" :options="networkStackOptions" clearable placeholder="未设置" :disabled="submitting" />
+          <small class="form-help">管理员声明的网络栈分类，不会修改服务器实际网络配置。</small>
+        </label>
 
         <label>
 		  <span>IPv4 已绑定域名（可选）</span>

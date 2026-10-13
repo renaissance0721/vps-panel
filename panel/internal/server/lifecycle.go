@@ -33,6 +33,50 @@ func (s *Service) EnsureMutable(ctx context.Context, id int64) error {
 	return nil
 }
 
+func validateNetworkMetadata(bandwidth *int64, networkStack *string) error {
+	if bandwidth != nil && (*bandwidth < 1 || *bandwidth > MaxBandwidthMbps) {
+		return ErrInvalidBandwidth
+	}
+	if networkStack != nil {
+		switch *networkStack {
+		case NetworkStackIPv4, NetworkStackIPv6, NetworkStackDual:
+		default:
+			return ErrInvalidNetworkStack
+		}
+	}
+	return nil
+}
+
+func (s *Service) UpdateNetworkMetadata(ctx context.Context, id int64, input UpdateNetworkMetadataInput) (Server, error) {
+	if err := validateNetworkMetadata(input.BandwidthMbps, input.NetworkStack); err != nil {
+		return Server{}, err
+	}
+	if err := s.EnsureMutable(ctx, id); err != nil {
+		return Server{}, err
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE servers SET bandwidth_mbps = CASE WHEN ? THEN ? ELSE bandwidth_mbps END,
+		 network_stack = CASE WHEN ? THEN ? ELSE network_stack END, updated_at = ?
+		 WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`,
+		input.SetBandwidthMbps, input.BandwidthMbps, input.SetNetworkStack, input.NetworkStack,
+		s.now().UTC().Truncate(time.Second).Unix(), id,
+	)
+	if err != nil {
+		return Server{}, fmt.Errorf("update server network metadata: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return Server{}, fmt.Errorf("read updated server metadata count: %w", err)
+	}
+	if count != 1 {
+		if err := s.EnsureMutable(ctx, id); err != nil {
+			return Server{}, err
+		}
+		return Server{}, ErrNotFound
+	}
+	return s.Get(ctx, id)
+}
+
 func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server, error) {
 	var err error
 	name, err = normalizeServerName(name)

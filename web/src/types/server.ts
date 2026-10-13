@@ -3,6 +3,8 @@ export type RenewalPeriodMonths = 1 | 3 | 6 | 12 | 24 | 36
 export type ServerRecord = {
   id: number
   name: string
+  bandwidth_mbps: number | null
+  network_stack: 'ipv4' | 'ipv6' | 'dual' | null
   bound_domain_ipv4: string
   bound_domain_ipv6: string
   owner_user_id: number | null

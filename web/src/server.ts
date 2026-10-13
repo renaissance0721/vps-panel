@@ -13,6 +13,16 @@ export const renewalPeriodOptions: Array<{ label: string; value: RenewalPeriodMo
   { label: '三年付', value: 36 },
 ]
 
+export const networkStackOptions = [
+  { label: 'IPv4 单栈', value: 'ipv4' },
+  { label: 'IPv6 单栈', value: 'ipv6' },
+  { label: 'IPv4 + IPv6 双栈', value: 'dual' },
+]
+
+export function networkStackLabel(value: ServerRecord['network_stack']): string {
+  return networkStackOptions.find(option => option.value === value)?.label ?? '未设置'
+}
+
 export function serverResourceAvailability(server: Pick<ServerRecord, 'status'> | undefined, endpointReady: boolean) {
   if (server?.status === 'offline') return { ready: false, label: '服务器离线' }
   if (server?.status === 'pending') return { ready: false, label: '等待 Agent 连接' }

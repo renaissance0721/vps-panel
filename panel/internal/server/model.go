@@ -16,6 +16,10 @@ const (
 	OutboundAuto            = "auto"
 	OutboundPreferIPv4      = "prefer_ipv4"
 	OutboundPreferIPv6      = "prefer_ipv6"
+	NetworkStackIPv4        = "ipv4"
+	NetworkStackIPv6        = "ipv6"
+	NetworkStackDual        = "dual"
+	MaxBandwidthMbps        = 10_000_000
 	TrafficSingle           = "single"
 	TrafficBidirectional    = "bidirectional"
 	maxNameLength           = 100
@@ -26,6 +30,8 @@ const (
 
 var (
 	ErrInvalidName               = errors.New("server name must be 1-100 characters")
+	ErrInvalidBandwidth          = errors.New("server bandwidth must be 1-10000000 Mbps")
+	ErrInvalidNetworkStack       = errors.New("invalid server network stack")
 	ErrInvalidBoundDomain        = errors.New("invalid server bound domain")
 	ErrIPv6Unavailable           = errors.New("server IPv6 listener unavailable")
 	ErrNotFound                  = errors.New("server not found")
@@ -47,6 +53,8 @@ var (
 type Server struct {
 	ID                        int64
 	Name                      string
+	BandwidthMbps             *int64
+	NetworkStack              *string
 	BoundDomainIPv4           string
 	BoundDomainIPv6           string
 	OwnerUserID               *int64
@@ -117,6 +125,8 @@ type ConfigMutation struct {
 
 type CreateServerInput struct {
 	Name                     string
+	BandwidthMbps            *int64
+	NetworkStack             *string
 	BoundDomainIPv4          string
 	BoundDomainIPv6          string
 	Visibility               string
@@ -129,4 +139,11 @@ type CreateServerInput struct {
 	TrafficCountMode         string
 	TrafficResetDay          int
 	TrafficResetTime         string
+}
+
+type UpdateNetworkMetadataInput struct {
+	BandwidthMbps    *int64
+	NetworkStack     *string
+	SetBandwidthMbps bool
+	SetNetworkStack  bool
 }

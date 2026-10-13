@@ -153,6 +153,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const renewalPeriodInput = ref<RenewalPeriodMonths | 0>(0)
   const autoRenewInput = ref(false)
   const nameInput = ref('')
+  const bandwidthMbpsInput = ref<number | null>(null)
+  const networkStackInput = ref<ServerRecord['network_stack']>(null)
   const boundDomainIPv4Input = ref('')
   const boundDomainIPv6Input = ref('')
   const ownerUserID = ref(0)
@@ -725,6 +727,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     nameInput.value = ''
+    bandwidthMbpsInput.value = null
+    networkStackInput.value = null
     boundDomainIPv4Input.value = ''
     boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
@@ -736,6 +740,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function openBasicInfoModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     nameInput.value = selectedServer.value.name
+    bandwidthMbpsInput.value = selectedServer.value.bandwidth_mbps ?? null
+    networkStackInput.value = selectedServer.value.network_stack ?? null
     boundDomainIPv4Input.value = selectedServer.value.bound_domain_ipv4 ?? ''
     boundDomainIPv6Input.value = selectedServer.value.bound_domain_ipv6 ?? ''
     ownerUserID.value = selectedServer.value.owner_user_id ?? 0
@@ -756,6 +762,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    bandwidthMbpsInput.value = null
+    networkStackInput.value = null
     boundDomainIPv4Input.value = ''
     boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
@@ -777,6 +785,12 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     const name = nameInput.value.trim()
     const boundDomainIPv4 = boundDomainIPv4Input.value.trim()
     const boundDomainIPv6 = boundDomainIPv6Input.value.trim()
+    const bandwidthMbps = bandwidthMbpsInput.value
+    const networkStack = networkStackInput.value
+    if (bandwidthMbps !== null && (!Number.isInteger(bandwidthMbps) || bandwidthMbps < 1 || bandwidthMbps > 10_000_000)) {
+      basicInfoFormError.value = '带宽必须为 1–10000000 Mbps 的整数或留空'
+      return
+    }
     if (!name || [...name].length > 100) {
       basicInfoFormError.value = '服务器名称不能为空且不能超过 100 个字符'
       return
@@ -803,6 +817,13 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoFormError.value = ''
     submitting.value = true
     try {
+      if (bandwidthMbps !== (current.bandwidth_mbps ?? null) || networkStack !== (current.network_stack ?? null)) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ bandwidth_mbps: bandwidthMbps, network_stack: networkStack }),
+        })
+        current = response.server
+      }
       if (name !== current.name) {
         const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
           method: 'PATCH',
@@ -1084,6 +1105,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    bandwidthMbpsInput.value = null
+    networkStackInput.value = null
     boundDomainIPv4Input.value = ''
     boundDomainIPv6Input.value = ''
     ownerUserID.value = 0
@@ -1127,6 +1150,8 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen,
     basicInfoFormError,
     nameInput,
+    bandwidthMbpsInput,
+    networkStackInput,
     boundDomainIPv4Input,
     boundDomainIPv6Input,
     ownerUserID,

@@ -104,7 +104,7 @@ test('Server 私有访问仅渲染管理账号，保持当前账号及独立所�
     assert.match(current, /disabled/)
     assert.ok(access.indexOf('alice') < access.indexOf('bob'))
     if (path.includes('ServerBasicInfoForm')) {
-      const owner = html.match(/<select[^>]*>[\s\S]*?<\/select>/)?.[0]
+      const owner = html.match(/<select[^>]*class="settings-input"[^>]*>[\s\S]*?<\/select>/)?.[0]
       assert.match(owner, /dave/)
       assert.match(owner, /eve/)
     }

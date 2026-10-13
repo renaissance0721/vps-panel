@@ -58,7 +58,9 @@ func TestNodeRoleMigrationAndOldBackupPreserveBehavior(t *testing.T) {
 	for _, statement := range []string{
 		`ALTER TABLE proxies DROP COLUMN node_role`,
 		`ALTER TABLE landing_nodes DROP COLUMN node_role`,
-		`DELETE FROM schema_migrations WHERE version = 29`,
+		`ALTER TABLE servers DROP COLUMN bandwidth_mbps`,
+		`ALTER TABLE servers DROP COLUMN network_stack`,
+		`DELETE FROM schema_migrations WHERE version >= 29`,
 		`UPDATE sqlite_sequence SET seq = 100 WHERE name IN ('proxies', 'landing_nodes')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {

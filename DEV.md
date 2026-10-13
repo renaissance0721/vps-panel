@@ -104,6 +104,10 @@ API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 L
 ## 7. Server 与 Metrics
 
 Server 管理包含基本信息、分组、归属、访问范围、续期、流量配置和生命周期。
+
+`bandwidth_mbps` 是可空的套餐标称带宽（1–10000000 Mbps），与月流量额度和实时网速独立；`network_stack` 是可空的管理员网络栈分类（`ipv4` / `ipv6` / `dual`）。历史及未填写的服务器均保留 NULL，界面显示“未设置”。
+两者仅属于 Panel 元数据，修改不递增 Agent desired-state version，也不修改实际网络配置；Agent 实际观测的 IPv4 / IPv6 仍由 `SystemInfo` 独立表示。现有 Server 创建、PATCH、Get / List DTO 提供这两个字段，PATCH 中省略保持原值，显式 null 清空。
+
 Server 的公开 / 私有访问范围只针对 `admin` / `vip`：公开对所有管理账号可见，私有通过 `server_access` 授权指定管理账号。
 写入时拒绝 `carpool` / `subscriber`，读取授权和判断私有访问时也检查账号角色，历史无效授权由数据迁移清理。
 拼车用户和订阅用户继续使用各自门户、Client 分配和订阅模型，不通过 `server_access` 授权。

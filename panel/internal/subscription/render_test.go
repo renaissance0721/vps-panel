@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -127,8 +128,15 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 			t.Fatalf("built-in Mihomo setting %q missing:\n%s", key, body)
 		}
 	}
-	if _, exists := raw["dns"]; exists {
-		t.Fatalf("rendered built-in Mihomo subscription manages DNS:\n%s", body)
+	dns, ok := raw["dns"].(map[string]any)
+	if !ok || dns["enable"] != true || dns["ipv6"] != false {
+		t.Fatalf("rendered built-in Mihomo DNS = %#v", raw["dns"])
+	}
+	for _, key := range []string{"nameserver", "direct-nameserver", "proxy-server-nameserver"} {
+		nameservers, ok := dns[key].([]any)
+		if !ok || !slices.Equal(nameservers, []any{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}) {
+			t.Fatalf("rendered built-in Mihomo DNS %q = %#v", key, dns[key])
+		}
 	}
 	profile, ok := raw["profile"].(map[string]any)
 	if !ok || profile["store-selected"] != true {
@@ -168,6 +176,46 @@ func assertBuiltinMihomoSettings(t *testing.T, body []byte) {
 	}
 }
 
+func TestRenderMihomoDNSOverlay(t *testing.T) {
+	routing := defaultRoutingPresetForTest(t)
+	for _, tc := range []struct {
+		name, content string
+		wantDNS       map[string]any
+	}{
+		{name: "without DNS", content: "log-level: info"},
+		{
+			name:    "partial DNS replaces defaults",
+			content: "dns:\n  ipv6: true\n  nameserver:\n    - https://1.1.1.1/dns-query",
+			wantDNS: map[string]any{"ipv6": true, "nameserver": []any{"https://1.1.1.1/dns-query"}},
+		},
+		{
+			name: "DNS can be disabled", content: "dns:\n  enable: false",
+			wantDNS: map[string]any{"enable": false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := RenderMihomoSubscription(SubscriptionData{
+				RoutingPreset:  routing,
+				MihomoTemplate: &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: tc.content},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantDNS == nil {
+				assertBuiltinMihomoSettings(t, body)
+				return
+			}
+			var raw map[string]any
+			if err := yaml.Unmarshal(body, &raw); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(raw["dns"], tc.wantDNS) || raw["ipv6"] != true {
+				t.Fatalf("custom DNS overlay = %#v, want %#v; top-level ipv6 = %#v", raw["dns"], tc.wantDNS, raw["ipv6"])
+			}
+		})
+	}
+}
+
 func TestRenderMihomoTLSOmitsRealityOptions(t *testing.T) {
 	body, err := RenderMihomoSubscription(SubscriptionData{RoutingPreset: defaultRoutingPresetForTest(t), Nodes: []proxystore.ClientShare{{
 		Client: proxystore.Client{UUID: "uuid"}, DisplayName: "TLS 节点", Protocol: proxystore.ProtocolVLESS,
@@ -204,6 +252,7 @@ func TestRenderMihomoCustomTemplateKeepsExistingSkeletonSemantics(t *testing.T) 
 		}},
 		MihomoTemplate: &SubscriptionTemplate{Type: TemplateTypeMihomo, Content: `dns:
   enable: true
+  ipv6: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   nameserver:
@@ -224,7 +273,7 @@ tun:
 	}
 	dns, ok := raw["dns"].(map[string]any)
 	nameservers, nameserversOK := dns["nameserver"].([]any)
-	if !ok || dns["enable"] != true || dns["enhanced-mode"] != "fake-ip" ||
+	if !ok || len(dns) != 5 || dns["enable"] != true || dns["ipv6"] != true || dns["enhanced-mode"] != "fake-ip" ||
 		dns["fake-ip-range"] != "198.18.0.1/16" || !nameserversOK || len(nameservers) != 1 ||
 		nameservers[0] != "https://1.1.1.1/dns-query" || raw["mixed-port"] != 7890 || len(parsed.ProxyGroups) != 8 ||
 		parsed.ProxyGroups[0].Name != "🚀 默认代理" ||

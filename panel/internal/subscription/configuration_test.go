@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestBuiltinMihomoTemplateDoesNotManageDNS(t *testing.T) {
+func TestBuiltinMihomoTemplateIncludesDefaultDNS(t *testing.T) {
 	value, err := BuildMihomoConfiguration(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -30,9 +30,7 @@ func TestBuiltinMihomoTemplateDoesNotManageDNS(t *testing.T) {
 			t.Fatalf("built-in Mihomo base is missing %q", key)
 		}
 	}
-	if _, exists := root["dns"]; exists {
-		t.Fatalf("built-in Mihomo base manages DNS:\n%s", value.YAML)
-	}
+	assertBuiltinMihomoSettings(t, []byte(value.YAML))
 	profile, ok := root["profile"].(map[string]any)
 	if !ok || profile["store-selected"] != true {
 		t.Fatalf("built-in Mihomo profile = %#v", root["profile"])

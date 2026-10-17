@@ -22,6 +22,19 @@ ipv6: true
 unified-delay: true
 tcp-concurrent: true
 
+dns:
+  enable: true
+  ipv6: false
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  direct-nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  proxy-server-nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+
 profile:
   store-selected: true
 

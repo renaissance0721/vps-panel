@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const probeHistoryRetention = 24 * time.Hour
+
 func (s *Service) History(ctx context.Context, serverID int64, hours int, capabilities map[string]bool) (History, error) {
 	if hours != 1 && hours != 6 && hours != 24 {
 		return History{}, ErrInvalid
@@ -57,6 +59,6 @@ func (s *Service) History(ctx context.Context, serverID int64, hours int, capabi
 }
 
 func (s *Service) Cleanup(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM monitor_probe_records WHERE ts < ?`, s.now().Add(-7*24*time.Hour).UnixMilli())
+	_, err := s.db.ExecContext(ctx, `DELETE FROM monitor_probe_records WHERE ts < ?`, s.now().Add(-probeHistoryRetention).UnixMilli())
 	return err
 }

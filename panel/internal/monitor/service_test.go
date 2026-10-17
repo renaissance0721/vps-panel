@@ -164,6 +164,8 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 		input.Type = kind
 		if kind == "icmp" {
 			input.Port = nil
+		} else {
+			input.ServerIDs = []int64{1, 2}
 		}
 		task, err := s.Save(ctx, 0, input)
 		if err != nil {
@@ -174,8 +176,8 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 			outcome string
 			latency any
 		}{
-			{8 * 24 * time.Hour, "success", 5}, {7 * 24 * time.Hour, "success", 5}, {25 * time.Hour, "success", 5},
-			{23 * time.Hour, "success", 10}, {5 * time.Hour, "timeout", nil}, {30 * time.Minute, "dns_error", nil},
+			{24*time.Hour + time.Millisecond, "success", 5}, {24 * time.Hour, "success", 5}, {25 * time.Hour, "success", 5},
+			{24*time.Hour - time.Millisecond, "success", 10}, {5 * time.Hour, "timeout", nil}, {30 * time.Minute, "dns_error", nil},
 			{20 * time.Minute, "success", 40}, {10 * time.Minute, "permission_error", nil}, {5 * time.Minute, "cancelled", nil},
 		} {
 			if _, err := db.Exec(`INSERT INTO monitor_probe_records VALUES (1, ?, ?, ?, ?)`, task.ID, s.now().Add(-sample.age).UnixMilli(), sample.outcome, sample.latency); err != nil {
@@ -186,7 +188,7 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		hours, count      int
 		tcpRate, icmpRate float64
-	}{{1, 8, 50, 0}, {6, 10, 200.0 / 3, 50}, {24, 12, 50, 100.0 / 3}} {
+	}{{1, 8, 50, 0}, {6, 10, 200.0 / 3, 50}, {24, 14, 40, 25}} {
 		h, err := s.History(ctx, 1, tc.hours, caps[1])
 		if err != nil || len(h.Samples) != tc.count || len(h.Tasks) != 2 || h.RangeHours != tc.hours {
 			t.Fatalf("history %d = %+v %v", tc.hours, h, err)
@@ -209,17 +211,27 @@ func TestProbeHistoryRangesSummaryAndCleanup(t *testing.T) {
 	if h, err := s.History(ctx, 1, 6, caps[2]); err != nil || len(h.Tasks) != 1 {
 		t.Fatalf("unsupported history: %+v %v", h, err)
 	}
+	latency := 42.5
+	if err := s.Ingest(ctx, 2, caps[2], ProbeResult{TaskID: 1, Outcome: "success", LatencyMS: &latency}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Cleanup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var old, boundary int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts < ?`, s.now().Add(-7*24*time.Hour).UnixMilli()).Scan(&old); err != nil || old != 0 {
+	cutoff := s.now().Add(-24 * time.Hour).UnixMilli()
+	var old, boundary, retained int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts < ?`, cutoff).Scan(&old); err != nil || old != 0 {
 		t.Fatalf("old records = %d %v", old, err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts = ?`, s.now().Add(-7*24*time.Hour).UnixMilli()).Scan(&boundary); err != nil || boundary != 2 {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts = ?`, cutoff).Scan(&boundary); err != nil || boundary != 2 {
 		t.Fatalf("boundary records = %d %v", boundary, err)
 	}
-	latency := 42.5
+	if err := db.QueryRow(`SELECT COUNT(*) FROM monitor_probe_records WHERE ts >= ?`, cutoff).Scan(&retained); err != nil || retained != 15 {
+		t.Fatalf("retained records = %d %v", retained, err)
+	}
+	if h, err := s.History(ctx, 2, 24, caps[2]); err != nil || len(h.Tasks) != 1 || len(h.Samples) != 1 || h.Tasks[0].LatestLatencyMS == nil || *h.Tasks[0].LatestLatencyMS != latency {
+		t.Fatalf("other server history after cleanup: %+v %v", h, err)
+	}
 	if err := s.Ingest(ctx, 1, caps[1], ProbeResult{TaskID: 1, Outcome: "success", LatencyMS: &latency}); err != nil {
 		t.Fatal(err)
 	}

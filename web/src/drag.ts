@@ -31,8 +31,12 @@ function scheduleFrame() {
   if (frame !== null) return
   frame = requestAnimationFrame(() => {
     frame = null
-    activePreview?.remove()
-    activePreview = null
+    // Keep the native drag image connected until the drag finishes. Moving it
+    // offscreen avoids painting a second copy without removing it mid-drag.
+    if (activePreview) {
+      activePreview.style.top = '-10000px'
+      activePreview.style.left = '-10000px'
+    }
     if (!activeSource?.isConnected) {
       endDragPreview()
       return
@@ -112,7 +116,8 @@ export function beginDragPreview(event: DragEvent, source: HTMLElement, payload:
   activePreview = preview
   activeSource = source
   scrollTarget = nearestScrollableAncestor(source)
-  pointer = { x: event.clientX, y: event.clientY }
+  // Wait for dragover before scrolling the source out from under a new drag.
+  pointer = null
   document.addEventListener('dragover', trackDrag, { capture: true })
   document.addEventListener('dragleave', leaveDocument, { capture: true })
   document.addEventListener('dragend', endDragPreview, { capture: true })

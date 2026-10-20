@@ -79,7 +79,7 @@ function environment() {
     frames.delete(key); callback()
   }
   const event = { clientX: 200, clientY: 590, dataTransfer: { setData() {}, setDragImage() {} } }
-  return { Element, document, page, body, source, frames, event, tick, dispatch, observer: () => observer }
+  return { Element, document, window, page, body, source, frames, event, tick, dispatch, observer: () => observer }
 }
 
 test('只选择真正纵向可滚动祖先，跳过横向 wrapper 并回退页面', () => {
@@ -91,6 +91,27 @@ test('只选择真正纵向可滚动祖先，跳过横向 wrapper 并回退页�
   assert.equal(nearestScrollableAncestor(env.source), modal)
   modal.overflowY = 'hidden'
   assert.equal(nearestScrollableAncestor(env.source), env.page)
+})
+
+test('原生拖影首帧保留已连接 DOM，dragover 前不滚动，结束后才移除', () => {
+  const env = environment()
+  let dragImage
+  env.event.dataTransfer.setDragImage = image => { dragImage = image }
+  beginDragPreview(env.event, env.source, '1')
+  assert.equal(dragImage.isConnected, true)
+  env.tick()
+  assert.equal(dragImage.isConnected, true, 'do not detach the native drag image during an active drag')
+  assert.equal(dragImage.style.top, '-10000px')
+  assert.equal(dragImage.style.left, '-10000px')
+  assert.equal(env.page.scrollTop, 0, 'dragstart alone must not move the source')
+  assert.equal(env.frames.size, 0)
+  env.dispatch('dragover', { clientX: 200, clientY: 590 })
+  env.tick()
+  assert.ok(env.page.scrollTop > 0, 'edge scrolling still runs after dragover')
+  assert.equal(dragImage.isConnected, true)
+  endDragPreview()
+  assert.equal(dragImage.isConnected, false)
+  assert.equal(env.frames.size, 0)
 })
 
 test('窗口拖拽只有一个 RAF，dragover 不拦截事件，中央及尽头暂停，结束后无残留', () => {
@@ -115,22 +136,29 @@ test('窗口拖拽只有一个 RAF，dragover 不拦截事件，中央及尽头�
   assert.equal(env.frames.size, 0, 'global listener removed')
 })
 
-test('内部容器按自身边缘滚动，离开范围停止，drop、dragend、ESC、源节点卸载均清理', () => {
-  for (const finish of ['drop', 'dragend', 'Escape', 'unmount']) {
+test('内部容器按自身边缘滚动，离开范围停止，drop、dragend、ESC、失焦、源节点卸载均清理', () => {
+  for (const finish of ['drop', 'dragend', 'Escape', 'blur', 'unmount']) {
     const env = environment()
+    let dragImage
+    env.event.dataTransfer.setDragImage = image => { dragImage = image }
     env.body.overflowY = 'auto'; env.body.clientHeight = 300
     env.body.getBoundingClientRect = () => ({ top: 100, bottom: 400, left: 100, right: 800 })
     beginDragPreview({ ...env.event, clientY: 390 }, env.source, '1')
+    env.dispatch('dragover', { clientX: 200, clientY: 390 })
     env.tick(); assert.ok(env.body.scrollTop > 0); assert.equal(env.page.scrollTop, 0)
     env.dispatch('dragover', { clientX: 50, clientY: 390 }); env.tick()
     assert.equal(env.frames.size, 0)
     env.dispatch('dragover', { clientX: 200, clientY: 390 })
     if (finish === 'Escape') env.dispatch('keydown', { key: 'Escape' })
+    else if (finish === 'blur') env.window.dispatchEvent(new Event('blur'))
     else if (finish === 'unmount') { env.source.isConnected = false; env.observer().callback() }
     else env.dispatch(finish)
     assert.equal(env.frames.size, 0, finish)
     assert.equal(env.observer().connected, false, finish)
     assert.equal(env.source.classes.size, 0, finish)
+    assert.equal(dragImage.isConnected, false, finish)
+    env.dispatch('dragover', { clientX: 200, clientY: 390 })
+    assert.equal(env.frames.size, 0, 'global dragover listener removed after ' + finish)
   }
 })
 
@@ -143,12 +171,31 @@ test('鼠标静止时滚动继续刷新新目标的 dragover，离开旧目标�
   }
   env.document.elementFromPoint = () => first
   beginDragPreview(env.event, env.source, '1')
+  env.dispatch('dragover', { clientX: 200, clientY: 590 })
   env.tick()
   env.document.elementFromPoint = () => second
   env.tick()
   assert.deepEqual(events.map(event => event.slice(0, 2)), [['first', 'dragover'], ['first', 'dragleave'], ['second', 'dragover']])
   assert.equal(events[0][2], 590)
   assert.equal(events[2][2], 590)
+})
+
+test('重开拖拽会清理上一次预览和 RAF，旧预览不会影响新会话', () => {
+  const env = environment()
+  const images = []
+  env.event.dataTransfer.setDragImage = image => images.push(image)
+  beginDragPreview(env.event, env.source, '1')
+  const observer = env.observer()
+  beginDragPreview(env.event, env.source, '2')
+  assert.equal(images[0].isConnected, false)
+  assert.equal(observer.connected, false)
+  assert.equal(images[1].isConnected, true)
+  env.tick()
+  assert.equal(images[1].isConnected, true)
+  endDragPreview()
+  endDragPreview()
+  assert.equal(images[1].isConnected, false)
+  assert.equal(env.frames.size, 0)
 })
 
 test('全部 HTML5 排序入口共用拖拽生命周期且卸载时清理', async () => {

@@ -167,15 +167,21 @@ Agent 管理专属的 Xray 二进制、配置、服务与防火墙规则；不�
 Relay 描述入口 Server 的监听与目标，支持 TCP、UDP、TCP+UDP。
 目标可以是已有 Proxy、Landing 或手动 host / port；引用更新时按现有逻辑同步所涉及 Server 的 desired state。
 
+Relay 是单 Server 上的一条 L4 转发执行规则，只关心 Server、Listen、Protocol、Target、Enabled、Realm desired state 和 Agent 应用结果。创建原因、业务归属、权限、Client 来源及凭据、发布状态、订阅收录和删除时机由 Subscription / Carpool 等上层业务决定，不向 Relay 继续添加业务布尔字段。
+
+Manual Target 当前只是 Relay 的轻量固定目标能力，不代表完整 Port Forward 产品模型；不要求目标 Client 凭据，也不产生普通 Proxy 分享语义或成为个人订阅来源。Carpool 自定义目标的专用分享仍由其业务入口复用来源 Client。若需要独立 ACL、源 IP 白名单、限速、最大连接数、独立流量配额、计费或复杂 UDP 生命周期，应新增 Port Forward 领域，不继续扩展 Relay。
+
+未来需要同时协调两台 Agent 的托管链路，例如 WireGuard 双端中转、SS2022 双端 Tunnel、入口 VPS 与落地 VPS 联动、两端创建 / 应用 / 回滚 / 退役或多跳路径，应新增独立 Tunnel 领域；不能直接塞入当前 Relay。本项目当前不实现 Port Forward 或 Tunnel。
+
 Proxy、Relay、Published Node 和个人订阅节点的 `enabled` 是保存的期望开关，与当前可用性分离。Agent 离线、公网 IP 探测失败或目标地址暂不可用不会写入禁用；Relay 目标无法解析时只跳过本次 Realm 配置。地址恢复使用既有依赖通知后重新生成配置，不需重新启用。管理员禁用、归档、到期和配额规则仍沿用原有业务生命周期。
 
 分享链接的入口地址来自 Relay，协议及认证参数来自目标节点，不能因中转地址改变而丢失目标 TLS / REALITY 参数。
 监听端口与 Proxy 共用现有端口预留检查，避免跨模块冲突。
 
 拼车用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
-这些资源不能绕过其归属流程直接修改。最后一条 Relay 的删除沿用与 Proxy 相同的清理能力检查。
+普通 Relay PATCH（包括启停、Target、监听地址和端口）及 DELETE 拒绝修改这些托管资源，admin 也不能绕过；Server 不属于现有 Relay PATCH 字段。拼车中转的修改仍经过拼车用户入口，管理员通过专用用户中转入口删除；数量限制由 Carpool 入口在创建事务内校验。普通及拼车中转删除最后一条 Relay 时沿用与 Proxy 相同的清理能力检查。
 
-中转页面复用只读 `subscription_published` 分类：false 为本地中转，true 为订阅发布中转；不增加分类字段。发布分类只提供查看和排障，创建、修改、启停及删除仍由「订阅管理 → 发布节点」和 `CreateSubscriptionRelayTx` 等专用生命周期负责。节点用途不限制 Relay target 或 Published Node target，direct 与 landing 仍遵循原有目标规则。
+中转页面复用只读 `subscription_published` 分类：false 为本地中转，true 为订阅发布中转；不增加分类字段。该兼容标识由已有 `subscription_published_nodes.relay_id` 关联派生，只用于托管保护和展示，不扩展其业务含义。发布分类只提供查看和排障，创建、修改、启停及删除仍由「订阅管理 → 发布节点」和 Subscription Service 负责：Subscription 在自己的事务内读取关联、检查套餐引用、协调订阅 Client 并维护 Relay，Relay 的 `CreateTx` / `UpdateTx` / `DeleteTx` 只执行转发参数校验及持久化。`UpdateTx` 返回变更状态，由调用方在同一事务中合并递增 affected Server 的 desired-state version；创建和删除沿用现有版本与操作记录写入。节点用途不限制 Relay target 或 Published Node target，direct 与 landing 仍遵循原有目标规则。
 
 Agent 在专属目录和服务中管理 Realm；清理只针对本项目拥有的运行时和防火墙资源。
 

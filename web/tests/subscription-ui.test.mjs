@@ -224,7 +224,7 @@ test('套餐节点保存失败保留 Modal、说明部分成功并刷新服务�
 test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => {
   assert.match(relaySource, /subscription_published/)
   assert.match(relaySource, /订阅发布/)
-  assert.match(relaySource, /v-if="!value\.subscription_published"/)
+  assert.match(relaySource, /v-if="!value\.owner_username && !value\.subscription_published"/)
   assert.match(clientSource, /client\.subscription_managed/)
   assert.match(clientSource, /订阅托管/)
   assert.match(clientSource, /v-if="!client\.subscription_managed"/)

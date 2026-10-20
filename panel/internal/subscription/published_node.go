@@ -120,7 +120,7 @@ func (s *Service) CreatePublishedNodeWithPlans(
 		} else {
 			port = *input.EntryPort
 		}
-		createdRelayID, createdMutation, err := s.relays.CreateSubscriptionRelayTx(ctx, tx, relay.CreateInput{
+		createdRelayID, createdMutation, err := s.relays.CreateTx(ctx, tx, relay.CreateInput{
 			ServerID: *input.SourceServerID, Name: name, ListenAddress: "0.0.0.0", ListenPort: port,
 			EntryHostMode: entryHostMode, EntryHost: entryHost,
 			TargetType: relay.TargetProxy, TargetProxyID: &input.TargetProxyID,
@@ -280,8 +280,8 @@ func (s *Service) UpdatePublishedNode(ctx context.Context, id int64, input Updat
 		if !relayID.Valid {
 			return PublishedNode{}, nil, ErrInvalidNodeTopology
 		}
-		serverID, changed, err := s.relays.UpdateSubscriptionRelayTx(ctx, tx, relayID.Int64, relay.SubscriptionRelayUpdateInput{
-			Name: name, ListenPort: listenPort, EntryHostMode: entryHostMode, EntryHost: entryHost, Enabled: enabled,
+		serverID, changed, err := s.relays.UpdateTx(ctx, tx, relayID.Int64, relay.UpdateInput{
+			Name: &name, ListenPort: &listenPort, EntryHostMode: &entryHostMode, EntryHost: &entryHost, Enabled: &enabled,
 		}, now)
 		if err != nil {
 			return PublishedNode{}, nil, err
@@ -431,7 +431,7 @@ func (s *Service) DeletePublishedNode(ctx context.Context, id int64) (*relay.Mut
 	}
 	var mutation *relay.Mutation
 	if relayID.Valid {
-		deletedMutation, err := s.relays.DeleteSubscriptionRelayTx(ctx, tx, relayID.Int64, now)
+		deletedMutation, err := s.relays.DeleteTx(ctx, tx, relayID.Int64, now)
 		if err != nil {
 			return nil, err
 		}

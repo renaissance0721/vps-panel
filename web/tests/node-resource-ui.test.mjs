@@ -147,6 +147,24 @@ test('中转默认本地分类，发布分类仅查看且不提供新增或拖�
   assert.doesNotMatch(published.html, /新增中转|>编辑<|>删除<|>禁用<|aria-label="拖动中转排序"/)
 })
 
+test('拼车托管中转只读，普通中转保留编辑启停删除入口', async () => {
+  const owned = { ...relay(1), owner_username: 'alice', source_client_id: 10,
+    created_at: '2026-10-20T00:00:00Z', updated_at: '2026-10-20T00:00:00Z' }
+  const managed = await withState(Relays, state => {
+    state.relays.value = [owned]; state.loading.value = false
+    state.selectedRelay.value = owned; state.detailOpen.value = true
+  }, { servers: [] })
+  assert.match(managed.html, /alice/)
+  assert.match(managed.html, /请通过拼车中转入口修改或在拼车面板中删除/)
+  assert.doesNotMatch(managed.html, />编辑<|>删除<|>禁用</)
+  const ordinary = await withState(Relays, state => {
+    state.relays.value = [relay(2)]; state.loading.value = false
+  }, { servers: [] })
+  assert.match(ordinary.html, />编辑</)
+  assert.match(ordinary.html, />禁用</)
+  assert.match(ordinary.html, />删除</)
+})
+
 test('受管节点配置开关独立于离线和公网 IP 状态，恢复不改手动禁用', async () => {
   const servers = [{ id: 1, status: 'offline', system_info: { public_ipv4: '203.0.113.1' } }]
   const model = useProxies({ servers, users: [] })

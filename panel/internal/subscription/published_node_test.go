@@ -153,8 +153,15 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 		t.Fatalf("stored shared Relay = %+v, error = %v", storedRelay, err)
 	}
 	newName := "blocked"
-	if _, _, err := relayService.Update(t.Context(), *created.RelayID, relay.UpdateInput{Name: &newName}); !errors.Is(err, relay.ErrSubscriptionManaged) {
-		t.Fatalf("generic Relay update error = %v", err)
+	newPort, targetHost, targetType := 24001, "bypass.example.com", relay.TargetManual
+	disabled, enabled := false, true
+	for _, input := range []relay.UpdateInput{
+		{Name: &newName}, {ListenPort: &newPort}, {Enabled: &disabled}, {Enabled: &enabled},
+		{TargetType: &targetType, TargetHost: &targetHost, TargetPort: &newPort},
+	} {
+		if _, _, err := relayService.Update(t.Context(), *created.RelayID, input); !errors.Is(err, relay.ErrSubscriptionManaged) {
+			t.Fatalf("generic Relay update error = %v", err)
+		}
 	}
 	if _, err := relayService.Delete(t.Context(), *created.RelayID); !errors.Is(err, relay.ErrSubscriptionManaged) {
 		t.Fatalf("generic Relay delete error = %v", err)
@@ -183,7 +190,6 @@ func TestRelayPublishedNodeCreatesSharedRelayAndProtectsIt(t *testing.T) {
 	if err != nil || len(desired) != 2 {
 		t.Fatalf("desired Relays before disable = %+v, error = %v", desired, err)
 	}
-	disabled := false
 	updated, mutations, err = service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{Enabled: &disabled})
 	if err != nil || updated.Enabled || len(mutations) != 1 || mutations[0].Version != 4 {
 		t.Fatalf("disabled published node = %+v, mutations = %+v, error = %v", updated, mutations, err)
@@ -561,6 +567,55 @@ func TestRelayPublishedNodeCreationRollsBackRelay(t *testing.T) {
 	}
 	if version != 1 {
 		t.Fatalf("source desired state version = %d, want 1", version)
+	}
+}
+
+func TestPublishedNodeRelayMutationRollsBackWithBusinessTransaction(t *testing.T) {
+	for _, action := range []string{"update", "delete"} {
+		t.Run(action, func(t *testing.T) {
+			db, service := newSubscriptionTestService(t)
+			insertSubscriptionTestServer(t, db, 1, "Source", "198.51.100.10")
+			insertSubscriptionTestServer(t, db, 2, "Target", "203.0.113.20")
+			insertSubscriptionTestProxy(t, db, 20, 2, "Target", 443, relay.EntryHostAuto, "")
+			sourceID := int64(1)
+			created, mutation, err := service.CreatePublishedNode(t.Context(), CreatePublishedNodeInput{
+				Name: "Original", Mode: NodeModeRelay, SourceServerID: &sourceID, TargetProxyID: 20, Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action == "update" {
+				if _, err := db.Exec(`CREATE TRIGGER reject_node_update BEFORE UPDATE ON subscription_published_nodes
+					BEGIN SELECT RAISE(ABORT, 'reject published update'); END`); err != nil {
+					t.Fatal(err)
+				}
+				name := "Must roll back"
+				if _, _, err := service.UpdatePublishedNode(t.Context(), created.ID, UpdatePublishedNodeInput{Name: &name}); err == nil {
+					t.Fatal("expected published node update failure after Relay update")
+				}
+			} else {
+				if _, err := db.Exec(`CREATE TRIGGER reject_relay_delete BEFORE DELETE ON relays
+					BEGIN SELECT RAISE(ABORT, 'reject relay deletion'); END`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.DeletePublishedNode(t.Context(), created.ID); err == nil {
+					t.Fatal("expected Relay deletion failure after published node deletion")
+				}
+			}
+			stored, err := service.GetPublishedNode(t.Context(), created.ID)
+			if err != nil || stored.Name != created.Name || stored.RelayID == nil || *stored.RelayID != *created.RelayID {
+				t.Fatalf("published node was not restored: %v", err)
+			}
+			storedRelay, err := service.relays.Get(t.Context(), *created.RelayID)
+			if err != nil || storedRelay.Name != created.Name || !storedRelay.Enabled {
+				t.Fatalf("Relay was not restored: %v", err)
+			}
+			var version int64
+			if err := db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = 1`).Scan(&version); err != nil || version != mutation.Version {
+				t.Fatalf("rolled back desired version = %d, %v; want %d", version, err, mutation.Version)
+			}
+			assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM configuration_operations WHERE server_id = 1`, 1)
+		})
 	}
 }
 

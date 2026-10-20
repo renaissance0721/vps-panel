@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -574,6 +575,8 @@ func TestUserRelayUsesAssignedClientOwnershipPortChecksAndDesiredState(t *testin
 	if limited.Code != http.StatusConflict || !strings.Contains(limited.Body.String(), "最多") {
 		t.Fatalf("relay limit = %d, %s", limited.Code, limited.Body.String())
 	}
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE owner_user_id = ?`, maxUserRelays, fixture.userID)
+	assertDatabaseCount(t, fixture.db, `SELECT desired_state_version FROM servers WHERE id = ?`, int(versionDeleted), server.Server.ID)
 }
 
 func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
@@ -720,6 +723,38 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var versionBefore, operationsBefore int
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, server.Server.ID).Scan(&versionBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM configuration_operations`).Scan(&operationsBefore); err != nil {
+		t.Fatal(err)
+	}
+	for _, before := range []relaystore.Relay{assignedRelay, customRelay} {
+		path := "/api/relays/" + strconv.FormatInt(before.ID, 10)
+		for _, patch := range []map[string]any{
+			{"name": "admin bypass"}, {"enabled": false}, {"enabled": true},
+			{"server_id": server.Server.ID}, {"listen_address": "127.0.0.1"}, {"listen_port": 25000},
+			{"entry_host_mode": "manual", "entry_host": "bypass.example.com"}, {"network": "udp"},
+			{"target_type": "manual", "target_host": "127.0.0.1", "target_port": 80},
+			{"target_proxy_id": proxy.ID, "target_client_id": foreignClientID},
+		} {
+			response := performRequest(t, fixture.handler, http.MethodPatch, path, patch, fixture.adminCookie)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "该中转由拼车用户管理") {
+				t.Fatalf("admin user relay bypass with %v = %d, %s", patch, response.Code, response.Body.String())
+			}
+		}
+		response := performRequest(t, fixture.handler, http.MethodDelete, path, nil, fixture.adminCookie)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "在拼车面板中删除") {
+			t.Fatalf("admin user relay bypass deletion = %d, %s", response.Code, response.Body.String())
+		}
+		after, err := relayService.Get(t.Context(), before.ID)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("blocked requests changed user Relay: %v", err)
+		}
+	}
+	assertDatabaseCount(t, fixture.db, `SELECT desired_state_version FROM servers WHERE id = ?`, versionBefore, server.Server.ID)
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM configuration_operations`, operationsBefore)
 	wantSourceShare, err := proxystore.NewService(fixture.db).GetClientShareAtEndpoint(t.Context(), sourceClientID, proxystore.ShareEndpoint{
 		Address: customRelay.EntryAddress, Port: customRelay.ListenPort,
 	})
@@ -779,6 +814,12 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 			t.Fatalf("admin redaction %s = %d, %s", path, response.Code, response.Body.String())
 		}
 	}
+	adminDeletion := performRequest(t, fixture.handler, http.MethodDelete,
+		"/api/admin/user-relays/"+strconv.FormatInt(customBody.Relay.ID, 10), nil, fixture.adminCookie)
+	if adminDeletion.Code != http.StatusNoContent {
+		t.Fatalf("dedicated admin user relay deletion = %d, %s", adminDeletion.Code, adminDeletion.Body.String())
+	}
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, customBody.Relay.ID)
 }
 
 func TestDeletingTargetAssignedClientPurgesUserRelay(t *testing.T) {

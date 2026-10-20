@@ -75,14 +75,12 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutatio
 	return created, mutation, err
 }
 
-func (s *Service) CreateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, input CreateInput, now time.Time) (int64, Mutation, error) {
+// CreateTx persists a forwarding rule in the caller's business transaction.
+// The caller validates ownership, source restrictions and credential requirements.
+func (s *Service) CreateTx(ctx context.Context, tx *sql.Tx, input CreateInput, now time.Time) (int64, Mutation, error) {
 	value, err := normalizeCreate(input)
 	if err != nil {
 		return 0, Mutation{}, err
-	}
-	if value.OwnerUserID != nil || value.SourceClientID != nil || value.TargetType != TargetProxy ||
-		value.TargetProxyID == nil || value.TargetClientID != nil {
-		return 0, Mutation{}, ErrInvalidTarget
 	}
 	return s.createTx(ctx, tx, value, now.UTC().Truncate(time.Second))
 }
@@ -101,17 +99,6 @@ func (s *Service) createTx(ctx context.Context, tx *sql.Tx, value Relay, now tim
 		}
 		if value.EntryHostMode == EntryHostAuto && state.public == "" {
 			return 0, Mutation{}, ErrEntryUnavailable
-		}
-	}
-	if value.OwnerUserID != nil {
-		var count int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM relays WHERE owner_user_id = ?`, *value.OwnerUserID,
-		).Scan(&count); err != nil {
-			return 0, Mutation{}, fmt.Errorf("count user relays: %w", err)
-		}
-		if count >= MaxUserRelays {
-			return 0, Mutation{}, ErrUserRelayLimit
 		}
 	}
 	if err := validateTarget(ctx, tx, &value); err != nil {
@@ -165,41 +152,8 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	} else if managed {
 		return Relay{}, Mutation{}, ErrSubscriptionManaged
 	}
-	value, err = ValidateUpdateInput(value, input)
-	if err != nil {
+	if _, err := s.updateTx(ctx, tx, value, input, now); err != nil {
 		return Relay{}, Mutation{}, err
-	}
-	if net.ParseIP(value.ListenAddress).To4() == nil {
-		state, err := readServerIPv6State(ctx, tx, value.ServerID)
-		if err != nil {
-			return Relay{}, Mutation{}, err
-		}
-		if state.reported && !state.stack {
-			return Relay{}, Mutation{}, ErrIPv6Unavailable
-		}
-		if value.EntryHostMode == EntryHostAuto && state.public == "" {
-			return Relay{}, Mutation{}, ErrEntryUnavailable
-		}
-	}
-	if err := validateTarget(ctx, tx, &value); err != nil {
-		return Relay{}, Mutation{}, err
-	}
-	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, id, value.SourceClientID); err != nil {
-		return Relay{}, Mutation{}, err
-	}
-	_, err = tx.ExecContext(ctx,
-		`UPDATE relays SET name = ?, listen_address = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?,
-		 target_type = ?, target_proxy_id = ?, target_client_id = ?, target_landing_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
-		 WHERE id = ?`,
-		value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
-		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
-		value.Enabled, now.Unix(), id,
-	)
-	if listener.IsConflict(err) {
-		return Relay{}, Mutation{}, ErrPortConflict
-	}
-	if err != nil {
-		return Relay{}, Mutation{}, fmt.Errorf("update relay: %w", err)
 	}
 	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
@@ -213,6 +167,65 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (Rela
 	}
 	updated, err := s.Get(ctx, id)
 	return updated, Mutation{ServerID: value.ServerID, Version: version}, err
+}
+
+// UpdateTx only updates the forwarding rule. The owning business validates its
+// association and bumps affected server versions in the same transaction.
+func (s *Service) UpdateTx(ctx context.Context, tx *sql.Tx, id int64, input UpdateInput, now time.Time) (int64, bool, error) {
+	value, err := getForMutation(ctx, tx, id)
+	if err != nil {
+		return 0, false, err
+	}
+	changed, err := s.updateTx(ctx, tx, value, input, now.UTC().Truncate(time.Second))
+	return value.ServerID, changed, err
+}
+
+func (s *Service) updateTx(ctx context.Context, tx *sql.Tx, previous Relay, input UpdateInput, now time.Time) (bool, error) {
+	value, err := ValidateUpdateInput(previous, input)
+	if err != nil {
+		return false, err
+	}
+	if net.ParseIP(value.ListenAddress).To4() == nil {
+		state, err := readServerIPv6State(ctx, tx, value.ServerID)
+		if err != nil {
+			return false, err
+		}
+		if state.reported && !state.stack {
+			return false, ErrIPv6Unavailable
+		}
+		if value.EntryHostMode == EntryHostAuto && state.public == "" {
+			return false, ErrEntryUnavailable
+		}
+	}
+	if err := validateTarget(ctx, tx, &value); err != nil {
+		return false, err
+	}
+	if err := ensurePortAvailable(ctx, tx, value.ServerID, value.ListenPort, value.Network, value.ID, value.SourceClientID); err != nil {
+		return false, err
+	}
+	_, err = tx.ExecContext(ctx,
+		`UPDATE relays SET name = ?, listen_address = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?,
+		 target_type = ?, target_proxy_id = ?, target_client_id = ?, target_landing_id = ?, target_host = ?, target_port = ?, network = ?, enabled = ?, updated_at = ?
+		 WHERE id = ?`,
+		value.Name, value.ListenAddress, value.ListenPort, value.EntryHostMode, value.EntryHost, value.TargetType,
+		nullableID(value.TargetProxyID), nullableID(value.TargetClientID), nullableID(value.TargetLandingID), value.TargetHost, nullablePort(value), value.Network,
+		value.Enabled, now.Unix(), value.ID,
+	)
+	if listener.IsConflict(err) {
+		return false, ErrPortConflict
+	}
+	if err != nil {
+		return false, fmt.Errorf("update relay: %w", err)
+	}
+	changed := previous.Name != value.Name || previous.ListenAddress != value.ListenAddress ||
+		previous.ListenPort != value.ListenPort || previous.EntryHostMode != value.EntryHostMode ||
+		previous.EntryHost != value.EntryHost || previous.TargetType != value.TargetType ||
+		nullableID(previous.TargetProxyID) != nullableID(value.TargetProxyID) ||
+		nullableID(previous.TargetClientID) != nullableID(value.TargetClientID) ||
+		nullableID(previous.TargetLandingID) != nullableID(value.TargetLandingID) ||
+		previous.TargetHost != value.TargetHost || previous.TargetPort != value.TargetPort ||
+		previous.Network != value.Network || previous.Enabled != value.Enabled
+	return changed, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id int64) (Mutation, error) {
@@ -235,20 +248,14 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	if err != nil {
 		return Mutation{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, id); err != nil {
-		return Mutation{}, fmt.Errorf("delete relay: %w", err)
-	}
-	version, err := bumpVersion(ctx, tx, value.ServerID, now)
+	mutation, err := s.deleteTx(ctx, tx, value, now)
 	if err != nil {
-		return Mutation{}, err
-	}
-	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "delete", version, now); err != nil {
 		return Mutation{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Mutation{}, fmt.Errorf("commit relay deletion: %w", err)
 	}
-	return Mutation{ServerID: value.ServerID, Version: version}, nil
+	return mutation, nil
 }
 
 func validateDelete(ctx context.Context, query interface {
@@ -275,64 +282,32 @@ func validateDelete(ctx context.Context, query interface {
 	return value, nil
 }
 
-func (s *Service) UpdateSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, input SubscriptionRelayUpdateInput, now time.Time) (int64, bool, error) {
+// DeleteTx removes a forwarding rule after the owning business has validated
+// its lifecycle and removed its references in the same transaction.
+func (s *Service) DeleteTx(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (Mutation, error) {
 	value, err := getForMutation(ctx, tx, id)
 	if err != nil {
-		return 0, false, err
+		return Mutation{}, err
 	}
-	managed, err := subscriptionManaged(ctx, tx, id)
-	if err != nil {
-		return 0, false, err
-	}
-	if !managed {
-		return 0, false, ErrSubscriptionManaged
-	}
-	updated := value
-	updated.Name = input.Name
-	updated.ListenPort = input.ListenPort
-	updated.EntryHostMode = input.EntryHostMode
-	updated.EntryHost = input.EntryHost
-	updated.Enabled = input.Enabled
-	updated, err = normalizeRelay(updated)
-	if err != nil {
-		return 0, false, err
-	}
-	if err := ensurePortAvailable(ctx, tx, updated.ServerID, updated.ListenPort, updated.Network, id, updated.SourceClientID); err != nil {
-		return 0, false, err
-	}
-	changed := value.Name != updated.Name || value.ListenPort != updated.ListenPort ||
-		value.EntryHostMode != updated.EntryHostMode || value.EntryHost != updated.EntryHost ||
-		value.Enabled != updated.Enabled
-	now = now.UTC().Truncate(time.Second)
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE relays SET name = ?, listen_port = ?, entry_host_mode = ?, entry_host = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		updated.Name, updated.ListenPort, updated.EntryHostMode, updated.EntryHost, updated.Enabled, now.Unix(), id,
-	); listener.IsConflict(err) {
-		return 0, false, ErrPortConflict
-	} else if err != nil {
-		return 0, false, fmt.Errorf("update subscription relay: %w", err)
-	}
-	return value.ServerID, changed, nil
+	return s.deleteTx(ctx, tx, value, now.UTC().Truncate(time.Second))
 }
 
-func (s *Service) DeleteSubscriptionRelayTx(ctx context.Context, tx *sql.Tx, id int64, now time.Time) (Mutation, error) {
-	value, err := getForMutation(ctx, tx, id)
+func (s *Service) deleteTx(ctx context.Context, tx *sql.Tx, value Relay, now time.Time) (Mutation, error) {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, value.ID); err != nil {
+		return Mutation{}, fmt.Errorf("delete relay: %w", err)
+	}
+	version, err := bumpVersion(ctx, tx, value.ServerID, now)
 	if err != nil {
 		return Mutation{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM relays WHERE id = ?`, id); err != nil {
-		return Mutation{}, fmt.Errorf("delete subscription relay: %w", err)
-	}
-	version, err := bumpVersion(ctx, tx, value.ServerID, now.UTC().Truncate(time.Second))
-	if err != nil {
-		return Mutation{}, err
-	}
-	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", id, "delete", version, now); err != nil {
+	if err := operation.RecordTx(ctx, tx, value.ServerID, "relay", value.ID, "delete", version, now); err != nil {
 		return Mutation{}, err
 	}
 	return Mutation{ServerID: value.ServerID, Version: version}, nil
 }
 
+// This compatibility guard protects ordinary mutations; lifecycle decisions
+// belong to the business service that owns the reference.
 func subscriptionManaged(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, relayID int64) (bool, error) {

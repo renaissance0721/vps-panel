@@ -264,6 +264,11 @@ func TestPersonalSubscriptionResolvesAllSourcesNamesAndOrder(t *testing.T) {
 	if _, exists := sourceByKey[personalSourceKey(PersonalSourceRelay, manualRelay.ID)]; exists {
 		t.Fatalf("manual relay must not be a personal subscription candidate: %+v", sourceByKey)
 	}
+	if _, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceRelay, SourceID: manualRelay.ID, DisplayName: "Manual bypass", Enabled: true},
+	}); !errors.Is(err, ErrPersonalSourceNotFound) {
+		t.Fatalf("manual relay bypass error = %v", err)
+	}
 	proxyHost, proxyPort := "proxy-alt.example.com", 1443
 	relayHost, relayPort := "2001:db8::2", 2443
 	landingHost, landingPort := "2001:db8::3", 3443

@@ -3,11 +3,13 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
@@ -106,6 +108,41 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 		t.Fatalf("subscription Relay = server %d target %d", relayServerID, relayTargetProxyID)
 	}
 	originalRelayID := *created.Node.RelayID
+	relays := relaystore.NewService(fixture.db)
+	before, err := relays.Get(t.Context(), originalRelayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versionBefore, operationsBefore int
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, sourceServerID).Scan(&versionBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM configuration_operations`).Scan(&operationsBefore); err != nil {
+		t.Fatal(err)
+	}
+	relayPath := "/api/relays/" + strconv.FormatInt(originalRelayID, 10)
+	for _, patch := range []map[string]any{
+		{"name": "bypass"}, {"enabled": false}, {"enabled": true},
+		{"server_id": targetServerID}, {"listen_address": "127.0.0.1"}, {"listen_port": 25000},
+		{"entry_host_mode": "manual", "entry_host": "bypass.example.com"}, {"network": "udp"},
+		{"target_type": "manual", "target_host": "bypass.example.com", "target_port": 80},
+		{"target_proxy_id": targetProxy.ID}, {"target_client_id": targetProxy.Clients[0].ID},
+	} {
+		response := performRequest(t, fixture.handler, http.MethodPatch, relayPath, patch, fixture.cookie)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "请从订阅管理中操作") {
+			t.Fatalf("admin bypass with %v = %d, %s", patch, response.Code, response.Body.String())
+		}
+	}
+	response = performRequest(t, fixture.handler, http.MethodDelete, relayPath, nil, fixture.cookie)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "请从订阅管理中操作") {
+		t.Fatalf("admin bypass deletion = %d, %s", response.Code, response.Body.String())
+	}
+	after, err := relays.Get(t.Context(), originalRelayID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("blocked requests changed published Relay: %v", err)
+	}
+	assertDatabaseCount(t, fixture.db, `SELECT desired_state_version FROM servers WHERE id = ?`, versionBefore, sourceServerID)
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM configuration_operations`, operationsBefore)
 	conflictingUpdate := performRequest(t, fixture.handler, http.MethodPatch,
 		"/api/admin/subscription/nodes/"+strconv.FormatInt(created.Node.ID, 10), map[string]any{
 			"entry_host_mode": "manual", "entry_host": "realm.example.com",
@@ -128,6 +165,21 @@ func TestSubscriptionRelayServersAndPublishedNodeCreation(t *testing.T) {
 		updated.Node.EntryAddress != "updated.example.com" || updated.Node.EntryPort != 24445 {
 		t.Fatalf("update relay endpoint = %d, %s", update.Code, update.Body.String())
 	}
+	for _, enabled := range []bool{false, true} {
+		response := performRequest(t, fixture.handler, http.MethodPatch,
+			"/api/admin/subscription/nodes/"+strconv.FormatInt(created.Node.ID, 10), map[string]any{"enabled": enabled}, fixture.cookie)
+		stored, err := relays.Get(t.Context(), originalRelayID)
+		if response.Code != http.StatusOK || err != nil || stored.Enabled != enabled {
+			t.Fatalf("subscription toggle %v = %d, %s, %v", enabled, response.Code, response.Body.String(), err)
+		}
+	}
+	response = performRequest(t, fixture.handler, http.MethodDelete,
+		"/api/admin/subscription/nodes/"+strconv.FormatInt(created.Node.ID, 10), nil, fixture.cookie)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("subscription deletion = %d, %s", response.Code, response.Body.String())
+	}
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, originalRelayID)
+	assertDatabaseCount(t, fixture.db, `SELECT COUNT(*) FROM subscription_published_nodes WHERE id = ?`, 0, created.Node.ID)
 }
 
 func TestDecodeTrafficMultiplier(t *testing.T) {

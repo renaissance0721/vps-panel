@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Manual targets are lightweight fixed endpoints, not a Port Forward domain.
 const (
 	TargetProxy        = "proxy"
 	TargetLanding      = "landing"
@@ -14,7 +15,6 @@ const (
 	NetworkTCP         = "tcp"
 	NetworkUDP         = "udp"
 	NetworkBoth        = "tcp,udp"
-	MaxUserRelays      = 10
 	UserRelayPortStart = 20000
 	UserRelayPortEnd   = 29999
 	maxNameRunes       = 100
@@ -39,8 +39,8 @@ var (
 	ErrTargetUnavailable              = errors.New("relay target address is unavailable")
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
-	ErrUserRelayLimit                 = errors.New("user relay limit reached")
 	ErrSubscriptionManaged            = errors.New("relay is managed by a subscription published node")
+	ErrUserManaged                    = errors.New("relay is managed by a user relay lifecycle")
 )
 
 type Relay struct {
@@ -77,7 +77,7 @@ type Relay struct {
 	Enabled                 bool
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
-	SubscriptionPublished   bool
+	SubscriptionPublished   bool // Read-only compatibility marker derived from the owning business record.
 }
 
 type CreateInput struct {
@@ -118,12 +118,4 @@ type UpdateInput struct {
 type Mutation struct {
 	ServerID int64
 	Version  int64
-}
-
-type SubscriptionRelayUpdateInput struct {
-	Name          string
-	ListenPort    int
-	EntryHostMode string
-	EntryHost     string
-	Enabled       bool
 }

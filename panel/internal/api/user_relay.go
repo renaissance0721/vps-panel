@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/netip"
@@ -17,7 +18,7 @@ import (
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
-const maxUserRelays = relaystore.MaxUserRelays
+const maxUserRelays = 10
 
 var (
 	errUserRelayLimit     = errors.New("user relay limit reached")
@@ -188,11 +189,11 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		}
 		port := ports[int(choice.Int64())]
 		input.ListenPort = port
-		value, mutation, err := s.relays.Create(r.Context(), input)
+		value, mutation, err := s.createUserRelay(r.Context(), input)
 		if errors.Is(err, relaystore.ErrPortConflict) {
 			continue
 		}
-		if errors.Is(err, relaystore.ErrUserRelayLimit) {
+		if errors.Is(err, errUserRelayLimit) {
 			writeUserRelayError(w, errUserRelayLimit)
 			return
 		}
@@ -205,6 +206,36 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		return
 	}
 	writeUserRelayError(w, errUserRelayPortsFull)
+}
+
+func (s *server) createUserRelay(ctx context.Context, input relaystore.CreateInput) (relaystore.Relay, relaystore.Mutation, error) {
+	if err := relaystore.ValidateCreateInput(input); err != nil {
+		return relaystore.Relay{}, relaystore.Mutation{}, err
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return relaystore.Relay{}, relaystore.Mutation{}, fmt.Errorf("begin user relay creation: %w", err)
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM relays WHERE owner_user_id = ?`, input.OwnerUserID,
+	).Scan(&count); err != nil {
+		return relaystore.Relay{}, relaystore.Mutation{}, fmt.Errorf("count user relays: %w", err)
+	}
+	if count >= maxUserRelays {
+		return relaystore.Relay{}, relaystore.Mutation{}, errUserRelayLimit
+	}
+	id, mutation, err := s.relays.CreateTx(ctx, tx, input, now)
+	if err != nil {
+		return relaystore.Relay{}, relaystore.Mutation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return relaystore.Relay{}, relaystore.Mutation{}, fmt.Errorf("commit user relay creation: %w", err)
+	}
+	created, err := s.relays.Get(ctx, id)
+	return created, mutation, err
 }
 
 func (s *server) updateMyRelay(w http.ResponseWriter, r *http.Request, user auth.User) {

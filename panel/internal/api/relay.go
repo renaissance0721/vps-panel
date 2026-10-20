@@ -335,6 +335,10 @@ func (s *server) updateRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		writeRelayError(w, relaystore.ErrSubscriptionManaged)
 		return
 	}
+	if current.OwnerUserID != nil {
+		writeRelayError(w, relaystore.ErrUserManaged)
+		return
+	}
 	var request updateRelayRequest
 	if !decodeJSON(w, r, &request) {
 		return
@@ -411,6 +415,10 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		writeRelayError(w, relaystore.ErrSubscriptionManaged)
 		return
 	}
+	if value.OwnerUserID != nil {
+		writeRelayError(w, relaystore.ErrUserManaged)
+		return
+	}
 	server, err := s.servers.Get(r.Context(), value.ServerID)
 	if err != nil {
 		writeServerError(w, err)
@@ -474,6 +482,8 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "当前 Agent 不支持受管运行时清理，请先升级 Agent")
 	case errors.Is(err, relaystore.ErrSubscriptionManaged):
 		writeError(w, http.StatusConflict, "该中转正在用于订阅发布节点，请从订阅管理中操作")
+	case errors.Is(err, relaystore.ErrUserManaged):
+		writeError(w, http.StatusConflict, "该中转由拼车用户管理，请通过拼车中转入口修改或在拼车面板中删除")
 	case errors.Is(err, relaystore.ErrProxyNotFound):
 		writeError(w, http.StatusNotFound, "目标代理节点不存在或已移除")
 	case errors.Is(err, relaystore.ErrLandingNotFound):

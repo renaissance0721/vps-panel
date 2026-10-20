@@ -79,6 +79,14 @@ func TestRelayAPIAuthenticationAndCRUD(t *testing.T) {
 		updated.Relay.ListenAddress != "::" || updated.Relay.Enabled {
 		t.Fatalf("updated relay = %+v", updated.Relay)
 	}
+	enabled, targetHost, listenPort := true, "updated.example.com", 9503
+	update = performRequest(t, handler, http.MethodPatch, path, updateRelayRequest{
+		Enabled: &enabled, TargetHost: &targetHost, ListenPort: &listenPort,
+	}, cookie)
+	if update.Code != http.StatusOK || json.Unmarshal(update.Body.Bytes(), &updated) != nil ||
+		!updated.Relay.Enabled || updated.Relay.TargetHost != targetHost || updated.Relay.ListenPort != listenPort {
+		t.Fatalf("re-enabled manual relay = %d, %s", update.Code, update.Body.String())
+	}
 	list := performRequest(t, handler, http.MethodGet, "/api/relays", nil, cookie)
 	if list.Code != http.StatusOK || !json.Valid(list.Body.Bytes()) {
 		t.Fatalf("list relays = %d, %s", list.Code, list.Body.String())

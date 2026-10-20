@@ -282,6 +282,38 @@ const subscriberDetail = () => ({
   password_request: { id: 7, status: 'pending' },
 })
 
+test('订阅用户使用紧凑卡片显示摘要，不新增拖拽且沿用详情入口', async t => {
+  const value = { ...subscriberDetail(), enabled_node_count: 3, expires_at: null, plan_name: 'Friendship' }
+  const { html, state } = await render(Subscriptions, state => {
+    state.currentTab.value = 'users'; state.loading.value = false
+    state.users.value = [value, { ...value, user_id: 43, username: 'Second' }]
+  }, { role: 'admin' })
+  assert.equal((html.match(/class="subscription-user-card subscription-overview-card"/g) ?? []).length, 2)
+  assert.match(html, /Revenant/); assert.match(html, /Second/)
+  for (const label of ['正常', 'Friendship', '已用 / 总量', '6 G / 100 G', '到期时间', '节点数量', '3 个', '查看 / 编辑']) assert.ok(html.includes(label))
+  assert.doesNotMatch(html, /<table|draggable=|drag-handle/)
+  t.after(() => { globalThis.fetch = originalFetch })
+  let requested
+  globalThis.fetch = async url => { requested = url; return { ok: true, status: 200, json: async () => ({ user: value }) } }
+  await state.openUser(value)
+  assert.equal(requested, '/api/admin/subscription/users/42')
+  assert.equal(state.userModalOpen.value, true)
+  assert.equal(state.selectedUser.value.username, 'Revenant')
+})
+
+test('共享订阅卡片把额度和节点数合并摘要，保留编辑删除入口', async () => {
+  const { html } = await render(Subscriptions, state => {
+    state.currentTab.value = 'plans'; state.loading.value = false
+    state.plans.value = [1, 2].map(id => ({ id, name: `Shared ${id}`, enabled: true, traffic_limit_bytes: 100 * 2 ** 30, nodes: [{ id }] }))
+  }, { role: 'admin' })
+  assert.match(html, /class="subscription-plan-grid"/)
+  assert.equal((html.match(/class="subscription-plan-card subscription-overview-card"/g) ?? []).length, 2)
+  assert.equal((html.match(/class="subscription-plan-summary"/g) ?? []).length, 2)
+  assert.ok(html.includes('100 G')); assert.ok(html.includes('1 个'))
+  assert.equal((html.match(/>编辑</g) ?? []).length, 2)
+  assert.equal((html.match(/>删除</g) ?? []).length, 2)
+})
+
 test('订阅用户详情按服务端顺序展示已计费流量，历史差额独立显示且不重复乘倍率', async () => {
   const { html, state } = await render(Subscriptions, state => {
     state.loading.value = false

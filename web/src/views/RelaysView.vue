@@ -702,8 +702,8 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
     <n-empty v-else-if="filteredRelays.length === 0" description="当前没有中转规则" />
     <div v-else class="server-table-wrap">
       <table class="server-table relay-table">
-        <thead><tr><th v-if="category === 'local'" class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口地址</th><th>监听端口</th><th>目标</th><th>客户端</th><th>状态</th><th>操作</th></tr></thead>
-        <TransitionGroup tag="tbody" name="table-row-order">
+        <thead><tr><th v-if="category === 'local'" class="reorder-cell" aria-label="排序"></th><th>名称</th><th>服务器</th><th>入口</th><th>目标</th><th>客户端</th><th>状态</th><th>操作</th></tr></thead>
+        <TransitionGroup :key="category" tag="tbody" name="table-row-order">
           <tr v-for="value in filteredRelays" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropRelay(value.id)">
             <td v-if="category === 'local'" class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null || !!search.trim() }" :title="search.trim() ? '清除搜索后可调整顺序' : '拖动排序'" :draggable="reorderingID === null && !search.trim()" aria-label="拖动中转排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>
@@ -717,10 +717,9 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
             </td>
             <td>{{ value.server_name }}</td>
             <td>
-              <span>{{ value.entry_address || '入口地址不可用' }}</span>
+              <span>{{ relayEndpointLabel(value.entry_address, value.listen_port) }}</span>
               <small class="secondary-text">{{ value.entry_host_mode === 'auto' ? '自动检测' : '手动' }}</small>
             </td>
-            <td>{{ value.listen_port }}</td>
             <td>{{ value.owner_username && value.target_type === 'manual' ? '自定义落地' : relayTargetLabel(value) }}</td>
             <td>{{ value.target_client_name || '—' }}</td>
             <td>

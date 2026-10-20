@@ -1445,20 +1445,28 @@ onUnmounted(() => {
 
   <section v-else-if="currentTab === 'users'" class="subscription-section">
     <n-empty v-if="users.length === 0" description="暂无订阅用户" />
-    <div v-else class="server-table-wrap"><table class="server-table"><thead><tr><th>用户</th><th>共享订阅</th><th>已用 / 总量</th><th>到期</th><th>节点</th><th>状态</th><th>操作</th></tr></thead><tbody>
-      <tr v-for="value in users" :key="value.user_id"><td>{{ value.username }}</td><td>{{ value.plan_name || '未开通' }}</td><td>{{ formatClientTrafficBytes(value.used_bytes) }} / {{ value.traffic_limit_bytes !== null ? formatClientTrafficBytes(value.traffic_limit_bytes) : '不限' }}</td><td>{{ value.expires_at ? formatTime(value.expires_at) : '不限' }}</td><td>{{ value.enabled_node_count }}</td><td><n-tag :type="value.active ? 'success' : 'warning'" size="small">{{ statusLabels[value.status] ?? value.status }}</n-tag></td><td><n-button size="small" secondary @click="openUser(value)">查看 / 编辑</n-button></td></tr>
-    </tbody></table></div>
+    <div v-else class="subscription-user-grid">
+      <n-card v-for="value in users" :key="value.user_id" class="subscription-user-card subscription-overview-card" size="small" :title="value.username">
+        <template #header-extra><n-tag :type="value.active ? 'success' : 'warning'" size="small">{{ statusLabels[value.status] ?? value.status }}</n-tag></template>
+        <div class="personal-subscription-summary">
+          <div><span>共享订阅</span><strong>{{ value.plan_name || '未开通' }}</strong></div>
+          <div><span>已用 / 总量</span><strong>{{ formatClientTrafficBytes(value.used_bytes) }} / {{ value.traffic_limit_bytes !== null ? formatClientTrafficBytes(value.traffic_limit_bytes) : '不限' }}</strong></div>
+          <div><span>到期时间</span><strong>{{ value.expires_at ? formatTime(value.expires_at) : '不限' }}</strong></div>
+          <div><span>节点数量</span><strong>{{ value.enabled_node_count }} 个</strong></div>
+        </div>
+        <div class="subscription-card-actions"><n-button size="small" secondary @click="openUser(value)">查看 / 编辑</n-button></div>
+      </n-card>
+    </div>
   </section>
 
   <section v-else-if="currentTab === 'plans'" class="subscription-section">
     <div class="section-heading"><span></span><n-button type="primary" @click="openCreatePlan">新增共享订阅</n-button></div>
     <n-empty v-if="plans.length === 0" description="暂无共享订阅" />
-    <div v-else class="user-management-grid">
-      <n-card v-for="value in plans" :key="value.id" :title="value.name">
-        <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
-        <p>{{ value.traffic_limit_bytes !== null ? formatClientTrafficBytes(value.traffic_limit_bytes) : '不限流量' }}</p>
-        <p>{{ value.nodes.length }} 个节点</p>
-        <div class="modal-actions"><n-button secondary @click="openEditPlan(value)">编辑</n-button><n-button type="error" secondary @click="deletePlan(value)">删除</n-button></div>
+    <div v-else class="subscription-plan-grid">
+      <n-card v-for="value in plans" :key="value.id" class="subscription-plan-card subscription-overview-card" size="small" :title="value.name">
+        <template #header-extra><n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '停用' }}</n-tag></template>
+        <div class="subscription-plan-summary"><span>流量额度：<strong>{{ value.traffic_limit_bytes !== null ? formatClientTrafficBytes(value.traffic_limit_bytes) : '不限流量' }}</strong></span><span>节点数量：<strong>{{ value.nodes.length }} 个</strong></span></div>
+        <div class="subscription-card-actions"><n-button size="small" secondary @click="openEditPlan(value)">编辑</n-button><n-button size="small" type="error" secondary @click="deletePlan(value)">删除</n-button></div>
       </n-card>
     </div>
   </section>
@@ -1806,6 +1814,61 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.subscription-user-grid,
+.subscription-plan-grid {
+  display: grid;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.subscription-user-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
+
+.subscription-plan-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.subscription-overview-card {
+  min-width: 0;
+}
+
+.subscription-overview-card :deep(.n-card-header) {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.subscription-overview-card :deep(.n-card-header__main) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.subscription-overview-card :deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subscription-plan-summary,
+.subscription-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.subscription-plan-summary {
+  color: var(--color-text-secondary);
+}
+
+.subscription-plan-summary strong {
+  color: var(--color-text);
+}
+
+.subscription-card-actions {
+  justify-content: flex-end;
+  margin-top: auto;
+}
+
 .personal-subscription-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1888,6 +1951,12 @@ onUnmounted(() => {
 
 .personal-subscription-summary > div:last-child {
   border-bottom: 0;
+}
+
+.subscription-user-card .personal-subscription-summary > div {
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
 }
 
 .personal-subscription-summary span,
@@ -2107,6 +2176,7 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
+  .subscription-plan-grid,
   .personal-subscription-grid {
     grid-template-columns: 1fr;
   }
@@ -2133,6 +2203,10 @@ onUnmounted(() => {
 }
 
 @media (max-width: 560px) {
+  .subscription-user-grid {
+    grid-template-columns: 1fr;
+  }
+
   .personal-subscription-summary > div {
     grid-template-columns: 1fr;
     gap: 3px;

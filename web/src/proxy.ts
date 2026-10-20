@@ -38,7 +38,7 @@ export function manualEntryHostMatchesFamily(host: string, family: ProxyListenFa
 
 export function proxyListProtocolFields(protocol: ProxyProtocol, security?: 'tls' | 'reality') {
   if (protocol === 'shadowsocks') {
-    return { protocol: 'Shadowsocks', transport: '--', security: '--', flow: '--' }
+    return { protocol: 'SS', transport: '--', security: '--', flow: '--' }
   }
   return {
     protocol: 'VLESS',

@@ -27,7 +27,7 @@ test('代理列表按协议显示字段', () => {
     protocol: 'VLESS', transport: 'TCP', security: 'REALITY', flow: 'XTLS Vision',
   })
   assert.deepEqual(proxyListProtocolFields('shadowsocks'), {
-    protocol: 'Shadowsocks', transport: '--', security: '--', flow: '--',
+    protocol: 'SS', transport: '--', security: '--', flow: '--',
   })
 })
 

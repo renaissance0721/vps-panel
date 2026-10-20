@@ -115,7 +115,7 @@ test('服务器和代理拖拽使用完整行预览、源行淡化与目标占�
     assert.match(view, /beginDragPreview\(event, source, String\(id\)\)/)
     assert.match(view, /endDragPreview\(\)/)
     assert.match(view, /row-drop-target/)
-    assert.match(view, /<TransitionGroup tag="tbody" name="table-row-order">/)
+    assert.match(view, /<TransitionGroup(?: :key="nodeRole")? tag="tbody" name="table-row-order">/)
   }
   assert.match(style, /\.drag-source,[\s\S]*opacity:\s*0\.38 !important/)
   assert.match(style, /\.server-table tr\.row-drop-target,\s*\.account-row\.row-drop-target\s*{[^}]*background:\s*var\(--color-primary-soft\)/)
@@ -129,9 +129,18 @@ test('代理 IP 和入口地址展示去重且处理缺失值', async () => {
   assert.deepEqual(proxyAddressLines({ server_public_ipv4: '1.2.3.4', entry_address: '1.2.3.4' }), ['1.2.3.4'])
   assert.deepEqual(proxyAddressLines({ server_public_ipv4: '', entry_address: '' }), ['未检测'])
   const view = await source('components/proxy/ProxyList.vue')
-  assert.match(view, /<th>IP \/ 地址<\/th>/)
+  assert.match(view, /<th>入口<\/th>/)
   assert.match(view, /proxyAddressLines\(value\)/)
   assert.doesNotMatch(view, /<th>出口 IP<\/th>/)
+})
+
+test('代理和中转按分类替换 TransitionGroup，稳定分类内保留排序动画', async () => {
+  for (const [path, category] of [['components/proxy/ProxyList.vue', 'nodeRole'], ['views/RelaysView.vue', 'category']]) {
+    const view = await source(path)
+    assert.ok(view.includes(`<TransitionGroup :key="${category}" tag="tbody" name="table-row-order">`))
+    assert.match(view, /:key="value.id"/)
+    assert.match(view, new RegExp(`watch\\(${category}, endDrag\\)`))
+  }
 })
 
 test('服务器基本信息使用单一修改入口和统一表单', async () => {

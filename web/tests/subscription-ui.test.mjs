@@ -11,6 +11,17 @@ const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import
 const clientSource = await readFile(new URL('../src/components/proxy/ClientList.vue', import.meta.url), 'utf8')
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
 
+test('订阅用户自适应卡片、共享订阅双列且窄屏单列', () => {
+  const users = managementSource.slice(managementSource.indexOf("currentTab === 'users'"), managementSource.indexOf("currentTab === 'plans'"))
+  assert.match(users, /class="subscription-user-grid"/)
+  assert.match(users, /@click="openUser\(value\)"/)
+  assert.doesNotMatch(users, /<table|TransitionGroup|dragstart|draggable/)
+  assert.match(managementSource, /\.subscription-user-grid\s*\{\s*grid-template-columns: repeat\(auto-fill, minmax\(min\(100%, 280px\), 1fr\)\)/)
+  assert.match(managementSource, /\.subscription-plan-grid\s*\{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(managementSource, /@media \(max-width: 900px\)\s*\{\s*\.subscription-plan-grid,[\s\S]*?grid-template-columns: 1fr/)
+  assert.doesNotMatch(styleSource, /min-width:\s*(1080|1040)px/)
+})
+
 test('订阅用户登录进入独立 Subscriber Portal 且不加载管理端数据', () => {
   assert.match(appSource, /state\.value\.user\?\.role === 'carpool' \|\| state\.value\.user\?\.role === 'subscriber'[\s\S]*stopServerPolling\(\)[\s\S]*return/)
   assert.match(appSource, /<SubscriberPortalView[^>]*state\.user\?\.role === 'subscriber'/)

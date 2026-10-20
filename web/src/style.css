@@ -384,10 +384,6 @@ td.server-actions {
   gap: 8px;
 }
 
-.proxy-table {
-  min-width: 1080px;
-}
-
 .secondary-text {
   display: block;
   margin-top: 3px;
@@ -696,10 +692,6 @@ td.server-actions {
   font-weight: 600;
 }
 
-.relay-table {
-  min-width: 1040px;
-}
-
 .relay-name-cell {
   display: inline-flex;
   align-items: center;
@@ -936,6 +928,18 @@ td.server-actions {
   color: #65717e;
   font-size: 12px;
   font-weight: 700;
+}
+
+.proxy-table th,
+.proxy-table td,
+.relay-table th,
+.relay-table td {
+  padding: 10px 8px;
+}
+
+.proxy-table .server-action-buttons,
+.relay-table .server-action-buttons {
+  min-width: 104px;
 }
 
 .server-table tbody tr:last-child td {

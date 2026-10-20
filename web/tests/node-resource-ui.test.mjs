@@ -28,7 +28,7 @@ const proxy = (id, node_role = 'direct') => ({ id, node_role, name: `managed-${i
 const external = (id, node_role = 'direct') => ({ id, node_role, name: `external-${id}`, host: 'example.com', port: 443,
   protocol: 'vless', visibility: 'private', owned_by_me: true })
 const relay = (id, subscription_published = false) => ({ id, server_id: 1, subscription_published, name: `relay-${id}`, server_name: 'server',
-  entry_address: 'relay.example.com', target_type: 'manual', target_host: 'example.com', target_port: 443,
+  entry_address: 'relay.example.com', listen_address: '0.0.0.0', listen_port: 35152, entry_host_mode: 'auto', target_type: 'manual', target_host: 'example.com', target_port: 443,
   target_address_ready: true, target_client_name: '', enabled: true })
 async function withState(component, seed, props = {}) {
   const setup = component.setup
@@ -77,6 +77,45 @@ test('受管节点分类内搜索、用途表单和包含隐藏行的排序', as
   const form = await renderToString(createSSRApp(ProxyForm, { model: reactive(model) }))
   assert.match(form, /节点用途/); assert.match(form, /value="landing"/)
   model.resetProxyForm(); assert.equal(model.proxyNodeRole.value, 'direct')
+})
+
+test('受管节点合并入口与端口，保留辅助地址，列表仅显示 VLESS 或 SS', async () => {
+  const model = useProxies({ servers: [], users: [] })
+  model.proxies.value = [
+    { ...proxy(1), server_public_ipv4: '43.165.180.105', entry_address: 'azjp.lvrin.com', listen_port: 35152 },
+    { ...proxy(2), listen_family: 'ipv6', server_public_ipv6: '2001:db8::1', entry_address: 'v6.example.com', listen_port: 35152 },
+    { ...proxy(3), entry_address: 'domain.example.com', protocol: 'shadowsocks', config: { method: '2022-blake3-aes-128-gcm' } },
+    { ...proxy(4), entry_address: '', server_public_ipv4: '' },
+  ]
+  model.loading.value = false
+  const html = await renderToString(createSSRApp(ProxyList, { model: reactive(model) }))
+  const table = html.match(/<table\b[\s\S]*?<\/table>/)?.[0] ?? ''
+  const headers = [...table.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/g)].map(match => match[1])
+  assert.deepEqual(headers, ['', '名称', '服务器', '入口', '协议', '状态', '操作'])
+  assert.match(table, /43\.165\.180\.105:35152/)
+  assert.match(table, /azjp\.lvrin\.com/)
+  assert.match(table, /\[2001:db8::1\]:35152/)
+  assert.match(table, /v6\.example\.com/)
+  assert.match(table, /domain\.example\.com:443/)
+  assert.match(table, />VLESS</); assert.match(table, />SS</)
+  assert.match(table, />未检测</); assert.doesNotMatch(table, /未检测:443/)
+  assert.doesNotMatch(table, /TCP|TLS|REALITY|XTLS|blake3|<th[^>]*>端口</)
+})
+
+test('中转合并入口复用 IPv6 格式化且不保留监听端口列', async () => {
+  const { html } = await withState(Relays, state => {
+    state.loading.value = false
+    state.relays.value = [
+      { ...relay(1), entry_address: 'azjp.lvrin.com' },
+      { ...relay(2), entry_address: '43.165.180.105' },
+      { ...relay(3), entry_address: '2001:db8::1' },
+    ]
+  }, { servers: [] })
+  const table = html.match(/<table\b[\s\S]*?<\/table>/)?.[0] ?? ''
+  const headers = [...table.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/g)].map(match => match[1])
+  assert.deepEqual(headers, ['', '名称', '服务器', '入口', '目标', '客户端', '状态', '操作'])
+  for (const endpoint of ['azjp.lvrin.com:35152', '43.165.180.105:35152', '[2001:db8::1]:35152']) assert.ok(table.includes(endpoint))
+  assert.match(table, /自动检测/)
 })
 
 test('外部节点同卡片分类、表单提交用途，排序不会跨分类', async () => {

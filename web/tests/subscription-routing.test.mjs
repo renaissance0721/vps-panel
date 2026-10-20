@@ -86,7 +86,7 @@ test('分流方案操作使用独立横向按钮组，中转列表仅隐藏 Netw
   assert.doesNotMatch(routingList, /class="modal-actions"/)
 
   const relayList = relays.slice(relays.indexOf('<table class="server-table relay-table">'), relays.indexOf('</table>'))
-  assert.match(relayList, /<th>名称<\/th><th>服务器<\/th><th>入口<\/th><th>目标<\/th><th>客户端<\/th><th>状态<\/th><th>操作<\/th>/)
+  assert.match(relayList, /<th>名称<\/th><th>服务器<\/th><th>入口<\/th><th>目标<\/th><th>状态<\/th><th>操作<\/th>/)
   assert.doesNotMatch(relayList, /<th>Network<\/th>|relayNetworkLabel\(value\.network\)/)
   assert.match(relays, /<span>Network<\/span>[\s\S]*v-model="network"/)
   assert.match(relays, /relayNetworkLabel\(selectedRelay\.network\)/)

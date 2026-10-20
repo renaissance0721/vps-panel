@@ -134,8 +134,8 @@ test('代理 IP 和入口地址展示去重且处理缺失值', async () => {
   assert.doesNotMatch(view, /<th>出口 IP<\/th>/)
 })
 
-test('代理和中转按分类替换 TransitionGroup，稳定分类内保留排序动画', async () => {
-  for (const [path, category] of [['components/proxy/ProxyList.vue', 'nodeRole'], ['views/RelaysView.vue', 'category']]) {
+test('受管节点、外部节点和中转按分类替换 TransitionGroup，稳定分类内保留排序动画', async () => {
+  for (const [path, category] of [['components/proxy/ProxyList.vue', 'nodeRole'], ['components/proxy/ExternalNodeManager.vue', 'category'], ['views/RelaysView.vue', 'category']]) {
     const view = await source(path)
     assert.ok(view.includes(`<TransitionGroup :key="${category}" tag="tbody" name="table-row-order">`))
     assert.match(view, /:key="value.id"/)

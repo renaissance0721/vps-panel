@@ -268,7 +268,7 @@ onUnmounted(() => {
     <div v-else class="server-table-wrap">
       <table class="server-table external-node-table">
         <thead><tr><th class="reorder-cell" aria-label="排序"></th><th>名称</th><th>协议</th><th>地址</th><th>端口</th><th>可见性</th><th>所有者状态</th><th>操作</th></tr></thead>
-        <TransitionGroup tag="tbody" name="table-row-order">
+        <TransitionGroup :key="category" tag="tbody" name="table-row-order">
           <tr v-for="value in filteredLandings" :key="value.id" :class="{ 'row-dragging': draggedID === value.id, 'row-drop-target': dropTargetID === value.id }" @dragover="dragOver($event, value.id)" @dragleave="dropTargetID === value.id && (dropTargetID = null)" @drop.prevent="dropExternalNode(value.id)">
             <td class="reorder-cell">
               <span class="drag-handle" :class="{ 'drag-handle--disabled': reorderingID !== null }" :draggable="reorderingID === null" title="拖动排序" aria-label="拖动外部节点排序" @dragstart="startDrag($event, value.id)" @dragend="endDrag"><span></span><span></span><span></span></span>

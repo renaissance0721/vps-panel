@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, reactive } from 'vue'
+import { createSSRApp, nextTick, reactive } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let loader, useProxies, ProxyList, ProxyForm, External, Relays
@@ -113,9 +113,54 @@ test('中转合并入口复用 IPv6 格式化且不保留监听端口列', async
   }, { servers: [] })
   const table = html.match(/<table\b[\s\S]*?<\/table>/)?.[0] ?? ''
   const headers = [...table.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/g)].map(match => match[1])
-  assert.deepEqual(headers, ['', '名称', '服务器', '入口', '目标', '客户端', '状态', '操作'])
+  assert.deepEqual(headers, ['', '名称', '服务器', '入口', '目标', '状态', '操作'])
   for (const endpoint of ['azjp.lvrin.com:35152', '43.165.180.105:35152', '[2001:db8::1]:35152']) assert.ok(table.includes(endpoint))
   assert.match(table, /自动检测/)
+})
+
+test('中转列表隐藏目标客户端单元格，详情分享与编辑选择仍保留', async () => {
+  const value = { ...relay(1), target_type: 'proxy', target_proxy_id: 2, target_client_id: 8,
+    target_client_name: 'list-client-name-must-not-render', target_proxy_name: '目标代理', network: 'tcp',
+    created_at: '2026-10-20T00:00:00Z', updated_at: '2026-10-20T00:00:00Z' }
+  const { html, state } = await withState(Relays, state => {
+    state.loading.value = false; state.relays.value = [value]
+    state.formOpen.value = true; state.targetType.value = 'proxy'; state.targetProxyID.value = 2
+    state.targetClientID.value = 8; state.targetClients.value = [{ id: 8, name: '目标手机', status: 'normal' }]
+    state.selectedRelay.value = value; state.detailOpen.value = true
+    state.relayClients.value = [{ client: { id: 8, name: '目标手机', status: 'normal', effective_enabled: true },
+      protocol: 'vless', uri: 'vless://fixture@relay.example.com:35152', network_compatible: true }]
+  }, { servers: [] })
+  const table = html.match(/<table\b[\s\S]*?<\/table>/)?.[0] ?? ''
+  assert.doesNotMatch(table, /客户端|list-client-name-must-not-render/)
+  assert.equal((table.match(/<td(?:\s[^>]*)?>/g) ?? []).length, 7)
+  assert.equal(state.targetClientID.value, 8)
+  assert.match(html, /<option[^>]*value="8"[^>]*>目标手机 · 正常<\/option>/)
+  assert.match(html, /class="relay-client-share"/)
+  assert.match(html, /中转 URI/); assert.match(html, />二维码</); assert.match(html, />复制链接</)
+})
+
+test('外部节点连续分类切换不请求 API，落地分类拖拽后两类顺序分别保持', async () => {
+  const rows = [external(3), external(4, 'landing'), external(2), external(5, 'landing'), external(1)]
+  const { state } = await withState(External, state => {
+    state.landings.value = rows.map(row => ({ ...row })); state.loading.value = false
+  })
+  const calls = mockOrder('landings', rows)
+  for (let index = 0; index < 24; index++) {
+    state.category.value = index % 2 ? 'landing' : 'direct'
+    await nextTick()
+    assert.deepEqual(state.filteredLandings.value.map(row => row.id), index % 2 ? [4, 5] : [3, 2, 1])
+    assert.deepEqual(state.landings.value.map(row => row.id), [3, 4, 2, 5, 1])
+    assert.equal(state.loading.value, false)
+  }
+  assert.equal(calls.length, 0)
+  state.draggedID.value = 5; await state.dropExternalNode(4)
+  assert.equal(calls.length, 3)
+  assert.deepEqual(state.filteredLandings.value.map(row => row.id), [5, 4])
+  await state.loadExternalNodes()
+  assert.deepEqual(state.filteredLandings.value.map(row => row.id), [5, 4])
+  state.category.value = 'direct'; await nextTick()
+  assert.deepEqual(state.filteredLandings.value.map(row => row.id), [3, 2, 1])
+  assert.equal(calls.length, 4)
 })
 
 test('外部节点同卡片分类、表单提交用途，排序不会跨分类', async () => {

@@ -942,6 +942,10 @@ td.server-actions {
   min-width: 104px;
 }
 
+.relay-table .server-actions {
+  width: 1%;
+}
+
 .server-table tbody tr:last-child td {
   border-bottom: 0;
 }

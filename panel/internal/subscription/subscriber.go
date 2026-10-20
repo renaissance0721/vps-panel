@@ -44,7 +44,12 @@ func (s *Service) ListSubscribers(ctx context.Context) ([]Subscriber, error) {
 }
 
 func (s *Service) GetSubscriber(ctx context.Context, userID int64) (Subscriber, error) {
-	value, err := scanSubscriber(s.db.QueryRowContext(ctx, subscriberSelect+`
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Subscriber{}, fmt.Errorf("begin subscriber detail: %w", err)
+	}
+	defer tx.Rollback()
+	value, err := scanSubscriber(tx.QueryRowContext(ctx, subscriberSelect+`
 		WHERE users.id = ? AND users.role = 'subscriber'`, userID), s.now().UTC())
 	if errors.Is(err, sql.ErrNoRows) {
 		return Subscriber{}, ErrSubscriberNotFound
@@ -52,10 +57,57 @@ func (s *Service) GetSubscriber(ctx context.Context, userID int64) (Subscriber, 
 	if err != nil {
 		return Subscriber{}, fmt.Errorf("get subscriber: %w", err)
 	}
-	if err := s.loadSubscriberUsage(ctx, &value); err != nil {
+	// scanSubscriber initializes UsedBytes with archived charged usage.
+	value.UsedBytes, err = currentSubscriberUsage(ctx, tx, userID, value.UsedBytes, 0)
+	if err != nil {
 		return Subscriber{}, err
 	}
+	if err := loadSubscriberNodeUsage(ctx, tx, &value); err != nil {
+		return Subscriber{}, err
+	}
+	setSubscriberStatus(&value, s.now().UTC())
+	if err := tx.Commit(); err != nil {
+		return Subscriber{}, fmt.Errorf("commit subscriber detail: %w", err)
+	}
 	return value, nil
+}
+
+func loadSubscriberNodeUsage(ctx context.Context, tx *sql.Tx, value *Subscriber) error {
+	value.NodeUsage = make([]SubscriberNodeUsage, 0)
+	if value.PlanID == nil {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT nodes.id, nodes.name, nodes.mode,
+		nodes.traffic_multiplier_bp, nodes.target_proxy_id,
+		COALESCE(clients.charged_uplink_bytes, 0), COALESCE(clients.charged_downlink_bytes, 0)
+		FROM subscription_plan_nodes AS plan_nodes
+		JOIN subscription_published_nodes AS nodes ON nodes.id = plan_nodes.published_node_id
+		LEFT JOIN subscriber_clients AS clients ON clients.proxy_id = nodes.target_proxy_id AND clients.user_id = ?
+		WHERE plan_nodes.plan_id = ? ORDER BY plan_nodes.position`, value.UserID, *value.PlanID)
+	if err != nil {
+		return fmt.Errorf("list subscriber node usage: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[int64]struct{})
+	for rows.Next() {
+		var node SubscriberNodeUsage
+		var proxyID int64
+		if err := rows.Scan(&node.PublishedNodeID, &node.Name, &node.Mode, &node.TrafficMultiplierBP,
+			&proxyID, &node.ChargedUplinkBytes, &node.ChargedDownlinkBytes); err != nil {
+			return fmt.Errorf("scan subscriber node usage: %w", err)
+		}
+		// A subscriber Client has exactly one published node in its current plan.
+		if _, duplicate := seen[proxyID]; duplicate {
+			return ErrInvalidPlanNodes
+		}
+		seen[proxyID] = struct{}{}
+		node.UsedBytes = saturatingAdd(node.ChargedUplinkBytes, node.ChargedDownlinkBytes)
+		value.NodeUsage = append(value.NodeUsage, node)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate subscriber node usage: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) UpdateSubscriber(ctx context.Context, userID int64, input UpdateSubscriberInput) (Subscriber, []proxystore.Mutation, error) {

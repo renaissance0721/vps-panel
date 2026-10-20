@@ -37,6 +37,7 @@ type subscriptionUserResponse struct {
 	EnabledNodeCount            int                            `json:"enabled_node_count"`
 	TrafficLimitBytes           *int64                         `json:"traffic_limit_bytes"`
 	UsedBytes                   int64                          `json:"used_bytes"`
+	NodeUsage                   []subscriberNodeUsageResponse  `json:"node_usage"`
 	CycleStartedAt              time.Time                      `json:"cycle_started_at"`
 	NextResetAt                 *time.Time                     `json:"next_reset_at"`
 	BillingPeriodMonths         *int                           `json:"billing_period_months"`
@@ -51,6 +52,16 @@ type subscriptionUserResponse struct {
 	PasswordRequest             *passwordChangeRequestResponse `json:"password_request,omitempty"`
 	CreatedAt                   time.Time                      `json:"created_at"`
 	UpdatedAt                   time.Time                      `json:"updated_at"`
+}
+
+type subscriberNodeUsageResponse struct {
+	PublishedNodeID      int64   `json:"published_node_id"`
+	Name                 string  `json:"name"`
+	Mode                 string  `json:"mode"`
+	TrafficMultiplier    float64 `json:"traffic_multiplier"`
+	ChargedUplinkBytes   int64   `json:"charged_uplink_bytes"`
+	ChargedDownlinkBytes int64   `json:"charged_downlink_bytes"`
+	UsedBytes            int64   `json:"used_bytes"`
 }
 
 func (s *server) listSubscriptionUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -220,9 +231,18 @@ func toSubscriptionUserResponse(value subscriptionstore.Subscriber, baseURL stri
 		TrafficResetTime: value.TrafficResetTime,
 		ClientCount:      value.ClientCount, EnabledNodeCount: value.EnabledNodeCount,
 		TrafficLimitBytes: value.TrafficLimitBytes, UsedBytes: value.UsedBytes,
+		NodeUsage:      make([]subscriberNodeUsageResponse, 0, len(value.NodeUsage)),
 		CycleStartedAt: value.CycleStartedAt, NextResetAt: value.NextResetAt,
 		BillingPeriodMonths: value.BillingPeriodMonths, Active: value.Active, Status: value.Status,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
+	for _, node := range value.NodeUsage {
+		response.NodeUsage = append(response.NodeUsage, subscriberNodeUsageResponse{
+			PublishedNodeID: node.PublishedNodeID, Name: node.Name, Mode: node.Mode,
+			TrafficMultiplier:  float64(node.TrafficMultiplierBP) / 100,
+			ChargedUplinkBytes: node.ChargedUplinkBytes, ChargedDownlinkBytes: node.ChargedDownlinkBytes,
+			UsedBytes: node.UsedBytes,
+		})
 	}
 	if includeToken {
 		urls := buildSubscriptionURLs(baseURL, value.SubscriptionToken)

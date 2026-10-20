@@ -197,6 +197,7 @@ type Subscriber struct {
 	EnabledNodeCount    int
 	TrafficLimitBytes   *int64
 	UsedBytes           int64
+	NodeUsage           []SubscriberNodeUsage
 	CycleStartedAt      time.Time
 	NextResetAt         *time.Time
 	BillingPeriodMonths *int
@@ -204,6 +205,16 @@ type Subscriber struct {
 	Status              string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type SubscriberNodeUsage struct {
+	PublishedNodeID      int64
+	Name                 string
+	Mode                 string
+	TrafficMultiplierBP  int
+	ChargedUplinkBytes   int64
+	ChargedDownlinkBytes int64
+	UsedBytes            int64
 }
 
 type UpdateSubscriberInput struct {

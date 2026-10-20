@@ -213,6 +213,8 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 管理员的订阅分发维护发布节点、套餐、subscriber 资料及相应 Client / Relay；subscriber 通过独立门户访问自己的资源。
 
+订阅用户详情在同一读取事务中返回本周期总量与按共享订阅节点顺序排列的 `node_usage`。明细直接读取 `subscriber_clients` 已应用倍率的 charged bytes，不再次乘倍率；当前发布节点倍率仅用于展示。移除 Client 后的 charged bytes 沿用 `subscriber_usage` 归档，总量与当前明细的正差额显示为历史 / 已移除节点，手动或周期重置继续同时清零归档及当前 charged usage。详情不新增统计表或轮询，链接与二维码复用个人订阅的格式选择及现有四种 URL；管理端 token 重置和 Mihomo 预览 API 保留。
+
 模板、路由配置及绑定由现有 subscription 模块校验，输出 Base64 节点列表、Mihomo YAML 或 Shadowrocket `.conf`。
 引用节点的权限、停用、到期、流量限制和删除影响，都应通过该模块已有生成与协调逻辑处理。
 公开订阅地址以不可猜测的 Token 授权；Token 重置后旧链接失效，不应记录到日志。

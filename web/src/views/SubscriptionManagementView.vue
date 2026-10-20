@@ -62,6 +62,13 @@ type MihomoConfiguration = {
   yaml: string
 }
 type PasswordRequest = { id: number; status: 'pending' | 'approved' | 'rejected' }
+type SubscriberNodeUsage = {
+  published_node_id: number
+  name: string
+  mode: 'direct' | 'relay'
+  traffic_multiplier: number
+  used_bytes: number
+}
 type Subscriber = {
   user_id: number
   username: string
@@ -82,6 +89,11 @@ type Subscriber = {
   active: boolean
   status: string
   subscription_url?: string
+  subscription_base64_url?: string
+  subscription_mihomo_url?: string
+  subscription_shadowrocket_url?: string
+  subscription_auto_url?: string
+  node_usage?: SubscriberNodeUsage[]
   password_request?: PasswordRequest
 }
 
@@ -119,7 +131,8 @@ type PersonalSubscription = {
   subscription_shadowrocket_url: string
   subscription_auto_url: string
 }
-type PersonalSubscriptionFormat = 'auto' | 'mihomo' | 'shadowrocket' | 'base64'
+type SubscriptionLinkFormat = 'auto' | 'mihomo' | 'shadowrocket' | 'base64'
+type SubscriptionLinks = Pick<PersonalSubscription, 'name' | 'subscription_auto_url' | 'subscription_base64_url' | 'subscription_mihomo_url' | 'subscription_shadowrocket_url'>
 type PersonalSource = {
   source_type: 'proxy' | 'relay' | 'landing'
   source_id: number
@@ -214,10 +227,8 @@ const userResetDay = ref(1)
 const userResetTime = ref('00:00')
 const userBillingMonths = ref(0)
 const userFormError = ref('')
-const copiedUserURL = ref(false)
-const mihomoPreviewOpen = ref(false)
-const mihomoPreviewYAML = ref('')
-const copiedMihomoPreview = ref(false)
+const historicalUserUsage = computed(() => Math.max(0, (selectedUser.value?.used_bytes ?? 0)
+  - (selectedUser.value?.node_usage ?? []).reduce((sum, node) => sum + node.used_bytes, 0)))
 
 const personalModalOpen = ref(false)
 const editingPersonal = ref<PersonalSubscription | null>(null)
@@ -233,13 +244,13 @@ const personalRoutingBindings = ref<RoutingBindings>({})
 const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
-const personalLinkModalOpen = ref(false)
-const personalLinkTarget = ref<PersonalSubscription | null>(null)
-const personalLinkFormat = ref<PersonalSubscriptionFormat>('auto')
-const personalLinkCopied = ref(false)
-const personalLinkError = ref('')
-const personalQR = ref<PersonalSubscription | null>(null)
-const personalQROpen = ref(false)
+const subscriptionLinkModalOpen = ref(false)
+const subscriptionLinkTarget = ref<SubscriptionLinks | null>(null)
+const subscriptionLinkFormat = ref<SubscriptionLinkFormat>('auto')
+const subscriptionLinkCopied = ref(false)
+const subscriptionLinkError = ref('')
+const subscriptionQR = ref<SubscriptionLinks | null>(null)
+const subscriptionQROpen = ref(false)
 const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
 const personalSourceAdderExpanded = ref(false)
 const personalSourceSearch = ref('')
@@ -755,7 +766,7 @@ async function deletePersonal(value: PersonalSubscription) {
   })
 }
 
-function personalSubscriptionURL(value: PersonalSubscription, format: PersonalSubscriptionFormat) {
+function subscriptionURL(value: SubscriptionLinks, format: SubscriptionLinkFormat) {
   switch (format) {
     case 'auto': return value.subscription_auto_url
     case 'mihomo': return value.subscription_mihomo_url
@@ -764,31 +775,41 @@ function personalSubscriptionURL(value: PersonalSubscription, format: PersonalSu
   }
 }
 
-function openPersonalLinkModal(value: PersonalSubscription) {
-  personalLinkTarget.value = value
-  personalLinkFormat.value = 'auto'
-  personalLinkCopied.value = false
-  personalLinkError.value = ''
-  personalLinkModalOpen.value = true
+function openSubscriptionLinkModal(value: SubscriptionLinks) {
+  subscriptionLinkTarget.value = value
+  subscriptionLinkFormat.value = 'auto'
+  subscriptionLinkCopied.value = false
+  subscriptionLinkError.value = ''
+  subscriptionLinkModalOpen.value = true
 }
 
-async function copyPersonalLink() {
-  const value = personalLinkTarget.value
-  const format = personalLinkFormat.value
+async function copySubscriptionLink() {
+  const value = subscriptionLinkTarget.value
+  const format = subscriptionLinkFormat.value
   if (!value) return
-  personalLinkCopied.value = false
-  personalLinkError.value = ''
+  subscriptionLinkCopied.value = false
+  subscriptionLinkError.value = ''
   try {
-    await navigator.clipboard.writeText(personalSubscriptionURL(value, format))
-    if (personalLinkTarget.value === value && personalLinkFormat.value === format) personalLinkCopied.value = true
+    await navigator.clipboard.writeText(subscriptionURL(value, format))
+    if (subscriptionLinkTarget.value === value && subscriptionLinkFormat.value === format) subscriptionLinkCopied.value = true
   } catch {
-    personalLinkError.value = '复制失败，请检查浏览器剪贴板权限后重试'
+    subscriptionLinkError.value = '复制失败，请检查浏览器剪贴板权限后重试'
   }
 }
 
-function showPersonalQR(value: PersonalSubscription) {
-  personalQR.value = value
-  personalQROpen.value = true
+function showSubscriptionQR(value: SubscriptionLinks) {
+  subscriptionQR.value = value
+  subscriptionQROpen.value = true
+}
+
+function subscriberLinks(value: Subscriber): SubscriptionLinks {
+  return {
+    name: value.username,
+    subscription_base64_url: value.subscription_base64_url ?? value.subscription_url ?? '',
+    subscription_mihomo_url: value.subscription_mihomo_url ?? '',
+    subscription_shadowrocket_url: value.subscription_shadowrocket_url ?? '',
+    subscription_auto_url: value.subscription_auto_url ?? '',
+  }
 }
 
 function personalSourceLabel(value: string, candidate = false) {
@@ -1288,7 +1309,6 @@ async function openUser(value: Subscriber) {
     userResetTime.value = response.user.traffic_reset_time
     userBillingMonths.value = response.user.billing_period_months ?? 0
     userFormError.value = ''
-    copiedUserURL.value = false
     userModalOpen.value = true
   })
 }
@@ -1332,41 +1352,9 @@ async function resetUserTraffic() {
   if (!value || !window.confirm(`确定重置 ${value.username} 的本周期流量吗？`)) return
   await run(async () => {
     const response = await api<{ user: Subscriber }>(`/api/admin/subscription/users/${value.user_id}/traffic/reset`, { method: 'POST' })
-    selectedUser.value = response.user
+    Object.assign(value, response.user)
     await loadAll()
   })
-}
-
-async function regenerateUserToken() {
-  const value = selectedUser.value
-  if (!value || !window.confirm('重新生成后，旧订阅链接会立即失效。确定继续吗？')) return
-  await run(async () => {
-    const response = await api<{ subscription_url: string }>(`/api/admin/subscription/users/${value.user_id}/token/regenerate`, { method: 'POST' })
-    value.subscription_url = response.subscription_url
-    copiedUserURL.value = false
-  })
-}
-
-async function copyUserURL() {
-  if (!selectedUser.value?.subscription_url) return
-  await navigator.clipboard.writeText(selectedUser.value.subscription_url)
-  copiedUserURL.value = true
-}
-
-async function previewUserMihomo() {
-  const value = selectedUser.value
-  if (!value) return
-  await run(async () => {
-    const response = await api<{ yaml: string }>(`/api/admin/subscription/users/${value.user_id}/mihomo-preview`)
-    mihomoPreviewYAML.value = response.yaml
-    copiedMihomoPreview.value = false
-    mihomoPreviewOpen.value = true
-  })
-}
-
-async function copyMihomoPreview() {
-  await navigator.clipboard.writeText(mihomoPreviewYAML.value)
-  copiedMihomoPreview.value = true
 }
 
 async function reviewUserPassword(action: 'approve' | 'reject') {
@@ -1446,8 +1434,8 @@ onUnmounted(() => {
           <div><span>Shadowrocket 模板</span><strong>{{ value.shadowrocket_template_name || '内置默认' }}</strong></div>
         </div>
         <div class="personal-subscription-actions">
-          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="openPersonalLinkModal(value)">复制链接</n-button>
-          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="showPersonalQR(value)">二维码</n-button>
+          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="openSubscriptionLinkModal(value)">复制链接</n-button>
+          <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="showSubscriptionQR(value)">二维码</n-button>
           <n-button size="small" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="openEditPersonal(value)">编辑</n-button>
           <n-button size="small" type="error" secondary :disabled="reorderingPersonalSubscriptionID !== null" @click="deletePersonal(value)">删除</n-button>
         </div>
@@ -1629,32 +1617,32 @@ onUnmounted(() => {
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="personalLinkModalOpen"><n-card class="personal-link-modal-card" title="复制订阅链接" closable @close="personalLinkModalOpen = false">
-    <form class="auth-form" @submit.prevent="copyPersonalLink">
-      <n-alert v-if="personalLinkError" type="error">{{ personalLinkError }}</n-alert>
+  <n-modal v-model:show="subscriptionLinkModalOpen"><n-card class="personal-link-modal-card" title="复制订阅链接" closable @close="subscriptionLinkModalOpen = false">
+    <form class="auth-form" @submit.prevent="copySubscriptionLink">
+      <n-alert v-if="subscriptionLinkError" type="error">{{ subscriptionLinkError }}</n-alert>
       <span id="personal-link-format-label">订阅格式</span>
-      <n-radio-group v-model:value="personalLinkFormat" class="personal-link-formats" aria-labelledby="personal-link-format-label" @update:value="personalLinkCopied = false; personalLinkError = ''">
+      <n-radio-group v-model:value="subscriptionLinkFormat" class="personal-link-formats" aria-labelledby="personal-link-format-label" @update:value="subscriptionLinkCopied = false; subscriptionLinkError = ''">
         <n-radio value="auto">Auto</n-radio>
         <n-radio value="mihomo">Mihomo</n-radio>
         <n-radio value="shadowrocket">Shadowrocket</n-radio>
         <n-radio value="base64">Base64</n-radio>
       </n-radio-group>
-      <div class="modal-actions"><n-button attr-type="button" @click="personalLinkModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit">{{ personalLinkCopied ? '已复制' : '复制' }}</n-button></div>
+      <div class="modal-actions"><n-button attr-type="button" @click="subscriptionLinkModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit">{{ subscriptionLinkCopied ? '已复制' : '复制' }}</n-button></div>
     </form>
   </n-card></n-modal>
 
   <QRCodeModal
-    v-if="personalQR"
-    v-model:show="personalQROpen"
-    :uri="personalQR.subscription_auto_url"
-    :title="personalQR.name"
-    modal-title="个人订阅二维码"
+    v-if="subscriptionQR"
+    v-model:show="subscriptionQROpen"
+    :uri="subscriptionQR.subscription_auto_url"
+    :title="subscriptionQR.name"
+    modal-title="订阅二维码"
     instruction="使用支持订阅二维码的客户端扫描导入。"
     :links="[
-      { label: 'Auto', value: personalQR.subscription_auto_url },
-      { label: 'Mihomo', value: personalQR.subscription_mihomo_url },
-      { label: 'Shadowrocket', value: personalQR.subscription_shadowrocket_url },
-      { label: 'Base64', value: personalQR.subscription_base64_url },
+      { label: 'Auto', value: subscriptionQR.subscription_auto_url },
+      { label: 'Mihomo', value: subscriptionQR.subscription_mihomo_url },
+      { label: 'Shadowrocket', value: subscriptionQR.subscription_shadowrocket_url },
+      { label: 'Base64', value: subscriptionQR.subscription_base64_url },
     ]"
   />
 
@@ -1774,27 +1762,47 @@ onUnmounted(() => {
     <div class="modal-actions subscription-form-actions"><n-button @click="planModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-if="selectedUser" v-model:show="userModalOpen"><n-card class="client-form-card subscription-form-card" title="订阅用户" closable @close="userModalOpen = false"><form class="auth-form" @submit.prevent="saveUser">
+  <n-modal v-if="selectedUser" v-model:show="userModalOpen"><n-card class="subscription-form-card subscriber-detail-card" title="订阅用户" closable @close="userModalOpen = false"><form class="auth-form" @submit.prevent="saveUser">
     <n-alert v-if="userFormError" type="error" closable @close="userFormError = ''">{{ userFormError }}</n-alert>
     <strong>{{ selectedUser.username }}</strong>
-    <dl class="user-details"><div><dt>状态</dt><dd>{{ statusLabels[selectedUser.status] ?? selectedUser.status }}</dd></div><div><dt>已用 / 总量</dt><dd>{{ formatClientTrafficBytes(selectedUser.used_bytes) }} / {{ selectedUser.traffic_limit_bytes !== null ? formatClientTrafficBytes(selectedUser.traffic_limit_bytes) : '不限' }}</dd></div><div><dt>周期开始</dt><dd>{{ formatTime(selectedUser.cycle_started_at) }}</dd></div><div><dt>下次重置</dt><dd>{{ selectedUser.next_reset_at ? formatTime(selectedUser.next_reset_at) : '不重置' }}</dd></div><div><dt>可用节点</dt><dd>{{ selectedUser.enabled_node_count }}</dd></div><div><dt>密码重置申请</dt><dd>{{ selectedUser.password_request?.status === 'pending' ? '等待审核' : '无待审核申请' }}</dd></div></dl>
-    <label><span>共享订阅</span><select v-model.number="userPlanID" class="settings-input"><option :value="0">未开通</option><option v-for="plan in enabledPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
-    <label><span>到期时间（留空不限）</span><input v-model="userExpiresAt" class="settings-input" type="datetime-local" /></label>
-    <label><span>流量重置</span><select v-model="userResetMode" class="settings-input"><option value="monthly">每月</option><option value="never">不重置</option></select></label>
-    <label v-if="userResetMode === 'monthly'"><span>重置日期</span><input v-model.number="userResetDay" class="settings-input" type="number" min="1" max="31" /></label>
-    <label v-if="userResetMode === 'monthly'"><span>重置时间（上海时区）</span><input v-model="userResetTime" class="settings-input" type="time" /></label>
-    <label><span>付款周期</span><select v-model.number="userBillingMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">月付</option><option :value="3">季付</option><option :value="6">半年付</option><option :value="12">年付</option></select></label>
-    <div class="switch-row"><span>启用账号</span><n-switch v-model:value="userEnabled" /></div>
-    <div v-if="selectedUser.password_request?.status === 'pending'" class="modal-actions"><span>密码重置申请等待审核</span><n-button secondary attr-type="button" @click="reviewUserPassword('reject')">拒绝</n-button><n-button type="primary" attr-type="button" @click="reviewUserPassword('approve')">批准</n-button></div>
-    <label><span>Subscription URL</span><n-input :value="selectedUser.subscription_url" readonly /></label>
-    <div class="modal-actions"><n-button secondary attr-type="button" @click="copyUserURL">{{ copiedUserURL ? '已复制' : '复制订阅链接' }}</n-button><n-button secondary attr-type="button" @click="previewUserMihomo">预览 Mihomo</n-button><n-button secondary attr-type="button" @click="regenerateUserToken">重置订阅链接</n-button><n-button secondary attr-type="button" @click="resetUserTraffic">重置流量</n-button></div>
+    <div class="subscriber-summary">
+      <div><span>状态</span><strong>{{ statusLabels[selectedUser.status] ?? selectedUser.status }}</strong></div>
+      <div><span>已用 / 总量</span><strong>{{ formatClientTrafficBytes(selectedUser.used_bytes) }} / {{ selectedUser.traffic_limit_bytes !== null ? formatClientTrafficBytes(selectedUser.traffic_limit_bytes) : '不限' }}</strong></div>
+      <div><span>周期开始</span><strong>{{ formatTime(selectedUser.cycle_started_at) }}</strong></div>
+    </div>
+    <div class="subscriber-settings">
+      <label><span>共享订阅</span><select v-model.number="userPlanID" class="settings-input"><option :value="0">未开通</option><option v-for="plan in enabledPlans" :key="plan.id" :value="plan.id">{{ plan.name }}</option></select></label>
+      <label><span>到期时间（留空不限）</span><input v-model="userExpiresAt" class="settings-input" type="datetime-local" /></label>
+      <label><span>流量重置</span><select v-model="userResetMode" class="settings-input"><option value="monthly">每月</option><option value="never">不重置</option></select></label>
+      <label><span>付款周期</span><select v-model.number="userBillingMonths" class="settings-input"><option :value="0">未设置</option><option :value="1">月付</option><option :value="3">季付</option><option :value="6">半年付</option><option :value="12">年付</option></select></label>
+      <label v-if="userResetMode === 'monthly'"><span>重置日期</span><input v-model.number="userResetDay" class="settings-input" type="number" min="1" max="31" /></label>
+      <label v-if="userResetMode === 'monthly'"><span>重置时间（上海时区）</span><input v-model="userResetTime" class="settings-input" type="time" /></label>
+      <div class="switch-row"><span>启用账号</span><n-switch v-model:value="userEnabled" /></div>
+      <div class="subscriber-traffic-action"><span>本周期流量</span><n-button secondary attr-type="button" :disabled="busy" @click="resetUserTraffic">重置本周期流量</n-button></div>
+    </div>
+    <n-alert v-if="selectedUser.password_request?.status === 'pending'" type="warning">
+      密码重置申请等待审核
+      <div class="modal-actions"><n-button secondary attr-type="button" :disabled="busy" @click="reviewUserPassword('reject')">拒绝</n-button><n-button type="primary" attr-type="button" :disabled="busy" @click="reviewUserPassword('approve')">批准</n-button></div>
+    </n-alert>
+    <details :key="selectedUser.user_id" class="subscriber-node-usage">
+      <summary>节点流量明细</summary>
+      <table class="subscriber-usage-table">
+        <thead><tr><th>节点</th><th>倍率</th><th>本周期计费流量</th></tr></thead>
+        <tbody>
+          <tr v-for="node in selectedUser.node_usage" :key="node.published_node_id"><td>{{ node.name }}</td><td>{{ node.traffic_multiplier }}×</td><td>{{ formatClientTrafficBytes(node.used_bytes) }}</td></tr>
+          <tr v-if="historicalUserUsage > 0"><td>历史 / 已移除节点</td><td>—</td><td>{{ formatClientTrafficBytes(historicalUserUsage) }}</td></tr>
+          <tr v-if="!selectedUser.node_usage?.length && historicalUserUsage === 0"><td colspan="3">暂无节点流量</td></tr>
+        </tbody>
+        <tfoot><tr><th scope="row">合计</th><td></td><td>{{ formatClientTrafficBytes(selectedUser.used_bytes) }}</td></tr></tfoot>
+      </table>
+    </details>
+    <section class="subscriber-links" aria-label="订阅链接">
+      <strong>订阅链接</strong>
+      <div class="subscriber-link-actions"><n-button secondary attr-type="button" :disabled="!selectedUser.subscription_auto_url" @click="openSubscriptionLinkModal(subscriberLinks(selectedUser))">复制链接</n-button><n-button secondary attr-type="button" :disabled="!selectedUser.subscription_auto_url" @click="showSubscriptionQR(subscriberLinks(selectedUser))">二维码</n-button></div>
+    </section>
     <div class="modal-actions"><n-button @click="userModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="mihomoPreviewOpen"><n-card class="client-form-card subscription-form-card" title="Mihomo 最终配置" closable @close="mihomoPreviewOpen = false">
-    <n-input :value="mihomoPreviewYAML" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
-    <div class="modal-actions"><n-button secondary @click="copyMihomoPreview">{{ copiedMihomoPreview ? '已复制' : '复制 YAML' }}</n-button><n-button @click="mihomoPreviewOpen = false">关闭</n-button></div>
-  </n-card></n-modal>
 </template>
 
 <style scoped>
@@ -1995,6 +2003,107 @@ onUnmounted(() => {
 
 .personal-link-formats :deep(.n-radio) {
   display: inline-flex;
+}
+
+.subscriber-detail-card {
+  width: min(900px, calc(100vw - 40px));
+}
+
+.subscriber-summary,
+.subscriber-settings {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.subscriber-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.subscriber-summary > div {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.subscriber-summary span {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.subscriber-summary strong {
+  font-size: 14px;
+}
+
+.subscriber-settings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subscriber-settings > *,
+.subscriber-settings input,
+.subscriber-settings select {
+  min-width: 0;
+}
+
+.subscriber-settings label,
+.subscriber-traffic-action,
+.subscriber-links {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.subscriber-traffic-action :deep(.n-button) {
+  justify-self: start;
+}
+
+.subscriber-node-usage summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.subscriber-usage-table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.subscriber-usage-table th,
+.subscriber-usage-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.subscriber-usage-table :is(th, td):first-child {
+  width: 44%;
+}
+
+.subscriber-usage-table :is(th, td):nth-child(2) {
+  width: 18%;
+}
+
+.subscriber-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .subscriber-summary,
+  .subscriber-settings {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {

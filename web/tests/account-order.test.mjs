@@ -175,7 +175,7 @@ test('个人订阅卡片保留四个主要操作并移除独立 Shadowrocket 操
   const source = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /personalPreviewOpen|personalPreviewYAML|regeneratePersonalToken/)
   assert.doesNotMatch(source, /shadowrocket-preview/)
-  assert.match(source, /\/api\/admin\/subscription\/users\/\$\{value.user_id\}\/mihomo-preview/)
+  assert.doesNotMatch(source, /mihomo-preview|regenerateUserToken/)
 })
 
 test('个人和共享模板选择按客户端类型隔离，停用模板仅保留当前引用', async () => {
@@ -225,29 +225,29 @@ test('复制订阅弹窗默认 Auto，四种格式复制对应 URL，重新打�
   const value = { id: 8, subscription_auto_url: 'https://panel.example/sub/one/auto',
     subscription_mihomo_url: 'https://panel.example/sub/one/mihomo', subscription_shadowrocket_url: 'https://panel.example/sub/one/shadowrocket',
     subscription_base64_url: 'https://panel.example/sub/one/base64' }
-  state.openPersonalLinkModal(value)
-  assert.equal(state.personalLinkModalOpen.value, true)
-  assert.equal(state.personalLinkFormat.value, 'auto')
-  assert.equal(state.personalLinkCopied.value, false)
+  state.openSubscriptionLinkModal(value)
+  assert.equal(state.subscriptionLinkModalOpen.value, true)
+  assert.equal(state.subscriptionLinkFormat.value, 'auto')
+  assert.equal(state.subscriptionLinkCopied.value, false)
   assert.equal(writeText.mock.calls.length, 0)
   for (const format of ['auto', 'mihomo', 'shadowrocket', 'base64']) {
-    state.personalLinkFormat.value = format
-    await state.copyPersonalLink()
+    state.subscriptionLinkFormat.value = format
+    await state.copySubscriptionLink()
     assert.equal(writeText.mock.calls.at(-1).arguments[0], value[`subscription_${format}_url`])
-    assert.equal(state.personalLinkCopied.value, true)
+    assert.equal(state.subscriptionLinkCopied.value, true)
   }
-  state.personalLinkModalOpen.value = false
-  state.openPersonalLinkModal({ ...value, id: 9, subscription_auto_url: 'https://panel.example/sub/two/auto' })
-  assert.equal(state.personalLinkFormat.value, 'auto')
-  assert.equal(state.personalLinkCopied.value, false)
-  await state.copyPersonalLink()
+  state.subscriptionLinkModalOpen.value = false
+  state.openSubscriptionLinkModal({ ...value, id: 9, subscription_auto_url: 'https://panel.example/sub/two/auto' })
+  assert.equal(state.subscriptionLinkFormat.value, 'auto')
+  assert.equal(state.subscriptionLinkCopied.value, false)
+  await state.copySubscriptionLink()
   assert.equal(writeText.mock.calls.at(-1).arguments[0], 'https://panel.example/sub/two/auto')
   writeText.mock.mockImplementation(async () => { throw new Error('Permission denied') })
-  await state.copyPersonalLink()
-  assert.equal(state.personalLinkCopied.value, false)
-  assert.match(state.personalLinkError.value, /复制失败/)
-  state.openPersonalLinkModal(value)
-  assert.equal(state.personalLinkError.value, '')
+  await state.copySubscriptionLink()
+  assert.equal(state.subscriptionLinkCopied.value, false)
+  assert.match(state.subscriptionLinkError.value, /复制失败/)
+  state.openSubscriptionLinkModal(value)
+  assert.equal(state.subscriptionLinkError.value, '')
 })
 
 test('模板编辑器只显示当前客户端的格式帮助', async () => {
@@ -265,6 +265,90 @@ test('模板编辑器只显示当前客户端的格式帮助', async () => {
       assert.doesNotMatch(html, /不能包含 proxies、proxy-groups、rule-providers 或 rules/)
     }
   }
+})
+
+const subscriberDetail = () => ({
+  user_id: 42, username: 'Revenant', plan_id: 9, enabled: true, active: true, status: 'normal',
+  traffic_limit_bytes: 100 * 2 ** 30, used_bytes: 6 * 2 ** 30, cycle_started_at: '2026-10-14T03:48:00Z',
+  traffic_reset_mode: 'monthly', traffic_reset_day: 14, traffic_reset_time: '00:00',
+  node_usage: [
+    { published_node_id: 8, name: 'Japan', traffic_multiplier: 0.5, used_bytes: 2 * 2 ** 30 },
+    { published_node_id: 3, name: 'Hong Kong', traffic_multiplier: 2, used_bytes: 3 * 2 ** 30 },
+  ],
+  subscription_auto_url: 'https://panel.example/sub/test-only/auto',
+  subscription_base64_url: 'https://panel.example/sub/test-only',
+  subscription_mihomo_url: 'https://panel.example/sub/test-only/mihomo',
+  subscription_shadowrocket_url: 'https://panel.example/sub/test-only/shadowrocket',
+  password_request: { id: 7, status: 'pending' },
+})
+
+test('订阅用户详情按服务端顺序展示已计费流量，历史差额独立显示且不重复乘倍率', async () => {
+  const { html, state } = await render(Subscriptions, state => {
+    state.loading.value = false
+    state.selectedUser.value = subscriberDetail()
+    state.userModalOpen.value = true
+    state.userResetMode.value = 'monthly'
+  }, { role: 'admin' })
+  assert.equal(state.historicalUserUsage.value, 2 ** 30)
+  assert.ok(html.indexOf('Japan') < html.indexOf('Hong Kong'))
+  const markup = html.replace(/ data-v-[\da-z]+/g, '')
+  assert.match(markup, /Japan<\/td><td>0.5×<\/td><td>2 G/)
+  assert.match(markup, /Hong Kong<\/td><td>2×<\/td><td>3 G/)
+  assert.match(markup, /历史 \/ 已移除节点<\/td><td>—<\/td><td>1 G/)
+  assert.match(html, /密码重置申请等待审核/)
+  assert.match(html, /<details[^>]*subscriber-node-usage/)
+  assert.doesNotMatch(html, /<details[^>]*\bopen\b|Subscription URL|预览 Mihomo|重置订阅链接|https:\/\/panel.example/)
+  state.selectedUser.value.used_bytes = 0
+  state.selectedUser.value.node_usage = []
+  assert.equal(state.historicalUserUsage.value, 0)
+})
+
+test('订阅用户复用个人订阅四格式复制和二维码数据，不拼接公开路径', async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const writeText = t.mock.fn(async () => {})
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText } } })
+  t.after(() => { if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor); else delete globalThis.navigator })
+  const { state } = await render(Subscriptions, () => {}, { role: 'admin' })
+  const value = subscriberDetail()
+  const links = state.subscriberLinks(value)
+  state.openSubscriptionLinkModal(links)
+  assert.equal(state.subscriptionLinkFormat.value, 'auto')
+  for (const format of ['auto', 'base64', 'mihomo', 'shadowrocket']) {
+    state.subscriptionLinkFormat.value = format
+    await state.copySubscriptionLink()
+    assert.equal(writeText.mock.calls.at(-1).arguments[0], value[`subscription_${format}_url`])
+  }
+  state.showSubscriptionQR(links)
+  assert.equal(state.subscriptionQROpen.value, true)
+  assert.deepEqual(state.subscriptionQR.value, { name: value.username, ...Object.fromEntries(
+    ['auto', 'base64', 'mihomo', 'shadowrocket'].map(format => [`subscription_${format}_url`, value[`subscription_${format}_url`]])) })
+})
+
+test('重置本周期流量需要确认，同时更新总量和节点明细并保留密码审核', async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const confirm = t.mock.fn(() => false)
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { confirm } })
+  t.after(() => { if (descriptor) Object.defineProperty(globalThis, 'window', descriptor); else delete globalThis.window; globalThis.fetch = originalFetch })
+  const { state } = await render(Subscriptions, state => { state.selectedUser.value = subscriberDetail() }, { role: 'admin' })
+  const requests = []
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push([url, options.method])
+    const reset = { ...subscriberDetail(), used_bytes: 0, node_usage: [] }
+    delete reset.password_request
+    return { ok: true, status: 200, json: async () => url.endsWith('/traffic/reset') ? { user: reset } : {
+      personal_subscriptions: [], routing_presets: [], templates: [], users: [], plans: [], nodes: [], proxies: [], servers: [],
+    } }
+  }
+  await state.resetUserTraffic()
+  assert.equal(requests.length, 0)
+  assert.equal(confirm.mock.calls[0].arguments[0], '确定重置 Revenant 的本周期流量吗？')
+  confirm.mock.mockImplementation(() => true)
+  await state.resetUserTraffic()
+  assert.deepEqual(requests[0], ['/api/admin/subscription/users/42/traffic/reset', 'POST'])
+  assert.equal(state.selectedUser.value.used_bytes, 0)
+  assert.deepEqual(state.selectedUser.value.node_usage, [])
+  assert.equal(state.historicalUserUsage.value, 0)
+  assert.equal(state.selectedUser.value.password_request.status, 'pending')
 })
 
 test('新增规则源默认 text，编辑和预览使用数据库内容且保留自定义 YAML', async () => {

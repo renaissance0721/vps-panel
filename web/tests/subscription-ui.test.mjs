@@ -72,7 +72,6 @@ test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建�
     '/api/admin/subscription/nodes',
     '/api/admin/subscription/relay-servers',
     '/traffic/reset',
-    '/token/regenerate',
   ]) {
     assert.ok(managementSource.includes(endpoint))
   }
@@ -90,10 +89,10 @@ test('个人订阅卡片只保留四个操作，复制入口打开格式弹窗',
   const personalSection = managementSource.slice(managementSource.indexOf("currentTab === 'personal'"), managementSource.indexOf("currentTab === 'users'"))
   const actions = personalSection.match(/<div class="personal-subscription-actions">([\s\S]*?)<\/div>/)?.[1] ?? ''
   assert.deepEqual([...actions.matchAll(/<n-button[^>]*>([^<]+)<\/n-button>/g)].map(match => match[1]), ['复制链接', '二维码', '编辑', '删除'])
-  assert.match(actions, /@click="openPersonalLinkModal\(value\)"/)
-  assert.match(managementSource, /<n-modal v-model:show="personalLinkModalOpen">[\s\S]*title="复制订阅链接"/)
-  assert.match(managementSource, /@submit\.prevent="copyPersonalLink"/)
-  assert.match(managementSource, /navigator\.clipboard\.writeText\(personalSubscriptionURL\(value, format\)\)/)
+  assert.match(actions, /@click="openSubscriptionLinkModal\(value\)"/)
+  assert.match(managementSource, /<n-modal v-model:show="subscriptionLinkModalOpen">[\s\S]*title="复制订阅链接"/)
+  assert.match(managementSource, /@submit\.prevent="copySubscriptionLink"/)
+  assert.match(managementSource, /navigator\.clipboard\.writeText\(subscriptionURL\(value, format\)\)/)
   for (const [format, label] of [['auto', 'Auto'], ['mihomo', 'Mihomo'], ['shadowrocket', 'Shadowrocket'], ['base64', 'Base64']]) {
     assert.match(managementSource, new RegExp(`<n-radio value="${format}">${label}</n-radio>`))
     assert.match(managementSource, new RegExp(`case '${format}': return value.subscription_${format}_url`))
@@ -104,7 +103,7 @@ test('个人订阅卡片只保留四个操作，复制入口打开格式弹窗',
 test('个人订阅复用一个二维码弹窗并提供四种订阅 URL', () => {
   assert.equal([...managementSource.matchAll(/<QRCodeModal\b/g)].length, 1)
   for (const [label, format] of [['Auto', 'auto'], ['Mihomo', 'mihomo'], ['Shadowrocket', 'shadowrocket'], ['Base64', 'base64']]) {
-    assert.match(managementSource, new RegExp(`\\{ label: '${label}', value: personalQR\\.subscription_${format}_url \\}`))
+    assert.match(managementSource, new RegExp(`\\{ label: '${label}', value: subscriptionQR\\.subscription_${format}_url \\}`))
   }
 })
 
@@ -231,7 +230,7 @@ test('普通管理页标记并阻止修改订阅托管 Relay 与 Client', () => 
 })
 
 test('分流方案使用策略组、结构化规则源和逐行规则编辑器', () => {
-  assert.doesNotMatch(managementSource, /Groups JSON|Rules JSON|routingGroupsJSON|routingRulesJSON|published_node_id/)
+  assert.doesNotMatch(managementSource, /Groups JSON|Rules JSON|routingGroupsJSON|routingRulesJSON/)
   for (const label of ['包含订阅全部节点', '添加 DIRECT', '添加 REJECT', '添加分组引用']) {
     assert.match(groupEditorSource, new RegExp(label))
   }
@@ -322,9 +321,9 @@ test('个人订阅使用 Proxy、Relay、Landing 独立实例与折叠拖拽编�
   assert.ok(personalFormStart >= 0)
   assert.doesNotMatch(personalForm, />上移<|>下移<|@click="movePersonalNode/)
   assert.doesNotMatch(personalForm, /发布节点/)
-  assert.match(managementSource, /\{ label: 'Auto', value: personalQR\.subscription_auto_url \}/)
-  assert.match(managementSource, /\{ label: 'Mihomo', value: personalQR\.subscription_mihomo_url \}/)
-  assert.match(managementSource, /\{ label: 'Base64', value: personalQR\.subscription_base64_url \}/)
+  assert.match(managementSource, /\{ label: 'Auto', value: subscriptionQR\.subscription_auto_url \}/)
+  assert.match(managementSource, /\{ label: 'Mihomo', value: subscriptionQR\.subscription_mihomo_url \}/)
+  assert.match(managementSource, /\{ label: 'Base64', value: subscriptionQR\.subscription_base64_url \}/)
   assert.match(styleSource, /\.personal-node-item\.personal-node-dragging\s*{[^}]*opacity:\s*0\.38/s)
   assert.match(styleSource, /\.personal-node-item\.personal-node-drop-target\s*{[^}]*border-color:\s*var\(--color-primary\)[^}]*transform:/s)
   assert.match(styleSource, /\.personal-node-order-move\s*{[^}]*transition:\s*transform/s)
@@ -426,12 +425,27 @@ test('内置 Mihomo 基础模板可查看并复制', () => {
   assert.match(managementSource, /function copyBuiltinTemplate\(\)[\s\S]*内置默认 Mihomo 模板 - 副本[\s\S]*builtinMihomo.value.yaml.trim\(\)/)
 })
 
-test('订阅用户可预览并复制正式 Mihomo YAML', () => {
-  assert.match(managementSource, /预览 Mihomo/)
-  assert.match(managementSource, /\/api\/admin\/subscription\/users\/\$\{value.user_id\}\/mihomo-preview/)
-  assert.match(managementSource, /mihomoPreviewYAML.value = response.yaml/)
-  assert.match(managementSource, /navigator.clipboard.writeText\(mihomoPreviewYAML.value\)/)
-  assert.match(managementSource, /复制 YAML/)
+test('订阅用户详情共用链接和二维码入口，不直接展示 URL 或重置链接', () => {
+  const detail = managementSource.slice(managementSource.indexOf('<n-modal v-if="selectedUser"'))
+  assert.match(detail, /openSubscriptionLinkModal\(subscriberLinks\(selectedUser\)\)/)
+  assert.match(detail, /showSubscriptionQR\(subscriberLinks\(selectedUser\)\)/)
+  assert.doesNotMatch(detail, /Subscription URL|预览 Mihomo|重置订阅链接|subscription_url/)
+  assert.doesNotMatch(managementSource, /mihomo-preview|token\/regenerate|mihomoPreview/)
+})
+
+test('订阅用户详情三张摘要卡、两列设置和默认折叠明细', () => {
+  const summary = managementSource.match(/<div class="subscriber-summary">([\s\S]*?)<div class="subscriber-settings">/)?.[1] ?? ''
+  assert.equal((summary.match(/<strong>/g) ?? []).length, 3)
+  assert.doesNotMatch(summary, /<dl|下次重置|可用节点|密码重置申请/)
+  const settings = managementSource.match(/<div class="subscriber-settings">([\s\S]*?)<n-alert v-if="selectedUser.password_request/)?.[1] ?? ''
+  assert.match(settings, /@click="resetUserTraffic"/)
+  assert.ok(settings.indexOf('付款周期') < settings.indexOf('重置日期'))
+  assert.match(managementSource, /<details[^>]*class="subscriber-node-usage">/)
+  assert.doesNotMatch(managementSource.match(/<details[^>]*class="subscriber-node-usage"[^>]*>/)?.[0] ?? '', /\bopen\b/)
+  assert.match(managementSource, /历史 \/ 已移除节点/)
+  assert.match(managementSource, /\.subscriber-detail-card\s*\{\s*width: min\(900px, calc\(100vw - 40px\)\)/)
+  assert.match(managementSource, /\.subscriber-settings\s*\{\s*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(managementSource, /@media \(max-width: 600px\)[\s\S]*\.subscriber-settings\s*\{\s*grid-template-columns: 1fr/)
 })
 
 test('用户可见文案统一使用共享订阅而非套餐', () => {

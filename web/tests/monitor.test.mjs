@@ -115,6 +115,31 @@ test('卡片渲染周期流量、网速和离线旧指标；缺失 metrics 安�
   assert.doesNotMatch(pending, /NaN|Infinity|undefined/)
 })
 
+test('卡片按 country_code 渲染本地旗帜且不改变真实服务器名称', async () => {
+  for (const [input, code, name] of [['de', 'DE', 'Bero DE'], ['JP', 'JP', 'AWS JP'], ['tw', 'TW', 'Taiwan Server']]) {
+    const value = server(1, 100, 0, 0, { name, system_info: { os_name: 'Debian', country_code: input } })
+    const html = await renderToString(createSSRApp(MonitorCard, { server: value }))
+    assert.match(html, new RegExp(`data-country-code="${code}"`))
+    assert.match(html, new RegExp(`/flags/4x3/${code.toLowerCase()}\\.svg`))
+    assert.ok(html.includes(`title="${name}"`))
+    assert.ok(html.includes(`>${name}</span>`))
+  }
+  const unknown = server(1, 100, 0, 0, { name: 'Unknown', system_info: { os_name: 'Debian', country_code: '' } })
+  const html = await renderToString(createSSRApp(MonitorCard, { server: unknown }))
+  assert.doesNotMatch(html, /class="country-flag/)
+  assert.ok(html.includes('>Unknown</span>'))
+  const invalid = server(1, 100, 0, 0, { name: 'Invalid', system_info: { os_name: 'Debian', country_code: 'DEU' } })
+  assert.doesNotMatch(await renderToString(createSSRApp(MonitorCard, { server: invalid })), /class="country-flag/)
+  for (const code of [undefined, null, 'XX', 'ZZ']) {
+    invalid.system_info.country_code = code
+    assert.doesNotMatch(await renderToString(createSSRApp(MonitorCard, { server: invalid })), /class="country-flag/)
+  }
+  const mismatchedName = server(1, 100, 0, 0, { name: 'AWS JP', system_info: { country_code: 'US' } })
+  const actualCountry = await renderToString(createSSRApp(MonitorCard, { server: mismatchedName }))
+  assert.match(actualCountry, /data-country-code="US"/)
+  assert.equal(mismatchedName.name, 'AWS JP')
+})
+
 test('圆环阈值、缺失和超出范围数据渲染正确', async () => {
   for (const [value, level, text] of [[69, 'normal', '69%'], [70, 'warning', '70%'], [84, 'warning', '84%'], [85, 'danger', '85%'], [120, 'danger', '100%'], [null, 'normal', '—']]) {
     const html = await renderToString(createSSRApp(MetricRing, { value, label: 'CPU' }))
@@ -125,6 +150,8 @@ test('圆环阈值、缺失和超出范围数据渲染正确', async () => {
 
 test('搜索、状态筛选和指标排序保留原始服务器顺序与待注册统计', async () => {
   const values = [server(1, 100, 0, 0, { name: 'Zulu' }), server(2, 100, 0, 0, { name: 'Alpha', status: 'offline' }), server(3, 100, 0, 0, { name: 'Pending', status: 'pending', metrics: null })]
+  values[0].system_info.country_code = 'TW'
+  values[1].system_info.country_code = 'DE'
   values[1].metrics.memory_used_bytes = 768
   const original = MonitorView.setup
   let bindings

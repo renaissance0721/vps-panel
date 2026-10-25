@@ -6,10 +6,19 @@ import (
 )
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db            *sql.DB
+	now           func() time.Time
+	geoIPProvider GeoIPProvider
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db, now: time.Now}
+func NewService(db *sql.DB, providers ...GeoIPProvider) *Service {
+	var provider GeoIPProvider
+	if len(providers) != 0 {
+		provider = providers[0]
+	}
+	return &Service{
+		db:            db,
+		now:           time.Now,
+		geoIPProvider: provider,
+	}
 }

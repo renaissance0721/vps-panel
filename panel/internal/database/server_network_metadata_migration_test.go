@@ -53,7 +53,10 @@ func TestServerNetworkMetadataMigrationPreservesData(t *testing.T) {
 		`UPDATE sqlite_sequence SET seq = 100 WHERE name = 'servers'`,
 		`ALTER TABLE servers DROP COLUMN bandwidth_mbps`,
 		`ALTER TABLE servers DROP COLUMN network_stack`,
-		`DELETE FROM schema_migrations WHERE version = 30`,
+		`ALTER TABLE server_system_info DROP COLUMN country_code`,
+		`ALTER TABLE server_system_info DROP COLUMN country_ip`,
+		`ALTER TABLE server_system_info DROP COLUMN country_lookup_at`,
+		`DELETE FROM schema_migrations WHERE version >= 30`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -85,6 +88,12 @@ func TestServerNetworkMetadataMigrationPreservesData(t *testing.T) {
 						t.Fatal("historical metadata should remain NULL")
 					}
 					values = values[:len(values)-2]
+				}
+				if table == "server_system_info" && len(columns) >= 3 && columns[len(columns)-1] == "country_lookup_at" {
+					if values[len(values)-1] != int64(0) || values[len(values)-2] != "" || values[len(values)-3] != "" {
+						t.Fatal("historical country metadata should remain empty")
+					}
+					values = values[:len(values)-3]
 				}
 				result[table] = append(result[table], values)
 			}

@@ -60,6 +60,9 @@ func TestNodeRoleMigrationAndOldBackupPreserveBehavior(t *testing.T) {
 		`ALTER TABLE landing_nodes DROP COLUMN node_role`,
 		`ALTER TABLE servers DROP COLUMN bandwidth_mbps`,
 		`ALTER TABLE servers DROP COLUMN network_stack`,
+		`ALTER TABLE server_system_info DROP COLUMN country_code`,
+		`ALTER TABLE server_system_info DROP COLUMN country_ip`,
+		`ALTER TABLE server_system_info DROP COLUMN country_lookup_at`,
 		`DELETE FROM schema_migrations WHERE version >= 29`,
 		`UPDATE sqlite_sequence SET seq = 100 WHERE name IN ('proxies', 'landing_nodes')`,
 	} {

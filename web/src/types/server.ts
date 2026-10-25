@@ -60,6 +60,7 @@ export type ServerSystemInfo = {
   ipv6: string[]
   public_ipv4: string
   public_ipv6: string
+  country_code: string
   agent_version: string
 }
 

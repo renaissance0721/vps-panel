@@ -101,7 +101,7 @@ func run() error {
 		DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
 		EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
 		RestoreRequested: restoreRequested,
-	})
+	}, serverstore.NewCountryISProvider())
 	server := &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 30
+const LatestSchemaVersion = 31
 
 type migration struct {
 	version            int
@@ -53,6 +53,23 @@ var migrations = []migration{
 	{version: 28, name: "subscription_list_order", up: createSubscriptionListOrder},
 	{version: 29, name: "node_roles", up: addNodeRoles},
 	{version: 30, name: "server_network_metadata", up: addServerNetworkMetadata},
+	{version: 31, name: "server_system_info_country", up: addServerSystemInfoCountry},
+}
+
+func addServerSystemInfoCountry(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`ALTER TABLE server_system_info ADD COLUMN country_code TEXT NOT NULL DEFAULT ''
+		 CHECK (country_code = '' OR (length(country_code) = 2 AND country_code GLOB '[A-Z][A-Z]'))`,
+		`ALTER TABLE server_system_info ADD COLUMN country_ip TEXT NOT NULL DEFAULT ''
+		 CHECK (length(country_ip) <= 45)`,
+		`ALTER TABLE server_system_info ADD COLUMN country_lookup_at INTEGER NOT NULL DEFAULT 0
+		 CHECK (typeof(country_lookup_at) = 'integer' AND country_lookup_at >= 0)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add server system information country: %w", err)
+		}
+	}
+	return nil
 }
 
 func addServerNetworkMetadata(ctx context.Context, tx *sql.Tx) error {

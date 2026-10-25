@@ -117,6 +117,7 @@ type systemInfoResponse struct {
 	IPv6         []string `json:"ipv6"`
 	PublicIPv4   string   `json:"public_ipv4"`
 	PublicIPv6   string   `json:"public_ipv6"`
+	CountryCode  string   `json:"country_code"`
 	AgentVersion string   `json:"agent_version"`
 }
 
@@ -207,6 +208,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 			IPv6:         value.SystemInfo.IPv6,
 			PublicIPv4:   value.SystemInfo.PublicIPv4,
 			PublicIPv6:   value.SystemInfo.PublicIPv6,
+			CountryCode:  value.SystemInfo.CountryCode,
 			AgentVersion: value.SystemInfo.AgentVersion,
 		}
 	}

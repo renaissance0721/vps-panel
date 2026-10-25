@@ -308,7 +308,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -357,7 +357,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,
@@ -399,7 +399,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var appliedConfigVersion, configSyncedAt sql.NullInt64
 	var configSyncStatus, configSyncError sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
-	var ipv4JSON, ipv6JSON, publicIPv4, publicIPv6, agentVersion sql.NullString
+	var ipv4JSON, ipv6JSON, publicIPv4, publicIPv6, countryCode, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
 	var cpuPercent sql.NullFloat64
 	var memoryUsed, memoryTotal, diskUsed, diskTotal, uptime sql.NullInt64
@@ -415,7 +415,7 @@ func scanServer(row rowScanner) (Server, error) {
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,
 		&appliedConfigVersion, &configSyncStatus, &configSyncError, &configSyncedAt,
-		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &publicIPv6, &agentVersion, &reportedAt,
+		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &publicIPv6, &countryCode, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
 		&createdAt, &updatedAt,
@@ -483,6 +483,7 @@ func scanServer(row rowScanner) (Server, error) {
 			Kernel:       kernel.String,
 			Arch:         arch.String,
 			PublicIPv4:   publicIPv4.String,
+			CountryCode:  countryCode.String,
 			AgentVersion: agentVersion.String,
 			ReportedAt:   time.Unix(reportedAt.Int64, 0).UTC(),
 		}

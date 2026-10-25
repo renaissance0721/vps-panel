@@ -1645,6 +1645,9 @@ td.server-actions {
 }
 
 .monitor-server-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1658,6 +1661,13 @@ td.server-actions {
   font-size: 15px;
   font-weight: 650;
   cursor: pointer;
+}
+
+.monitor-server-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monitor-server-link:hover {
@@ -1788,6 +1798,7 @@ td.server-actions {
 .monitor-empty { padding: 48px 0; }
 
 .monitor-detail-modal { width: min(1000px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
+.monitor-detail-title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .monitor-detail-modal h3 { font-size: 15px; margin: 0 0 16px; }
 .monitor-basic-info { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; }
 .monitor-basic-info dt { color: var(--color-text-secondary); font-size: 12px; }

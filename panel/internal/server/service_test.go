@@ -15,13 +15,13 @@ type testService struct {
 	*agentService
 }
 
-func newTestService(t *testing.T) (*testService, *sql.DB) {
+func newTestService(t *testing.T, providers ...GeoIPProvider) (*testService, *sql.DB) {
 	t.Helper()
 	db, err := database.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	resources := NewService(db)
+	resources := NewService(db, providers...)
 	return &testService{resources, agentcontrol.NewService(db, func() time.Time { return resources.now() })}, db
 }

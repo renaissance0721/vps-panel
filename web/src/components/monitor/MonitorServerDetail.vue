@@ -5,6 +5,7 @@ import type { ServerRecord } from '../../types/server'
 import type { LatencyHours } from '../../types/monitor'
 import { formatBytes, formatUptime, statusLabel } from '../../server'
 import { probeColors, probeLabel, probeOutcomeLabel, supportsProbe, useProbeHistory } from '../../composables/useProbe'
+import CountryFlag from '../common/CountryFlag.vue'
 import MonitorProbeAssignmentEditor from './MonitorProbeAssignmentEditor.vue'
 
 const LatencyChart = defineAsyncComponent(() => import('./LatencyChart.vue'))
@@ -31,8 +32,7 @@ const fields = computed(() => {
   return [
     ['主机名', info?.hostname || '—'], ['操作系统', info?.os_name || '—'], ['系统版本', info?.os_version || '—'],
     ['内核', info?.kernel || '—'], ['架构', info?.arch || '—'], ['内存总量', bytes(metrics?.memory_total_bytes)],
-    ['磁盘总量', bytes(metrics?.disk_total_bytes)], ['IPv4', info?.ipv4?.join(' · ') || '—'],
-    ['IPv6', info?.ipv6?.join(' · ') || '—'], ['公网 IPv4', info?.public_ipv4 || '—'],
+    ['磁盘总量', bytes(metrics?.disk_total_bytes)], ['公网 IPv4', info?.public_ipv4 || '—'],
     ['公网 IPv6', info?.public_ipv6 || '—'],
     ['运行时间', metrics?.uptime_seconds !== undefined && Number.isFinite(metrics.uptime_seconds) && metrics.uptime_seconds >= 0 ? formatUptime(metrics.uptime_seconds) : '—'],
   ]
@@ -51,7 +51,8 @@ watch([() => props.server.id, () => props.show, hours, supported, () => props.se
 
 <template>
   <n-modal :show="show" @update:show="emit('update:show', $event)">
-    <n-card class="monitor-detail-modal" :title="server.name" closable @close="emit('update:show', false)">
+    <n-card class="monitor-detail-modal" closable @close="emit('update:show', false)">
+      <template #header><span class="monitor-detail-title"><CountryFlag :country-code="server.system_info?.country_code" />{{ server.name }}</span></template>
       <template #header-extra><span class="monitor-status" :class="`monitor-status-${server.status}`">{{ statusLabel(server.status) }}</span></template>
       <section aria-label="基础信息">
         <h3>基础信息</h3>

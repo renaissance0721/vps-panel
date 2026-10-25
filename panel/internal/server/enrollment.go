@@ -30,7 +30,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
 		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
-		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6,
+		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,
 		 metrics.cpu_percent, metrics.memory_used_bytes, metrics.memory_total_bytes,
 		 metrics.disk_used_bytes, metrics.disk_total_bytes, metrics.uptime_seconds,

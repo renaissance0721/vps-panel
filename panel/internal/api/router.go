@@ -68,11 +68,11 @@ type Handler struct {
 
 func (h *Handler) RunNotifications(ctx context.Context) { h.notifications.Run(ctx) }
 
-func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig) *Handler {
-	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil)
+func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
+	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil, geoIPProviders...)
 }
 
-func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender) *Handler {
+func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
 	relays := relaystore.NewService(db)
 	keyPath := ""
 	if backupConfig.DataDir != "" {
@@ -81,7 +81,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	s := &server{
 		db:                   db,
 		authService:          auth.NewService(db),
-		servers:              serverstore.NewService(db),
+		servers:              serverstore.NewService(db, geoIPProviders...),
 		proxies:              proxystore.NewService(db),
 		landings:             landingstore.NewService(db),
 		relays:               relays,

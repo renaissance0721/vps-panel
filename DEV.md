@@ -108,6 +108,8 @@ Server 管理包含基本信息、分组、归属、访问范围、续期、流�
 `bandwidth_mbps` 是可空的套餐标称带宽（1–10000000 Mbps），与月流量额度和实时网速独立；`network_stack` 是可空的管理员网络栈分类（`ipv4` / `ipv6` / `dual`）。历史及未填写的服务器均保留 NULL，界面显示“未设置”。
 两者仅属于 Panel 元数据，修改不递增 Agent desired-state version，也不修改实际网络配置；Agent 实际观测的 IPv4 / IPv6 仍由 `SystemInfo` 独立表示。现有 Server 创建、PATCH、Get / List DTO 提供这两个字段，PATCH 中省略保持原值，显式 null 清空。
 
+Server Get / List 的 `system_info.country_code` 为 Panel 按公网 IP 查询得到的两位大写国家/地区代码，未知时为空字符串，Agent 上报协议保持不变。GeoIP 只选明确上报的 `public_ipv4`，为空时选明确上报的 `public_ipv6`，不使用接口列表或旧 Agent 的 IPv6 衍生地址。事务内保存 `country_code`、所选 `country_ip` 和毫秒级 `country_lookup_at`；事务提交后通过可注入 Provider 异步查询 [country.is](https://country.is/)，HTTPS 请求最多等待 2 秒、响应最多 4 KiB。成功结果跨重启复用；地址变化清空旧结果并重新查询，失败在五分钟冷却后的下次 SystemInfo 上报重试。冷却持久化，查询时间戳同时用于条件回写，并校验 Agent 身份，避免旧地址或重绑前的晚返回覆盖结果。Monitor 共用 `CountryFlag` 展示随构建分发的 `flag-icons` SVG，直接使用对应代码（包括 TW / CN / HK / MO），不改变名称、搜索或排序。
+
 Server 的公开 / 私有访问范围只针对 `admin` / `vip`：公开对所有管理账号可见，私有通过 `server_access` 授权指定管理账号。
 写入时拒绝 `carpool` / `subscriber`，读取授权和判断私有访问时也检查账号角色，历史无效授权由数据迁移清理。
 拼车用户和订阅用户继续使用各自门户、Client 分配和订阅模型，不通过 `server_access` 授权。

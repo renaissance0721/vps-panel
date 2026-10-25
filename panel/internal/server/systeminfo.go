@@ -26,6 +26,7 @@ type SystemInfo struct {
 	IPv6         []string
 	PublicIPv4   string
 	PublicIPv6   string
+	CountryCode  string
 	AgentVersion string
 	ReportedAt   time.Time
 }
@@ -81,6 +82,12 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		}
 		report.PublicIPv6 = ip.String()
 	}
+	countryIP := report.PublicIPv4
+	if countryIP == "" {
+		countryIP = report.PublicIPv6
+	}
+	// GeoIP only uses explicitly reported public addresses, before the legacy
+	// IPv6 interface-list fallback used by the rest of Server networking.
 	report.PublicIPv6 = netutil.EffectivePublicIPv6(report.PublicIPv6, report.IPv6)
 	ipv4JSON, _ := json.Marshal(report.IPv4)
 	ipv6JSON, _ := json.Marshal(report.IPv6)
@@ -101,18 +108,29 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 	if err != nil {
 		return false, fmt.Errorf("read reporting Agent: %w", err)
 	}
-	var previousPublicIPv4, previousPublicIPv6 string
+	var previousPublicIPv4, previousPublicIPv6, previousCountryCode, previousCountryIP string
+	var countryLookupAt int64
 	err = tx.QueryRowContext(ctx,
-		`SELECT public_ipv4, public_ipv6 FROM server_system_info WHERE server_id = ?`, serverID,
-	).Scan(&previousPublicIPv4, &previousPublicIPv6)
+		`SELECT public_ipv4, public_ipv6, country_code, country_ip, country_lookup_at FROM server_system_info WHERE server_id = ?`, serverID,
+	).Scan(&previousPublicIPv4, &previousPublicIPv6, &previousCountryCode, &previousCountryIP, &countryLookupAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("read previous public IPv4: %w", err)
+		return false, fmt.Errorf("read previous system information addresses: %w", err)
 	}
-	now := s.now().UTC().Truncate(time.Second).Unix()
+	now := s.now().UTC()
+	countryCode := previousCountryCode
+	countryIPChanged := previousCountryIP != countryIP
+	if countryIPChanged {
+		countryCode = ""
+	}
+	lookupCountry := s.geoIPProvider != nil && countryIP != "" && countryCode == "" &&
+		(countryIPChanged || countryLookupAt == 0 || now.UnixMilli()-countryLookupAt >= geoIPRetryCooldown.Milliseconds())
+	if countryIPChanged || lookupCountry {
+		countryLookupAt = max(now.UnixMilli(), countryLookupAt+1)
+	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_system_info
-		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, agent_version, reported_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, public_ipv4, public_ipv6, country_code, country_ip, country_lookup_at, agent_version, reported_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(server_id) DO UPDATE SET
 		 hostname = excluded.hostname,
 		 os_name = excluded.os_name,
@@ -123,15 +141,21 @@ func (s *Service) ReportSystemInfo(ctx context.Context, agentID, serverID int64,
 		 ipv6 = excluded.ipv6,
 		 public_ipv4 = excluded.public_ipv4,
 		 public_ipv6 = excluded.public_ipv6,
+		 country_code = excluded.country_code,
+		 country_ip = excluded.country_ip,
+		 country_lookup_at = excluded.country_lookup_at,
 		 agent_version = excluded.agent_version,
 		 reported_at = excluded.reported_at`,
 		serverID, report.Hostname, report.OSName, report.OSVersion, report.Kernel, report.Arch,
-		string(ipv4JSON), string(ipv6JSON), report.PublicIPv4, report.PublicIPv6, agentVersion, now,
+		string(ipv4JSON), string(ipv6JSON), report.PublicIPv4, report.PublicIPv6, countryCode, countryIP, countryLookupAt, agentVersion, now.Unix(),
 	); err != nil {
 		return false, fmt.Errorf("save system information: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit system information report: %w", err)
+	}
+	if lookupCountry {
+		go s.lookupCountry(agentID, serverID, countryIP, countryLookupAt)
 	}
 	return previousPublicIPv4 != report.PublicIPv4 || previousPublicIPv6 != report.PublicIPv6, nil
 }

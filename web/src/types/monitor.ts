@@ -14,6 +14,8 @@ export type ProbeTask = {
   updated_at: string
 }
 export type ProbeInput = Omit<ProbeTask, 'id' | 'port' | 'created_at' | 'updated_at'>
+export type ServerProbeAssignmentTask = Pick<ProbeTask, 'id' | 'name' | 'type' | 'target' | 'port' | 'interval_seconds' | 'enabled'> & { assigned: boolean }
+export type ServerProbeAssignmentsInput = { task_ids: number[] }
 export type ProbeSummary = Pick<ProbeTask, 'id' | 'name' | 'type' | 'target' | 'port' | 'interval_seconds'> & {
   latest_latency_ms: number | null
   latest_outcome: ProbeOutcome | ''

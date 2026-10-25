@@ -7,7 +7,7 @@ import vue from '@vitejs/plugin-vue'
 import { createRenderer, createSSRApp, effectScope, nextTick, reactive, ssrContextKey } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-let loader, useProbeHistory, useProbeTasks, latencySeries, supportsProbe, probeTarget, Detail, View, Manager
+let loader, useProbeHistory, useProbeTasks, useServerProbeAssignments, latencySeries, supportsProbe, probeTarget, Detail, View, Manager, AssignmentEditor
 const originalFetch = globalThis.fetch
 before(async () => {
   loader = await createServer({
@@ -15,10 +15,11 @@ before(async () => {
     resolve: { alias: { 'naive-ui': fileURLToPath(new URL('./helpers/ui-stubs.mjs', import.meta.url)) } },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, optimizeDeps: { noDiscovery: true, include: [] },
   })
-  ;({ useProbeHistory, useProbeTasks, latencySeries, supportsProbe, probeTarget } = await loader.ssrLoadModule('/src/composables/useProbe.ts'))
+  ;({ useProbeHistory, useProbeTasks, useServerProbeAssignments, latencySeries, supportsProbe, probeTarget } = await loader.ssrLoadModule('/src/composables/useProbe.ts'))
   ;({ default: Detail } = await loader.ssrLoadModule('/src/components/monitor/MonitorServerDetail.vue'))
   ;({ default: View } = await loader.ssrLoadModule('/src/views/MonitorView.vue'))
   ;({ default: Manager } = await loader.ssrLoadModule('/src/components/monitor/ProbeTaskManager.vue'))
+  ;({ default: AssignmentEditor } = await loader.ssrLoadModule('/src/components/monitor/MonitorProbeAssignmentEditor.vue'))
 })
 after(async () => { globalThis.fetch = originalFetch; await loader?.close() })
 
@@ -346,4 +347,179 @@ test('编辑默认任务保留未声明能力的继承节点并显示真实分�
   assert.equal(bindings.serverOptions.value[1].disabled, false)
   bindings.form.value.default_on = false
   assert.deepEqual(bindings.form.value.server_ids, [1, 2])
+})
+
+test('服务器详情仅管理员显示编辑监测，离线与未知能力不阻止入口', async () => {
+  globalThis.fetch = () => new Promise(() => {})
+  for (const role of ['admin', 'vip']) {
+    const { html } = await render(Detail, { server: server({ status: 'offline', agent_capabilities: [] }), role, show: true })
+    assert.equal(html.includes('编辑监测'), role === 'admin')
+    assert.match(html, /1 小时/); assert.match(html, /6 小时/); assert.match(html, /24 小时/)
+  }
+  const { html } = await render(Detail, { server: server({ decommission_status: 'pending' }), role: 'admin', show: true })
+  assert.match(html, /<button[^>]*disabled[^>]*>编辑监测/)
+})
+
+function mountAssignmentEditor(props) {
+  let bindings
+  const events = []
+  const renderer = createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null })
+  const app = renderer.createApp({ setup() { bindings = AssignmentEditor.setup(props, { expose() {}, emit: (...args) => events.push(args) }); return () => null } })
+  app.provide(ssrContextKey, {})
+  app.mount({})
+  return { bindings, events, unmount: () => app.unmount() }
+}
+const flushAssignments = () => new Promise(resolve => setImmediate(resolve))
+
+test('监测编辑加载当前勾选，单次 PUT 后重新 GET，并通知详情刷新当前时间范围', async () => {
+  const requests = []
+  const initial = [task({ assigned: true }), task({ id: 2, name: '广州联通', type: 'icmp', port: null, assigned: false, enabled: false })]
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, options })
+    if (options.method === 'PUT') return response(undefined, 204)
+    return response({ tasks: initial })
+  }
+  const scope = mountAssignmentEditor(reactive({ show: true, server: server({ status: 'offline' }) }))
+  try {
+    await flushAssignments()
+    const b = scope.bindings
+    assert.deepEqual(b.selectedIDs.value, [1])
+    b.toggle(1, false); b.toggle(2, true)
+    await b.submit()
+    assert.deepEqual(requests.map(r => r.options.method ?? 'GET'), ['GET', 'PUT', 'GET'])
+    assert.ok(requests.every(r => r.url === '/api/monitor/servers/1/probe-assignments'))
+    assert.deepEqual(JSON.parse(requests[1].options.body), { task_ids: [2] })
+    assert.deepEqual(scope.events, [['saved', 1], ['update:show', false]])
+  } finally { scope.unmount() }
+  requests.length = 0
+  globalThis.fetch = async (url, options) => { requests.push({ url, options }); return response(history()) }
+  const { bindings } = await render(Detail, { show: true, server: server(), role: 'admin' })
+  bindings.hours.value = 24
+  bindings.assignmentsSaved(1)
+  assert.equal(requests.at(-1).url, '/api/monitor/servers/1/latency?hours=24')
+  const count = requests.length
+  bindings.assignmentsSaved(2)
+  assert.equal(requests.length, count)
+})
+
+test('编辑列表显示全局停用、能力不足、离线提示，并支持搜索和独立选择', async () => {
+  globalThis.fetch = () => new Promise(() => {})
+  const values = [task({ name: '上海电信', assigned: true }), task({ id: 2, name: '广州联通', type: 'icmp', port: null, assigned: false, enabled: false, target: 'carrier.example.net' })]
+  const { html, bindings: b } = await render(AssignmentEditor, { show: true, server: server({ status: 'offline' }) }, b => {
+    b.tasks.value = values; b.loading.value = false; b.loaded.value = true; b.selectedIDs.value = [1]
+  })
+  assert.match(html, /aria-label="监测 上海电信"[^>]*checked/)
+  const unassigned = html.match(/<input[^>]*aria-label="监测 广州联通"[^>]*>/)[0]
+  assert.doesNotMatch(unassigned, /checked|disabled/)
+  for (const text of ['全局停用', '当前 Agent 暂不支持 ICMP，支持后自动生效', '服务器当前离线', '下次连接后生效', 'TCP · example.com:443 · 60 秒']) assert.ok(html.includes(text), text)
+  b.search.value = 'carrier.example'
+  assert.deepEqual(b.visibleTasks.value.map(t => t.id), [2])
+  b.selectAll()
+  assert.deepEqual(b.selectedIDs.value, [1, 2])
+  assert.equal(values[1].enabled, false)
+  b.clearSelection()
+  assert.deepEqual(b.selectedIDs.value, [])
+  b.search.value = '上海'
+  b.selectAll()
+  assert.deepEqual(b.selectedIDs.value, [1])
+  b.select(Array.from({ length: 64 }, (_, i) => i + 1))
+  b.toggle(65, true)
+  assert.equal(b.selectedIDs.value.length, 64)
+  assert.match(b.error.value, /最多选择 64/)
+  const source = await readFile(new URL('../src/components/monitor/MonitorProbeAssignmentEditor.vue', import.meta.url), 'utf8')
+  assert.match(source, /max-height: 50vh; overflow-y: auto/)
+  assert.doesNotMatch(source, /window\.location|setTimeout|default_on|server_ids/)
+})
+
+test('无任务、加载失败和保存失败保留可理解状态，空分配允许保存', async () => {
+  globalThis.fetch = async () => response({ tasks: [] })
+  const props = reactive({ show: true, server: server() })
+  const scope = mountAssignmentEditor(props)
+  try {
+    await flushAssignments()
+    assert.equal(scope.bindings.loaded.value, true)
+    let input
+    globalThis.fetch = async (_, options) => {
+      if (options.method === 'PUT') { input = JSON.parse(options.body); return response(undefined, 204) }
+      return response({ tasks: [] })
+    }
+    await scope.bindings.submit()
+    assert.deepEqual(input, { task_ids: [] })
+  } finally { scope.unmount() }
+  globalThis.fetch = () => new Promise(() => {})
+  const empty = await render(AssignmentEditor, { show: true, server: server() }, b => { b.loaded.value = true; b.loading.value = false })
+  assert.match(empty.html, /暂无延迟探测任务/)
+  assert.match(empty.html, /请先在延迟探测管理中创建任务/)
+  globalThis.fetch = async () => response({ tasks: [task({ assigned: true })] })
+  const failed = mountAssignmentEditor(reactive({ show: true, server: server() }))
+  try {
+    await flushAssignments()
+    globalThis.fetch = async () => response({ error: '保存失败' }, 400)
+    await failed.bindings.submit()
+    assert.equal(failed.bindings.error.value, '保存失败')
+    assert.deepEqual(failed.bindings.selectedIDs.value, [1])
+    assert.deepEqual(failed.events, [])
+    globalThis.fetch = async (_, options) => options.method === 'PUT' ? response(undefined, 204) : response({ error: '读取失败' }, 500)
+    await failed.bindings.submit()
+    assert.match(failed.bindings.error.value, /设置已保存，但重新加载失败/)
+    assert.deepEqual(failed.events, [['saved', 1]])
+  } finally { failed.unmount() }
+})
+
+test('服务器 A 到 B 及关闭重开隔离晚返回的读取和保存结果', async () => {
+  const pending = []
+  globalThis.fetch = (url, options) => new Promise(resolve => pending.push({ url, options, resolve }))
+  const props = reactive({ show: true, server: server() })
+  const scope = mountAssignmentEditor(props)
+  try {
+    const a = pending[0]
+    props.server = server({ id: 2, name: 'B' })
+    await nextTick()
+    const b = pending.at(-1)
+    assert.equal(a.options.signal.aborted, true)
+    b.resolve(response({ tasks: [task({ id: 2, assigned: true })] }))
+    await flushAssignments()
+    a.resolve(response({ tasks: [task({ assigned: true })] }))
+    await flushAssignments()
+    assert.deepEqual(scope.bindings.selectedIDs.value, [2])
+    assert.deepEqual(scope.bindings.tasks.value.map(t => t.id), [2])
+    const saving = scope.bindings.submit()
+    const put = pending.at(-1)
+    assert.equal(put.options.method, 'PUT')
+    props.show = false
+    await nextTick()
+    props.server = server(); props.show = true
+    await nextTick()
+    pending.at(-1).resolve(response({ tasks: [task({ id: 3, assigned: true })] }))
+    await flushAssignments()
+    put.resolve(response(undefined, 204))
+    await saving
+    assert.deepEqual(scope.events, [])
+    assert.deepEqual(scope.bindings.selectedIDs.value, [3])
+    assert.equal(scope.bindings.saving.value, false)
+  } finally { scope.unmount() }
+})
+
+test('分配 composable 关闭后忽略晚返回错误，且禁止未加载或重复保存', async () => {
+  const scope = effectScope()
+  const state = scope.run(() => useServerProbeAssignments())
+  const pending = []
+  globalThis.fetch = (url, options) => new Promise((resolve, reject) => pending.push({ url, options, resolve, reject }))
+  try {
+    assert.equal(await state.save(1, []), false)
+    const load = state.load(1)
+    state.reset()
+    pending[0].reject(new Error('old error'))
+    await load
+    assert.equal(state.error.value, '')
+    const next = state.load(2)
+    pending.at(-1).resolve(response({ tasks: [] }))
+    await next
+    const saving = state.save(2, [])
+    assert.equal(await state.save(2, []), false)
+    scope.stop()
+    pending.at(-1).resolve(response(undefined, 204))
+    assert.equal(await saving, false)
+    assert.equal(state.saving.value, false)
+  } finally { scope.stop() }
 })

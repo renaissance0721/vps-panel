@@ -133,6 +133,47 @@ func (s *server) notifyProbeTasks() {
 	}
 }
 
+func (s *server) getServerProbeAssignments(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("server_id"), "服务器 ID 无效")
+	if !ok || !s.requireServerAccess(w, r, user, id) || !s.requireMutableServer(w, r, id) {
+		return
+	}
+	tasks, err := s.monitor.ListServerProbeAssignments(r.Context(), id)
+	if err != nil {
+		writeMonitorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+func (s *server) setServerProbeAssignments(w http.ResponseWriter, r *http.Request, user auth.User) {
+	id, ok := readPositiveID(w, r.PathValue("server_id"), "服务器 ID 无效")
+	if !ok || !s.requireServerAccess(w, r, user, id) || !s.requireMutableServer(w, r, id) {
+		return
+	}
+	var request struct {
+		TaskIDs *[]int64 `json:"task_ids"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.TaskIDs == nil {
+		writeMonitorError(w, monitor.ErrInvalid)
+		return
+	}
+	// Share the global task mutation lock through commit and the targeted push.
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	if err := s.monitor.SetServerProbeAssignments(r.Context(), id, *request.TaskIDs); err != nil {
+		writeMonitorError(w, err)
+		return
+	}
+	if err := s.agents.NotifyProbeTasks(id, s.monitor); err != nil {
+		log.Printf("notify probe tasks for server %d: %v", id, err)
+	}
+	writeNoContent(w)
+}
+
 func (s *server) getMonitorLatency(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("server_id"), "服务器 ID 无效")
 	if !ok || !s.requireServerAccess(w, r, user, id) {

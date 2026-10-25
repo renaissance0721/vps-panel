@@ -68,7 +68,7 @@ const visibleServers = computed(() => {
     <div v-else class="monitor-grid">
       <MonitorCard v-for="server in visibleServers" :key="server.id" :server="server" :speed="speeds.get(server.id)" @view-server="viewMonitor" />
     </div>
-    <MonitorServerDetail v-if="monitorDetailOpen && selectedMonitorServer" v-model:show="monitorDetailOpen" :server="selectedMonitorServer" />
+    <MonitorServerDetail v-if="monitorDetailOpen && selectedMonitorServer" v-model:show="monitorDetailOpen" :server="selectedMonitorServer" :role="role" />
     <ProbeTaskManager v-if="probeManagerOpen && role === 'admin'" v-model:show="probeManagerOpen" :servers="servers" />
     <NotificationSettings v-if="notificationsOpen && role === 'admin'" v-model:show="notificationsOpen" />
   </div>

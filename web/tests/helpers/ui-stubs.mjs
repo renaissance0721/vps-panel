@@ -11,7 +11,9 @@ function container(name) {
 export const NCard = container('NCard')
 export const NAlert = container('NAlert')
 export const NTag = container('NTag')
-export const NEmpty = container('NEmpty')
+export const NEmpty = defineComponent({
+  setup: (_, { slots, attrs }) => () => h('section', attrs, [slots.default?.(), slots.extra?.()]),
+})
 export const NSpin = container('NSpin')
 export const NRadio = container('NRadio')
 export const NRadioGroup = container('NRadioGroup')
@@ -36,6 +38,10 @@ export const NInput = defineComponent({
   setup: (props, { attrs }) => () => h('input', { ...attrs, value: props.value }),
 })
 export const NInputNumber = NInput
+export const NCheckbox = defineComponent({
+  props: ['checked'],
+  setup: (props, { attrs }) => () => h('input', { ...attrs, type: 'checkbox', checked: props.checked }),
+})
 export const NSelect = defineComponent({
   props: ['value', 'options'],
   setup: (props, { attrs }) => () => h('select', attrs,

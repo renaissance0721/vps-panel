@@ -1,7 +1,7 @@
 import { getCurrentScope, onScopeDispose, ref } from 'vue'
 import { api } from '../api/client'
 import type { ServerRecord } from '../types/server'
-import type { LatencyHistory, LatencyHours, ProbeInput, ProbeOutcome, ProbeTask, ProbeType } from '../types/monitor'
+import type { LatencyHistory, LatencyHours, ProbeInput, ProbeOutcome, ProbeTask, ProbeType, ServerProbeAssignmentTask, ServerProbeAssignmentsInput } from '../types/monitor'
 
 export function supportsProbe(server: ServerRecord, type: ProbeType): boolean {
   return server.agent_capabilities?.includes(`probe.${type}`) ?? false
@@ -94,6 +94,71 @@ export function useProbeTasks() {
     finally { saving.value = false }
   }
   return { tasks, loading, saving, error, load, save, remove }
+}
+
+export function useServerProbeAssignments() {
+  const tasks = ref<ServerProbeAssignmentTask[]>([])
+  const loading = ref(false)
+  const loaded = ref(false)
+  const saving = ref(false)
+  const error = ref('')
+  let sequence = 0
+  let server: number | null = null
+  let controller: AbortController | undefined
+
+  function reset() {
+    sequence++
+    controller?.abort()
+    server = null
+    tasks.value = []
+    loading.value = loaded.value = saving.value = false
+    error.value = ''
+  }
+
+  async function load(serverID: number): Promise<boolean> {
+    const request = ++sequence
+    controller?.abort()
+    controller = new AbortController()
+    server = serverID
+    tasks.value = []
+    loading.value = true
+    loaded.value = saving.value = false
+    error.value = ''
+    try {
+      const value = await api<{ tasks: ServerProbeAssignmentTask[] }>(`/api/monitor/servers/${serverID}/probe-assignments`, { signal: controller.signal })
+      if (request !== sequence) return false
+      tasks.value = value.tasks
+      loaded.value = true
+      return true
+    } catch (reason) {
+      if (request === sequence) error.value = reason instanceof Error ? reason.message : '无法加载监测设置'
+      return false
+    } finally {
+      if (request === sequence) loading.value = false
+    }
+  }
+
+  async function save(serverID: number, taskIDs: number[]): Promise<boolean> {
+    if (!loaded.value || loading.value || saving.value || server !== serverID) return false
+    const request = ++sequence
+    controller?.abort()
+    controller = new AbortController()
+    saving.value = true
+    error.value = ''
+    const input: ServerProbeAssignmentsInput = { task_ids: taskIDs }
+    try {
+      await api(`/api/monitor/servers/${serverID}/probe-assignments`, { method: 'PUT', body: JSON.stringify(input), signal: controller.signal })
+      return request === sequence
+    } catch (reason) {
+      if (request === sequence) error.value = reason instanceof Error ? reason.message : '无法保存监测设置'
+      return false
+    } finally {
+      if (request === sequence) saving.value = false
+    }
+  }
+
+  if (getCurrentScope()) onScopeDispose(reset)
+  return { tasks, loading, loaded, saving, error, load, save, reset }
 }
 
 // Explicit nulls break failures; inserted nulls break periods without Agent reports.

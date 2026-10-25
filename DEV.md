@@ -132,11 +132,13 @@ Panel 保存最新指标与更新时间；Server 在线状态与当前 Agent 连
 Server 创建事务在 pending 阶段写入所有默认任务的分配；关闭默认开关保留已有分配。默认任务总数与每台 Server 的实际分配数分别最多 64，均包含停用任务。
 升级迁移会一次性把旧默认任务对未归档、未处于 decommission 状态的服务器的关系写入关联表，保留手动分配及历史记录。
 Agent capability 只决定已分配任务能否下发，不决定 assignment 是否存在。
+服务器详情的“编辑监测”与全局任务管理共用该分配表。管理员通过 `GET /api/monitor/servers/{server_id}/probe-assignments` 读取全部任务及当前勾选，通过 `PUT` 提交 `task_ids`，两者均校验 Server ACL 和可修改生命周期。Service 在同一事务内校验任务、替换当前 Server 的关联，支持空列表和离线服务器，不修改任务属性、`enabled`、`default_on` 或历史记录。PUT 与全局任务修改共用 `probeMu`，提交后只向当前连接的目标 Server 推送任务；前端重新读取分配并刷新当前时间范围的延迟历史。
 TCP 与 ICMP 分别由 `probe.tcp` / `probe.icmp` 声明；不能因 Agent 名称或版本推断支持。
 任务通过现有 WebSocket 下发独立的完整 desired task list，不进入 Xray / Realm desired state。
 
 Agent 执行 TCP connect 或 ICMP Echo，Panel 验证当前连接、任务状态、分配范围及能力后保存结果。
 历史查询沿用管理角色与 Server ACL；前端支持 1h / 6h / 24h 延迟曲线和相应失败率，SQLite 定期清理过期探测记录。
+History 继续以当前已启用、已分配且能力支持的任务为展示范围；取消分配后旧记录保留，重新分配后仍可查看保留期内的数据。
 权限错误等本机问题不应被展示成 ICMP 丢包；失败和报告间断保留图表空隙。
 
 精确超时、任务上限、结果枚举、窗口统计及 API 字段见 [网络探测协议](docs/agent-api-v1.md#network-probes)。

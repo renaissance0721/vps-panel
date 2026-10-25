@@ -43,6 +43,12 @@ type Task struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type ServerProbeAssignmentTask struct {
+	ProbeTask
+	Enabled  bool `json:"enabled"`
+	Assigned bool `json:"assigned"`
+}
+
 type DesiredTasks struct {
 	Type    string      `json:"type"`
 	Version int64       `json:"version"`

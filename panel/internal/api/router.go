@@ -212,6 +212,8 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("PATCH /api/monitor/probes/{id}", s.requireAdmin(s.saveProbe))
 	mux.HandleFunc("DELETE /api/monitor/probes/{id}", s.requireAdmin(s.deleteProbe))
 	mux.HandleFunc("GET /api/monitor/servers/{server_id}/latency", s.requireManager(s.getMonitorLatency))
+	mux.HandleFunc("GET /api/monitor/servers/{server_id}/probe-assignments", s.requireAdmin(s.getServerProbeAssignments))
+	mux.HandleFunc("PUT /api/monitor/servers/{server_id}/probe-assignments", s.requireAdmin(s.setServerProbeAssignments))
 	mux.HandleFunc("GET /api/servers", s.requireManager(s.listServers))
 	mux.HandleFunc("POST /api/servers", s.requireManager(s.createServer))
 	mux.HandleFunc("POST /api/servers/{id}/reorder", s.requireManager(s.reorderServer))

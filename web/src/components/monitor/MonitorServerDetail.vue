@@ -5,11 +5,13 @@ import type { ServerRecord } from '../../types/server'
 import type { LatencyHours } from '../../types/monitor'
 import { formatBytes, formatUptime, statusLabel } from '../../server'
 import { probeColors, probeLabel, probeOutcomeLabel, supportsProbe, useProbeHistory } from '../../composables/useProbe'
+import MonitorProbeAssignmentEditor from './MonitorProbeAssignmentEditor.vue'
 
 const LatencyChart = defineAsyncComponent(() => import('./LatencyChart.vue'))
-const props = defineProps<{ server: ServerRecord; show: boolean }>()
+const props = defineProps<{ server: ServerRecord; show: boolean; role?: string }>()
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 const hours = ref<LatencyHours>(1)
+const assignmentEditorOpen = ref(false)
 const rangeOptions: LatencyHours[] = [1, 6, 24]
 const supported = computed(() => supportsProbe(props.server, 'tcp') || supportsProbe(props.server, 'icmp'))
 const { history, loading, error, load, reset } = useProbeHistory()
@@ -36,7 +38,11 @@ const fields = computed(() => {
   ]
 })
 function refresh() { if (props.show && supported.value) void load(props.server.id, hours.value) }
-watch([() => props.server.id, () => props.show], () => { if (props.show) hours.value = 1 })
+function assignmentsSaved(serverID: number) { if (props.server.id === serverID) refresh() }
+watch([() => props.server.id, () => props.show], () => {
+  assignmentEditorOpen.value = false
+  if (props.show) hours.value = 1
+})
 watch([() => props.server.id, () => props.show, hours, supported, () => props.server.agent_capabilities?.join(',')], () => {
   if (!props.show || !supported.value) reset()
   else refresh()
@@ -52,7 +58,7 @@ watch([() => props.server.id, () => props.show, hours, supported, () => props.se
         <dl class="monitor-basic-info"><div v-for="[label, value] in fields" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div></dl>
       </section>
       <section class="monitor-latency-section" aria-label="网络延迟">
-        <h3>网络延迟</h3>
+        <div class="monitor-latency-heading"><h3>网络延迟</h3><n-button v-if="role === 'admin'" size="small" :disabled="!!server.archived_at || !!server.decommission_status" @click="assignmentEditorOpen = true">编辑监测</n-button></div>
         <div class="monitor-range-actions">
           <div role="group" aria-label="延迟时间范围"><n-button v-for="range in rangeOptions" :key="range" size="small" :type="hours === range ? 'primary' : 'default'" :aria-pressed="hours === range" @click="hours = range">{{ range }} 小时</n-button></div>
           <n-button size="small" :disabled="!supported || loading" @click="refresh">刷新</n-button>
@@ -79,4 +85,5 @@ watch([() => props.server.id, () => props.show, hours, supported, () => props.se
       </section>
     </n-card>
   </n-modal>
+  <MonitorProbeAssignmentEditor v-if="role === 'admin' && show && assignmentEditorOpen" v-model:show="assignmentEditorOpen" :server="server" @saved="assignmentsSaved" />
 </template>

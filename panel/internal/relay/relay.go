@@ -244,11 +244,7 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("begin relay deletion: %w", err)
 	}
 	defer tx.Rollback()
-	value, err := validateDelete(ctx, tx, id, allowManagedPurge)
-	if err != nil {
-		return Mutation{}, err
-	}
-	mutation, err := s.deleteTx(ctx, tx, value, now)
+	mutation, err := s.DeleteWithManagedPurgeTx(ctx, tx, id, allowManagedPurge, now)
 	if err != nil {
 		return Mutation{}, err
 	}
@@ -256,6 +252,15 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("commit relay deletion: %w", err)
 	}
 	return mutation, nil
+}
+
+// DeleteWithManagedPurgeTx keeps ordinary deletion guards within the caller's transaction.
+func (s *Service) DeleteWithManagedPurgeTx(ctx context.Context, tx *sql.Tx, id int64, allowManagedPurge bool, now time.Time) (Mutation, error) {
+	value, err := validateDelete(ctx, tx, id, allowManagedPurge)
+	if err != nil {
+		return Mutation{}, err
+	}
+	return s.deleteTx(ctx, tx, value, now.UTC().Truncate(time.Second))
 }
 
 func validateDelete(ctx context.Context, query interface {

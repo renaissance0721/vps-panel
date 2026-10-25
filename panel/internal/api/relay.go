@@ -430,7 +430,7 @@ func (s *server) deleteRelay(w http.ResponseWriter, r *http.Request, user auth.U
 		APIVersion:     server.AgentAPIVersion,
 		Capabilities:   server.AgentCapabilities,
 	}, agentcontrol.CapabilityManagedRuntimePurge)
-	mutation, err := s.relays.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
+	mutation, err := s.deleteRelayWithPersonalReferences(r.Context(), id, allowManagedPurge)
 	if err != nil {
 		writeRelayError(w, err)
 		return

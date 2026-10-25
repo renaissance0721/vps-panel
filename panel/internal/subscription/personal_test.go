@@ -44,6 +44,268 @@ func TestPersonalEndpointOverrideRemainsReadyWhenPublicIPv4IsMissing(t *testing.
 	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM personal_subscription_nodes WHERE group_id = ? AND enabled = 1`, 2, group.ID)
 }
 
+func TestPersonalDisabledSourcesRejectNewNodesAndPreserveExisting(t *testing.T) {
+	for _, sourceType := range []string{PersonalSourceProxy, PersonalSourceRelay} {
+		t.Run(sourceType, func(t *testing.T) {
+			db, service := newSubscriptionTestService(t)
+			insertPersonalTestUser(t, db, 100, "admin", "admin")
+			insertSubscriptionTestServer(t, db, 1, "source", "198.51.100.10")
+			actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+			external, err := service.landings.Create(t.Context(), actor.UserID, landingstore.CreateInput{
+				Name: "external", URI: "vless://uuid@healthy.example.com:443",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sourceID int64
+			var setEnabled func(bool)
+			wantStatus, wantDetail := PersonalNodeProxyDisabled, "Proxy 已停用"
+			if sourceType == PersonalSourceProxy {
+				value := createSubscriptionTestRealityProxy(t, db, 1, "proxy", 443)
+				sourceID = value.ID
+				setEnabled = func(enabled bool) {
+					t.Helper()
+					if _, _, err := service.proxies.Update(t.Context(), sourceID, proxystore.UpdateInput{Enabled: &enabled}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else {
+				value, _, err := service.relays.Create(t.Context(), relaystore.CreateInput{
+					ServerID: 1, Name: "relay", ListenPort: 9000, EntryHostMode: relaystore.EntryHostAuto,
+					TargetType: relaystore.TargetLanding, TargetLandingID: &external.ID, Network: relaystore.NetworkTCP, Enabled: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sourceID = value.ID
+				wantStatus, wantDetail = PersonalNodeSourceDisabled, "Relay 已停用"
+				setEnabled = func(enabled bool) {
+					t.Helper()
+					if _, _, err := service.relays.Update(t.Context(), sourceID, relaystore.UpdateInput{Enabled: &enabled}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			assertCandidate := func(want bool) {
+				t.Helper()
+				sources, err := service.ListPersonalSubscriptionSources(t.Context(), actor, "default")
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, source := range sources {
+					if source.SourceType == sourceType && source.SourceID == sourceID {
+						found = true
+					}
+				}
+				if found != want {
+					t.Fatalf("candidate present=%v, want %v", found, want)
+				}
+			}
+			assertCandidate(true)
+			group, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{
+				Name: "personal", ClientName: "default", Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := SetPersonalSubscriptionNodeInput{SourceType: sourceType, SourceID: sourceID, DisplayName: "selected", Enabled: true}
+			fallback := SetPersonalSubscriptionNodeInput{SourceType: PersonalSourceLanding, SourceID: external.ID, DisplayName: "fallback", Enabled: true}
+			group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{input, fallback})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nodeID, fallbackID := group.Nodes[0].ID, group.Nodes[1].ID
+			setEnabled(false)
+			assertCandidate(false)
+			group, err = service.GetPersonalSubscription(t.Context(), actor, group.ID)
+			if err != nil || len(group.Nodes) != 2 {
+				t.Fatalf("retained nodes count=%d, error=%v", len(group.Nodes), err)
+			}
+			node := group.Nodes[0]
+			if node.ID != nodeID || node.SourceType != sourceType || node.SourceID != sourceID || !node.Enabled ||
+				node.Status != wantStatus || node.StatusDetail != wantDetail {
+				t.Fatalf("disabled source lost its saved identity or status: id=%d status=%s", node.ID, node.Status)
+			}
+			data, err := service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
+			if err != nil || len(data.Nodes) != 1 || data.Nodes[0].Name != "fallback" {
+				t.Fatalf("disabled source output count=%d, error=%v", len(data.Nodes), err)
+			}
+			if _, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{input}); !errors.Is(err, ErrPersonalSourceNotFound) {
+				t.Fatalf("new disabled source accepted: %v", err)
+			}
+			input.ID = &fallbackID
+			if _, err := service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{input}); !errors.Is(err, ErrPersonalSourceNotFound) {
+				t.Fatalf("existing ID changed to disabled source: %v", err)
+			}
+			input.ID, fallback.ID = &nodeID, &fallbackID
+			input.DisplayName = "renamed"
+			group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{input, fallback})
+			if err != nil || len(group.Nodes) != 2 || group.Nodes[0].Status != wantStatus {
+				t.Fatalf("save existing disabled node: %v", err)
+			}
+			assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM personal_subscription_nodes WHERE id = ?`, 1, nodeID)
+			setEnabled(true)
+			assertCandidate(true)
+			group, err = service.GetPersonalSubscription(t.Context(), actor, group.ID)
+			if err != nil || group.Nodes[0].ID != nodeID || group.Nodes[0].Status != PersonalNodeReady {
+				t.Fatalf("saved source did not recover: %v", err)
+			}
+			data, err = service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
+			if err != nil || len(data.Nodes) != 2 || data.Nodes[0].Name != "renamed" {
+				t.Fatalf("recovered output count=%d, error=%v", len(data.Nodes), err)
+			}
+		})
+	}
+}
+
+func TestPersonalGenerationSkipsUnavailableClientsAndEndpoints(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertPersonalTestUser(t, db, 100, "admin", "admin")
+	insertSubscriptionTestServer(t, db, 1, "source", "198.51.100.10")
+	value := createSubscriptionTestRealityProxy(t, db, 1, "proxy", 443)
+	external, err := service.landings.Create(t.Context(), 100, landingstore.CreateInput{Name: "fallback", URI: "vless://uuid@healthy.example.com:443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+	group, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{Name: "personal", ClientName: "default", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceProxy, SourceID: value.ID, DisplayName: "proxy", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: external.ID, DisplayName: "fallback", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO client_metrics
+		(client_id, xray_uplink_bytes, xray_downlink_bytes, cycle_uplink_bytes, cycle_downlink_bytes, cycle_started_at, updated_at)
+		VALUES (?, 100, 0, 100, 0, 1, 1)`, value.Clients[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, status, serverStatus, address string
+		enabled                             bool
+		expiresAt, limit                    any
+	}{
+		{name: "ready", status: PersonalNodeReady, serverStatus: "online", address: "198.51.100.10", enabled: true},
+		{name: "disabled client", status: PersonalNodeClientDisabled, serverStatus: "online", address: "198.51.100.10"},
+		{name: "expired client", status: PersonalNodeClientExpired, serverStatus: "online", address: "198.51.100.10", enabled: true, expiresAt: service.now().Add(-time.Second).Unix()},
+		{name: "exhausted client", status: PersonalNodeClientExhausted, serverStatus: "online", address: "198.51.100.10", enabled: true, limit: 100},
+		{name: "offline server", status: PersonalNodeEndpointUnavailable, serverStatus: "offline", address: "198.51.100.10", enabled: true},
+		{name: "missing entry address", status: PersonalNodeEndpointUnavailable, serverStatus: "online", enabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := db.Exec(`UPDATE clients SET enabled = ?, expires_at = ?, traffic_limit_bytes = ? WHERE id = ?`,
+				test.enabled, test.expiresAt, test.limit, value.Clients[0].ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE servers SET status = ? WHERE id = 1`, test.serverStatus); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec(`UPDATE server_system_info SET public_ipv4 = ? WHERE server_id = 1`, test.address); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := service.GetPersonalSubscription(t.Context(), actor, group.ID)
+			if err != nil || len(stored.Nodes) != 2 || stored.Nodes[0].Status != test.status || !stored.Nodes[0].Enabled {
+				t.Fatalf("stored node status or enabled changed: %v", err)
+			}
+			data, err := service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
+			wantCount := 1
+			if test.status == PersonalNodeReady {
+				wantCount = 2
+			}
+			if err != nil || len(data.Nodes) != wantCount || data.Nodes[wantCount-1].Name != "fallback" {
+				t.Fatalf("generated node count=%d, want %d, error=%v", len(data.Nodes), wantCount, err)
+			}
+		})
+	}
+}
+
+func TestPruneDeletedPersonalSourcesKeepsDisabledSourcesAndRepairsHistoricalOrphans(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertPersonalTestUser(t, db, 100, "admin", "admin")
+	insertSubscriptionTestServer(t, db, 1, "source", "198.51.100.10")
+	proxy := createSubscriptionTestRealityProxy(t, db, 1, "proxy", 443)
+	external, err := service.landings.Create(t.Context(), 100, landingstore.CreateInput{Name: "external", URI: "vless://uuid@external.example.com:443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, _, err := service.relays.Create(t.Context(), relaystore.CreateInput{
+		ServerID: 1, Name: "local", ListenPort: 9000, EntryHostMode: relaystore.EntryHostAuto,
+		TargetType: relaystore.TargetLanding, TargetLandingID: &external.ID, Network: relaystore.NetworkTCP, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+	group, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{Name: "personal", ClientName: "default", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceProxy, SourceID: proxy.ID, DisplayName: "proxy", Enabled: true},
+		{SourceType: PersonalSourceRelay, SourceID: local.ID, DisplayName: "relay", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: external.ID, DisplayName: "external", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce an orphan left by a deletion before reference cleanup existed.
+	if _, err := db.Exec(`INSERT INTO personal_subscription_nodes
+		(group_id, source_type, source_id, display_name, enabled, position, created_at, updated_at)
+		VALUES (?, 'landing', 99999, 'orphan', 1, 4, 1, 1)`, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	preset, err := service.GetRoutingPreset(t.Context(), group.RoutingPresetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := service.GetPersonalSubscription(t.Context(), actor, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, len(stored.Nodes))
+	for _, node := range stored.Nodes {
+		ids = append(ids, node.ID)
+	}
+	key := preset.Groups[0].Key
+	if _, err := service.SetPersonalSubscriptionRoutingBindings(t.Context(), actor, group.ID, RoutingBindings{key: ids}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE proxies SET enabled = 0 WHERE id = ?`, proxy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE relays SET enabled = 0 WHERE id = ?`, local.ID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := PruneDeletedPersonalSubscriptionSourcesTx(t.Context(), tx, service.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = service.GetPersonalSubscription(t.Context(), actor, group.ID)
+	if err != nil || len(stored.Nodes) != 3 || len(stored.RoutingBindings[key]) != 3 {
+		t.Fatalf("cleanup removed existing sources or retained an orphan: %v", err)
+	}
+	for i, node := range stored.Nodes {
+		if node.ID != ids[i] || !node.Enabled || stored.RoutingBindings[key][i] != ids[i] {
+			t.Fatal("cleanup changed an existing node or binding")
+		}
+	}
+	if stored.Nodes[0].Status != PersonalNodeProxyDisabled || stored.Nodes[1].Status != PersonalNodeSourceDisabled {
+		t.Fatal("cleanup lost disabled source status")
+	}
+}
+
 func TestPersonalSubscriptionCRUDOwnerAndToken(t *testing.T) {
 	db, service := newSubscriptionTestService(t)
 	insertPersonalTestUser(t, db, 100, "admin-a", "admin")

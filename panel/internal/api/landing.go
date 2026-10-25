@@ -145,7 +145,7 @@ func (s *server) deleteLanding(w http.ResponseWriter, r *http.Request, user auth
 	if !ok {
 		return
 	}
-	if err := s.landings.Delete(r.Context(), id, user.ID); err != nil {
+	if err := s.deleteLandingWithPersonalReferences(r.Context(), id, user.ID); err != nil {
 		writeLandingError(w, err)
 		return
 	}

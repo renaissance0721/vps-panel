@@ -265,7 +265,7 @@ func (s *server) deleteProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		writeRelayError(w, err)
 		return
 	}
-	mutation, err := s.proxies.DeleteWithManagedPurge(r.Context(), id, allowManagedPurge)
+	mutation, err := s.deleteProxyWithPersonalReferences(r.Context(), id, allowManagedPurge)
 	if err != nil {
 		writeProxyError(w, err)
 		return

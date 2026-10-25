@@ -191,6 +191,17 @@ func (s *Service) Delete(ctx context.Context, id, userID int64) error {
 		return fmt.Errorf("begin landing deletion: %w", err)
 	}
 	defer tx.Rollback()
+	if err := s.DeleteTx(ctx, tx, id, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit landing deletion: %w", err)
+	}
+	return nil
+}
+
+// DeleteTx validates ownership and Relay references in the caller's transaction.
+func (s *Service) DeleteTx(ctx context.Context, tx *sql.Tx, id, userID int64) error {
 	if _, err := getOwned(ctx, tx, id, userID); err != nil {
 		return err
 	}
@@ -203,9 +214,6 @@ func (s *Service) Delete(ctx context.Context, id, userID int64) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM landing_nodes WHERE id = ? AND owner_user_id = ?`, id, userID); err != nil {
 		return fmt.Errorf("delete landing: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit landing deletion: %w", err)
 	}
 	return nil
 }

@@ -437,6 +437,9 @@ func (s *Service) DeletePublishedNode(ctx context.Context, id int64) (*relay.Mut
 		}
 		mutation = &deletedMutation
 	}
+	if err := PruneDeletedPersonalSubscriptionSourcesTx(ctx, tx, now); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit published node deletion: %w", err)
 	}

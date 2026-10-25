@@ -441,6 +441,18 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 		return Mutation{}, fmt.Errorf("begin proxy deletion: %w", err)
 	}
 	defer tx.Rollback()
+	mutation, err := s.DeleteWithManagedPurgeTx(ctx, tx, id, allowManagedPurge, now)
+	if err != nil {
+		return Mutation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Mutation{}, fmt.Errorf("commit proxy deletion: %w", err)
+	}
+	return mutation, nil
+}
+
+// DeleteWithManagedPurgeTx validates and deletes a Proxy in the caller's transaction.
+func (s *Service) DeleteWithManagedPurgeTx(ctx context.Context, tx *sql.Tx, id int64, allowManagedPurge bool, now time.Time) (Mutation, error) {
 	value, err := validateDelete(ctx, tx, id, allowManagedPurge)
 	if err != nil {
 		return Mutation{}, err
@@ -454,9 +466,6 @@ func (s *Service) DeleteWithManagedPurge(ctx context.Context, id int64, allowMan
 	}
 	if err := operation.RecordTx(ctx, tx, value.ServerID, "proxy", id, "delete", version, now); err != nil {
 		return Mutation{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Mutation{}, fmt.Errorf("commit proxy deletion: %w", err)
 	}
 	return Mutation{ServerID: value.ServerID, Version: version}, nil
 }

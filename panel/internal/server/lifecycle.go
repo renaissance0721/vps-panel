@@ -548,6 +548,9 @@ func (s *Service) PermanentlyDeleteWithMutations(ctx context.Context, id int64) 
 	if count == 0 {
 		return nil, ErrNotFound
 	}
+	if err := subscriptionstore.PruneDeletedPersonalSubscriptionSourcesTx(ctx, tx, s.now()); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit permanent server deletion: %w", err)
 	}
@@ -763,11 +766,6 @@ func deleteArchivedDependenciesTx(ctx context.Context, tx *sql.Tx, serverID int6
 			OR source_server_id = ? OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
 				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
 				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))`},
-		{"remove personal subscription references", `DELETE FROM personal_subscription_nodes WHERE
-			(source_type = 'proxy' AND source_id IN (SELECT id FROM proxies WHERE server_id = ?))
-			OR (source_type = 'relay' AND source_id IN (SELECT id FROM relays WHERE server_id = ?
-				OR target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?)
-				OR source_client_id IN (SELECT clients.id FROM clients JOIN proxies ON proxies.id = clients.proxy_id WHERE proxies.server_id = ?)))`},
 		{"remove published subscription references", `DELETE FROM subscription_published_nodes WHERE
 			target_proxy_id IN (SELECT id FROM proxies WHERE server_id = ?) OR source_server_id = ?
 			OR relay_id IN (SELECT id FROM relays WHERE server_id = ?
@@ -783,8 +781,6 @@ func deleteArchivedDependenciesTx(ctx context.Context, tx *sql.Tx, serverID int6
 		switch statement.name {
 		case "unlink subscription plans", "remove published subscription references":
 			args = []any{serverID, serverID, serverID, serverID, serverID}
-		case "remove personal subscription references":
-			args = []any{serverID, serverID, serverID, serverID}
 		case "remove subscriber client references":
 			args = []any{serverID}
 		case "remove cross-server relay references":

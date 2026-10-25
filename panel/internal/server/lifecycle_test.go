@@ -265,6 +265,10 @@ func TestForceArchiveDisablesSubscriptionDependenciesAndPermanentDeleteIsForeign
 		VALUES (303, 'relay', ?, 'Relay node', 1, 1, 1, 1)`, relayID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE personal_subscription_groups SET routing_bindings_json =
+		json_object('removed', json_array((SELECT id FROM personal_subscription_nodes WHERE group_id = 303))) WHERE id = 303`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
 		VALUES (304, 'subscriber', 'hash', 'subscriber', 1, 1)`); err != nil {
 		t.Fatal(err)
@@ -328,6 +332,14 @@ func TestForceArchiveDisablesSubscriptionDependenciesAndPermanentDeleteIsForeign
 	_ = db.QueryRow(`SELECT COUNT(*) FROM subscription_published_nodes WHERE id = 300`).Scan(&publishedCount)
 	if serverCount != 0 || relayCount != 0 || publishedCount != 0 {
 		t.Fatalf("permanent deletion leftovers: server=%d relay=%d published=%d", serverCount, relayCount, publishedCount)
+	}
+	var personalCount int
+	var bindings string
+	if err := db.QueryRow(`SELECT COUNT(*) FROM personal_subscription_nodes WHERE group_id = 303`).Scan(&personalCount); err != nil || personalCount != 0 {
+		t.Fatalf("permanent deletion personal references=%d: %v", personalCount, err)
+	}
+	if err := db.QueryRow(`SELECT routing_bindings_json FROM personal_subscription_groups WHERE id = 303`).Scan(&bindings); err != nil || bindings != "{}" {
+		t.Fatalf("permanent deletion personal bindings=%s: %v", bindings, err)
 	}
 	rows, err := db.Query(`PRAGMA foreign_key_check`)
 	if err != nil {

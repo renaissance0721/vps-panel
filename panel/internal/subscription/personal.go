@@ -22,6 +22,7 @@ type personalSourceState struct {
 	status         string
 	statusDetail   string
 	accessible     bool
+	selectable     bool // Eligibility for a new node, independent of runtime readiness.
 	requiresClient bool
 	resolved       *ResolvedSubscriptionNode
 }
@@ -236,7 +237,7 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		if err != nil {
 			return PersonalSubscription{}, err
 		}
-		if !state.accessible {
+		if !state.accessible || !state.selectable {
 			if input.ID == nil || existing[*input.ID].SourceType != input.SourceType || existing[*input.ID].SourceID != input.SourceID {
 				return PersonalSubscription{}, ErrPersonalSourceNotFound
 			}
@@ -390,7 +391,7 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		if err != nil {
 			return nil, err
 		}
-		if state.accessible {
+		if state.accessible && state.selectable {
 			values = append(values, personalSourceResponse(PersonalSourceProxy, value.ID, value.Name, state))
 		}
 	}
@@ -406,7 +407,7 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		if err != nil {
 			return nil, err
 		}
-		if state.accessible {
+		if state.accessible && state.selectable {
 			values = append(values, personalSourceResponse(PersonalSourceRelay, value.ID, value.Name, state))
 		}
 	}
@@ -422,7 +423,7 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		if err != nil {
 			return nil, err
 		}
-		if state.accessible {
+		if state.accessible && state.selectable {
 			values = append(values, personalSourceResponse(PersonalSourceLanding, value.ID, value.Name, state))
 		}
 	}
@@ -585,7 +586,7 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "落地节点不能用于个人订阅，请更换为直连节点。"), nil
 		}
 		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name,
-			accessible: true, requiresClient: true}
+			accessible: true, selectable: value.Enabled, requiresClient: true}
 		if !value.Enabled {
 			state.status, state.statusDetail = PersonalNodeProxyDisabled, "Proxy 已停用"
 			return state, nil
@@ -640,7 +641,7 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		}
 		state := personalSourceState{
 			name: value.Name, detail: value.ServerName + " · " + value.Name,
-			accessible: true, requiresClient: value.TargetType == relaystore.TargetProxy,
+			accessible: true, selectable: value.Enabled, requiresClient: value.TargetType == relaystore.TargetProxy,
 		}
 		endpoint := &proxystore.ShareEndpoint{Address: value.EntryAddress, Port: value.ListenPort}
 		if !value.Enabled {
@@ -753,7 +754,7 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		}
 		state := personalSourceState{
 			name: value.Name, detail: fmt.Sprintf("%s · %s:%d", value.Protocol, value.Host, value.Port),
-			status: PersonalNodeReady, statusDetail: "节点自带凭据", accessible: true,
+			status: PersonalNodeReady, statusDetail: "节点自带凭据", accessible: true, selectable: true,
 		}
 		raw, err := s.landings.GetURI(ctx, sourceID, actor.UserID)
 		if err != nil {

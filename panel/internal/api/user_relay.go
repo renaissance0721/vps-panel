@@ -359,7 +359,7 @@ func (s *server) deleteOwnedRelay(w http.ResponseWriter, r *http.Request, value 
 		writeServerError(w, err)
 		return
 	}
-	mutation, err := s.relays.DeleteWithManagedPurge(r.Context(), value.ID, allowManagedPurge)
+	mutation, err := s.deleteRelayWithPersonalReferences(r.Context(), value.ID, allowManagedPurge)
 	if err != nil {
 		writeRelayError(w, err)
 		return
@@ -378,7 +378,7 @@ func (s *server) deleteUserRelaysForClient(ctx context.Context, clientID int64) 
 		if err != nil {
 			return err
 		}
-		mutation, err := s.relays.DeleteWithManagedPurge(ctx, value.ID, allowManagedPurge)
+		mutation, err := s.deleteRelayWithPersonalReferences(ctx, value.ID, allowManagedPurge)
 		if err != nil {
 			return err
 		}
@@ -445,7 +445,7 @@ func (s *server) prepareUserRelayDeletions(ctx context.Context, clientIDs []int6
 
 func (s *server) deletePreparedUserRelays(ctx context.Context, deletions []userRelayDeletion) error {
 	for _, deletion := range deletions {
-		mutation, err := s.relays.DeleteWithManagedPurge(ctx, deletion.value.ID, deletion.allowManagedPurge)
+		mutation, err := s.deleteRelayWithPersonalReferences(ctx, deletion.value.ID, deletion.allowManagedPurge)
 		if err != nil {
 			return err
 		}

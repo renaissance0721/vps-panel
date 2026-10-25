@@ -153,4 +153,7 @@ func TestPersonalNodeEligibilityAndLegacyReferences(t *testing.T) {
 	if _, err := service.DeletePublishedNode(t.Context(), published.ID); err != nil {
 		t.Fatalf("published lifecycle delete: %v", err)
 	}
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM personal_subscription_nodes WHERE source_type = 'relay' AND source_id = ?`, 0, publishedRelay.ID)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 0, publishedRelay.ID)
+	assertSubscriptionCount(t, db, `SELECT COUNT(*) FROM relays WHERE id = ?`, 1, local.ID)
 }

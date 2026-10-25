@@ -10,6 +10,7 @@ import (
 
 	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -339,6 +340,9 @@ func (s *Service) DeleteUser(ctx context.Context, userID int64) ([]proxystore.Mu
 			return nil, fmt.Errorf("read deleted user count: %w", err)
 		}
 		return nil, ErrUserNotFound
+	}
+	if err := subscriptionstore.PruneDeletedPersonalSubscriptionSourcesTx(ctx, tx, s.now()); err != nil {
+		return nil, err
 	}
 	mutations, err := proxystore.BumpServerVersionsTx(ctx, tx, serverIDs, s.now().UTC().Truncate(time.Second))
 	if err != nil {

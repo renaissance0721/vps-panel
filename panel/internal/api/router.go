@@ -195,6 +195,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("GET /api/admin/users/{id}", s.requireAdmin(s.getAdminUserDetail))
 	mux.HandleFunc("DELETE /api/admin/users/{id}", s.requireAdmin(s.deleteAdminUser))
 	mux.HandleFunc("POST /api/admin/users/{id}/nodes", s.requireAdmin(s.createAdminUserNode))
+	mux.HandleFunc("DELETE /api/admin/users/{id}/nodes/{nodeID}", s.requireAdmin(s.deleteAdminUserNode))
 	mux.HandleFunc("GET /api/me/nodes", s.requireCarpool(s.listMyNodes))
 	mux.HandleFunc("PATCH /api/me/nodes/{id}", s.requireCarpool(s.updateMyNode))
 	mux.HandleFunc("GET /api/me/nodes/{id}/share", s.requireCarpool(s.getMyNodeShare))

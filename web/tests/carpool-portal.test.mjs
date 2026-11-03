@@ -20,7 +20,7 @@ test('carpool 使用独立门户且登录初始化不加载管理数据', () => 
 })
 
 test('拼车用户门户按需请求分享并只展示轻量节点与中转表单', () => {
-  assert.match(portalSource, /\/api\/me\/nodes\/\$\{node\.client_id\}\/share/)
+  assert.match(portalSource, /\/api\/me\/nodes\/\$\{node\.id\}\/share/)
   assert.match(portalSource, /\/api\/me\/relays\/\$\{relay\.id\}\/share/)
   assert.match(portalSource, /source_client_id: sourceClientID\.value/)
   assert.match(portalSource, /target_client_id: targetClientID\.value/)
@@ -39,9 +39,9 @@ test('拼车用户门户按需请求分享并只展示轻量节点与中转表�
 })
 
 test('拼车用户只通过专用接口修改自己的 Client Name', () => {
-  assert.ok(portalSource.includes('/api/me/nodes/${node.client_id}'))
+  assert.ok(portalSource.includes('/api/me/nodes/${node.id}'))
   assert.match(portalSource, /body: JSON\.stringify\(\{ name: nodeName\.value\.trim\(\) \}\)/)
-  assert.match(portalSource, /title="编辑节点"/)
+  assert.match(portalSource, /title="编辑客户端名称"/)
   assert.match(portalSource, /editingNode\?\.server_name/)
   assert.match(portalSource, /editingNode\?\.proxy_name/)
   assert.match(portalSource, /客户端名称/)
@@ -66,4 +66,12 @@ test('用户门户各区域独立加载且管理员中转页标记用户中转',
   assert.match(relayViewSource, /用户中转/)
   assert.match(relayViewSource, /owner_username/)
   assert.match(relayViewSource, /自定义落地/)
+})
+
+
+test('共享客户端的直连和中转使用各自的节点 ID 和状态', () => {
+  assert.match(portalSource, /:key="node\.id"/)
+  assert.match(portalSource, /node\.source_type === 'relay'/)
+  assert.match(portalSource, /relay_disabled: '中转已停用'/)
+  assert.doesNotMatch(portalSource, /:key="node\.client_id"/)
 })

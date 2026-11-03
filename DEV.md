@@ -183,6 +183,8 @@ Proxy、Relay、Published Node 和个人订阅节点的 `enabled` 是保存的�
 监听端口与 Proxy 共用现有端口预留检查，避免跨模块冲突。
 
 拼车用户的个人中转使用分配给自己的 Client 和受限来源；订阅发布产生的受管 Relay 由订阅业务维护。
+
+拼车节点入口使用 `carpool_node_assignments` 区分 Proxy 和 Relay，多个入口可引用同一用户的目标 Proxy Client。分享通过节点 assignment ID 校验归属；Relay 入口使用该 Client 的凭据和 Relay 的当前入口地址。迁移按用户和 Proxy 回填最小 Client ID，历史重复 Client 原样保留。移除入口保留 Client；删除 Relay 同事务清理其节点引用，存在节点引用时禁止更改 Relay 目标。
 普通 Relay PATCH（包括启停、Target、监听地址和端口）及 DELETE 拒绝修改这些托管资源，admin 也不能绕过；Server 不属于现有 Relay PATCH 字段。拼车中转的修改仍经过拼车用户入口，管理员通过专用用户中转入口删除；数量限制由 Carpool 入口在创建事务内校验。普通及拼车中转删除最后一条 Relay 时沿用与 Proxy 相同的清理能力检查。
 
 中转页面复用只读 `subscription_published` 分类：false 为本地中转，true 为订阅发布中转；不增加分类字段。该兼容标识由已有 `subscription_published_nodes.relay_id` 关联派生，只用于托管保护和展示，不扩展其业务含义。发布分类只提供查看和排障，创建、修改、启停及删除仍由「订阅管理 → 发布节点」和 Subscription Service 负责：Subscription 在自己的事务内读取关联、检查套餐引用、协调订阅 Client 并维护 Relay，Relay 的 `CreateTx` / `UpdateTx` / `DeleteTx` 只执行转发参数校验及持久化。`UpdateTx` 返回变更状态，由调用方在同一事务中合并递增 affected Server 的 desired-state version；创建和删除沿用现有版本与操作记录写入。节点用途不限制 Relay target 或 Published Node target，direct 与 landing 仍遵循原有目标规则。

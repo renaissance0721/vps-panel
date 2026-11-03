@@ -59,7 +59,7 @@ test('拼车面板继续通过 /api/admin/users 加载拼车用户', () => {
 })
 
 test('拼车面板保留客户端、用户中转和密码重置申请管理', () => {
-  for (const label of ['客户端', '+ 新建客户端', '用户中转', '密码重置申请', '删除中转', '拒绝', '批准']) {
+  for (const label of ['客户端', '+ 添加节点', '用户中转', '密码重置申请', '删除中转', '拒绝', '批准']) {
     assert.ok(carpoolSource.includes(label))
   }
   assert.match(carpoolSource, /v-for="node in assignedNodes"/)
@@ -71,7 +71,12 @@ test('拼车面板从 User 角度复用真实 Client 且操作后刷新详情', 
   assert.doesNotMatch(composableSource, /\/api\/proxies\/\$\{[^}]+\}\/clients/)
   assert.doesNotMatch(composableSource, /user_nodes/)
   assert.match(composableSource, /\/api\/clients\/\$\{node\.client\.id\}/)
-  assert.match(composableSource, /将删除该用户在此节点的客户端凭据，并删除依赖此客户端创建的用户中转。是否继续？/)
+  assert.match(composableSource, /共享客户端和用户中转将保留/)
+  assert.match(composableSource, /source_type: node\.source_type, source_id: node\.source_id/)
+  assert.match(carpoolSource, /直连节点/)
+  assert.match(carpoolSource, /中转节点/)
+  assert.match(carpoolSource, /node\.server_name.*→.*node\.proxy_name/)
+  assert.match(carpoolSource, /:key="node\.id"/)
   for (const operation of ['saveNode', 'removeNode', 'removeRelay', 'reviewPasswordRequest']) {
     assert.match(composableSource, new RegExp(`async function ${operation}\\([\\s\\S]*?await loadDetail\\(\\)`))
   }

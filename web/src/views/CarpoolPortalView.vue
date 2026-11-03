@@ -9,6 +9,10 @@ import QRCodeModal from '../components/share/QRCodeModal.vue'
 import AccountMenu from '../components/AccountMenu.vue'
 
 type UserNode = {
+  id: number
+  source_type: 'proxy' | 'relay'
+  source_id: number
+  display_name: string
   client_id: number
   client_name: string
   server_name: string
@@ -107,7 +111,7 @@ async function run(action: () => Promise<void>) {
 }
 
 async function getNodeShare(node: UserNode) {
-  return (await api<{ share: NodeShare }>(`/api/me/nodes/${node.client_id}/share`)).share
+  return (await api<{ share: NodeShare }>(`/api/me/nodes/${node.id}/share`)).share
 }
 
 async function getRelayShare(relay: UserRelay) {
@@ -118,7 +122,7 @@ async function copyNode(node: UserNode) {
   await run(async () => {
     const share = await getNodeShare(node)
     await navigator.clipboard.writeText(share.uri)
-    copiedNodeID.value = node.client_id
+    copiedNodeID.value = node.id
   })
 }
 
@@ -142,7 +146,7 @@ async function saveNode() {
   const node = editingNode.value
   if (!node) return
   await run(async () => {
-    await api(`/api/me/nodes/${node.client_id}`, {
+    await api(`/api/me/nodes/${node.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ name: nodeName.value.trim() }),
     })
@@ -175,7 +179,7 @@ function nodeUsagePercent(node: UserNode) {
 }
 
 function nodeStatus(node: UserNode) {
-  const labels: Record<string, string> = { normal: '可用', warning: '流量预警', exhausted: '流量已用完', expired: '已到期', disabled: '已停用' }
+  const labels: Record<string, string> = { normal: '可用', warning: '流量预警', exhausted: '流量已用完', expired: '已到期', disabled: '已停用', relay_disabled: '中转已停用', relay_unavailable: '中转目标不可用' }
   return labels[node.status] ?? node.status
 }
 
@@ -261,13 +265,13 @@ onMounted(async () => {
         <h2 class="portal-section-title">我的节点</h2>
         <n-empty v-if="nodes.length === 0" description="管理员尚未分配节点" />
         <div v-else class="user-card-grid">
-          <n-card v-for="node in nodes" :key="node.client_id" :title="node.server_name" :bordered="true">
+          <n-card v-for="node in nodes" :key="node.id" :title="node.display_name" :bordered="true">
             <template #header-extra><span :class="['user-status', { online: node.effective_enabled }]">● {{ nodeStatus(node) }}</span></template>
-            <p class="secondary-text">{{ node.proxy_name }}</p>
+            <p class="secondary-text">{{ node.source_type === 'relay' ? '中转 · ' + node.server_name + ' → ' : '直连 · ' }}{{ node.proxy_name }}</p>
             <n-progress type="line" :percentage="nodeUsagePercent(node)" :show-indicator="false" />
             <strong>{{ formatClientTrafficBytes(node.traffic_used_bytes) }} / {{ node.traffic_limit_bytes ? formatClientTrafficBytes(node.traffic_limit_bytes) : '不限' }}</strong>
             <dl class="user-details"><div><dt>到期</dt><dd>{{ node.expires_at ? formatTime(node.expires_at) : '不限' }}</dd></div><div><dt>付款周期</dt><dd>{{ billingLabel(node.billing_period_months) }}</dd></div></dl>
-            <div class="modal-actions"><n-button secondary :disabled="busy" @click="openNodeEdit(node)">编辑</n-button><n-button secondary :disabled="busy" @click="copyNode(node)">{{ copiedNodeID === node.client_id ? '已复制' : '复制链接' }}</n-button><n-button type="primary" :disabled="busy" @click="showNodeQR(node)">二维码</n-button></div>
+            <div class="modal-actions"><n-button secondary :disabled="busy" @click="openNodeEdit(node)">编辑</n-button><n-button secondary :disabled="busy" @click="copyNode(node)">{{ copiedNodeID === node.id ? '已复制' : '复制链接' }}</n-button><n-button type="primary" :disabled="busy" @click="showNodeQR(node)">二维码</n-button></div>
           </n-card>
         </div>
       </section>
@@ -287,7 +291,7 @@ onMounted(async () => {
     </template>
   </main>
 
-  <n-modal v-model:show="nodeModalOpen"><n-card class="client-form-card" title="编辑节点" closable @close="nodeModalOpen = false"><form class="auth-form" @submit.prevent="saveNode"><div class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span></div><label><span>客户端名称</span><n-input v-model:value="nodeName" maxlength="100" /></label><div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
+  <n-modal v-model:show="nodeModalOpen"><n-card class="client-form-card" title="编辑客户端名称" closable @close="nodeModalOpen = false"><form class="auth-form" @submit.prevent="saveNode"><div class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span></div><label><span>客户端名称</span><n-input v-model:value="nodeName" maxlength="100" /></label><div class="modal-actions"><n-button @click="nodeModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
   <n-modal v-model:show="relayModalOpen"><n-card class="client-form-card" :title="editingRelayID === null ? '添加中转' : '修改落地'" closable @close="relayModalOpen = false"><form class="auth-form" @submit.prevent="saveRelay"><template v-if="editingRelayID === null"><label><span>名称</span><n-input v-model:value="relayName" maxlength="100" /></label><label><span>入口节点</span><select v-model.number="sourceClientID" class="settings-input" @change="onSourceChange"><option v-for="source in relaySources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label><fieldset class="relay-mode-field"><legend>落地方式</legend><n-radio-group v-model:value="relayMode"><div class="relay-mode-options"><n-radio value="assigned_node">使用已有节点</n-radio><n-radio value="custom">自定义落地</n-radio></div></n-radio-group></fieldset><label v-if="relayMode === 'assigned_node'"><span>落地节点</span><select v-model.number="targetClientID" class="settings-input"><option v-for="source in targetSources" :key="source.client_id" :value="source.client_id">{{ source.server_name }} · {{ source.proxy_name }}</option></select></label></template><template v-if="relayMode === 'custom'"><label><span>落地公网 IP</span><n-input v-model:value="relayTargetIP" placeholder="1.2.3.4" /></label><label><span>落地端口</span><input v-model.number="relayTargetPort" class="settings-input" type="number" min="1" max="65535" /></label></template><div class="modal-actions"><n-button @click="relayModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div></form></n-card></n-modal>
   <QRCodeModal :show="qrOpen" :uri="qrURI" :title="qrTitle" :subtitle="qrSubtitle" @update:show="qrOpen = $event" />
 </template>

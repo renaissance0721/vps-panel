@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/listener"
@@ -48,6 +49,28 @@ func (s *Service) Get(ctx context.Context, id int64) (Relay, error) {
 		return Relay{}, ErrNotFound
 	}
 	return values[0], nil
+}
+
+// GetTx 在调用方事务内读取中转及其解析后的入口和目标。
+func (s *Service) GetTx(ctx context.Context, tx *sql.Tx, id int64) (Relay, error) {
+	values, err := list(ctx, tx, `WHERE relays.id = ? AND source.archived_at IS NULL`, id)
+	if err != nil {
+		return Relay{}, err
+	}
+	if len(values) == 0 {
+		return Relay{}, ErrNotFound
+	}
+	return values[0], nil
+}
+
+// NetworkCompatible 判断中转网络是否能够承载目标代理协议。
+func NetworkCompatible(network, protocol string) bool {
+	return !(protocol == "vless" && network == NetworkUDP)
+}
+
+// CarpoolAvailable 判断普通中转能否安全映射到目标 Proxy 的 Client。
+func CarpoolAvailable(r Relay, proxyID int64, protocol string) bool {
+	return r.OwnerUserID == nil && !r.SubscriptionPublished && r.Enabled && r.TargetType == TargetProxy && r.TargetProxyID != nil && *r.TargetProxyID == proxyID && strings.TrimSpace(r.EntryAddress) != "" && r.ListenPort > 0 && r.TargetAddressReady && NetworkCompatible(r.Network, protocol)
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Relay, Mutation, error) {
@@ -184,6 +207,15 @@ func (s *Service) updateTx(ctx context.Context, tx *sql.Tx, previous Relay, inpu
 	value, err := ValidateUpdateInput(previous, input)
 	if err != nil {
 		return false, err
+	}
+	if previous.TargetType != value.TargetType || nullableID(previous.TargetProxyID) != nullableID(value.TargetProxyID) {
+		var referenced bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM carpool_node_assignments WHERE source_type = 'relay' AND source_id = ?)`, previous.ID).Scan(&referenced); err != nil {
+			return false, err
+		}
+		if referenced {
+			return false, ErrCarpoolReferenced
+		}
 	}
 	if net.ParseIP(value.ListenAddress).To4() == nil {
 		state, err := readServerIPv6State(ctx, tx, value.ServerID)

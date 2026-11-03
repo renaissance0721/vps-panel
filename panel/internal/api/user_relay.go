@@ -76,6 +76,27 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 		writeInternalError(w, err)
 		return
 	}
+	assignments, err := s.carpoolAssignments(r.Context(), user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	assignedClients := make(map[int64]bool)
+	for _, assignment := range assignments {
+		client, err := s.proxies.GetAssignedClient(r.Context(), user.ID, assignment.ClientID)
+		if err != nil {
+			continue
+		}
+		if assignment.SourceType == "proxy" && assignment.SourceID == client.ProxyID {
+			assignedClients[client.ID] = true
+		}
+		if assignment.SourceType == "relay" {
+			relay, err := s.relays.Get(r.Context(), assignment.SourceID)
+			if err == nil && relayCarpoolAvailable(relay, client.ProxyID, client.Protocol) {
+				assignedClients[client.ID] = true
+			}
+		}
+	}
 	type sourceResponse struct {
 		ClientID         int64  `json:"client_id"`
 		ServerName       string `json:"server_name"`
@@ -86,7 +107,7 @@ func (s *server) listMyRelaySources(w http.ResponseWriter, r *http.Request, user
 	values := make([]sourceResponse, 0, len(clients))
 	now := time.Now()
 	for _, client := range clients {
-		if client.UserRelayPortCount > 0 && client.LifecycleAt(now).EffectiveEnabled {
+		if assignedClients[client.ID] && client.UserRelayPortCount > 0 && client.LifecycleAt(now).EffectiveEnabled {
 			values = append(values, sourceResponse{
 				ClientID: client.ID, ServerName: client.ServerName,
 				ProxyName: client.ProxyName, Protocol: client.Protocol, EffectiveEnabled: true,
@@ -119,6 +140,15 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		writeProxyError(w, err)
 		return
 	}
+	available, err := s.carpoolClientHasNode(r.Context(), user.ID, source)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !available {
+		writeError(w, http.StatusConflict, "所选节点当前不可用于创建中转")
+		return
+	}
 	if !source.LifecycleAt(time.Now()).EffectiveEnabled {
 		writeError(w, http.StatusConflict, "所选节点当前不可用于创建中转")
 		return
@@ -146,6 +176,15 @@ func (s *server) createMyRelay(w http.ResponseWriter, r *http.Request, user auth
 		target, err := s.proxies.GetAssignedClient(r.Context(), user.ID, request.TargetClientID)
 		if err != nil {
 			writeProxyError(w, err)
+			return
+		}
+		available, err := s.carpoolClientHasNode(r.Context(), user.ID, target)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !available {
+			writeError(w, http.StatusConflict, "所选落地节点当前不可用于创建中转")
 			return
 		}
 		if !target.LifecycleAt(time.Now()).EffectiveEnabled {

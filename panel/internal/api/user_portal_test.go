@@ -603,7 +603,8 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 		return body.Client.ID
 	}
 	sourceClientID := proxy.Clients[0].ID
-	targetClientID := createClient("Alice Target")
+	_, targetProxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, 25001)
+	targetClientID := targetProxy.Clients[0].ID
 	foreignClientID := createClient("Bob Target")
 	assign(sourceClientID, fixture.userID)
 	assign(targetClientID, fixture.userID)
@@ -676,7 +677,7 @@ func TestUserRelayModesSharesOwnerIsolationAndAdminRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	if storedServerID != server.Server.ID || storedSourceID != sourceClientID || storedType != relaystore.TargetProxy ||
-		storedTargetProxyID != proxy.ID || storedTargetID != targetClientID {
+		storedTargetProxyID != targetProxy.ID || storedTargetID != targetClientID {
 		t.Fatalf("stored assigned relay = server %d source %d type %s proxy %d target %d port %d",
 			storedServerID, storedSourceID, storedType, storedTargetProxyID, storedTargetID, assignedPort)
 	}
@@ -827,15 +828,9 @@ func TestDeletingTargetAssignedClientPurgesUserRelay(t *testing.T) {
 	defer fixture.db.Close()
 	server, proxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, 24000)
 	sourceClientID := proxy.Clients[0].ID
-	targetResponse := performRequest(t, fixture.handler, http.MethodPost,
-		"/api/proxies/"+strconv.FormatInt(proxy.ID, 10)+"/clients", map[string]any{"name": "Target"}, fixture.adminCookie)
-	var targetBody struct {
-		Client clientResponse `json:"client"`
-	}
-	if targetResponse.Code != http.StatusCreated || json.Unmarshal(targetResponse.Body.Bytes(), &targetBody) != nil {
-		t.Fatalf("create target client = %d, %s", targetResponse.Code, targetResponse.Body.String())
-	}
-	for _, clientID := range []int64{sourceClientID, targetBody.Client.ID} {
+	targetServer, targetProxy := createPortalServerAndProxy(t, fixture, proxystore.ProtocolVLESS, 25002)
+	targetClientID := targetProxy.Clients[0].ID
+	for _, clientID := range []int64{sourceClientID, targetClientID} {
 		assigned := performRequest(t, fixture.handler, http.MethodPatch,
 			"/api/admin/clients/"+strconv.FormatInt(clientID, 10)+"/assignment",
 			map[string]any{"user_id": fixture.userID, "billing_period_months": 1}, fixture.adminCookie)
@@ -854,29 +849,36 @@ func TestDeletingTargetAssignedClientPurgesUserRelay(t *testing.T) {
 	}
 	created := performRequest(t, fixture.handler, http.MethodPost, "/api/me/relays", map[string]any{
 		"name": "Target Dependency", "mode": "assigned_node", "source_client_id": sourceClientID,
-		"target_client_id": targetBody.Client.ID,
+		"target_client_id": targetClientID,
 	}, fixture.userCookie)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create target-dependent relay = %d, %s", created.Code, created.Body.String())
 	}
-	var versionBefore int64
+	var versionBefore, targetVersionBefore int64
 	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, server.Server.ID).Scan(&versionBefore); err != nil {
 		t.Fatal(err)
 	}
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, targetServer.Server.ID).Scan(&targetVersionBefore); err != nil {
+		t.Fatal(err)
+	}
 	deleted := performRequest(t, fixture.handler, http.MethodDelete,
-		"/api/clients/"+strconv.FormatInt(targetBody.Client.ID, 10), nil, fixture.adminCookie)
+		"/api/clients/"+strconv.FormatInt(targetClientID, 10), nil, fixture.adminCookie)
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete target client = %d, %s", deleted.Code, deleted.Body.String())
 	}
 	var relayCount, versionAfter int64
-	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM relays WHERE target_client_id = ?`, targetBody.Client.ID).Scan(&relayCount); err != nil {
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM relays WHERE target_client_id = ?`, targetClientID).Scan(&relayCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, server.Server.ID).Scan(&versionAfter); err != nil {
 		t.Fatal(err)
 	}
-	if relayCount != 0 || versionAfter != versionBefore+2 {
-		t.Fatalf("target cleanup = relays %d version %d->%d", relayCount, versionBefore, versionAfter)
+	var targetVersionAfter int64
+	if err := fixture.db.QueryRow(`SELECT desired_state_version FROM servers WHERE id = ?`, targetServer.Server.ID).Scan(&targetVersionAfter); err != nil {
+		t.Fatal(err)
+	}
+	if relayCount != 0 || versionAfter != versionBefore+1 || targetVersionAfter != targetVersionBefore+1 {
+		t.Fatalf("target cleanup = relays %d source version %d->%d target version %d->%d", relayCount, versionBefore, versionAfter, targetVersionBefore, targetVersionAfter)
 	}
 }
 
@@ -1116,8 +1118,12 @@ func TestAdminUserManagementCreatesRealAssignedClientsAndReusesExistingFlows(t *
 		t.Fatalf("user portal nodes = %d, %s", nodes.Code, nodes.Body.String())
 	}
 	for clientID, prefix := range map[int64]string{vlessBody.Client.ID: `"uri":"vless://`, ssBody.Client.ID: `"uri":"ss://`} {
+		var assignmentID int64
+		if err := fixture.db.QueryRow(`SELECT id FROM carpool_node_assignments WHERE user_id = ? AND client_id = ? AND source_type = 'proxy'`, fixture.userID, clientID).Scan(&assignmentID); err != nil {
+			t.Fatal(err)
+		}
 		share := performRequest(t, fixture.handler, http.MethodGet,
-			"/api/me/nodes/"+strconv.FormatInt(clientID, 10)+"/share", nil, fixture.userCookie)
+			"/api/me/nodes/"+strconv.FormatInt(assignmentID, 10)+"/share", nil, fixture.userCookie)
 		if share.Code != http.StatusOK || !strings.Contains(share.Body.String(), prefix) ||
 			!strings.Contains(share.Body.String(), map[int64]string{vlessBody.Client.ID: "alice-SG", ssBody.Client.ID: "alice-SS"}[clientID]) {
 			t.Fatalf("assigned client share = %d, %s", share.Code, share.Body.String())
@@ -1240,9 +1246,13 @@ func TestAdminUserManagementOnlyOffersAdminCreatedServersButKeepsLegacyAssignmen
 	if _, err := fixture.db.Exec(`UPDATE clients SET assigned_user_id = ? WHERE id = ?`, fixture.userID, legacyClientID); err != nil {
 		t.Fatal(err)
 	}
+	// 模拟旧数据库迁移时回填的直连节点分配。
+	if _, err := fixture.db.Exec(`INSERT INTO carpool_node_assignments (user_id, client_id, source_type, source_id, created_at) VALUES (?, ?, 'proxy', ?, 1)`, fixture.userID, legacyClientID, vipProxyBody.Proxy.ID); err != nil {
+		t.Fatal(err)
+	}
 	detail := performRequest(t, fixture.handler, http.MethodGet,
 		"/api/admin/users/"+strconv.FormatInt(fixture.userID, 10), nil, fixture.adminCookie)
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"proxy_id":`+strconv.FormatInt(adminProxy.ID, 10)) ||
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"source_id":`+strconv.FormatInt(adminProxy.ID, 10)) ||
 		!strings.Contains(detail.Body.String(), `"proxy_id":`+strconv.FormatInt(vipProxyBody.Proxy.ID, 10)) ||
 		!strings.Contains(detail.Body.String(), `"id":`+strconv.FormatInt(legacyClientID, 10)) {
 		t.Fatalf("legacy assignment detail = %d, %s", detail.Code, detail.Body.String())

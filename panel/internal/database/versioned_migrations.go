@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 31
+const LatestSchemaVersion = 32
 
 type migration struct {
 	version            int
@@ -54,6 +54,34 @@ var migrations = []migration{
 	{version: 29, name: "node_roles", up: addNodeRoles},
 	{version: 30, name: "server_network_metadata", up: addServerNetworkMetadata},
 	{version: 31, name: "server_system_info_country", up: addServerSystemInfoCountry},
+	{version: 32, name: "carpool_node_assignments", up: createCarpoolNodeAssignments},
+}
+
+func createCarpoolNodeAssignments(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS carpool_node_assignments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK (source_type IN ('proxy', 'relay')),
+			source_id INTEGER NOT NULL CHECK (source_id > 0),
+			created_at INTEGER NOT NULL,
+			UNIQUE (user_id, source_type, source_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_carpool_node_assignments_user ON carpool_node_assignments(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_carpool_node_assignments_client ON carpool_node_assignments(client_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_carpool_node_assignments_source ON carpool_node_assignments(source_type, source_id)`,
+		`CREATE TRIGGER IF NOT EXISTS delete_carpool_relay_assignments AFTER DELETE ON relays
+		 BEGIN DELETE FROM carpool_node_assignments WHERE source_type = 'relay' AND source_id = OLD.id; END`,
+		`INSERT OR IGNORE INTO carpool_node_assignments (user_id, client_id, source_type, source_id, created_at)
+		 SELECT assigned_user_id, MIN(id), 'proxy', proxy_id, MIN(created_at)
+		 FROM clients WHERE assigned_user_id IS NOT NULL GROUP BY assigned_user_id, proxy_id`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create carpool node assignments: %w", err)
+		}
+	}
+	return nil
 }
 
 func addServerSystemInfoCountry(ctx context.Context, tx *sql.Tx) error {

@@ -40,6 +40,7 @@ var (
 	ErrManagedRuntimePurgeUnsupported = errors.New("Agent does not support managed runtime purge")
 	ErrServerDecommissioning          = errors.New("server is decommissioning")
 	ErrSubscriptionManaged            = errors.New("relay is managed by a subscription published node")
+	ErrCarpoolReferenced              = errors.New("relay is referenced by carpool nodes")
 	ErrUserManaged                    = errors.New("relay is managed by a user relay lifecycle")
 )
 

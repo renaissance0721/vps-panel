@@ -3,13 +3,17 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 type createAssignedNodeRequest struct {
+	SourceType          string          `json:"source_type"`
+	SourceID            int64           `json:"source_id"`
 	ProxyID             int64           `json:"proxy_id"`
 	Name                string          `json:"name"`
 	ClientUDP443        bool            `json:"client_udp443"`
@@ -18,14 +22,6 @@ type createAssignedNodeRequest struct {
 	BillingPeriodMonths *int            `json:"billing_period_months"`
 	UserRelayPortCount  *int            `json:"user_relay_port_count"`
 	clientTrafficRequest
-}
-
-type userManagementNodeResponse struct {
-	ProxyID    int64           `json:"proxy_id"`
-	ServerName string          `json:"server_name"`
-	ProxyName  string          `json:"proxy_name"`
-	Protocol   string          `json:"protocol"`
-	Client     *clientResponse `json:"client"`
 }
 
 func (s *server) listAdminUsers(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -48,50 +44,59 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	if !ok {
 		return
 	}
-	proxies, err := s.proxies.ListDistributable(r.Context())
+	sources, err := s.carpoolSources(r.Context())
 	if err != nil {
-		writeProxyError(w, err)
+		writeInternalError(w, err)
 		return
 	}
-	assigned, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
+	assignments, err := s.carpoolAssignments(r.Context(), user.ID)
 	if err != nil {
-		writeProxyError(w, err)
+		writeInternalError(w, err)
 		return
 	}
-	assignedByProxy := make(map[int64]proxystore.Client, len(assigned))
-	for _, client := range assigned {
-		assignedByProxy[client.ProxyID] = client
-	}
-	nodes := make([]userManagementNodeResponse, 0, len(proxies))
-	for _, proxy := range proxies {
-		var clientResponseValue *clientResponse
-		if client, exists := assignedByProxy[proxy.ID]; exists {
-			value := toClientResponse(client)
-			clientResponseValue = &value
-		}
-		nodes = append(nodes, userManagementNodeResponse{
-			ProxyID: proxy.ID, ServerName: proxy.ServerName, ProxyName: proxy.Name,
-			Protocol: proxy.Protocol, Client: clientResponseValue,
-		})
-	}
-	for _, client := range assigned {
-		if _, eligible := assignedByProxy[client.ProxyID]; eligible {
-			found := false
-			for _, node := range nodes {
-				if node.ProxyID == client.ProxyID {
-					found = true
-					break
-				}
-			}
-			if found {
+	nodes := []carpoolSource{}
+	assigned := map[string]bool{}
+	for _, assignment := range assignments {
+		assigned[fmt.Sprintf("%s:%d", assignment.SourceType, assignment.SourceID)] = true
+		node, _, err := s.carpoolNode(r.Context(), assignment)
+		if err != nil {
+			if errors.Is(err, proxystore.ErrClientNotFound) || errors.Is(err, relaystore.ErrNotFound) {
 				continue
 			}
+			writeInternalError(w, err)
+			return
 		}
-		value := toClientResponse(client)
-		nodes = append(nodes, userManagementNodeResponse{
-			ProxyID: client.ProxyID, ServerName: client.ServerName, ProxyName: client.ProxyName,
-			Protocol: client.Protocol, Client: &value,
-		})
+		nodes = append(nodes, node)
+	}
+	clients, err := s.proxies.ListAssignedClients(r.Context(), user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	clientByProxy := map[int64]proxystore.Client{}
+	for _, client := range clients {
+		current, ok := clientByProxy[client.ProxyID]
+		if !ok || client.ID < current.ID {
+			clientByProxy[client.ProxyID] = client
+		}
+	}
+	available := []carpoolSource{}
+	for _, source := range sources {
+		if !assigned[fmt.Sprintf("%s:%d", source.SourceType, source.SourceID)] {
+			proxyID := source.SourceID
+			if source.SourceType == "relay" {
+				relay, err := s.relays.Get(r.Context(), source.SourceID)
+				if err != nil || relay.TargetProxyID == nil {
+					continue
+				}
+				proxyID = *relay.TargetProxyID
+			}
+			if client, ok := clientByProxy[proxyID]; ok {
+				value := toClientResponse(client)
+				source.Client = &value
+			}
+			available = append(available, source)
+		}
 	}
 	relays, err := s.relays.ListByOwner(r.Context(), user.ID)
 	if err != nil {
@@ -114,7 +119,7 @@ func (s *server) getAdminUserDetail(w http.ResponseWriter, r *http.Request, _ au
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":  toAccessUserResponse(user),
-		"nodes": nodes, "relays": relayResponse, "password_request": pendingPasswordRequest,
+		"nodes": nodes, "available_sources": available, "relays": relayResponse, "password_request": pendingPasswordRequest,
 	})
 }
 
@@ -125,6 +130,44 @@ func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, act
 	}
 	var request createAssignedNodeRequest
 	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.SourceType == "" && request.ProxyID > 0 {
+		request.SourceType, request.SourceID = "proxy", request.ProxyID
+	}
+	sources, err := s.carpoolSources(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	var proxyID int64
+	for _, source := range sources {
+		if source.SourceType != request.SourceType || source.SourceID != request.SourceID {
+			continue
+		}
+		if source.SourceType == "proxy" {
+			proxyID = source.SourceID
+		} else {
+			relay, err := s.relays.Get(r.Context(), source.SourceID)
+			if err != nil || relay.TargetProxyID == nil {
+				break
+			}
+			proxyID = *relay.TargetProxyID
+		}
+		break
+	}
+	if proxyID == 0 {
+		if request.SourceType == "proxy" {
+			if _, err := s.proxies.Get(r.Context(), request.SourceID); err != nil {
+				writeProxyError(w, err)
+				return
+			}
+			if err := proxystore.RequireAdminCreatedProxy(r.Context(), s.db, request.SourceID); err != nil {
+				writeClientAssignmentError(w, err)
+				return
+			}
+		}
+		writeError(w, http.StatusBadRequest, "节点来源不可用")
 		return
 	}
 	enabled := true
@@ -145,12 +188,12 @@ func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, act
 	if request.UserRelayPortCount != nil {
 		userRelayPortCount = *request.UserRelayPortCount
 	}
-	value, mutation, err := s.proxies.CreateAssignedClient(r.Context(), proxystore.AssignedClientCreateInput{
-		UserID: user.ID, ProxyID: request.ProxyID, Name: request.Name,
+	value, mutation, err := s.proxies.CreateCarpoolNode(r.Context(), proxystore.AssignedClientCreateInput{
+		UserID: user.ID, ProxyID: proxyID, Name: request.Name,
 		ClientUDP443: request.ClientUDP443, Enabled: enabled, ExpiresAt: expiresAt,
 		Traffic: traffic, BillingPeriodMonths: request.BillingPeriodMonths,
 		UserRelayPortCount: userRelayPortCount,
-	})
+	}, request.SourceType, request.SourceID)
 	if err != nil {
 		if errors.Is(err, proxystore.ErrAssignedClientExists) {
 			writeError(w, http.StatusConflict, "该用户已开通此节点")
@@ -159,8 +202,10 @@ func (s *server) createAdminUserNode(w http.ResponseWriter, r *http.Request, act
 		writeClientRelayPortError(w, err)
 		return
 	}
-	s.notifyProxyMutation(mutation)
-	s.recordAudit(r, actor, "client.create", "client", value.ID, "为用户创建代理客户端 "+value.Name)
+	if mutation.Version > 0 {
+		s.notifyProxyMutation(mutation)
+	}
+	s.recordAudit(r, actor, "carpool.node.create", "user", user.ID, "为用户添加拼车节点")
 	writeJSON(w, http.StatusCreated, map[string]any{"client": toClientResponse(value)})
 }
 
@@ -183,4 +228,31 @@ func (s *server) readManagedUser(w http.ResponseWriter, r *http.Request) (auth.U
 		return auth.User{}, false
 	}
 	return user, true
+}
+
+func (s *server) deleteAdminUserNode(w http.ResponseWriter, r *http.Request, actor auth.User) {
+	user, ok := s.readManagedUser(w, r)
+	if !ok {
+		return
+	}
+	id, ok := readPositiveID(w, r.PathValue("nodeID"), "节点 ID 无效")
+	if !ok {
+		return
+	}
+	result, err := s.db.ExecContext(r.Context(), `DELETE FROM carpool_node_assignments WHERE user_id = ? AND id = ?`, user.ID, id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if count == 0 {
+		writeError(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	s.recordAudit(r, actor, "carpool.node.delete", "user", user.ID, "移除拼车节点")
+	writeNoContent(w)
 }

@@ -2,7 +2,10 @@ import type { AccessUser } from './auth'
 import type { ClientRecord } from './proxy'
 
 export type ManagedUserNode = {
-  proxy_id: number
+  id: number
+  source_type: 'proxy' | 'relay'
+  source_id: number
+  display_name: string
   server_name: string
   proxy_name: string
   protocol: 'vless' | 'shadowsocks'
@@ -32,6 +35,7 @@ export type ManagedPasswordRequest = {
 export type ManagedUserDetail = {
   user: AccessUser
   nodes: ManagedUserNode[]
+  available_sources: ManagedUserNode[]
   relays: ManagedUserRelay[]
   password_request: ManagedPasswordRequest | null
 }

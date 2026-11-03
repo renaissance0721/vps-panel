@@ -26,7 +26,7 @@ import type { ManagedUserNode } from '../types/userManagement'
 const model = useUserManagement()
 const {
   users, selectedUserID, detail, assignedNodes, availableNodes, loading, submitting, error,
-  formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
+  formOpen, formMode, editingNode, selectedNodeSource, clientName, clientEnabled, clientUDP443,
   trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
   trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths,
   userRelayPortCount,
@@ -75,11 +75,12 @@ onMounted(model.load)
       </n-card>
 
       <section>
-        <div class="section-heading"><h2>客户端</h2><n-button type="primary" :disabled="availableNodes.length === 0" @click="model.openCreate">+ 新建客户端</n-button></div>
+        <div class="section-heading"><h2>客户端</h2><n-button type="primary" :disabled="availableNodes.length === 0" @click="model.openCreate">+ 添加节点</n-button></div>
         <n-empty v-if="assignedNodes.length === 0" description="暂无已开通客户端" />
         <div v-else class="user-management-grid">
-          <n-card v-for="node in assignedNodes" :key="node.proxy_id" size="small" :bordered="true">
-            <template #header>{{ node.server_name }} · {{ node.proxy_name }}</template>
+          <n-card v-for="node in assignedNodes" :key="node.id" size="small" :bordered="true">
+            <template #header><n-tag size="small">{{ node.source_type === 'proxy' ? '直连' : '中转' }}</n-tag> {{ node.display_name }}</template>
+            <p v-if="node.source_type === 'relay'" class="secondary-text">{{ node.server_name }} → {{ node.proxy_name }}</p>
             <template #header-extra><n-tag :type="node.client ? clientStatusTagType(node.client.status) : 'default'" size="small">{{ node.protocol === 'vless' ? 'VLESS' : 'Shadowsocks' }} · {{ node.client ? clientStatusLabel(node.client.status) : '未知' }}</n-tag></template>
             <template v-if="node.client">
               <div class="user-management-status">
@@ -132,10 +133,11 @@ onMounted(model.load)
     </template>
 
     <n-modal v-model:show="formOpen">
-      <n-card class="client-form-card" :title="formMode === 'create' ? '新建客户端' : '编辑用户节点'" closable @close="formOpen = false">
+      <n-card class="client-form-card" :title="formMode === 'create' ? '添加节点' : '编辑用户节点'" closable @close="formOpen = false">
         <form class="proxy-form" @submit.prevent="model.saveNode">
-          <label v-if="formMode === 'create'"><span>代理节点</span><select v-model.number="createProxyID" class="settings-input" @change="model.selectCreateNode"><option v-for="node in availableNodes" :key="node.proxy_id" :value="node.proxy_id">{{ node.server_name }} · {{ node.proxy_name }}</option></select></label>
+          <label v-if="formMode === 'create'"><span>节点来源</span><select v-model="selectedNodeSource" class="settings-input" @change="model.selectCreateNode"><optgroup label="直连节点"><option v-for="node in availableNodes.filter(n => n.source_type === 'proxy')" :key="`proxy:${node.source_id}`" :value="`proxy:${node.source_id}`">[直连] {{ node.display_name }} · {{ node.protocol }}</option></optgroup><optgroup label="中转节点"><option v-for="node in availableNodes.filter(n => n.source_type === 'relay')" :key="`relay:${node.source_id}`" :value="`relay:${node.source_id}`">[中转] {{ node.display_name }} · {{ node.server_name }} → {{ node.proxy_name }} · {{ node.protocol }}</option></optgroup></select></label>
           <div v-else class="fixed-fields"><span>{{ editingNode?.server_name }}</span><span>{{ editingNode?.proxy_name }}</span><span>{{ editingNode?.protocol }}</span></div>
+          <n-alert v-if="formMode === 'create' && editingNode?.client" type="info">此节点将复用已有客户端及其流量、到期和端口设置；下方设置仅在创建新客户端时生效。</n-alert>
           <label><span>客户端名称</span><n-input v-model:value="clientName" /></label>
           <label><span>流量额度（留空为不限）</span><div class="user-management-inline"><n-input v-model:value="trafficLimit" placeholder="例如 100" /><select v-model="trafficLimitUnit" class="settings-input"><option value="G">GiB</option><option value="T">TiB</option></select></div></label>
           <label><span>流量重置</span><select v-model="trafficResetMode" class="settings-input"><option value="never">不重置</option><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>

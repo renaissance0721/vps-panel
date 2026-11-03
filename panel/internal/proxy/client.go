@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 func (s *Service) ListClients(ctx context.Context, proxyID int64) ([]Client, error) {
@@ -123,6 +125,19 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 }
 
 func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClientCreateInput) (Client, Mutation, error) {
+	return s.createAssignedClient(ctx, input, "", 0)
+}
+
+// CreateCarpoolNode 在同一事务内创建节点入口，并在需要时创建客户端凭据。
+// 已有多个客户端时，按 ID 确定性地选择一个复用。
+func (s *Service) CreateCarpoolNode(ctx context.Context, input AssignedClientCreateInput, sourceType string, sourceID int64) (Client, Mutation, error) {
+	if (sourceType != "proxy" && sourceType != "relay") || sourceID <= 0 {
+		return Client{}, Mutation{}, ErrNotFound
+	}
+	return s.createAssignedClient(ctx, input, sourceType, sourceID)
+}
+
+func (s *Service) createAssignedClient(ctx context.Context, input AssignedClientCreateInput, sourceType string, sourceID int64) (Client, Mutation, error) {
 	if err := validateClientRelayPortCount(input.UserRelayPortCount); err != nil {
 		return Client{}, Mutation{}, err
 	}
@@ -152,12 +167,42 @@ func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClient
 	if err := RequireAdminCreatedProxy(ctx, tx, input.ProxyID); err != nil {
 		return Client{}, Mutation{}, err
 	}
-	var duplicate int
-	err = tx.QueryRowContext(ctx,
-		`SELECT 1 FROM clients WHERE proxy_id = ? AND assigned_user_id = ? LIMIT 1`, input.ProxyID, input.UserID,
-	).Scan(&duplicate)
+	if sourceType != "" {
+		if sourceType == "proxy" && sourceID != input.ProxyID {
+			return Client{}, Mutation{}, ErrNotFound
+		}
+		if sourceType == "relay" {
+			r, err := relaystore.NewService(s.db).GetTx(ctx, tx, sourceID)
+			if err != nil || !relaystore.CarpoolAvailable(r, input.ProxyID, proxyValue.Protocol) {
+				if err != nil && !errors.Is(err, relaystore.ErrNotFound) {
+					return Client{}, Mutation{}, err
+				}
+				return Client{}, Mutation{}, ErrNotFound
+			}
+		}
+		var duplicate int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM carpool_node_assignments WHERE user_id = ? AND source_type = ? AND source_id = ?`, input.UserID, sourceType, sourceID).Scan(&duplicate)
+		if err == nil {
+			return Client{}, Mutation{}, ErrAssignedClientExists
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Client{}, Mutation{}, err
+		}
+	}
+	var existingID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM clients WHERE proxy_id = ? AND assigned_user_id = ? ORDER BY id LIMIT 1`, input.ProxyID, input.UserID).Scan(&existingID)
 	if err == nil {
-		return Client{}, Mutation{}, ErrAssignedClientExists
+		if sourceType == "" {
+			return Client{}, Mutation{}, ErrAssignedClientExists
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO carpool_node_assignments (user_id, client_id, source_type, source_id, created_at) VALUES (?, ?, ?, ?, ?)`, input.UserID, existingID, sourceType, sourceID, now.Unix()); err != nil {
+			return Client{}, Mutation{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return Client{}, Mutation{}, err
+		}
+		value, err := s.GetClient(ctx, existingID)
+		return value, Mutation{}, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Client{}, Mutation{}, fmt.Errorf("check assigned client duplicate: %w", err)
@@ -189,6 +234,11 @@ func (s *Service) CreateAssignedClient(ctx context.Context, input AssignedClient
 	clientID, err := result.LastInsertId()
 	if err != nil {
 		return Client{}, Mutation{}, fmt.Errorf("read assigned client id: %w", err)
+	}
+	if sourceType != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO carpool_node_assignments (user_id, client_id, source_type, source_id, created_at) VALUES (?, ?, ?, ?, ?)`, input.UserID, clientID, sourceType, sourceID, now.Unix()); err != nil {
+			return Client{}, Mutation{}, err
+		}
 	}
 	if err := reserveClientRelayPorts(ctx, tx, clientID, proxyValue.ServerID, input.UserRelayPortCount, now); err != nil {
 		return Client{}, Mutation{}, err
@@ -322,6 +372,23 @@ func (s *Service) AssignClient(ctx context.Context, id int64, userID *int64, bil
 		nullableID(userID), nullableInt(billingPeriodMonths), now.Unix(), id,
 	); err != nil {
 		return Client{}, fmt.Errorf("assign client: %w", err)
+	}
+	assignmentChanged := (currentUserID.Valid && (userID == nil || currentUserID.Int64 != *userID)) ||
+		(!currentUserID.Valid && userID != nil)
+	if assignmentChanged {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM carpool_node_assignments WHERE client_id = ?`, id); err != nil {
+			return Client{}, fmt.Errorf("remove previous carpool node assignments: %w", err)
+		}
+		if userID != nil {
+			// 保留历史重复客户端；直连节点与迁移及新分配流程一样选择最小 ID。
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO carpool_node_assignments
+				(user_id, client_id, source_type, source_id, created_at)
+				SELECT ?, MIN(id), 'proxy', ?, ? FROM clients
+				WHERE assigned_user_id = ? AND proxy_id = ? HAVING COUNT(*) > 0`,
+				*userID, proxyID, now.Unix(), *userID, proxyID); err != nil {
+				return Client{}, fmt.Errorf("create direct carpool node assignment: %w", err)
+			}
+		}
 	}
 	if userID == nil {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM client_relay_ports WHERE client_id = ?`, id); err != nil {

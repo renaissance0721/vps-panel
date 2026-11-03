@@ -302,7 +302,7 @@ func (s *server) getRelayLandingShare(w http.ResponseWriter, r *http.Request, us
 }
 
 func relayNetworkCompatibility(network, protocol string) (bool, string) {
-	if protocol == proxystore.ProtocolVLESS && network == relaystore.NetworkUDP {
+	if !relaystore.NetworkCompatible(network, protocol) {
 		return false, "当前中转 Network 与该 Proxy 不兼容"
 	}
 	return true, ""
@@ -472,6 +472,8 @@ func toRelayResponse(value relaystore.Relay) relayResponse {
 
 func writeRelayError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, relaystore.ErrCarpoolReferenced):
+		writeError(w, http.StatusConflict, "该中转正在被拼车节点引用，请先移除相关拼车节点")
 	case errors.Is(err, relaystore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "中转规则不存在")
 	case errors.Is(err, relaystore.ErrServerNotFound):

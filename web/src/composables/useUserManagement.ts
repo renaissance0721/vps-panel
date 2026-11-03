@@ -22,7 +22,7 @@ export function useUserManagement() {
   const formOpen = ref(false)
   const formMode = ref<'create' | 'edit'>('create')
   const editingNode = ref<ManagedUserNode | null>(null)
-  const createProxyID = ref<number | null>(null)
+  const selectedNodeSource = ref<string | null>(null)
   const clientName = ref('')
   const clientEnabled = ref(true)
   const clientUDP443 = ref(false)
@@ -37,8 +37,8 @@ export function useUserManagement() {
   const billingPeriodMonths = ref<0 | 1 | 3 | 6 | 12>(0)
   const userRelayPortCount = ref(5)
 
-  const assignedNodes = computed(() => detail.value?.nodes.filter((node) => node.client !== null) ?? [])
-  const availableNodes = computed(() => detail.value?.nodes.filter((node) => node.client === null) ?? [])
+  const assignedNodes = computed(() => detail.value?.nodes ?? [])
+  const availableNodes = computed(() => detail.value?.available_sources ?? [])
 
   async function run(action: () => Promise<void>) {
     submitting.value = true
@@ -113,18 +113,18 @@ export function useUserManagement() {
   function openCreate() {
     const node = availableNodes.value[0]
     if (!node) {
-      error.value = '没有可开通的代理节点'
+      error.value = '没有可添加的节点'
       return
     }
     resetForm(node)
     formMode.value = 'create'
-    createProxyID.value = node.proxy_id
+    selectedNodeSource.value = `${node.source_type}:${node.source_id}`
     clientName.value = `${detail.value?.user.username ?? 'user'}-${node.proxy_name}`
     formOpen.value = true
   }
 
   function selectCreateNode() {
-    const node = availableNodes.value.find((value) => value.proxy_id === createProxyID.value)
+    const node = availableNodes.value.find((value) => `${value.source_type}:${value.source_id}` === selectedNodeSource.value)
     if (!node) return
     resetForm(node)
     formMode.value = 'create'
@@ -168,7 +168,7 @@ export function useUserManagement() {
     const userID = selectedUserID.value
     const validationError = validateForm()
     if (!node || userID === null || validationError) {
-      error.value = validationError || '请选择用户和代理节点'
+      error.value = validationError || '请选择用户和节点来源'
       return
     }
     await run(async () => {
@@ -187,7 +187,7 @@ export function useUserManagement() {
       if (formMode.value === 'create') {
         await api(`/api/admin/users/${userID}/nodes`, {
           method: 'POST',
-          body: JSON.stringify({ ...payload, proxy_id: node.proxy_id, billing_period_months: billingPeriodMonths.value || null, user_relay_port_count: userRelayPortCount.value }),
+          body: JSON.stringify({ ...payload, source_type: node.source_type, source_id: node.source_id, billing_period_months: billingPeriodMonths.value || null, user_relay_port_count: userRelayPortCount.value }),
         })
       } else if (node.client) {
         if (userRelayPortCount.value !== node.client.user_relay_port_count) {
@@ -208,9 +208,9 @@ export function useUserManagement() {
   }
 
   async function removeNode(node: ManagedUserNode) {
-    if (!node.client || !window.confirm('将删除该用户在此节点的客户端凭据，并删除依赖此客户端创建的用户中转。是否继续？')) return
+    if (!node.client || selectedUserID.value === null || !window.confirm('确定移除该节点入口吗？共享客户端和用户中转将保留。')) return
     await run(async () => {
-      await api(`/api/clients/${node.client!.id}`, { method: 'DELETE' })
+      await api(`/api/admin/users/${selectedUserID.value}/nodes/${node.id}`, { method: 'DELETE' })
       await loadDetail()
     })
   }
@@ -234,7 +234,7 @@ export function useUserManagement() {
 
   return {
     users, selectedUserID, detail, assignedNodes, availableNodes, loading, submitting, error,
-    formOpen, formMode, editingNode, createProxyID, clientName, clientEnabled, clientUDP443,
+    formOpen, formMode, editingNode, selectedNodeSource, clientName, clientEnabled, clientUDP443,
     trafficLimit, trafficLimitUnit, trafficResetMode, trafficResetWeekday,
     trafficResetDay, trafficResetTime, expirationMode, expiresAt, billingPeriodMonths, userRelayPortCount,
     load, loadDetail, selectUser, openCreate, selectCreateNode, openEdit, saveNode, removeNode, removeRelay,

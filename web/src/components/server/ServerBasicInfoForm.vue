@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { toRefs, watch } from 'vue'
+import { h, toRefs, watch } from 'vue'
 import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NSelect, NSwitch } from 'naive-ui'
+import CountryFlag from '../common/CountryFlag.vue'
+import { countryOptions, filterCountry } from '../../country'
+import type { SelectOption } from 'naive-ui'
 import type { ServersViewState } from '../../composables/useServers'
 import { userRoleLabel } from '../../format'
 import { networkStackOptions, renewalPeriodOptions, serverIPv6State, serverIPv6StatusMessage } from '../../server'
@@ -12,6 +15,7 @@ const props = defineProps<{
     | 'submitting'
 	| 'selectedServer'
     | 'nameInput'
+    | 'countryOverrideCodeInput'
     | 'bandwidthMbpsInput'
     | 'networkStackInput'
 	| 'boundDomainIPv4Input'
@@ -36,6 +40,7 @@ const {
   basicInfoFormError,
   submitting,
   nameInput,
+  countryOverrideCodeInput,
   bandwidthMbpsInput,
   networkStackInput,
 	boundDomainIPv4Input,
@@ -53,6 +58,14 @@ const {
   closeBasicInfoModal,
   saveBasicInfo,
 } = toRefs(props.model)
+
+const regionOptions = [{ label: '自动识别（根据公网 IP）', value: '' }, ...countryOptions]
+
+function renderCountryLabel(option: SelectOption) {
+  return h('span', { style: 'display: inline-flex; align-items: center; gap: 6px' }, [
+    h(CountryFlag, { countryCode: String(option.value) }), String(option.label),
+  ])
+}
 
 watch(renewalPeriodInput, (value) => {
   if (value === 0) autoRenewInput.value = false
@@ -78,6 +91,12 @@ watch(expirationInput, (value) => {
         </n-alert>
 
         <label><span>名称</span><n-input v-model:value="nameInput" maxlength="100" :disabled="submitting" /></label>
+
+        <label>
+          <span>地区</span>
+          <n-select :value="countryOverrideCodeInput" :options="regionOptions" filterable clearable
+            @update:value="countryOverrideCodeInput = $event || null" :filter="filterCountry" :render-label="renderCountryLabel" placeholder="自动识别（根据公网 IP）" :disabled="submitting" />
+        </label>
 
         <label>
           <span>带宽大小</span>

@@ -155,6 +155,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   const nameInput = ref('')
   const bandwidthMbpsInput = ref<number | null>(null)
   const networkStackInput = ref<ServerRecord['network_stack']>(null)
+  const countryOverrideCodeInput = ref<string | null>(null)
   const boundDomainIPv4Input = ref('')
   const boundDomainIPv6Input = ref('')
   const ownerUserID = ref(0)
@@ -727,6 +728,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     diagnosticReport.value = null
     diagnosticError.value = ''
     nameInput.value = ''
+    countryOverrideCodeInput.value = null
     bandwidthMbpsInput.value = null
     networkStackInput.value = null
     boundDomainIPv4Input.value = ''
@@ -740,6 +742,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
   function openBasicInfoModal() {
     if (!selectedServer.value || selectedServer.value.archived_at) return
     nameInput.value = selectedServer.value.name
+    countryOverrideCodeInput.value = selectedServer.value.country_override_code ?? null
     bandwidthMbpsInput.value = selectedServer.value.bandwidth_mbps ?? null
     networkStackInput.value = selectedServer.value.network_stack ?? null
     boundDomainIPv4Input.value = selectedServer.value.bound_domain_ipv4 ?? ''
@@ -762,6 +765,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    countryOverrideCodeInput.value = null
     bandwidthMbpsInput.value = null
     networkStackInput.value = null
     boundDomainIPv4Input.value = ''
@@ -821,6 +825,13 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
         const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ bandwidth_mbps: bandwidthMbps, network_stack: networkStack }),
+        })
+        current = response.server
+      }
+      if (countryOverrideCodeInput.value !== (current.country_override_code ?? null)) {
+        const response = await api<{ server: ServerRecord }>(`/api/servers/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ country_override_code: countryOverrideCodeInput.value }),
         })
         current = response.server
       }
@@ -1105,6 +1116,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     basicInfoModalOpen.value = false
     basicInfoFormError.value = ''
     nameInput.value = ''
+    countryOverrideCodeInput.value = null
     bandwidthMbpsInput.value = null
     networkStackInput.value = null
     boundDomainIPv4Input.value = ''
@@ -1152,6 +1164,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     nameInput,
     bandwidthMbpsInput,
     networkStackInput,
+    countryOverrideCodeInput,
     boundDomainIPv4Input,
     boundDomainIPv6Input,
     ownerUserID,

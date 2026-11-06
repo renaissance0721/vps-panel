@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 32
+const LatestSchemaVersion = 33
 
 type migration struct {
 	version            int
@@ -55,6 +55,16 @@ var migrations = []migration{
 	{version: 30, name: "server_network_metadata", up: addServerNetworkMetadata},
 	{version: 31, name: "server_system_info_country", up: addServerSystemInfoCountry},
 	{version: 32, name: "carpool_node_assignments", up: createCarpoolNodeAssignments},
+	{version: 33, name: "server_country_override", up: addServerCountryOverride},
+}
+
+// The baseline is historical; fresh databases also run this migration.
+func addServerCountryOverride(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `ALTER TABLE servers ADD COLUMN country_override_code TEXT`)
+	if err != nil {
+		return fmt.Errorf("add server country override: %w", err)
+	}
+	return nil
 }
 
 func createCarpoolNodeAssignments(ctx context.Context, tx *sql.Tx) error {

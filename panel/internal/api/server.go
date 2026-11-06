@@ -208,6 +208,7 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasRenewalPeriod := len(request.RenewalPeriodMonths) != 0
 	hasAutoRenew := request.AutoRenew != nil
 	hasRenewalSettings := hasExpiration || hasRenewalPeriod || hasAutoRenew
+	hasCountryOverride := len(request.CountryOverrideCode) != 0
 	hasName := request.Name != nil
 	hasNetworkMetadata := len(request.BandwidthMbps) != 0 || len(request.NetworkStack) != 0
 	hasBoundDomain := request.BoundDomainIPv4 != nil || request.BoundDomainIPv6 != nil
@@ -217,13 +218,28 @@ func (s *server) updateServerExpiration(w http.ResponseWriter, r *http.Request, 
 	hasAnyTraffic := len(request.MonthlyTrafficLimitBytes) != 0 || request.TrafficCountMode != nil ||
 		request.TrafficResetDay != nil || request.TrafficResetTime != nil
 	settingCount := 0
-	for _, present := range []bool{hasName, hasNetworkMetadata, hasBoundDomain, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
+	for _, present := range []bool{hasName, hasCountryOverride, hasNetworkMetadata, hasBoundDomain, hasOwner, hasRenewalSettings, hasAnyTraffic, hasOutboundPreference, hasBlockChinaInbound} {
 		if present {
 			settingCount++
 		}
 	}
 	if settingCount != 1 {
 		writeError(w, http.StatusBadRequest, "服务器设置格式无效")
+		return
+	}
+	if hasCountryOverride {
+		var code *string
+		if json.Unmarshal(request.CountryOverrideCode, &code) != nil {
+			writeServerError(w, serverstore.ErrInvalidCountryOverride)
+			return
+		}
+		updated, err := s.servers.UpdateCountryOverride(r.Context(), id, code)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		s.recordAudit(r, user, "server.update", "server", id, "更新服务器地区")
+		writeJSON(w, http.StatusOK, map[string]any{"server": toServerResponse(updated, s.panelVersion)})
 		return
 	}
 	if hasNetworkMetadata {
@@ -564,6 +580,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "服务器名称不能为空且不能超过 100 个字符")
 	case errors.Is(err, serverstore.ErrInvalidBandwidth):
 		writeError(w, http.StatusBadRequest, "带宽必须为 1–10000000 Mbps 的整数或留空")
+	case errors.Is(err, serverstore.ErrInvalidCountryOverride):
+		writeError(w, http.StatusBadRequest, "服务器地区代码无效")
 	case errors.Is(err, serverstore.ErrInvalidNetworkStack):
 		writeError(w, http.StatusBadRequest, "网络栈必须为 ipv4、ipv6、dual 或留空")
 	case errors.Is(err, serverstore.ErrInvalidBoundDomain):

@@ -31,6 +31,7 @@ const (
 var (
 	ErrInvalidName               = errors.New("server name must be 1-100 characters")
 	ErrInvalidBandwidth          = errors.New("server bandwidth must be 1-10000000 Mbps")
+	ErrInvalidCountryOverride    = errors.New("invalid server country override")
 	ErrInvalidNetworkStack       = errors.New("invalid server network stack")
 	ErrInvalidBoundDomain        = errors.New("invalid server bound domain")
 	ErrIPv6Unavailable           = errors.New("server IPv6 listener unavailable")
@@ -54,6 +55,7 @@ type Server struct {
 	ID                        int64
 	Name                      string
 	BandwidthMbps             *int64
+	CountryOverrideCode       *string
 	NetworkStack              *string
 	BoundDomainIPv4           string
 	BoundDomainIPv6           string

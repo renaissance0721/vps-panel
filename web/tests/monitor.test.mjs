@@ -173,3 +173,18 @@ test('搜索、状态筛选和指标排序保留原始服务器顺序与待注�
     assert.match(empty, /暂无服务器/)
   } finally { MonitorView.setup = original }
 })
+
+
+test('卡片和详情统一优先显示手动地区并回退 GeoIP', async () => {
+  const { default: Detail } = await loader.ssrLoadModule('/src/components/monitor/MonitorServerDetail.vue')
+  for (const [override, geo, expected] of [['SG','JP','SG'], [null,'JP','JP'], ['TW','JP','TW'], ['HK',null,'HK'], ['MO',null,'MO'], ['CN',null,'CN'], [null,null,null]]) {
+    const value = server(1, 100, 0, 0, { country_override_code: override, system_info: geo ? { country_code: geo } : null })
+    for (const [component, props] of [[MonitorCard, { server: value }], [Detail, { server: value, show: true }]]) {
+      const html = await renderToString(createSSRApp(component, props))
+      if (expected) {
+        assert.match(html, new RegExp(`data-country-code="${expected}"`))
+        assert.match(html, new RegExp(`/flags/4x3/${expected.toLowerCase()}\\.svg`))
+      } else assert.doesNotMatch(html, /class="country-flag/)
+    }
+  }
+})

@@ -39,6 +39,7 @@ type updateServerRequest struct {
 	Name                     *string         `json:"name"`
 	BandwidthMbps            json.RawMessage `json:"bandwidth_mbps"`
 	NetworkStack             json.RawMessage `json:"network_stack"`
+	CountryOverrideCode      json.RawMessage `json:"country_override_code"`
 	BoundDomainIPv4          *string         `json:"bound_domain_ipv4"`
 	BoundDomainIPv6          *string         `json:"bound_domain_ipv6"`
 	OwnerUserID              json.RawMessage `json:"owner_user_id"`
@@ -62,6 +63,7 @@ type serverResponse struct {
 	Name                      string              `json:"name"`
 	BandwidthMbps             *int64              `json:"bandwidth_mbps"`
 	NetworkStack              *string             `json:"network_stack"`
+	CountryOverrideCode       *string             `json:"country_override_code"`
 	BoundDomainIPv4           string              `json:"bound_domain_ipv4"`
 	BoundDomainIPv6           string              `json:"bound_domain_ipv6"`
 	OwnerUserID               *int64              `json:"owner_user_id"`
@@ -150,6 +152,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		Name:                     value.Name,
 		BandwidthMbps:            value.BandwidthMbps,
 		NetworkStack:             value.NetworkStack,
+		CountryOverrideCode:      value.CountryOverrideCode,
 		BoundDomainIPv4:          value.BoundDomainIPv4,
 		BoundDomainIPv6:          value.BoundDomainIPv6,
 		OwnerUserID:              value.OwnerUserID,

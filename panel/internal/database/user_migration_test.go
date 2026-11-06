@@ -168,7 +168,7 @@ func snapshotUserMigrationTable(t *testing.T, db *sql.DB, table string) [][]any 
 		// Check defaults while comparing every original column.
 		original := make([]any, 0, len(values))
 		for i, column := range columns {
-			if column == "shadowrocket_template_id" || column == "bandwidth_mbps" || column == "network_stack" {
+			if column == "shadowrocket_template_id" || column == "bandwidth_mbps" || column == "network_stack" || column == "country_override_code" {
 				if values[i] != nil {
 					t.Fatalf("new %s must default to NULL", column)
 				}

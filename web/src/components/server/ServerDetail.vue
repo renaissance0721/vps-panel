@@ -31,9 +31,9 @@ import {
   chinaInboundUnsupportedReason,
   agentImplementationLabel,
   agentSupportsCapability,
-  serverIPv6StatusLabel,
   networkStackLabel,
 } from '../../server'
+import { countryLabel } from '../../country'
 import ServerTraffic from './ServerTraffic.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
 const props = defineProps<{
@@ -226,11 +226,11 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                 </div>
             <dl class="server-details">
               <div><dt>名称</dt><dd>{{ selectedServer.name }}</dd></div>
+              <div><dt>地区</dt><dd>{{ countryLabel(selectedServer) }}</dd></div>
               <div><dt>带宽</dt><dd>{{ selectedServer.bandwidth_mbps == null ? '未设置' : `${selectedServer.bandwidth_mbps} Mbps` }}</dd></div>
               <div><dt>网络栈</dt><dd>{{ networkStackLabel(selectedServer.network_stack) }}</dd></div>
-			  <div><dt>IPv4 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv4 || '未设置' }}</dd></div>
-			  <div><dt>IPv6 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv6 || '未设置' }}</dd></div>
-			  <div><dt>IPv6 状态</dt><dd>{{ serverIPv6StatusLabel(selectedServer) }}</dd></div>
+			  <div v-if="selectedServer.bound_domain_ipv4 && selectedServer.network_stack !== 'ipv6'"><dt>IPv4 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv4 }}</dd></div>
+			  <div v-if="selectedServer.bound_domain_ipv6 && selectedServer.network_stack !== 'ipv4'"><dt>IPv6 已绑定域名</dt><dd>{{ selectedServer.bound_domain_ipv6 }}</dd></div>
               <div><dt>状态</dt><dd>{{ statusLabel(selectedServer.status) }}</dd></div>
               <div><dt>所有者</dt><dd>{{ selectedServer.owner_username || '—' }}</dd></div>
               <div>
@@ -248,12 +248,6 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               </div>
               <div><dt>续费周期</dt><dd>{{ renewalPeriodLabel(selectedServer.renewal_period_months) }}</dd></div>
               <div><dt>自动续费</dt><dd>{{ selectedServer.auto_renew ? '已开启' : '已关闭' }}</dd></div>
-              <div>
-                <dt>最后通信</dt>
-                <dd>{{ selectedServer.last_seen_at ? formatTime(selectedServer.last_seen_at) : '—' }}</dd>
-              </div>
-              <div><dt>创建时间</dt><dd>{{ formatTime(selectedServer.created_at) }}</dd></div>
-              <div><dt>更新时间</dt><dd>{{ formatTime(selectedServer.updated_at) }}</dd></div>
               <div v-if="selectedServer.archived_at">
                 <dt>移除时间</dt><dd>{{ formatTime(selectedServer.archived_at) }}</dd>
               </div>

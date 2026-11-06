@@ -56,6 +56,7 @@ func TestServerNetworkMetadataMigrationPreservesData(t *testing.T) {
 		`ALTER TABLE server_system_info DROP COLUMN country_code`,
 		`ALTER TABLE server_system_info DROP COLUMN country_ip`,
 		`ALTER TABLE server_system_info DROP COLUMN country_lookup_at`,
+		`ALTER TABLE servers DROP COLUMN country_override_code`,
 		`DELETE FROM schema_migrations WHERE version >= 30`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -83,7 +84,14 @@ func TestServerNetworkMetadataMigrationPreservesData(t *testing.T) {
 				if err := rows.Scan(dest...); err != nil {
 					t.Fatal(err)
 				}
-				if table == "servers" && len(columns) >= 2 && columns[len(columns)-1] == "network_stack" {
+				if table == "servers" && columns[len(columns)-1] == "country_override_code" {
+					if values[len(values)-1] != nil {
+						t.Fatal("historical country override should remain NULL")
+					}
+					values = values[:len(values)-1]
+
+				}
+				if table == "servers" && len(columns) >= 2 && columns[len(values)-1] == "network_stack" {
 					if values[len(values)-1] != nil || values[len(values)-2] != nil {
 						t.Fatal("historical metadata should remain NULL")
 					}

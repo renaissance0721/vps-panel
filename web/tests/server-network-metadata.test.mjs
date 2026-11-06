@@ -47,7 +47,7 @@ function setup(t, record = server()) {
 const render = (component, model) => renderToString(createSSRApp(component, { model }))
 const buttons = html => [...html.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g)].map(([, attributes, label]) => ({ attributes, label: label.trim() }))
 
-test('基本信息带宽/网络栈展示与真实 IPv6 状态独立，出入站使用同一宽区域', async t => {
+test('基本信息展示带宽和网络栈，出入站使用同一宽区域', async t => {
   const model = setup(t)
   let html = await render(Detail, model)
   assert.match(html, /<dt>带宽<\/dt><dd>未设置<\/dd>/)
@@ -58,7 +58,7 @@ test('基本信息带宽/网络栈展示与真实 IPv6 状态独立，出入站�
     html = await render(Detail, model)
     assert.ok(html.includes(label))
     assert.match(html, /<dt>带宽<\/dt><dd>500 Mbps<\/dd>/)
-    assert.match(html, /<dt>IPv6 状态<\/dt><dd>公网 2606:4700::1111<\/dd>/)
+    assert.doesNotMatch(html, /<dt>IPv6 状态<\/dt>/)
   }
   const sections = html.split(/<section class="server-detail-section[^>]*>/).slice(1)
   assert.equal(sections.filter(section => section.includes('出入站管理')).length, 1)
@@ -167,4 +167,57 @@ test('三个出站策略和中国入站开关沿用当前 PATCH payload', async 
     { block_china_inbound: true }, { block_china_inbound: false },
   ])
   assert.ok(requests.every(value => value.url === '/api/servers/1'))
+})
+
+
+test('地区选择搜索、保存、清除及重新打开回显', async t => {
+  const { countryOptions, filterCountry } = await loader.ssrLoadModule('/src/country.ts')
+  assert.equal(countryOptions.length, 249)
+  for (const [query, code] of [['hk','HK'], ['Hong Kong','HK'], ['香港','HK'], ['tw','TW'], ['Taiwan','TW'], ['台湾','TW'], ['jp','JP'], ['jap','JP'], ['日本','JP'], ['sing','SG'], ['德国','DE'], ['united states','US'], ['hOnG  kOnG','HK']]) {
+    assert.ok(countryOptions.some(option => option.value === code && filterCountry(query, option)), query)
+  }
+  const model = setup(t, server({ country_override_code: null }))
+  let stored = model.selectedServer
+  const requests = []
+  t.mock.method(globalThis, 'fetch', async (url, options = {}) => {
+    if (options.method === 'PATCH') {
+      const body = JSON.parse(options.body); requests.push(body); stored = { ...stored, ...body }
+      return new Response(JSON.stringify({ server: stored }))
+    }
+    return new Response(JSON.stringify({ servers: url.includes('archived') ? [] : [stored] }))
+  })
+  model.openBasicInfoModal()
+  assert.match(await render(Form, model), /地区/)
+  assert.equal(model.countryOverrideCodeInput, null)
+  model.countryOverrideCodeInput = 'TW'
+  await model.saveBasicInfo()
+  assert.equal(model.selectedServer.country_override_code, 'TW')
+  model.openBasicInfoModal()
+  assert.equal(model.countryOverrideCodeInput, 'TW')
+  model.countryOverrideCodeInput = null
+  await model.saveBasicInfo()
+  model.openBasicInfoModal()
+  assert.equal(model.countryOverrideCodeInput, null)
+  assert.deepEqual(requests, [{ country_override_code: 'TW' }, { country_override_code: null }])
+})
+
+test('基本信息地区、域名与精简字段随数据和网络栈展示', async t => {
+  const model = setup(t)
+  for (const [stack, v4, v6, expected4, expected6] of [
+    ['ipv4', 'v4.example', 'v6.example', true, false], ['ipv6', 'v4.example', 'v6.example', false, true],
+    ['dual', 'v4.example', 'v6.example', true, true], ['dual', 'v4.example', '', true, false],
+    ['dual', '', 'v6.example', false, true], ['dual', '', '', false, false], [null, 'v4.example', 'v6.example', true, true],
+  ]) {
+    model.selectedServer = server({ network_stack: stack, bound_domain_ipv4: v4, bound_domain_ipv6: v6, country_override_code: 'TW', archived_at: '2026-10-01' })
+    const html = await render(Detail, model)
+    assert.equal(html.includes('<dt>IPv4 已绑定域名</dt>'), expected4)
+    assert.equal(html.includes('<dt>IPv6 已绑定域名</dt>'), expected6)
+    assert.match(html, /<dt>地区<\/dt><dd>台湾<\/dd>/)
+    for (const label of ['IPv6 状态', '最后通信', '创建时间', '更新时间']) assert.ok(!html.includes(`<dt>${label}</dt>`), label)
+    assert.match(html, /<dt>移除时间<\/dt>/)
+  }
+  model.selectedServer = server({ country_override_code: null, system_info: { country_code: 'JP' } })
+  assert.match(await render(Detail, model), /日本（自动识别）/)
+  model.selectedServer.system_info = null
+  assert.match(await render(Detail, model), /<dt>地区<\/dt><dd>自动识别<\/dd>/)
 })

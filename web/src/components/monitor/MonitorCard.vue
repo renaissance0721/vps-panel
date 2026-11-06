@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { ServerRecord } from '../../types/server'
 import { formatBytes, formatUptime, statusLabel } from '../../server'
 import { metricPercent, type MonitorSpeed } from '../../composables/useMonitor'
+import { effectiveCountryCode } from '../../country'
 import CountryFlag from '../common/CountryFlag.vue'
 import MetricRing from './MetricRing.vue'
 
@@ -24,7 +25,7 @@ function speedText(value: number | undefined | null): string {
   <article class="monitor-card" :class="{ 'monitor-card-offline': !online }">
     <header class="monitor-card-header">
       <button class="monitor-server-link" type="button" :title="server.name" :aria-label="`查看服务器详情：${server.name}`" @click="emit('view-server', server)">
-        <CountryFlag :country-code="server.system_info?.country_code" />
+        <CountryFlag :country-code="effectiveCountryCode(server)" />
         <span class="monitor-server-name">{{ server.name }}</span>
       </button>
       <span class="monitor-status" :class="`monitor-status-${server.status}`">{{ statusLabel(server.status) }}</span>

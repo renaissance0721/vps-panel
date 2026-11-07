@@ -110,3 +110,36 @@ export function generateMCPConnection(client: MCPClient, platform: MCPPlatform, 
   }
   return platform === 'windows' ? windowsCommand(client, endpoint, token) : unixCommand(client, endpoint, token)
 }
+
+export function generateMCPAgentPrompt(client: MCPClient, platform: MCPPlatform, endpoint: string, token?: string): string {
+  const config = generateMCPConnection(client, platform, endpoint, token)
+  // Pick a fence longer than any backticks in the generated configuration.
+  const longestRun = Math.max(0, ...(config.match(/`+/g) ?? []).map(run => run.length))
+  const fence = '`'.repeat(Math.max(3, longestRun + 1))
+  const clientName = client === 'codex' ? 'Codex Desktop / CLI' : client === 'claude' ? 'Claude Code' : 'Cursor'
+  const location = client === 'cursor'
+    ? `将下面的 JSON 中 vps-panel 条目合并到 Cursor 的 ~/.cursor/mcp.json 或项目的 .cursor/mcp.json 的 mcpServers 中。保留其他已有 MCP 配置，不能用此 JSON 替换整个配置文件。${token === undefined ? '请确保 Cursor 进程能够读取 VPS_PANEL_MCP_TOKEN 环境变量。' : '该 JSON 会将令牌保存到配置文件，请提醒我保护该文件。'}`
+    : `在当前 ${platform === 'windows' ? 'Windows PowerShell' : 'macOS / Linux Bash'} 环境中，使用下面的配置命令；也可以使用 ${clientName} 支持的等效配置方式。`
+  const tokenInstructions = token === undefined
+    ? '此配置不包含令牌明文。请引导我在受信任的终端中输入令牌；如果无法交互输入，请说明如何安全设置所需环境变量。不要擅自查找或读取其他应用的敏感凭据。'
+    : '下面的配置包含完整令牌。请仅用于此 MCP 鉴权，不要输出、记录或发送给其他服务；避免将含令牌的命令写入终端历史或日志。'
+  const clientVerification = client === 'claude'
+    ? 'Claude Code 会将 Bearer 请求头保存到用户配置文件，请提醒我保护该文件。可使用 claude mcp get vps-panel 和 /mcp 检查配置与连接。'
+    : client === 'cursor'
+      ? '检查 Cursor 的 MCP 设置与工具发现；如果无法编辑配置，请给我保留其他配置的手动合并步骤。'
+      : '使用 Codex 支持的方式检查注册配置；如果需要，提醒我完全退出并重启 Codex Desktop。'
+  const language = client === 'cursor' ? 'json' : platform === 'windows' ? 'powershell' : 'bash'
+
+  return [
+    `请在当前环境及可用工具权限允许的范围内，帮我为 ${clientName} 配置 VPS Panel MCP，并验证连接。`,
+    `MCP 名称：vps-panel\nMCP 地址：${endpoint}\n传输：Streamable HTTP\n鉴权：Bearer Token`,
+    '请先检查当前 MCP 配置。如果已存在同名 vps-panel，先检查其内容；未经我确认，不要删除或覆盖。',
+    location,
+    tokenInstructions,
+    `配置内容：\n${fence}${language}\n${config}\n${fence}`,
+    clientVerification,
+    '验证时先检查配置和认证，尝试发现工具列表（tools/list），再实际调用 get_panel_info 和 list_servers。只执行这些只读检查，不要修改任何 VPS Panel 业务资源，也不要伪造工具结果。',
+    '仅有配置注册成功不代表连接成功。请分别报告注册、认证、工具发现和实际调用的结果；只有验证通过才能报告端到端连接成功。如果当前会话无法发现或调用新 MCP，请标记“已注册，但尚未完成连接验证”，并说明是否需要重启客户端。',
+    '如果缺少所需终端、客户端命令、执行权限或配置访问权限，请说明具体阻塞和需要我手动执行的步骤，不要声称安装成功。不要输出或记录令牌明文。',
+  ].join('\n\n')
+}

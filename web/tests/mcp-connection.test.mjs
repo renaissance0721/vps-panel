@@ -2,11 +2,58 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { generateMCPConnection, quoteBash, quotePowerShell } from '../src/mcpConnection.ts'
+import { generateMCPAgentPrompt, generateMCPConnection, quoteBash, quotePowerShell } from '../src/mcpConnection.ts'
 
 const endpoint = "https://example.test/a'$(printf INJECTED)/mcp"
 const token = "token'\"$() ` backtick\nnext"
 const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : '/bin/bash'
+
+test('Codex Windows 提示词复用原始命令并要求真实只读验证', () => {
+  const before = generateMCPConnection('codex', 'windows', endpoint)
+  const prompt = generateMCPAgentPrompt('codex', 'windows', endpoint)
+  assert.ok(prompt.includes('Codex Desktop / CLI'))
+  assert.ok(prompt.includes(endpoint))
+  assert.match(prompt, /Streamable HTTP/)
+  assert.ok(prompt.includes(before))
+  assert.match(prompt, /get_panel_info/)
+  assert.match(prompt, /list_servers/)
+  assert.doesNotMatch(prompt, /get_overview/)
+  assert.doesNotMatch(prompt, /one-time-secret/)
+  assert.match(prompt, /未经我确认，不要删除或覆盖/)
+  assert.match(prompt, /已注册，但尚未完成连接验证/)
+  assert.match(prompt, /不要输出或记录令牌明文/)
+  assert.equal(generateMCPConnection('codex', 'windows', endpoint), before)
+})
+
+test('含特殊字符的令牌仅在显式传入时嵌入配置，代码围栏保持完整', () => {
+  const trickyToken = `${token}\n\`\`\`\`\`\nend`
+  for (const client of ['codex', 'claude', 'cursor']) {
+    for (const platform of ['windows', 'unix']) {
+      const raw = generateMCPConnection(client, platform, endpoint, trickyToken)
+      const prompt = generateMCPAgentPrompt(client, platform, endpoint, trickyToken)
+      assert.ok(prompt.includes(raw))
+      assert.ok(!generateMCPAgentPrompt(client, platform, endpoint).includes(trickyToken))
+      const fence = prompt.match(/配置内容：\n(`+)(?:powershell|bash|json)\n/)[1]
+      assert.ok(fence.length > Math.max(0, ...(raw.match(/`+/g) ?? []).map(value => value.length)))
+      assert.ok(prompt.includes(`\n${raw}\n${fence}`))
+    }
+  }
+})
+
+test('Claude 和 Cursor 的提示词分别说明验证与合并配置', () => {
+  const claude = generateMCPAgentPrompt('claude', 'unix', endpoint)
+  assert.match(claude, /Claude Code/)
+  assert.match(claude, /macOS \/ Linux Bash/)
+  assert.match(claude, /claude mcp get vps-panel/)
+  assert.match(claude, /\/mcp/)
+  const cursor = generateMCPAgentPrompt('cursor', 'windows', endpoint)
+  assert.match(cursor, /Cursor/)
+  assert.match(cursor, /合并到 Cursor/)
+  assert.match(cursor, /保留其他已有 MCP 配置/)
+  assert.match(cursor, /手动合并步骤/)
+  assert.ok(cursor.includes(generateMCPConnection('cursor', 'windows', endpoint)))
+  assert.doesNotMatch(cursor, /get_overview/)
+})
 for (const platform of ['windows', 'unix']) {
   for (const client of ['codex', 'claude']) {
     test(`${client} ${platform}: 默认交互输入并可生成带令牌版本`, () => {

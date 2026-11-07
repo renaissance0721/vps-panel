@@ -317,6 +317,8 @@ Server 的公开可见性不赋予拼车用户管理权限。具体敏感操作�
 
 隐藏按钮只是 UI 行为。新增读写 API、分享、导出或订阅来源时，后端必须独立校验对应角色与资源权限。
 
+MCP 由 Go SDK 的无状态 Streamable HTTP 处理 `/mcp`；管理接口使用现有管理员 Session，MCP Bearer Token 不可访问管理接口。令牌仅保存 SHA-256，每次请求重新检查全局开关、过期 / 撤销状态和所属账号的当前管理员角色。工具使用当前账号上下文复用 Server ACL、Relay 可见性及个人订阅 Service，输出字段采用白名单；调用审计不保存参数或结果。延迟汇总由 Monitor Service 在数据库中聚合，避免加载完整原始历史。生产反向代理配置与连接方法见 [README](README.md#mcp-只读集成)。
+
 ## 15. Database / Migration / Backup
 
 SQLite 使用单连接、外键和 WAL。schema 定义见 [schema.go](panel/internal/database/schema.go)，版本迁移入口见 [versioned_migrations.go](panel/internal/database/versioned_migrations.go)。

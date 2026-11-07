@@ -10,6 +10,7 @@ function container(name) {
 
 export const NCard = container('NCard')
 export const NAlert = container('NAlert')
+export const NPopconfirm = defineComponent({ setup: (_, { slots }) => () => h('section', [slots.trigger?.(), slots.default?.()]) })
 export const NTag = container('NTag')
 export const NEmpty = defineComponent({
   setup: (_, { slots, attrs }) => () => h('section', attrs, [slots.default?.(), slots.extra?.()]),

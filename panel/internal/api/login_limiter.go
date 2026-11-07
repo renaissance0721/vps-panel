@@ -34,6 +34,7 @@ type loginLimiter struct {
 	pairFailures map[loginAttemptKey]loginFailure
 	ipFailures   map[string]loginFailure
 	pairLimit    int
+	ipLimit      int
 }
 
 func newLoginLimiter() *loginLimiter {
@@ -41,6 +42,7 @@ func newLoginLimiter() *loginLimiter {
 		pairFailures: make(map[loginAttemptKey]loginFailure),
 		ipFailures:   make(map[string]loginFailure),
 		pairLimit:    loginPairFailureLimit,
+		ipLimit:      loginIPFailureLimit,
 	}
 }
 
@@ -77,7 +79,7 @@ func (l *loginLimiter) allowLocked(ip, username string, now time.Time) (bool, ti
 	if !hasIP && len(l.ipFailures) >= maxLoginIPEntries {
 		retryAfter = loginFailureWindow
 	}
-	if ipFailure.count >= loginIPFailureLimit {
+	if ipFailure.count >= l.ipLimit {
 		retryAfter = max(retryAfter, remainingLoginWindow(ipFailure, now))
 	}
 	return retryAfter <= 0, retryAfter

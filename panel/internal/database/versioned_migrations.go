@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 33
+const LatestSchemaVersion = 34
 
 type migration struct {
 	version            int
@@ -56,6 +56,33 @@ var migrations = []migration{
 	{version: 31, name: "server_system_info_country", up: addServerSystemInfoCountry},
 	{version: 32, name: "carpool_node_assignments", up: createCarpoolNodeAssignments},
 	{version: 33, name: "server_country_override", up: addServerCountryOverride},
+	{version: 34, name: "mcp_access", up: createMCPAccess},
+}
+
+func createMCPAccess(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS mcp_settings (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)))`,
+		`INSERT OR IGNORE INTO mcp_settings (id, enabled) VALUES (1, 0)`,
+		`CREATE TABLE IF NOT EXISTS mcp_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+			token_hash BLOB NOT NULL UNIQUE, token_prefix TEXT NOT NULL,
+			owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			scope TEXT NOT NULL CHECK (scope = 'read'), created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL, last_used_at INTEGER, revoked_at INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, token_id INTEGER NOT NULL REFERENCES mcp_tokens(id),
+			owner_user_id INTEGER NOT NULL, tool_name TEXT NOT NULL, called_at INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL, success INTEGER NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+			request_id TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_called_at ON mcp_audit_logs(called_at DESC, id DESC)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create MCP access: %w", err)
+		}
+	}
+	return nil
 }
 
 // The baseline is historical; fresh databases also run this migration.

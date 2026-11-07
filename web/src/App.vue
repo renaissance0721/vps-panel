@@ -47,6 +47,7 @@ import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AuditLogView from './views/AuditLogView.vue'
 import MailSettingsView from './views/MailSettingsView.vue'
+import MCPSettingsView from './views/MCPSettingsView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 import { userRoleLabel } from './format'
 
@@ -585,6 +586,7 @@ onUnmounted(stopServerPolling)
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
                 <MailSettingsView v-if="currentPage === 'settings' && state.user?.role === 'admin'" />
+                <MCPSettingsView v-if="currentPage === 'settings' && state.user?.role === 'admin'" />
                 <AuditLogView v-if="currentPage === 'audit' && state.user?.role === 'admin'" />
                 <ServersView :active="currentPage === 'servers'" :model="serverView" />
               </div>

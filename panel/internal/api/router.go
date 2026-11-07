@@ -43,6 +43,9 @@ type server struct {
 	passwordResetLimiter *loginLimiter
 	emailResetLimiter    *loginLimiter
 	mailTestLimiter      *mailTestLimiter
+	mcpLimiter           *loginLimiter
+	mcpRequestLimiter    *loginLimiter
+	mcpConcurrent        chan struct{}
 }
 
 type BackupConfig struct {
@@ -97,10 +100,22 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		passwordResetLimiter: newLoginLimiter(),
 		emailResetLimiter:    newLoginLimiter(),
 		mailTestLimiter:      newMailTestLimiter(),
+		mcpLimiter:           newLoginLimiter(),
+		mcpRequestLimiter:    newLoginLimiter(),
+		mcpConcurrent:        make(chan struct{}, 16),
 	}
 	s.notifications = notification.NewService(db, s.servers, s.agents)
+	s.mcpRequestLimiter.pairLimit = 120
+	s.mcpRequestLimiter.ipLimit = 120
 	s.emailResetLimiter.pairLimit = 1
 	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", s.serveMCP)
+	mux.HandleFunc("GET /api/mcp/settings", s.requireAdmin(s.mcpSettings))
+	mux.HandleFunc("PATCH /api/mcp/settings", s.requireAdmin(s.mcpSettings))
+	mux.HandleFunc("GET /api/mcp/tokens", s.requireAdmin(s.mcpTokens))
+	mux.HandleFunc("POST /api/mcp/tokens", s.requireAdmin(s.mcpTokens))
+	mux.HandleFunc("DELETE /api/mcp/tokens/{id}", s.requireAdmin(s.revokeMCPToken))
+	mux.HandleFunc("GET /api/mcp/audit-logs", s.requireAdmin(s.mcpAuditLogs))
 	mux.HandleFunc("GET /api/notifications/settings", s.requireAdmin(s.getNotificationSettings))
 	mux.HandleFunc("PUT /api/notifications/settings", s.requireAdmin(s.saveNotificationSettings))
 	mux.HandleFunc("POST /api/notifications/test", s.requireAdmin(s.testNotification))

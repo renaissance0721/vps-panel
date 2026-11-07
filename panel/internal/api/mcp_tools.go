@@ -37,11 +37,18 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if err != nil {
 			return nil, nil, errors.New("user query failed")
 		}
-		out := []any{}
+		carpoolUsers := make([]auth.User, 0)
 		for _, u := range users {
-			if u.Role != auth.RoleCarpool {
-				continue
+			if u.Role == auth.RoleCarpool {
+				carpoolUsers = append(carpoolUsers, u)
 			}
+		}
+		a, b, err := mcpBounds(in.Limit, in.Offset, len(carpoolUsers))
+		if err != nil {
+			return nil, nil, err
+		}
+		out := []any{}
+		for _, u := range carpoolUsers[a:b] {
 			assignments, err := s.carpoolAssignments(ctx, u.ID)
 			if err != nil {
 				return nil, nil, errors.New("assignment query failed")
@@ -56,11 +63,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 			}
 			out = append(out, map[string]any{"user_id": u.ID, "username": u.Username, "node_count": len(assignments), "direct_count": direct, "relay_count": relay})
 		}
-		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, map[string]any{"items": out[a:b], "total": len(out)}, nil
+		return nil, map[string]any{"items": out, "total": len(carpoolUsers)}, nil
 	})
 	mcp.AddTool(ms, mcpDef("get_latency_history", "Summarize probe history for 1, 6 or 24 hours."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpHistoryInput) (*mcp.CallToolResult, any, error) {
 		v, err := s.mcpVisibleServer(ctx, user, in.ServerID)
@@ -94,10 +97,25 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 				continue
 			}
 			if _, e := s.relayForUser(ctx, user, v.ID); e != nil {
-				if errors.Is(e, relaystore.ErrNotFound) {
+				if !errors.Is(e, relaystore.ErrNotFound) {
+					return nil, nil, errors.New("relay access check failed")
+				}
+				// Only expose a broken relay when its source is visible and the
+				// target is actually absent, never merely inaccessible.
+				allowed, e := s.canAccessServer(ctx, user, v.ServerID)
+				if e != nil {
+					return nil, nil, errors.New("relay access check failed")
+				}
+				if !allowed || (v.OwnerUserID != nil && user.Role != auth.RoleAdmin) {
 					continue
 				}
-				return nil, nil, errors.New("relay access check failed")
+				missing, e := s.relays.TargetMissing(ctx, v)
+				if e != nil {
+					return nil, nil, errors.New("relay access check failed")
+				}
+				if !missing {
+					continue
+				}
 			}
 			issues := []string{}
 			if !v.Enabled {
@@ -137,22 +155,19 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if in.Status != "" && in.Status != "all" && in.Status != "online" && in.Status != "offline" {
 			return nil, nil, errors.New("invalid status")
 		}
-		values, err := s.servers.ListForUser(ctx, user.ID)
+		limit, err := mcpLimit(in.Limit, in.Offset)
+		if err != nil {
+			return nil, nil, err
+		}
+		values, total, err := s.servers.ListPageForUser(ctx, user.ID, in.Status, limit, in.Offset)
 		if err != nil {
 			return nil, nil, errors.New("server query failed")
 		}
 		out := []any{}
 		for _, v := range values {
-			if in.Status != "" && in.Status != "all" && in.Status != v.Status {
-				continue
-			}
 			out = append(out, mcpServerSummary(v))
 		}
-		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
-		if err != nil {
-			return nil, nil, err
-		}
-		return nil, map[string]any{"items": out[a:b], "total": len(out)}, nil
+		return nil, map[string]any{"items": out, "total": total}, nil
 	})
 	mcp.AddTool(ms, mcpDef("get_server_details", "Get visible server details by ID."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpServerID) (*mcp.CallToolResult, any, error) {
 		v, err := s.mcpVisibleServer(ctx, user, in.ServerID)
@@ -242,7 +257,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		}
 		return nil, map[string]any{"items": out[a:b], "total": len(out)}, nil
 	})
-	mcp.AddTool(ms, mcpDef("list_subscriptions", "List the current user's personal subscription summaries."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpPage) (*mcp.CallToolResult, any, error) {
+	mcp.AddTool(ms, mcpDef("list_subscriptions", "List personal and administrator-managed subscriber summaries without credentials."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpPage) (*mcp.CallToolResult, any, error) {
 		values, err := s.subscriptions.ListPersonalSubscriptions(ctx, subscriptionstore.PersonalSubscriptionActor{UserID: user.ID, Role: user.Role})
 		if err != nil {
 			return nil, nil, errors.New("subscription query failed")
@@ -250,6 +265,15 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		out := []any{}
 		for _, v := range values {
 			out = append(out, map[string]any{"id": v.ID, "name": v.Name, "type": "personal", "enabled": v.Enabled, "node_count": len(v.Nodes), "updated_at": v.UpdatedAt})
+		}
+		if user.Role == auth.RoleAdmin {
+			subscribers, err := s.subscriptions.ListSubscribers(ctx)
+			if err != nil {
+				return nil, nil, errors.New("subscription query failed")
+			}
+			for _, v := range subscribers {
+				out = append(out, map[string]any{"id": v.UserID, "name": v.Username, "type": "subscriber", "enabled": v.ProfileEnabled, "node_count": v.EnabledNodeCount, "updated_at": v.UpdatedAt})
+			}
 		}
 		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
 		if err != nil {

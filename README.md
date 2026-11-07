@@ -132,7 +132,7 @@ Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有
 
 ## MCP 只读集成
 
-管理员可在「系统设置 → AI / MCP 集成」启用默认关闭的 MCP 服务，并创建或撤销只读令牌。令牌仅创建时显示一次；请妥善保存并通过 HTTPS 使用。令牌绑定创建者，访问范围仍受服务器权限限制，撤销或创建者不再是管理员后立即失效。个人订阅工具仅列出当前管理员自己的个人订阅。
+管理员可在「系统设置 → AI / MCP 集成」启用默认关闭的 MCP 服务，并创建或撤销只读令牌。令牌仅创建时显示一次；请妥善保存并通过 HTTPS 使用。令牌绑定创建者，访问范围仍受服务器权限限制，撤销或创建者不再是管理员后立即失效。订阅工具先列出当前管理员自己的个人订阅（`type: personal`），再列出管理员可管理的订阅用户摘要（`type: subscriber`），不返回订阅令牌或链接；`subscriber` 的 `id` 为用户 ID，其 `node_count` 为启用的套餐节点数。拼车节点通过单独的工具查询。
 
 在运行 Codex 的环境设置 `VPS_PANEL_MCP_TOKEN` 后，在管理页面复制并执行生成的 `codex mcp add` 命令。令牌应由运行 Codex 的进程环境提供，不要写入命令示例；可用 `codex mcp list` 检查配置。连接语法见 [OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 

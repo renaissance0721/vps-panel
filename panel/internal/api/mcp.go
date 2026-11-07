@@ -22,12 +22,20 @@ type mcpServerID struct {
 }
 type mcpEmpty struct{}
 
-func mcpBounds(limit, offset, n int) (int, int, error) {
+func mcpLimit(limit, offset int) (int, error) {
 	if limit == 0 {
 		limit = 50
 	}
 	if limit < 1 || limit > 100 || offset < 0 || offset > 10000 {
-		return 0, 0, errors.New("invalid pagination")
+		return 0, errors.New("invalid pagination")
+	}
+	return limit, nil
+}
+
+func mcpBounds(limit, offset, n int) (int, int, error) {
+	limit, err := mcpLimit(limit, offset)
+	if err != nil {
+		return 0, 0, err
 	}
 	start := min(offset, n)
 	return start, min(start+limit, n), nil

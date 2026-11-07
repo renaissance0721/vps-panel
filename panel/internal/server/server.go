@@ -280,7 +280,25 @@ func (s *Service) ListArchivedForUser(ctx context.Context, userID int64) ([]Serv
 	return s.list(ctx, true, userID)
 }
 
+// ListPageForUser applies the same access rules as ListForUser before pagination.
+func (s *Service) ListPageForUser(ctx context.Context, userID int64, status string, limit, offset int) ([]Server, int, error) {
+	if userID <= 0 || limit <= 0 || offset < 0 {
+		return nil, 0, errors.New("invalid server page")
+	}
+	condition, args := serverListCondition(false, userID, status)
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE `+condition, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count servers: %w", err)
+	}
+	values, err := s.listFiltered(ctx, false, userID, status, limit, offset)
+	return values, total, err
+}
+
 func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Server, error) {
+	return s.listFiltered(ctx, archived, userID, "", 0, 0)
+}
+
+func serverListCondition(archived bool, userID int64, status string) (string, []any) {
 	archiveCondition := "servers.archived_at IS NULL"
 	if archived {
 		archiveCondition = "servers.archived_at IS NOT NULL"
@@ -293,6 +311,20 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 			WHERE server_access.server_id = servers.id AND server_access.user_id = ? AND users.role IN ('admin', 'vip')
 		))`
 		arguments = append(arguments, userID)
+	}
+	if status != "" && status != "all" {
+		accessCondition += " AND servers.status = ?"
+		arguments = append(arguments, status)
+	}
+	return archiveCondition + accessCondition, arguments
+}
+
+func (s *Service) listFiltered(ctx context.Context, archived bool, userID int64, status string, limit, offset int) ([]Server, error) {
+	condition, arguments := serverListCondition(archived, userID, status)
+	page := ""
+	if limit > 0 {
+		page = " LIMIT ? OFFSET ?"
+		arguments = append(arguments, limit, offset)
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.country_override_code, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
@@ -321,7 +353,7 @@ func (s *Service) list(ctx context.Context, archived bool, userID int64) ([]Serv
 		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
-		 WHERE `+archiveCondition+accessCondition+` ORDER BY servers.created_at DESC, servers.id DESC`, arguments...,
+		 WHERE `+condition+` ORDER BY servers.created_at DESC, servers.id DESC`+page, arguments...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)

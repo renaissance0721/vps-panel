@@ -19,6 +19,31 @@ func (s *Service) List(ctx context.Context) ([]Relay, error) {
 	return list(ctx, s.db, `WHERE source.archived_at IS NULL ORDER BY relays.created_at DESC, relays.id DESC`)
 }
 
+// TargetMissing distinguishes a deleted target from one hidden by access rules.
+// It deliberately returns only existence, including targets on archived servers.
+func (s *Service) TargetMissing(ctx context.Context, value Relay) (bool, error) {
+	var exists bool
+	switch value.TargetType {
+	case TargetProxy:
+		if value.TargetProxyID == nil {
+			return true, nil
+		}
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM proxies WHERE id = ?)`, *value.TargetProxyID).Scan(&exists); err != nil {
+			return false, err
+		}
+	case TargetLanding:
+		if value.TargetLandingID == nil {
+			return true, nil
+		}
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM landing_nodes WHERE id = ?)`, *value.TargetLandingID).Scan(&exists); err != nil {
+			return false, err
+		}
+	default:
+		return false, nil
+	}
+	return !exists, nil
+}
+
 func (s *Service) ListByOwner(ctx context.Context, userID int64) ([]Relay, error) {
 	return list(ctx, s.db,
 		`WHERE relays.owner_user_id = ? AND source.archived_at IS NULL ORDER BY relays.created_at DESC, relays.id DESC`,

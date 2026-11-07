@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NInput, NModal, NPopconfirm, NSelect, NSwitch } from 'naive-ui'
 import { api } from '../api/client'
+import { generateMCPConnection, type MCPClient, type MCPPlatform } from '../mcpConnection'
 
 type Token = { id: number; name: string; prefix: string; scope: string; created_at: number; expires_at: number; last_used_at: number | null; revoked_at: number | null }
 type Audit = { id: number; token_name: string; tool_name: string; called_at: number; duration_ms: number; success: boolean }
@@ -9,6 +10,7 @@ const enabled = ref(false)
 const tokens = ref<Token[]>([])
 const logs = ref<Audit[]>([])
 const error = ref('')
+const copyStatus = ref('')
 const busy = ref(false)
 const loaded = ref(false)
 const open = ref(false)
@@ -17,7 +19,18 @@ const days = ref(90)
 const secret = ref('')
 const controller = new AbortController()
 const endpoint = computed(() => `${window.location.origin}/mcp`)
-const command = computed(() => `codex mcp add vps-panel --url ${endpoint.value} --bearer-token-env-var VPS_PANEL_MCP_TOKEN`)
+const selectedClient = ref<MCPClient>('codex')
+const selectedPlatform = ref<MCPPlatform>('windows')
+const connection = computed(() => generateMCPConnection(selectedClient.value, selectedPlatform.value, endpoint.value))
+const clientOptions = [
+  { label: 'Codex Desktop / CLI', value: 'codex' },
+  { label: 'Claude Code', value: 'claude' },
+  { label: 'Cursor', value: 'cursor' },
+]
+const platformOptions = [
+  { label: 'Windows PowerShell', value: 'windows' },
+  { label: 'macOS / Linux（Bash）', value: 'unix' },
+]
 const tools = [
   ['list_servers', '列出可访问的服务器'], ['get_server_details', '读取服务器基本信息'],
   ['get_server_metrics', '读取最新资源指标'], ['get_latency_history', '汇总探测延迟历史'],
@@ -27,7 +40,7 @@ const tools = [
 ]
 const options = [30, 90, 180].map(value => ({ label: `${value} 天`, value }))
 function date(value: number | null) { return value ? new Date(value * 1000).toLocaleString() : '—' }
-function close() { if (busy.value) return; open.value = false; secret.value = ''; name.value = '' }
+function close() { if (busy.value) return; open.value = false; secret.value = ''; name.value = ''; copyStatus.value = '' }
 function fail(reason: unknown) { if (!controller.signal.aborted) error.value = reason instanceof Error ? reason.message : '请求失败' }
 async function load() {
   try {
@@ -52,7 +65,15 @@ async function create() {
   } catch (reason) { fail(reason) } finally { busy.value = false }
 }
 async function revoke(id: number) { busy.value = true; error.value = ''; try { await api(`/api/mcp/tokens/${id}`, { method: 'DELETE', signal: controller.signal }); await load() } catch (reason) { fail(reason) } finally { busy.value = false } }
-async function copy(value: string) { try { await navigator.clipboard.writeText(value) } catch { error.value = '复制失败，请手动复制。' } }
+async function copy(value: string) {
+  error.value = ''; copyStatus.value = ''
+  try { await navigator.clipboard.writeText(value); copyStatus.value = '已复制到剪贴板。' }
+  catch { error.value = '复制失败，请检查浏览器的剪贴板权限。' }
+}
+async function copyConnectionWithToken() {
+  if (!secret.value) return
+  await copy(generateMCPConnection(selectedClient.value, selectedPlatform.value, endpoint.value, secret.value))
+}
 onMounted(load)
 onUnmounted(() => { secret.value = ''; controller.abort() })
 </script>
@@ -64,15 +85,35 @@ onUnmounted(() => { secret.value = ''; controller.abort() })
     <p>MCP 服务：<n-switch :value="enabled" :loading="busy" :disabled="!loaded" @update:value="change" /> {{ enabled ? '已启用' : '已关闭' }}</p>
     <p>服务地址：<code>{{ endpoint }}</code> <n-button size="small" @click="copy(endpoint)">复制地址</n-button></p>
     <h3>访问令牌</h3>
-    <n-button :disabled="!loaded" @click="open = true">创建令牌</n-button>
+    <n-button :disabled="!loaded" @click="copyStatus = ''; open = true">创建令牌</n-button>
     <div class="mcp-table-scroll"><table class="mcp-token-table"><thead><tr><th>名称</th><th>前缀</th><th>权限</th><th>创建时间</th><th>到期时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead><tbody>
       <tr v-for="item in tokens" :key="item.id"><td>{{ item.name }}</td><td>{{ item.prefix }}…</td><td>只读</td><td>{{ date(item.created_at) }}</td><td>{{ date(item.expires_at) }}</td><td>{{ date(item.last_used_at) }}</td><td>{{ item.revoked_at ? '已撤销' : item.expires_at * 1000 <= Date.now() ? '已过期' : '有效' }}</td><td><n-popconfirm v-if="!item.revoked_at" @positive-click="revoke(item.id)"><template #trigger><n-button size="small" :disabled="busy">撤销</n-button></template>撤销后该令牌立即失效，确定撤销？</n-popconfirm></td></tr>
     </tbody></table></div>
     <h3>可用工具（只读）</h3><ul><li v-for="tool in tools" :key="tool[0]"><code>{{ tool[0] }}</code>：{{ tool[1] }}</li></ul>
-    <h3>连接指南</h3><p>创建令牌并保存到客户端环境变量 VPS_PANEL_MCP_TOKEN；客户端使用 Bearer Token 访问服务地址。测试工具列表后即可查询；不再使用时请撤销令牌。</p><pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ command }}</pre><n-button size="small" @click="copy(command)">复制 Codex 命令</n-button>
+    <h3>客户端连接配置</h3>
+    <div class="mcp-connection-options">
+      <label><span>客户端</span><n-select v-model:value="selectedClient" :options="clientOptions" /></label>
+      <label v-if="selectedClient !== 'cursor'"><span>操作系统 / 终端</span><n-select v-model:value="selectedPlatform" :options="platformOptions" /></label>
+    </div>
+    <template v-if="selectedClient === 'codex'">
+      <p>复制命令 → 在对应终端执行一次 → 完全退出并重启 Codex Desktop。若已有同名配置，命令会先要求确认替换。</p>
+      <p v-if="selectedPlatform === 'windows'">命令会隐藏输入令牌，并将其保存到当前 Windows 用户环境变量及当前 PowerShell 进程；同一用户的其他程序可能读取该变量。</p>
+      <p v-else>命令使用 Bash 隐藏输入令牌，并仅为当前终端设置环境变量。后续终端或桌面应用也需要获得该变量；从此终端启动 Codex，或自行在桌面会话中配置该变量。</p>
+    </template>
+    <template v-else-if="selectedClient === 'claude'">
+      <p>复制命令并在对应终端执行一次，然后运行 <code>claude mcp get vps-panel</code> 或在 Claude Code 中使用 <code>/mcp</code> 检查连接。若存在同名配置，请先检查其作用域。</p>
+      <n-alert type="warning">Claude Code 会将 Bearer 令牌作为请求头保存到用户配置文件，请保护该文件。</n-alert>
+    </template>
+    <template v-else>
+      <p>复制 JSON，将 <code>vps-panel</code> 条目合并到已有 <code>~/.cursor/mcp.json</code> 的 <code>mcpServers</code> 中，不要覆盖其他配置。也可以使用项目目录的 <code>.cursor/mcp.json</code>。</p>
+      <p>先在启动 Cursor 的用户环境中设置 <code>VPS_PANEL_MCP_TOKEN</code>，然后完全退出并重启 Cursor；环境变量需要对 Cursor 进程可见。</p>
+    </template>
+    <pre class="mcp-connection-code">{{ connection }}</pre>
+    <n-button size="small" @click="copy(connection)">{{ selectedClient === 'cursor' ? '复制 MCP JSON' : '复制连接指令' }}</n-button>
+    <span v-if="copyStatus && !open" class="mcp-copy-status" role="status">{{ copyStatus }}</span>
     <h3>最近调用</h3><div class="mcp-table-scroll"><table class="mcp-audit-table"><thead><tr><th>时间</th><th>令牌</th><th>工具</th><th>状态</th><th>耗时</th></tr></thead><tbody><tr v-for="item in logs" :key="item.id"><td>{{ date(item.called_at) }}</td><td>{{ item.token_name }}</td><td>{{ item.tool_name }}</td><td>{{ item.success ? '成功' : '失败' }}</td><td>{{ item.duration_ms }} ms</td></tr></tbody></table></div>
   </n-card>
-  <n-modal :show="open" :mask-closable="!busy" :close-on-esc="!busy" @update:show="value => { if (!value) close() }"><n-card class="account-modal-card" title="创建 MCP 令牌" :closable="!busy" @close="close"><template v-if="secret"><n-alert type="warning">令牌仅显示一次，请立即保存。</n-alert><p style="overflow-wrap: anywhere">{{ secret }}</p><n-button @click="copy(secret)">复制令牌</n-button></template><form v-else class="auth-form" @submit.prevent="create"><label><span>令牌名称</span><n-input v-model:value="name" maxlength="100" /></label><p>权限：只读</p><label><span>有效期</span><n-select v-model:value="days" :options="options" /></label><div class="modal-actions"><n-button :disabled="busy" @click="close">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">创建</n-button></div></form></n-card></n-modal>
+  <n-modal :show="open" :mask-closable="!busy" :close-on-esc="!busy" @update:show="value => { if (!value) close() }"><n-card class="account-modal-card" title="创建 MCP 令牌" :closable="!busy" @close="close"><template v-if="secret"><n-alert type="warning">令牌仅显示一次，请立即保存。带令牌的配置可能暴露在剪贴板和终端历史中；Cursor JSON 还会将令牌保存到配置文件。</n-alert><n-alert v-if="error" type="error">{{ error }}</n-alert><p style="overflow-wrap: anywhere">{{ secret }}</p><div class="mcp-modal-actions"><n-button @click="copy(secret)">复制令牌</n-button><n-button @click="copyConnectionWithToken">{{ selectedClient === 'cursor' ? '复制带令牌的 MCP JSON' : '复制带令牌的连接指令' }}</n-button></div><p v-if="copyStatus" role="status">{{ copyStatus }}</p><p>使用连接配置区域当前选择的客户端<span v-if="selectedClient !== 'cursor'">和终端</span>生成。</p></template><form v-else class="auth-form" @submit.prevent="create"><label><span>令牌名称</span><n-input v-model:value="name" maxlength="100" /></label><p>权限：只读</p><label><span>有效期</span><n-select v-model:value="days" :options="options" /></label><div class="modal-actions"><n-button :disabled="busy" @click="close">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">创建</n-button></div></form></n-card></n-modal>
 </template>
 
 <style scoped>
@@ -80,4 +121,10 @@ onUnmounted(() => { secret.value = ''; controller.abort() })
 .mcp-token-table { min-width: 900px; }
 .mcp-audit-table { min-width: 600px; }
 .mcp-table-scroll th, .mcp-table-scroll td { padding: 6px 10px; text-align: left; white-space: nowrap; }
+.mcp-connection-options { display: flex; flex-wrap: wrap; gap: 12px; }
+.mcp-connection-options label { flex: 1 1 220px; min-width: 0; }
+.mcp-connection-options label span { display: block; margin-bottom: 6px; }
+.mcp-connection-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-copy-status { margin-left: 8px; }
 </style>

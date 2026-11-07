@@ -25,10 +25,20 @@ test('MCP 设置仅管理员可见，地址和说明随当前域名生成', asyn
   assert.equal(bindings.enabled.value, false)
   assert.equal(bindings.endpoint.value, 'https://panel.example.com/mcp')
   assert.match(html, /AI \/ MCP 集成/)
-  assert.match(bindings.command.value, /--bearer-token-env-var VPS_PANEL_MCP_TOKEN/)
+  assert.equal(bindings.selectedClient.value, 'codex')
+  assert.equal(bindings.selectedPlatform.value, 'windows')
+  assert.match(bindings.connection.value, /--bearer-token-env-var VPS_PANEL_MCP_TOKEN/)
+  bindings.selectedClient.value = 'claude'
+  bindings.selectedPlatform.value = 'unix'
+  assert.match(bindings.connection.value, /claude mcp add --transport http/)
+  bindings.selectedClient.value = 'cursor'
+  assert.equal(JSON.parse(bindings.connection.value).mcpServers['vps-panel'].headers.Authorization, 'Bearer ${env:VPS_PANEL_MCP_TOKEN}')
 })
 test('令牌只显示一次并可撤销；失败显示错误', async () => {
   const original = globalThis.fetch; const requests = []
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const clipboard = []
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async value => { clipboard.push(value) } } } })
   globalThis.fetch = async (url, options = {}) => {
     requests.push({ url, options })
     if (options.method === 'DELETE') return new Response(null, { status: 204 })
@@ -40,11 +50,15 @@ test('令牌只显示一次并可撤销；失败显示错误', async () => {
   try {
     const { bindings } = await mount(); await bindings.load(); bindings.name.value = 'test'; await bindings.create()
     assert.equal(bindings.secret.value, 'one-time-secret')
+    assert.doesNotMatch(bindings.connection.value, /one-time-secret/)
+    await bindings.copyConnectionWithToken()
+    assert.match(clipboard[0], /one-time-secret/)
     const posted = JSON.parse(requests.find(item => item.options.method === 'POST').options.body)
     assert.equal(posted.scope, 'read')
     bindings.close(); assert.equal(bindings.secret.value, '')
+    await bindings.copyConnectionWithToken(); assert.equal(clipboard.length, 1)
     await bindings.revoke(7); assert.ok(requests.some(item => item.url.endsWith('/tokens/7') && item.options.method === 'DELETE'))
     globalThis.fetch = async () => new Response(JSON.stringify({ error: '请求失败' }), { status: 500 })
     await bindings.change(true); assert.equal(bindings.enabled.value, false); assert.equal(bindings.error.value, '请求失败')
-  } finally { globalThis.fetch = original }
+  } finally { globalThis.fetch = original; if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator); else delete globalThis.navigator }
 })

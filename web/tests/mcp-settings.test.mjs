@@ -21,6 +21,7 @@ async function mount(prepare = () => {}) {
 test('首次展示弹窗明确提示 AI 对话历史风险并保留原始命令入口', async () => {
   const { bindings, html } = await mount(value => { value.open.value = true; value.secret.value = 'temporary-secret' })
   assert.match(html, /AI 对话历史/)
+  assert.match(html, /工具执行记录/)
   assert.match(html, /受信任的个人环境/)
   assert.match(html, /复制含令牌的 AI 安装提示词/)
   assert.match(html, /复制带令牌的原始配置命令/)
@@ -75,6 +76,8 @@ test('令牌只显示一次并可撤销；失败显示错误', async () => {
     await bindings.copyAgentPromptWithToken()
     assert.match(clipboard[1], /one-time-secret/)
     assert.match(clipboard[1], /list_servers/)
+    assert.match(clipboard[1], /已有 VPS_PANEL_TOKEN 时继续使用它/)
+    assert.match(clipboard[1], /必要时可在工具参数中使用/)
     await bindings.copyConnectionWithToken()
     assert.match(clipboard[2], /one-time-secret/)
     assert.doesNotMatch(clipboard[2], /get_panel_info/)

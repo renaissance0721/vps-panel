@@ -323,3 +323,102 @@ func TestSetServerOrderPreservesHiddenAndArchivedAndRollsBack(t *testing.T) {
 		t.Fatal("sorting changed business state")
 	}
 }
+
+func TestSetOrderAllKindsAndPrivateLandingTarget(t *testing.T) {
+	db, _ := orderTestDB(t)
+	defer db.Close()
+	var routingID int64
+	if err := db.QueryRow(`SELECT id FROM subscription_routing_presets WHERE is_default=1`).Scan(&routingID); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO landing_nodes(id,owner_user_id,name,visibility,protocol,host,port,uri,created_at,updated_at) VALUES (1,1,'own','private','vless','example.test',443,'secret-one',1,1),(2,2,'private','private','vless','example.test',443,'secret-two',2,2),(3,2,'public','public','vless','example.test',443,'secret-three',3,3)`, nil},
+		{`INSERT INTO relays(id,server_id,name,listen_port,target_type,target_landing_id,network,created_at,updated_at) VALUES (4,1,'hidden target',9104,'landing',2,'tcp',4,4),(5,1,'public target',9105,'landing',3,'tcp',5,5)`, nil},
+		{`INSERT INTO personal_subscription_groups(id,owner_user_id,name,token,enabled,client_name,routing_preset_id,created_at,updated_at) VALUES (1,1,'A','secret-a',1,'admin',?,1,1),(2,1,'B','secret-b',1,'admin',?,2,2),(3,2,'C','secret-c',1,'other',?,3,3)`, []any{routingID, routingID, routingID}},
+		{`INSERT INTO subscription_published_nodes(id,name,mode,target_proxy_id,enabled,created_at,updated_at) VALUES (1,'A','direct',1,1,1,1),(2,'B','direct',3,1,2,2)`, nil},
+	} {
+		if _, err := db.Exec(statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, statement := range []string{
+		`INSERT INTO user_proxy_order(user_id,proxy_id,position) VALUES (1,4,77)`,
+		`INSERT INTO user_relay_order(user_id,relay_id,position) VALUES (1,4,77)`,
+		`INSERT INTO user_landing_order(user_id,landing_id,position) VALUES (1,2,77)`,
+		`INSERT INTO user_personal_subscription_order(user_id,personal_subscription_id,position) VALUES (1,3,77)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func() [3]string {
+		var result [3]string
+		if err := db.QueryRow(`SELECT (SELECT json_group_array(json_array(id,name,enabled,config_json,updated_at)) FROM proxies),
+			(SELECT json_group_array(json_array(id,name,enabled,updated_at)) FROM relays),
+			(SELECT json_group_array(json_array(id,name,enabled,updated_at)) FROM subscription_published_nodes)`).Scan(&result[0], &result[1], &result[2]); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := snapshot()
+	store := NewStore(db)
+	for _, kind := range []Kind{Servers, Proxies, Relays, Landings, Users, PersonalSubscriptions, PublishedNodes} {
+		t.Run(string(kind), func(t *testing.T) {
+			original := visibleOrder(t, db, 1, kind, false)
+			if len(original) < 2 {
+				t.Fatal("fixture requires at least two visible items")
+			}
+			secondUserBefore := visibleOrder(t, db, 2, kind, false)
+			want := append([]int64{}, original...)
+			for i, j := 0, len(want)-1; i < j; i, j = i+1, j-1 {
+				want[i], want[j] = want[j], want[i]
+			}
+			if _, err := store.SetOrder(t.Context(), 1, kind, want, true); err != nil {
+				t.Fatal(err)
+			}
+			if got := visibleOrder(t, db, 1, kind, false); !reflect.DeepEqual(got, original) {
+				t.Fatal("dry run modified order")
+			}
+			for _, bad := range [][]int64{want[:len(want)-1], append(append([]int64{}, want...), want[0]), append(append([]int64{}, want[:len(want)-1]...), 99999)} {
+				if _, err := store.SetOrder(t.Context(), 1, kind, bad, false); !errors.Is(err, ErrInvalidOrder) {
+					t.Fatalf("invalid %v: %v", bad, err)
+				}
+			}
+			if _, err := store.SetOrder(t.Context(), 1, kind, want, false); err != nil {
+				t.Fatal(err)
+			}
+			if got := visibleOrder(t, db, 1, kind, false); !reflect.DeepEqual(got, want) {
+				t.Fatalf("saved %v, want %v", got, want)
+			}
+			if got := visibleOrder(t, db, 2, kind, false); !reflect.DeepEqual(got, secondUserBefore) {
+				t.Fatal("other user order changed")
+			}
+		})
+	}
+	for _, id := range visibleOrder(t, db, 1, Relays, false) {
+		if id == 4 {
+			t.Fatal("private landing target leaked")
+		}
+	}
+	for _, query := range []string{
+		`SELECT position FROM user_proxy_order WHERE user_id=1 AND proxy_id=4`,
+		`SELECT position FROM user_relay_order WHERE user_id=1 AND relay_id=4`,
+		`SELECT position FROM user_landing_order WHERE user_id=1 AND landing_id=2`,
+		`SELECT position FROM user_personal_subscription_order WHERE user_id=1 AND personal_subscription_id=3`,
+	} {
+		var position int
+		if err := db.QueryRow(query).Scan(&position); err != nil || position != 77 {
+			t.Fatal("hidden preference changed")
+		}
+	}
+	var changed int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers WHERE desired_state_version != 10 OR updated_at != created_at`).Scan(&changed); err != nil || changed != 0 {
+		t.Fatal("business state changed")
+	}
+	if snapshot() != before {
+		t.Fatal("sorting changed business resource data")
+	}
+}

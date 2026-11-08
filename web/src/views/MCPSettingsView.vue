@@ -43,6 +43,8 @@ const tools = [
   ['check_relay_health', '检查中转配置状态'], ['list_subscriptions', '列出可访问的订阅摘要'],
   ['list_carpool_nodes', '汇总拼车分配'], ['get_panel_info', '查看面板和授权信息'],
   ['list_proxy_clients', '列出代理客户端标识'],
+  ['list_landings', '列出可访问的外部节点'], ['list_users', '列出用户摘要'],
+  ['list_personal_subscriptions', '列出个人订阅'], ['list_published_nodes', '列出订阅发布节点'],
 ]
 const options = [30, 90, 180].map(value => ({ label: `${value} 天`, value }))
 function date(value: number | null) { return value ? new Date(value * 1000).toLocaleString() : '—' }
@@ -108,7 +110,8 @@ onUnmounted(() => { secret.value = ''; controller.abort() })
       <tr v-for="item in tokens" :key="item.id"><td>{{ item.name }}</td><td>{{ item.prefix }}…</td><td>{{ item.scope === 'read_write' ? '读写' : '只读' }}</td><td>{{ date(item.created_at) }}</td><td>{{ date(item.expires_at) }}</td><td>{{ date(item.last_used_at) }}</td><td>{{ item.revoked_at ? '已撤销' : item.expires_at * 1000 <= Date.now() ? '已过期' : '有效' }}</td><td><n-popconfirm v-if="!item.revoked_at" @positive-click="revoke(item.id)"><template #trigger><n-button size="small" :disabled="busy">撤销</n-button></template>撤销后该令牌立即失效，确定撤销？</n-popconfirm></td></tr>
     </tbody></table></div>
     <h3>可用工具（只读）</h3><ul><li v-for="tool in tools" :key="tool[0]"><code>{{ tool[0] }}</code>：{{ tool[1] }}</li></ul>
-    <h3>写操作工具</h3><p>服务器：<code>create_server</code>、<code>update_server</code>、<code>set_server_order</code>；代理：<code>create_proxy</code>、<code>update_proxy</code>、<code>set_proxy_enabled</code>、<code>delete_proxy</code>；中转：<code>create_relay</code>、<code>update_relay</code>、<code>set_relay_enabled</code>、<code>delete_relay</code>。配置保存后 Agent 同步可能仍在进行。</p>
+    <h3>写操作工具</h3><p>服务器：<code>create_server</code>、<code>update_server</code>；代理：<code>create_proxy</code>、<code>update_proxy</code>、<code>set_proxy_enabled</code>、<code>delete_proxy</code>；中转：<code>create_relay</code>、<code>update_relay</code>、<code>set_relay_enabled</code>、<code>delete_relay</code>。配置保存后 Agent 同步可能仍在进行。</p>
+    <p>列表排序：<code>set_server_order</code>、<code>set_proxy_order</code>、<code>set_relay_order</code>、<code>set_landing_order</code>、<code>set_user_order</code>、<code>set_personal_subscription_order</code>、<code>set_published_node_order</code>。</p>
     <h3>客户端连接配置</h3>
     <div class="mcp-connection-options">
       <label><span>客户端</span><n-select v-model:value="selectedClient" :options="clientOptions" /></label>

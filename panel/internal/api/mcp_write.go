@@ -140,4 +140,5 @@ func (s *server) registerMCPWriteTools(ms *mcp.Server, identity mcpIdentity) {
 	s.registerMCPServerWrites(ms, identity)
 	s.registerMCPProxyTools(ms, identity)
 	s.registerMCPRelayWrites(ms, identity)
+	s.registerMCPOrders(ms, identity)
 }

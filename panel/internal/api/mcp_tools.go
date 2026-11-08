@@ -7,6 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
@@ -91,7 +92,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if err != nil {
 			return nil, nil, errors.New("relay query failed")
 		}
-		out := []any{}
+		out := []map[string]any{}
 		for _, v := range values {
 			if in.RelayID != 0 && in.RelayID != v.ID {
 				continue
@@ -144,6 +145,9 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		}
 		if in.RelayID != 0 && len(out) == 0 {
 			return nil, nil, errors.New("relay not found")
+		}
+		if err := s.mcpOrderItems(ctx, user, listorder.Relays, out); err != nil {
+			return nil, nil, errors.New("order query failed")
 		}
 		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
 		if err != nil {
@@ -220,7 +224,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if err != nil {
 			return nil, nil, errors.New("proxy query failed")
 		}
-		out := []any{}
+		out := []map[string]any{}
 		for _, v := range values {
 			ok, e := s.canAccessServer(ctx, user, v.ServerID)
 			if e != nil {
@@ -229,6 +233,9 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 			if ok {
 				out = append(out, map[string]any{"id": v.ID, "name": v.Name, "server_id": v.ServerID, "server_name": v.ServerName, "protocol": v.Protocol, "enabled": v.Enabled, "node_role": v.NodeRole, "updated_at": v.UpdatedAt})
 			}
+		}
+		if err := s.mcpOrderItems(ctx, user, listorder.Proxies, out); err != nil {
+			return nil, nil, errors.New("order query failed")
 		}
 		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
 		if err != nil {
@@ -241,7 +248,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if err != nil {
 			return nil, nil, errors.New("relay query failed")
 		}
-		out := []any{}
+		out := []map[string]any{}
 		for _, v := range values {
 			if _, e := s.relayForUser(ctx, user, v.ID); e != nil {
 				if errors.Is(e, relaystore.ErrNotFound) {
@@ -250,6 +257,9 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 				return nil, nil, errors.New("relay access check failed")
 			}
 			out = append(out, map[string]any{"id": v.ID, "name": v.Name, "server_id": v.ServerID, "server_name": v.ServerName, "listen_port": v.ListenPort, "target_type": v.TargetType, "target_proxy_id": v.TargetProxyID, "target_server_name": v.TargetServerName, "target_proxy_name": v.TargetProxyName, "enabled": v.Enabled, "target_address_ready": v.TargetAddressReady, "target_unavailable_reason": v.TargetUnavailableReason, "updated_at": v.UpdatedAt})
+		}
+		if err := s.mcpOrderItems(ctx, user, listorder.Relays, out); err != nil {
+			return nil, nil, errors.New("order query failed")
 		}
 		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
 		if err != nil {
@@ -262,9 +272,16 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		if err != nil {
 			return nil, nil, errors.New("subscription query failed")
 		}
-		out := []any{}
+		personal := []map[string]any{}
 		for _, v := range values {
-			out = append(out, map[string]any{"id": v.ID, "name": v.Name, "type": "personal", "enabled": v.Enabled, "node_count": len(v.Nodes), "updated_at": v.UpdatedAt})
+			personal = append(personal, map[string]any{"id": v.ID, "name": v.Name, "type": "personal", "enabled": v.Enabled, "node_count": len(v.Nodes), "updated_at": v.UpdatedAt})
+		}
+		if err := s.mcpOrderItems(ctx, user, listorder.PersonalSubscriptions, personal); err != nil {
+			return nil, nil, errors.New("order query failed")
+		}
+		out := make([]any, 0, len(personal))
+		for _, v := range personal {
+			out = append(out, v)
 		}
 		if user.Role == auth.RoleAdmin {
 			subscribers, err := s.subscriptions.ListSubscribers(ctx)

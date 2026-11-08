@@ -23,7 +23,7 @@ const (
 var (
 	ErrNotFound         = errors.New("resource not found")
 	ErrInvalidDirection = errors.New("invalid reorder direction")
-	ErrInvalidOrder     = errors.New("server order must include each visible server exactly once")
+	ErrInvalidOrder     = errors.New("order must include each visible resource exactly once")
 )
 
 type Store struct{ db *sql.DB }
@@ -131,6 +131,7 @@ func visibleQuery(kind Kind, archived bool) string {
 			JOIN servers AS source ON source.id = relays.server_id
 			LEFT JOIN proxies AS target_proxy ON target_proxy.id = relays.target_proxy_id
 			LEFT JOIN servers AS target ON target.id = target_proxy.server_id
+			LEFT JOIN landing_nodes AS target_landing ON target_landing.id = relays.target_landing_id
 			WHERE source.archived_at IS NULL AND
 			(source.visibility = 'public' OR EXISTS (
 				SELECT 1 FROM server_access WHERE server_id = source.id AND user_id = ?
@@ -138,7 +139,9 @@ func visibleQuery(kind Kind, archived bool) string {
 				(target_proxy.id IS NOT NULL AND target.archived_at IS NULL AND
 				(target.visibility = 'public' OR EXISTS (
 					SELECT 1 FROM server_access WHERE server_id = target.id AND user_id = ?
-				)))) ORDER BY relays.created_at DESC, relays.id DESC`
+				)))) AND (relays.target_type != 'landing' OR
+				(target_landing.id IS NOT NULL AND (target_landing.owner_user_id = ? OR target_landing.visibility = 'public')))
+			ORDER BY relays.created_at DESC, relays.id DESC`
 	default:
 		panic("unknown list order kind")
 	}
@@ -149,7 +152,7 @@ func visibleArguments(kind Kind, userID int64) []any {
 	case Users, PublishedNodes:
 		return nil
 	case Relays:
-		return []any{userID, userID}
+		return []any{userID, userID, userID}
 	default:
 		return []any{userID}
 	}
@@ -246,12 +249,18 @@ func (s *Store) Move(ctx context.Context, userID int64, kind Kind, archived bool
 // SetServerOrder atomically validates the complete visible set and saves its
 // order while retaining preferences for archived and inaccessible servers.
 func (s *Store) SetServerOrder(ctx context.Context, userID int64, ids []int64, dryRun bool) ([]int64, error) {
+	return s.SetOrder(ctx, userID, Servers, ids, dryRun)
+}
+
+// SetOrder stores one user's complete visible resource order atomically.
+func (s *Store) SetOrder(ctx context.Context, userID int64, kind Kind, ids []int64, dryRun bool) ([]int64, error) {
+	table, column := tableAndColumn(kind)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin server reorder: %w", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, visibleQuery(Servers, false), userID)
+	rows, err := tx.QueryContext(ctx, visibleQuery(kind, false), visibleArguments(kind, userID)...)
 	if err != nil {
 		return nil, fmt.Errorf("list visible servers: %w", err)
 	}
@@ -281,7 +290,7 @@ func (s *Store) SetServerOrder(ctx context.Context, userID int64, ids []int64, d
 	if dryRun {
 		return append([]int64{}, ids...), nil
 	}
-	rows, err = tx.QueryContext(ctx, "SELECT server_id, position FROM user_server_order WHERE user_id = ? ORDER BY position, server_id", userID)
+	rows, err = tx.QueryContext(ctx, "SELECT "+column+", position FROM "+table+" WHERE user_id = ? ORDER BY position, "+column, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +310,7 @@ func (s *Store) SetServerOrder(ctx context.Context, userID int64, ids []int64, d
 	}
 	// Leave inaccessible and archived rows, including their positions, intact.
 	for _, id := range ids {
-		if _, err = tx.ExecContext(ctx, "DELETE FROM user_server_order WHERE user_id = ? AND server_id = ?", userID, id); err != nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE user_id = ? AND "+column+" = ?", userID, id); err != nil {
 			return nil, err
 		}
 	}
@@ -310,7 +319,7 @@ func (s *Store) SetServerOrder(ctx context.Context, userID int64, ids []int64, d
 		for reserved[position] {
 			position++
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO user_server_order (user_id, server_id, position) VALUES (?, ?, ?)", userID, id, position); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO "+table+" (user_id, "+column+", position) VALUES (?, ?, ?)", userID, id, position); err != nil {
 			return nil, err
 		}
 		position++

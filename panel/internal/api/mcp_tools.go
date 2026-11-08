@@ -249,7 +249,7 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 				}
 				return nil, nil, errors.New("relay access check failed")
 			}
-			out = append(out, map[string]any{"id": v.ID, "name": v.Name, "server_name": v.ServerName, "listen_port": v.ListenPort, "target_type": v.TargetType, "target_server_name": v.TargetServerName, "target_proxy_name": v.TargetProxyName, "enabled": v.Enabled, "target_address_ready": v.TargetAddressReady, "target_unavailable_reason": v.TargetUnavailableReason, "updated_at": v.UpdatedAt})
+			out = append(out, map[string]any{"id": v.ID, "name": v.Name, "server_id": v.ServerID, "server_name": v.ServerName, "listen_port": v.ListenPort, "target_type": v.TargetType, "target_proxy_id": v.TargetProxyID, "target_server_name": v.TargetServerName, "target_proxy_name": v.TargetProxyName, "enabled": v.Enabled, "target_address_ready": v.TargetAddressReady, "target_unavailable_reason": v.TargetUnavailableReason, "updated_at": v.UpdatedAt})
 		}
 		a, b, err := mcpBounds(in.Limit, in.Offset, len(out))
 		if err != nil {

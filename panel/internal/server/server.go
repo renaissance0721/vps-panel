@@ -322,7 +322,14 @@ func serverListCondition(archived bool, userID int64, status string) (string, []
 func (s *Service) listFiltered(ctx context.Context, archived bool, userID int64, status string, limit, offset int) ([]Server, error) {
 	condition, arguments := serverListCondition(archived, userID, status)
 	page := ""
+	orderJoin := ""
+	orderBy := "servers.created_at DESC, servers.id DESC"
 	if limit > 0 {
+		// Match the web list: unordered servers precede ordered ones, with
+		// creation order as a stable tie-breaker, before LIMIT/OFFSET.
+		orderJoin = " LEFT JOIN user_server_order AS list_order ON list_order.server_id = servers.id AND list_order.user_id = ?"
+		arguments = append([]any{userID}, arguments...)
+		orderBy = "(list_order.position IS NOT NULL), list_order.position, servers.created_at DESC, servers.id DESC"
 		page = " LIMIT ? OFFSET ?"
 		arguments = append(arguments, limit, offset)
 	}
@@ -353,7 +360,7 @@ func (s *Service) listFiltered(ctx context.Context, archived bool, userID int64,
 		 LEFT JOIN agents AS agent ON agent.server_id = servers.id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 LEFT JOIN server_metrics AS metrics ON metrics.server_id = servers.id
-		 WHERE `+condition+` ORDER BY servers.created_at DESC, servers.id DESC`+page, arguments...,
+		 `+orderJoin+` WHERE `+condition+` ORDER BY `+orderBy+page, arguments...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list servers: %w", err)

@@ -23,6 +23,7 @@ const (
 var (
 	ErrNotFound         = errors.New("resource not found")
 	ErrInvalidDirection = errors.New("invalid reorder direction")
+	ErrInvalidOrder     = errors.New("server order must include each visible server exactly once")
 )
 
 type Store struct{ db *sql.DB }
@@ -240,4 +241,82 @@ func (s *Store) Move(ctx context.Context, userID int64, kind Kind, archived bool
 		return fmt.Errorf("commit list reorder: %w", err)
 	}
 	return nil
+}
+
+// SetServerOrder atomically validates the complete visible set and saves its
+// order while retaining preferences for archived and inaccessible servers.
+func (s *Store) SetServerOrder(ctx context.Context, userID int64, ids []int64, dryRun bool) ([]int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin server reorder: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, visibleQuery(Servers, false), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list visible servers: %w", err)
+	}
+	visible := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		visible[id] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if ids == nil || len(ids) != len(visible) {
+		return nil, ErrInvalidOrder
+	}
+	for _, id := range ids {
+		if !visible[id] {
+			return nil, ErrInvalidOrder
+		}
+		delete(visible, id)
+	}
+	if dryRun {
+		return append([]int64{}, ids...), nil
+	}
+	rows, err = tx.QueryContext(ctx, "SELECT server_id, position FROM user_server_order WHERE user_id = ? ORDER BY position, server_id", userID)
+	if err != nil {
+		return nil, err
+	}
+	positions, _, err := readPositions(rows)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		seen[id] = true
+	}
+	reserved := make(map[int64]bool)
+	for id, position := range positions {
+		if !seen[id] {
+			reserved[position] = true
+		}
+	}
+	// Leave inaccessible and archived rows, including their positions, intact.
+	for _, id := range ids {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM user_server_order WHERE user_id = ? AND server_id = ?", userID, id); err != nil {
+			return nil, err
+		}
+	}
+	position := int64(1)
+	for _, id := range ids {
+		for reserved[position] {
+			position++
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO user_server_order (user_id, server_id, position) VALUES (?, ?, ?)", userID, id, position); err != nil {
+			return nil, err
+		}
+		position++
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return append([]int64{}, ids...), nil
 }

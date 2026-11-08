@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
 
@@ -44,7 +45,29 @@ type mcpUpdateServer struct {
 	DryRun                   bool    `json:"dry_run,omitempty"`
 }
 
+type mcpServerOrder struct {
+	ServerIDs []int64 `json:"server_ids"`
+	DryRun    bool    `json:"dry_run,omitempty"`
+}
+
 func (s *server) registerMCPServerWrites(ms *mcp.Server, identity mcpIdentity) {
+	mcp.AddTool(ms, mcpWriteDef("set_server_order", "Set the complete top-to-bottom order of all visible active servers for the current user. dry_run validates without saving.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpServerOrder) (*mcp.CallToolResult, any, error) {
+		if err := s.requireMCPWrite(ctx, identity); err != nil {
+			return nil, nil, err
+		}
+		ids, err := s.orders.SetServerOrder(ctx, identity.user.ID, in.ServerIDs, in.DryRun)
+		if errors.Is(err, listorder.ErrInvalidOrder) {
+			return nil, nil, errors.New("server_ids must contain every visible active server exactly once")
+		}
+		if err != nil {
+			return nil, nil, errors.New("server order could not be saved")
+		}
+		if !in.DryRun {
+			req, _ := http.NewRequestWithContext(ctx, "POST", "http://localhost/internal", nil)
+			s.recordAudit(req, identity.user, "server.reorder", "server", 0, "通过 MCP 更新服务器排序")
+		}
+		return nil, map[string]any{"server_ids": ids, "dry_run": in.DryRun, "saved": !in.DryRun}, nil
+	})
 	mcp.AddTool(ms, mcpWriteDef("create_server", "Create a server record. Enrollment credentials are not returned; use the Panel to enroll its Agent.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpCreateServer) (*mcp.CallToolResult, any, error) {
 		if err := s.requireMCPWrite(ctx, identity); err != nil {
 			return nil, nil, err

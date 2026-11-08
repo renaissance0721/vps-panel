@@ -265,3 +265,61 @@ func TestReorderBoundariesRollbackAndSequentialRequests(t *testing.T) {
 	}
 	wantOrder(t, db, 1, Servers, false, 1, 2, 3)
 }
+
+func TestSetServerOrderPreservesHiddenAndArchivedAndRollsBack(t *testing.T) {
+	db, _ := orderTestDB(t)
+	defer db.Close()
+	store := NewStore(db)
+	if _, err := db.Exec(`UPDATE users SET role='admin' WHERE id=2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_server_order(user_id,server_id,position) VALUES (1,4,1),(1,5,2),(1,2,3)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, ids := range [][]int64{{1, 2}, {1, 2, 2}, {1, 2, 4}, {1, 2, 999}, {1, 2, 5}} {
+		if _, err := store.SetServerOrder(t.Context(), 1, ids, false); !errors.Is(err, ErrInvalidOrder) {
+			t.Fatalf("invalid order %v: %v", ids, err)
+		}
+	}
+	if _, err := store.SetServerOrder(t.Context(), 1, []int64{1, 3, 2}, true); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 1, Servers, false, 3, 1, 2)
+	if _, err := store.SetServerOrder(t.Context(), 1, []int64{1, 3, 2}, false); err != nil {
+		t.Fatal(err)
+	}
+	var hiddenPosition, archivedPosition int
+	if err := db.QueryRow(`SELECT position FROM user_server_order WHERE user_id=1 AND server_id=4`).Scan(&hiddenPosition); err != nil || hiddenPosition != 1 {
+		t.Fatal("hidden server position changed")
+	}
+	if err := db.QueryRow(`SELECT position FROM user_server_order WHERE user_id=1 AND server_id=5`).Scan(&archivedPosition); err != nil || archivedPosition != 2 {
+		t.Fatal("archived server position changed")
+	}
+	wantOrder(t, db, 1, Servers, false, 1, 3, 2)
+	wantOrder(t, db, 2, Servers, false, 4, 3, 1)
+	if _, err := store.SetServerOrder(t.Context(), 2, []int64{1, 4, 3}, false); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 2, Servers, false, 1, 4, 3)
+	wantOrder(t, db, 1, Servers, false, 1, 3, 2)
+	if _, err := db.Exec(`INSERT INTO server_access(server_id,user_id) VALUES (4,1)`); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 1, Servers, false, 4, 1, 3, 2)
+	wantOrder(t, db, 1, Servers, true, 5)
+	if err := store.Move(t.Context(), 1, Servers, false, 3, "up"); err != nil {
+		t.Fatal(err)
+	}
+	wantOrder(t, db, 1, Servers, false, 4, 3, 1, 2)
+	if _, err := db.Exec(`CREATE TRIGGER fail_bulk_order BEFORE INSERT ON user_server_order WHEN NEW.server_id = 2 BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetServerOrder(t.Context(), 1, []int64{4, 2, 1, 3}, false); err == nil {
+		t.Fatal("failed batch must roll back")
+	}
+	wantOrder(t, db, 1, Servers, false, 4, 3, 1, 2)
+	var changed int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers WHERE desired_state_version != 10 OR updated_at != created_at`).Scan(&changed); err != nil || changed != 0 {
+		t.Fatal("sorting changed business state")
+	}
+}

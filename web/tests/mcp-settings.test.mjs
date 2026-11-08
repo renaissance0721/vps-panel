@@ -110,7 +110,7 @@ test('读写令牌直接授权管理，保留历史审计并移除审批界面',
   try {
     const { bindings, html } = await mount(); await bindings.load()
     assert.equal(bindings.writeEnabled.value, true)
-    assert.match(html, /写操作工具/); assert.doesNotMatch(html, /变更审批/)
+    assert.match(html, /写操作工具/); assert.match(html, /set_server_order/); assert.doesNotMatch(html, /变更审批/)
     bindings.tokenScope.value = 'read_write'; bindings.name.value = 'writer'; await bindings.create()
     const created = JSON.parse(requests.find(item => item.url.endsWith('/tokens') && item.options.method === 'POST').options.body)
     assert.equal(created.scope, 'read_write'); assert.equal(created.capabilities, undefined)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,6 +23,85 @@ type writeFixture struct {
 	tokenID      int64
 	serverID     int64
 	hiddenID     int64
+}
+
+func TestMCPServerOrderPaginationPermissionsAndWebCompatibility(t *testing.T) {
+	f, cleanup := newWriteFixture(t)
+	defer cleanup()
+	second := createAccessTestServer(t, f.handler, f.cookie, "Second", "private", nil).Server.ID
+	archived := createAccessTestServer(t, f.handler, f.cookie, "Archived", "private", nil).Server.ID
+	if _, err := f.db.Exec(`UPDATE servers SET status='online', created_at=10 WHERE id IN (?,?)`, f.serverID, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE servers SET archived_at=1 WHERE id=?`, archived); err != nil {
+		t.Fatal(err)
+	}
+	var owner int64
+	if err := f.db.QueryRow(`SELECT owner_user_id FROM mcp_tokens WHERE id=?`, f.tokenID).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO user_server_order(user_id,server_id,position) VALUES (?, ?, 1), (?, ?, 2)`, owner, f.hiddenID, owner, archived); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err := f.db.QueryRow(`SELECT json_group_array(json_array(id,desired_state_version,updated_at)) FROM servers`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	read := phase1Session(t, f.handler, f.cookie)
+	readResult, err := read.CallTool(t.Context(), &mcp.CallToolParams{Name: "set_server_order", Arguments: map[string]any{"server_ids": []int64{f.serverID, second}}})
+	if err != nil || !readResult.IsError {
+		t.Fatal("read token reordered servers")
+	}
+	for _, ids := range [][]int64{{f.serverID}, {f.serverID, f.serverID}, {f.serverID, f.hiddenID}, {f.serverID, archived}, {f.serverID, 999999}} {
+		f.call(t, "set_server_order", map[string]any{"server_ids": ids}, false)
+	}
+	args := map[string]any{"server_ids": []int64{f.serverID, second}, "dry_run": true}
+	preview := f.call(t, "set_server_order", args, true)
+	if preview["saved"] != false || preview["dry_run"] != true {
+		t.Fatal("incorrect preview")
+	}
+	_, originalPage := phase1Call(t, f.session, "list_servers", map[string]any{"limit": 1})
+	if originalPage.Total != 2 || int64(originalPage.Items[0]["id"].(float64)) != second {
+		t.Fatal("preview modified order")
+	}
+	delete(args, "dry_run")
+	out := f.call(t, "set_server_order", args, true)
+	if out["saved"] != true || !reflect.DeepEqual(out["server_ids"], []any{float64(f.serverID), float64(second)}) {
+		t.Fatalf("unexpected saved order: %+v", out)
+	}
+	for offset, id := range []int64{f.serverID, second} {
+		_, page := phase1Call(t, f.session, "list_servers", map[string]any{"limit": 1, "offset": offset})
+		if page.Total != 2 || len(page.Items) != 1 || int64(page.Items[0]["id"].(float64)) != id {
+			t.Fatalf("page %d: %+v", offset, page)
+		}
+	}
+	_, filtered := phase1Call(t, f.session, "list_servers", map[string]any{"status": "online", "limit": 1, "offset": 1})
+	if filtered.Total != 2 || len(filtered.Items) != 1 || int64(filtered.Items[0]["id"].(float64)) != second {
+		t.Fatalf("filtered page: %+v", filtered)
+	}
+	var preserved int
+	if err := f.db.QueryRow(`SELECT COUNT(*) FROM user_server_order WHERE user_id=? AND server_id IN (?,?)`, owner, f.hiddenID, archived).Scan(&preserved); err != nil || preserved != 2 {
+		t.Fatal("hidden or archived preference lost")
+	}
+	response := performRequest(t, f.handler, "POST", "/api/servers/"+strconv.FormatInt(second, 10)+"/reorder", map[string]any{"direction": "up"}, f.cookie)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("web reorder: %d %s", response.Code, response.Body.String())
+	}
+	_, page := phase1Call(t, f.session, "list_servers", map[string]any{"limit": 1})
+	if int64(page.Items[0]["id"].(float64)) != second {
+		t.Fatal("MCP order did not follow web drag")
+	}
+	var after string
+	if err := f.db.QueryRow(`SELECT json_group_array(json_array(id,desired_state_version,updated_at)) FROM servers`).Scan(&after); err != nil || before != after {
+		t.Fatal("ordering changed server business state")
+	}
+	third := createAccessTestServer(t, f.handler, f.cookie, "Unordered New", "private", nil).Server.ID
+	for offset, id := range []int64{third, second, f.serverID} {
+		_, page := phase1Call(t, f.session, "list_servers", map[string]any{"limit": 1, "offset": offset})
+		if page.Total != 3 || len(page.Items) != 1 || int64(page.Items[0]["id"].(float64)) != id {
+			t.Fatalf("unordered server page %d: %+v", offset, page)
+		}
+	}
 }
 
 func newWriteFixture(t *testing.T) (*writeFixture, func()) {
@@ -142,6 +222,10 @@ func TestMCPDirectProxyRelayLifecycle(t *testing.T) {
 	clientID := int64(items[0].(map[string]any)["id"].(float64))
 	relay := f.call(t, "create_relay", map[string]any{"server_id": f.serverID, "name": "Test Relay", "listen_port": 9500, "target_type": "proxy", "target_proxy_id": proxyID, "target_client_id": clientID, "network": "tcp"}, true)
 	relayID := objectID(t, relay, "relay")
+	_, relayPage := phase1Call(t, f.session, "list_relays", map[string]any{})
+	if len(relayPage.Items) != 1 || int64(relayPage.Items[0]["server_id"].(float64)) != f.serverID || int64(relayPage.Items[0]["target_proxy_id"].(float64)) != proxyID {
+		t.Fatalf("relay relationship identifiers missing: %+v", relayPage)
+	}
 	f.call(t, "update_relay", map[string]any{"id": relayID, "changes": map[string]any{"name": "Relay Renamed"}}, true)
 	f.call(t, "set_relay_enabled", map[string]any{"id": relayID, "enabled": false}, true)
 	f.call(t, "delete_relay", map[string]any{"id": relayID, "expected_name": "wrong"}, false)

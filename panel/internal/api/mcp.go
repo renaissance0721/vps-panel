@@ -53,7 +53,7 @@ func (s *server) mcpServer(identity mcpIdentity, requestID string) *mcp.Server {
 			name := "unknown"
 			if call, ok := req.(*mcp.CallToolRequest); ok && call != nil && call.Params != nil {
 				switch call.Params.Name {
-				case "list_servers", "get_server_details", "get_server_metrics", "get_latency_history", "list_proxies", "list_relays", "check_relay_health", "list_subscriptions", "list_carpool_nodes", "get_panel_info", "create_server", "update_server", "create_proxy", "update_proxy", "set_proxy_enabled", "delete_proxy", "create_relay", "update_relay", "set_relay_enabled", "delete_relay", "list_proxy_clients":
+				case "list_servers", "get_server_details", "get_server_metrics", "get_latency_history", "list_proxies", "list_relays", "check_relay_health", "list_subscriptions", "list_carpool_nodes", "get_panel_info", "create_server", "update_server", "set_server_order", "create_proxy", "update_proxy", "set_proxy_enabled", "delete_proxy", "create_relay", "update_relay", "set_relay_enabled", "delete_relay", "list_proxy_clients":
 					name = call.Params.Name
 				}
 			}

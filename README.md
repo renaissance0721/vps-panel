@@ -130,9 +130,13 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有管理账号可见，私有仅对指定管理账号可见。
 `carpool` / `subscriber` 继续使用独立门户、Client 分配和订阅权限。
 
-## MCP 只读集成
+<a id="mcp-只读集成"></a>
 
-管理员可在「系统设置 → AI / MCP 集成」启用默认关闭的 MCP 服务，并创建或撤销只读令牌。令牌仅创建时显示一次；请妥善保存并通过 HTTPS 使用。令牌绑定创建者，访问范围仍受服务器权限限制，撤销或创建者不再是管理员后立即失效。订阅工具先列出当前管理员自己的个人订阅（`type: personal`），再列出管理员可管理的订阅用户摘要（`type: subscriber`），不返回订阅令牌或链接；`subscriber` 的 `id` 为用户 ID，其 `node_count` 为启用的套餐节点数。拼车节点通过单独的工具查询。
+## MCP 集成
+
+管理员可在「系统设置 → AI / MCP 集成」启用默认关闭的 MCP 服务，并创建或撤销令牌。现有只读令牌保持只读；新建的读写令牌需要明确授予 `server.rename` 能力，且写操作开关默认关闭。令牌仅创建时显示一次；请妥善保存并通过 HTTPS 使用。令牌绑定创建者，访问范围仍受服务器权限限制，撤销或创建者不再是管理员后立即失效。订阅工具先列出当前管理员自己的个人订阅（`type: personal`），再列出管理员可管理的订阅用户摘要（`type: subscriber`），不返回订阅令牌或链接；`subscriber` 的 `id` 为用户 ID，其 `node_count` 为启用的套餐节点数。拼车节点通过单独的工具查询。
+
+服务器重命名需要先通过 `prepare_change` 创建计划，再由令牌所属管理员在网页使用当前密码审批，最后由客户端调用 `apply_change`。可使用 `get_change_status` 查询结果；计划有效期为 10 分钟，批准后最多 5 分钟内执行。Panel 重启或从备份恢复后未执行的计划失效，需要重新准备和审批。服务器重命名仅修改面板元数据，不触发 Agent 同步。MCP 不提供其他写操作。
 
 在运行 Codex 的环境设置 `VPS_PANEL_MCP_TOKEN` 后，在管理页面复制并执行生成的 `codex mcp add` 命令。令牌应由运行 Codex 的进程环境提供，不要写入命令示例；可用 `codex mcp list` 检查配置。连接语法见 [OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 

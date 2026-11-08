@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 34
+const LatestSchemaVersion = 35
 
 type migration struct {
 	version            int
@@ -57,6 +57,64 @@ var migrations = []migration{
 	{version: 32, name: "carpool_node_assignments", up: createCarpoolNodeAssignments},
 	{version: 33, name: "server_country_override", up: addServerCountryOverride},
 	{version: 34, name: "mcp_access", up: createMCPAccess},
+	{version: 35, name: "mcp_change_plans", up: createMCPChangePlans},
+}
+
+func createMCPChangePlans(ctx context.Context, tx *sql.Tx) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('mcp_settings') WHERE name='write_enabled'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE mcp_settings ADD COLUMN write_enabled INTEGER NOT NULL DEFAULT 0 CHECK (write_enabled IN (0, 1))`); err != nil {
+			return err
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('mcp_tokens') WHERE name='access_scope'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE mcp_tokens ADD COLUMN access_scope TEXT NOT NULL DEFAULT 'read' CHECK(access_scope IN ('read','read_write'))`); err != nil {
+			return err
+		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS server_change_revisions (server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE, revision INTEGER NOT NULL DEFAULT 1)`,
+		`INSERT OR IGNORE INTO server_change_revisions(server_id,revision) SELECT id,1 FROM servers`,
+		`CREATE TRIGGER IF NOT EXISTS server_change_revision_create AFTER INSERT ON servers BEGIN INSERT INTO server_change_revisions(server_id,revision) VALUES(NEW.id,1); END`,
+		`CREATE TRIGGER IF NOT EXISTS server_change_revision AFTER UPDATE ON servers
+		 WHEN OLD.name IS NOT NEW.name OR OLD.visibility IS NOT NEW.visibility OR OLD.owner_user_id IS NOT NEW.owner_user_id
+		 OR OLD.bandwidth_mbps IS NOT NEW.bandwidth_mbps OR OLD.network_stack IS NOT NEW.network_stack
+		 OR OLD.country_override_code IS NOT NEW.country_override_code OR OLD.bound_domain_ipv4 IS NOT NEW.bound_domain_ipv4 OR OLD.bound_domain_ipv6 IS NOT NEW.bound_domain_ipv6
+		 OR OLD.outbound_preference IS NOT NEW.outbound_preference OR OLD.block_china_inbound IS NOT NEW.block_china_inbound
+		 OR OLD.archived_at IS NOT NEW.archived_at OR OLD.decommission_status IS NOT NEW.decommission_status
+		 OR OLD.expires_at IS NOT NEW.expires_at OR OLD.renewal_period_months IS NOT NEW.renewal_period_months
+		 OR OLD.auto_renew IS NOT NEW.auto_renew OR OLD.renewal_anchor_day IS NOT NEW.renewal_anchor_day
+		 OR OLD.monthly_traffic_limit_bytes IS NOT NEW.monthly_traffic_limit_bytes OR OLD.traffic_count_mode IS NOT NEW.traffic_count_mode
+		 OR OLD.traffic_reset_day IS NOT NEW.traffic_reset_day OR OLD.traffic_reset_time IS NOT NEW.traffic_reset_time BEGIN
+		 UPDATE server_change_revisions SET revision = revision + 1 WHERE server_id = NEW.id; END`,
+		`CREATE TRIGGER IF NOT EXISTS server_access_revision_add AFTER INSERT ON server_access BEGIN UPDATE server_change_revisions SET revision=revision+1 WHERE server_id=NEW.server_id; END`,
+		`CREATE TRIGGER IF NOT EXISTS server_access_revision_remove AFTER DELETE ON server_access BEGIN UPDATE server_change_revisions SET revision=revision+1 WHERE server_id=OLD.server_id; END`,
+		`CREATE TABLE IF NOT EXISTS mcp_token_capabilities (token_id INTEGER NOT NULL REFERENCES mcp_tokens(id),
+		 capability TEXT NOT NULL CHECK (capability = 'server.rename'), PRIMARY KEY(token_id, capability))`,
+		`CREATE TABLE IF NOT EXISTS mcp_change_plans (
+		 id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, token_id INTEGER NOT NULL REFERENCES mcp_tokens(id),
+		 owner_user_id INTEGER NOT NULL, request_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+		 server_id INTEGER NOT NULL, old_name TEXT NOT NULL, new_name TEXT NOT NULL, resource_revision INTEGER NOT NULL,
+		 plan_hash TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','committed','conflicted','expired','revoked')),
+		 created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, approved_at INTEGER, approval_expires_at INTEGER,
+		 approved_by INTEGER, approved_hash TEXT NOT NULL DEFAULT '', consumed_at INTEGER, UNIQUE(token_id, request_id))`,
+		`CREATE INDEX IF NOT EXISTS mcp_change_plans_owner ON mcp_change_plans(owner_user_id, status, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS mcp_change_events (id INTEGER PRIMARY KEY AUTOINCREMENT, plan_id TEXT NOT NULL REFERENCES mcp_change_plans(id),
+		 token_id INTEGER NOT NULL, actor_user_id INTEGER NOT NULL, event TEXT NOT NULL, created_at INTEGER NOT NULL,
+		 server_id INTEGER NOT NULL, plan_hash TEXT NOT NULL, request_id TEXT NOT NULL DEFAULT '')`,
+		`CREATE INDEX IF NOT EXISTS mcp_change_events_plan ON mcp_change_events(plan_id, id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create MCP change plans: %w", err)
+		}
+	}
+	return nil
 }
 
 func createMCPAccess(ctx context.Context, tx *sql.Tx) error {

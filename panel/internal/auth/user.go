@@ -157,6 +157,18 @@ func (s *Service) GetUser(ctx context.Context, id int64) (User, error) {
 	return user, nil
 }
 
+// VerifyPassword reauthenticates an existing user without creating a session.
+func (s *Service) VerifyPassword(ctx context.Context, id int64, password string) error {
+	var hash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, id).Scan(&hash); err != nil {
+		return ErrInvalidCredentials
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		return ErrInvalidCredentials
+	}
+	return nil
+}
+
 func (s *Service) RenameUser(ctx context.Context, id int64, currentPassword, username string) (User, error) {
 	username = strings.TrimSpace(username)
 	if !usernamePattern.MatchString(username) {

@@ -118,10 +118,13 @@ func TestMCPPhase1PaginationSubscriptionsAndReadOnly(t *testing.T) {
 		t.Fatalf("carpool page: %+v", page)
 	}
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 10 {
+	if err != nil || len(tools.Tools) != 13 {
 		t.Fatalf("tool count: %v", err)
 	}
 	for _, tool := range tools.Tools {
+		if tool.Name == "prepare_change" || tool.Name == "apply_change" {
+			continue
+		}
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 			t.Fatalf("tool %s is not marked read-only", tool.Name)
 		}

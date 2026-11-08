@@ -51,6 +51,7 @@ func TestServerNetworkMetadataMigrationPreservesData(t *testing.T) {
 		`UPDATE agents SET implementation = 'custom', api_version = 1, capabilities_json = '["outbound_preference","firewall.cn_block"]',
 		 applied_config_version = 7, config_sync_status = 'failed', config_sync_error = 'apply failed', config_synced_at = 123`,
 		`UPDATE sqlite_sequence SET seq = 100 WHERE name = 'servers'`,
+		`DROP TRIGGER IF EXISTS server_change_revision`,
 		`ALTER TABLE servers DROP COLUMN bandwidth_mbps`,
 		`ALTER TABLE servers DROP COLUMN network_stack`,
 		`ALTER TABLE server_system_info DROP COLUMN country_code`,

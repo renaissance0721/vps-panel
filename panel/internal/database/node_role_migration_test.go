@@ -56,6 +56,7 @@ func TestNodeRoleMigrationAndOldBackupPreserveBehavior(t *testing.T) {
 	}
 	// Reproduce v28: identical schema and migration history, with neither new column.
 	for _, statement := range []string{
+		`DROP TRIGGER IF EXISTS server_change_revision`,
 		`ALTER TABLE proxies DROP COLUMN node_role`,
 		`ALTER TABLE landing_nodes DROP COLUMN node_role`,
 		`ALTER TABLE servers DROP COLUMN bandwidth_mbps`,

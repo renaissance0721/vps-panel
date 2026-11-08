@@ -18,6 +18,11 @@ func (s *Service) CanAccess(ctx context.Context, userID, serverID int64) (bool, 
 	return canAccessServer(ctx, s.db, userID, serverID)
 }
 
+// CanAccessTx checks the same access policy within an existing transaction.
+func (s *Service) CanAccessTx(ctx context.Context, tx *sql.Tx, userID, serverID int64) (bool, error) {
+	return canAccessServer(ctx, tx, userID, serverID)
+}
+
 func (s *Service) UpdateAccess(
 	ctx context.Context,
 	serverID, currentUserID int64,

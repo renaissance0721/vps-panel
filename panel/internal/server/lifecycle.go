@@ -77,25 +77,40 @@ func (s *Service) UpdateNetworkMetadata(ctx context.Context, id int64, input Upd
 	return s.Get(ctx, id)
 }
 
-func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server, error) {
-	var err error
-	name, err = normalizeServerName(name)
+// NormalizeName applies the same validation to web and MCP rename requests.
+func NormalizeName(name string) (string, error) { return normalizeServerName(name) }
+
+// UpdateNameTx participates in the caller's transaction, without committing it.
+func (s *Service) UpdateNameTx(ctx context.Context, tx *sql.Tx, id int64, name string) error {
+	name, err := normalizeServerName(name)
 	if err != nil {
-		return Server{}, err
+		return err
 	}
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
-		name, s.now().UTC().Truncate(time.Second).Unix(), id,
-	)
+	result, err := tx.ExecContext(ctx, `UPDATE servers SET name = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL AND decommission_status = ''`, name, s.now().UTC().Truncate(time.Second).Unix(), id)
 	if err != nil {
-		return Server{}, fmt.Errorf("update server name: %w", err)
+		return fmt.Errorf("update server name: %w", err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return Server{}, fmt.Errorf("read updated server name count: %w", err)
+		return err
 	}
 	if count != 1 {
-		return Server{}, ErrNotFound
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Service) UpdateName(ctx context.Context, id int64, name string) (Server, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Server{}, err
+	}
+	defer tx.Rollback()
+	if err := s.UpdateNameTx(ctx, tx, id, name); err != nil {
+		return Server{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Server{}, err
 	}
 	return s.Get(ctx, id)
 }

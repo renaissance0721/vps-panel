@@ -19,7 +19,7 @@ func TestCountryOverrideMigrationPreservesServerAndGeoIP(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO server_system_info (server_id, hostname, os_name, os_version, kernel, arch, ipv4, ipv6, agent_version, country_code, country_ip, country_lookup_at, reported_at) VALUES (?, 'host', 'Linux', '', '', '', '[]', '[]', '', 'JP', '198.51.100.1', 42, 42)`, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range []string{`ALTER TABLE servers DROP COLUMN country_override_code`, `DELETE FROM schema_migrations WHERE version >= 33`} {
+	for _, statement := range []string{`DROP TRIGGER IF EXISTS server_change_revision`, `ALTER TABLE servers DROP COLUMN country_override_code`, `DELETE FROM schema_migrations WHERE version >= 33`} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}

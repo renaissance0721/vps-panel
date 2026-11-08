@@ -26,43 +26,52 @@ type mcpToken struct {
 	RevokedAt  *int64 `json:"revoked_at"`
 }
 
-func (s *server) mcpSettings(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) mcpSettings(w http.ResponseWriter, r *http.Request, user auth.User) {
 	if r.Method == http.MethodPatch {
 		var input struct {
-			Enabled *bool `json:"mcp_enabled"`
+			Enabled      *bool `json:"mcp_enabled"`
+			WriteEnabled *bool `json:"mcp_write_enabled"`
 		}
 		if !decodeJSON(w, r, &input) {
 			return
 		}
-		if input.Enabled == nil {
+		if input.Enabled == nil && input.WriteEnabled == nil {
 			writeError(w, 400, "缺少服务状态")
 			return
 		}
-		if _, err := s.db.ExecContext(r.Context(), `UPDATE mcp_settings SET enabled = ? WHERE id = 1`, *input.Enabled); err != nil {
+		if _, err := s.db.ExecContext(r.Context(), `UPDATE mcp_settings SET enabled = COALESCE(?, enabled), write_enabled = COALESCE(?, write_enabled) WHERE id = 1`, input.Enabled, input.WriteEnabled); err != nil {
 			writeInternalError(w, err)
 			return
 		}
+		if input.WriteEnabled != nil {
+			s.recordAudit(r, user, "mcp.write_settings", "mcp_settings", 0, "更新 MCP 写操作开关")
+		}
 	}
-	var enabled bool
-	if err := s.db.QueryRowContext(r.Context(), `SELECT enabled FROM mcp_settings WHERE id = 1`).Scan(&enabled); err != nil {
+	var enabled, writeEnabled bool
+	if err := s.db.QueryRowContext(r.Context(), `SELECT enabled,write_enabled FROM mcp_settings WHERE id = 1`).Scan(&enabled, &writeEnabled); err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"mcp_enabled": enabled})
+	writeJSON(w, 200, map[string]any{"mcp_enabled": enabled, "mcp_write_enabled": writeEnabled})
 }
 
 func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.User) {
 	if r.Method == http.MethodPost {
 		var in struct {
-			Name      string `json:"name"`
-			Scope     string `json:"scope"`
-			ExpiresAt string `json:"expires_at"`
+			Name         string   `json:"name"`
+			Scope        string   `json:"scope"`
+			Capabilities []string `json:"capabilities"`
+			ExpiresAt    string   `json:"expires_at"`
 		}
 		if !decodeJSON(w, r, &in) {
 			return
 		}
 		in.Name = strings.TrimSpace(in.Name)
-		if in.Name == "" || utf8.RuneCountInString(in.Name) > 100 || (in.Scope != "" && in.Scope != "read") {
+		if in.Scope == "" {
+			in.Scope = "read"
+		}
+		validCapability := len(in.Capabilities) == 1 && in.Capabilities[0] == "server.rename"
+		if in.Name == "" || utf8.RuneCountInString(in.Name) > 100 || !((in.Scope == "read" && len(in.Capabilities) == 0) || (in.Scope == "read_write" && validCapability)) {
 			writeError(w, 400, "令牌名称或权限无效")
 			return
 		}
@@ -84,7 +93,15 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 		token := "vpsmcp_" + base64.RawURLEncoding.EncodeToString(random[:])
 		hash := sha256.Sum256([]byte(token))
 		prefix := token[:15]
-		result, err := s.db.ExecContext(r.Context(), `INSERT INTO mcp_tokens(name,token_hash,token_prefix,owner_user_id,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?)`, in.Name, hash[:], prefix, user.ID, "read", now.Unix(), expiry.Unix())
+		tx, err := s.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		defer tx.Rollback()
+		// Preserve the legacy scope column for old tokens. The explicit access scope
+		// and the capability are both required for write access.
+		result, err := tx.ExecContext(r.Context(), `INSERT INTO mcp_tokens(name,token_hash,token_prefix,owner_user_id,scope,access_scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)`, in.Name, hash[:], prefix, user.ID, "read", in.Scope, now.Unix(), expiry.Unix())
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -94,10 +111,23 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 			writeInternalError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"token": token, "item": mcpToken{ID: id, Name: in.Name, Prefix: prefix, Scope: "read", CreatedAt: now.Unix(), ExpiresAt: expiry.Unix()}})
+		if in.Scope == "read_write" {
+			if _, err := tx.ExecContext(r.Context(), `INSERT INTO mcp_token_capabilities(token_id,capability) VALUES (?, 'server.rename')`, id); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if in.Scope == "read_write" {
+			s.recordAudit(r, user, "mcp.write_token.create", "mcp_token", id, "创建服务器重命名令牌")
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"token": token, "item": mcpToken{ID: id, Name: in.Name, Prefix: prefix, Scope: in.Scope, CreatedAt: now.Unix(), ExpiresAt: expiry.Unix()}})
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT id,name,token_prefix,scope,created_at,expires_at,last_used_at,revoked_at FROM mcp_tokens ORDER BY id DESC LIMIT 500`)
+	rows, err := s.db.QueryContext(r.Context(), `SELECT id,name,token_prefix,access_scope,created_at,expires_at,last_used_at,revoked_at FROM mcp_tokens ORDER BY id DESC LIMIT 500`)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -118,7 +148,7 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 	}
 	writeJSON(w, 200, map[string]any{"tokens": items})
 }
-func (s *server) revokeMCPToken(w http.ResponseWriter, r *http.Request, _ auth.User) {
+func (s *server) revokeMCPToken(w http.ResponseWriter, r *http.Request, user auth.User) {
 	id, ok := readPositiveID(w, r.PathValue("id"), "令牌 ID 无效")
 	if !ok {
 		return
@@ -137,6 +167,7 @@ func (s *server) revokeMCPToken(w http.ResponseWriter, r *http.Request, _ auth.U
 		writeError(w, 404, "令牌不存在")
 		return
 	}
+	s.recordAudit(r, user, "mcp.token.revoke", "mcp_token", id, "撤销 MCP 令牌")
 	writeNoContent(w)
 }
 

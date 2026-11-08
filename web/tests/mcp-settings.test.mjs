@@ -97,29 +97,23 @@ test('令牌只显示一次并可撤销；失败显示错误', async () => {
     await bindings.change(true); assert.equal(bindings.enabled.value, false); assert.equal(bindings.error.value, '请求失败')
   } finally { globalThis.fetch = original; if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator); else delete globalThis.navigator }
 })
-test('写令牌需明确选择重命名权限，审批需要密码并清除密码', async () => {
+test('读写令牌直接授权管理，保留历史审计并移除审批界面', async () => {
   const original = globalThis.fetch; const requests = []
-  const plan = { plan_id: 'plan-1', server_id: 9, old_name: '旧节点', new_name: '新节点', token_name: 'writer', status: 'pending', created_at: 1, expires_at: 9999999999 }
   globalThis.fetch = async (url, options = {}) => {
     requests.push({ url, options })
-    if (url.endsWith('/approve')) return new Response(JSON.stringify({ status: 'approved' }))
     if (url.endsWith('/tokens') && options.method === 'POST') return new Response(JSON.stringify({ token: 'secret' }), { status: 201 })
     if (url.endsWith('/settings')) return new Response(JSON.stringify({ mcp_enabled: true, mcp_write_enabled: true }))
     if (url.endsWith('/tokens')) return new Response(JSON.stringify({ tokens: [] }))
-    if (url.endsWith('/change-plans')) return new Response(JSON.stringify({ plans: [plan] }))
     if (url.endsWith('/change-events')) return new Response(JSON.stringify({ events: [] }))
     return new Response(JSON.stringify({ logs: [] }))
   }
   try {
-    const { bindings } = await mount(); await bindings.load()
+    const { bindings, html } = await mount(); await bindings.load()
     assert.equal(bindings.writeEnabled.value, true)
-    assert.equal(bindings.plans.value[0].old_name, '旧节点')
+    assert.match(html, /写操作工具/); assert.doesNotMatch(html, /变更审批/)
     bindings.tokenScope.value = 'read_write'; bindings.name.value = 'writer'; await bindings.create()
     const created = JSON.parse(requests.find(item => item.url.endsWith('/tokens') && item.options.method === 'POST').options.body)
-    assert.equal(created.scope, 'read_write'); assert.deepEqual(created.capabilities, ['server.rename'])
-    bindings.selectDecision(plan, 'approve'); bindings.approvalPassword.value = 'password-for-approval'; await bindings.submitDecision()
-    const approval = requests.find(item => item.url.endsWith('/approve'))
-    assert.deepEqual(JSON.parse(approval.options.body), { password: 'password-for-approval' })
-    assert.equal(bindings.approvalPassword.value, ''); assert.equal(bindings.selectedPlan.value, null)
+    assert.equal(created.scope, 'read_write'); assert.equal(created.capabilities, undefined)
+    assert.ok(!requests.some(item => item.url.includes('/change-plans')))
   } finally { globalThis.fetch = original }
 })

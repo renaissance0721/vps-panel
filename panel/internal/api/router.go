@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -48,8 +46,6 @@ type server struct {
 	mcpLimiter           *loginLimiter
 	mcpRequestLimiter    *loginLimiter
 	mcpConcurrent        chan struct{}
-	mcpApprovalLimiter   *loginLimiter
-	mcpInstanceID        string
 }
 
 type BackupConfig struct {
@@ -80,12 +76,6 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 }
 
 func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	var instanceBytes [32]byte
-	_, instanceErr := rand.Read(instanceBytes[:])
-	instanceID := ""
-	if instanceErr == nil {
-		instanceID = hex.EncodeToString(instanceBytes[:])
-	}
 	relays := relaystore.NewService(db)
 	keyPath := ""
 	if backupConfig.DataDir != "" {
@@ -113,8 +103,6 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		mcpLimiter:           newLoginLimiter(),
 		mcpRequestLimiter:    newLoginLimiter(),
 		mcpConcurrent:        make(chan struct{}, 16),
-		mcpApprovalLimiter:   newLoginLimiter(),
-		mcpInstanceID:        instanceID,
 	}
 	s.notifications = notification.NewService(db, s.servers, s.agents)
 	s.mcpRequestLimiter.pairLimit = 120
@@ -128,10 +116,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("POST /api/mcp/tokens", s.requireAdmin(s.mcpTokens))
 	mux.HandleFunc("DELETE /api/mcp/tokens/{id}", s.requireAdmin(s.revokeMCPToken))
 	mux.HandleFunc("GET /api/mcp/audit-logs", s.requireAdmin(s.mcpAuditLogs))
-	mux.HandleFunc("GET /api/mcp/change-plans", s.requireAdmin(s.mcpListPlans))
 	mux.HandleFunc("GET /api/mcp/change-events", s.requireAdmin(s.mcpChangeEvents))
-	mux.HandleFunc("POST /api/mcp/change-plans/{id}/approve", s.requireAdmin(s.mcpApprovePlan))
-	mux.HandleFunc("POST /api/mcp/change-plans/{id}/reject", s.requireAdmin(s.mcpRejectPlan))
 	mux.HandleFunc("GET /api/notifications/settings", s.requireAdmin(s.getNotificationSettings))
 	mux.HandleFunc("PUT /api/notifications/settings", s.requireAdmin(s.saveNotificationSettings))
 	mux.HandleFunc("POST /api/notifications/test", s.requireAdmin(s.testNotification))

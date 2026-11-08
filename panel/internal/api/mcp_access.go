@@ -70,8 +70,13 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 		if in.Scope == "" {
 			in.Scope = "read"
 		}
-		validCapability := len(in.Capabilities) == 1 && in.Capabilities[0] == "server.rename"
-		if in.Name == "" || utf8.RuneCountInString(in.Name) > 100 || !((in.Scope == "read" && len(in.Capabilities) == 0) || (in.Scope == "read_write" && validCapability)) {
+		// A legacy client may request only server.rename. Accepting that request as
+		// a general read_write token would silently grant broader authority.
+		if len(in.Capabilities) != 0 {
+			writeError(w, 400, "旧版细粒度权限已停用，请明确创建读写令牌")
+			return
+		}
+		if in.Name == "" || utf8.RuneCountInString(in.Name) > 100 || (in.Scope != "read" && in.Scope != "read_write") {
 			writeError(w, 400, "令牌名称或权限无效")
 			return
 		}
@@ -99,8 +104,7 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 			return
 		}
 		defer tx.Rollback()
-		// Preserve the legacy scope column for old tokens. The explicit access scope
-		// and the capability are both required for write access.
+		// Keep the legacy scope column unchanged; access_scope is authoritative.
 		result, err := tx.ExecContext(r.Context(), `INSERT INTO mcp_tokens(name,token_hash,token_prefix,owner_user_id,scope,access_scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)`, in.Name, hash[:], prefix, user.ID, "read", in.Scope, now.Unix(), expiry.Unix())
 		if err != nil {
 			writeInternalError(w, err)
@@ -111,18 +115,13 @@ func (s *server) mcpTokens(w http.ResponseWriter, r *http.Request, user auth.Use
 			writeInternalError(w, err)
 			return
 		}
-		if in.Scope == "read_write" {
-			if _, err := tx.ExecContext(r.Context(), `INSERT INTO mcp_token_capabilities(token_id,capability) VALUES (?, 'server.rename')`, id); err != nil {
-				writeInternalError(w, err)
-				return
-			}
-		}
+
 		if err := tx.Commit(); err != nil {
 			writeInternalError(w, err)
 			return
 		}
 		if in.Scope == "read_write" {
-			s.recordAudit(r, user, "mcp.write_token.create", "mcp_token", id, "创建服务器重命名令牌")
+			s.recordAudit(r, user, "mcp.write_token.create", "mcp_token", id, "创建 MCP 读写令牌")
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"token": token, "item": mcpToken{ID: id, Name: in.Name, Prefix: prefix, Scope: in.Scope, CreatedAt: now.Unix(), ExpiresAt: expiry.Unix()}})
 		return

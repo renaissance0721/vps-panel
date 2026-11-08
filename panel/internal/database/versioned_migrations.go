@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 35
+const LatestSchemaVersion = 36
 
 type migration struct {
 	version            int
@@ -58,6 +58,19 @@ var migrations = []migration{
 	{version: 33, name: "server_country_override", up: addServerCountryOverride},
 	{version: 34, name: "mcp_access", up: createMCPAccess},
 	{version: 35, name: "mcp_change_plans", up: createMCPChangePlans},
+	{version: 36, name: "retire_mcp_approvals", up: retireMCPApprovals},
+}
+
+// Older write tokens authorized only server.rename. Do not silently broaden
+// their authority when read_write becomes a general management scope.
+func retireMCPApprovals(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE mcp_change_plans SET status='revoked' WHERE status IN ('pending','approved')`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mcp_tokens SET access_scope='read' WHERE access_scope='read_write'`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func createMCPChangePlans(ctx context.Context, tx *sql.Tx) error {

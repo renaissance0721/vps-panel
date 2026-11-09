@@ -57,7 +57,7 @@ func (s *server) registerMCPProxyTools(ms *mcp.Server, identity mcpIdentity) {
 		}
 		out := []any{}
 		for _, c := range v.Clients {
-			out = append(out, map[string]any{"id": c.ID, "name": c.Name, "enabled": c.Enabled})
+			out = append(out, toClientSummaryResponse(c))
 		}
 		return nil, map[string]any{"items": out, "total": len(out)}, nil
 	})

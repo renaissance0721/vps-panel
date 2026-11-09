@@ -140,6 +140,8 @@ Server 的公开 / 私有访问范围仅用于 `admin` / `vip`：公开对所有
 
 当前工具覆盖服务器创建和部分设置、Proxy / Relay 创建修改启停删除，以及服务器监控、订阅和拼车摘要。服务器、代理、中转、外部节点、用户、个人订阅和订阅发布节点支持个人列表排序，排序工具需要完整的可见资源 ID，并支持 `dry_run`。服务器重命名也支持 `dry_run`；其他写工具尚不支持预览。Proxy / Relay 返回的 Agent 同步状态与 Panel 保存状态分开，网络连通性需另行验证。服务器创建不会通过 MCP 返回 Agent 注册令牌，请在 Panel 中生成安装命令。Codex 可使用项目内 [VPS Panel Skill](.agents/skills/vps-panel/SKILL.md) 辅助选择和组合工具。
 
+MCP 还支持代理客户端、外部节点、服务器访问权限与流量校准，以及 Agent 注册和升级。分享链接和 Agent 注册命令含敏感凭据，须由读写令牌显式请求；Agent 注册命令要求面板配置可信公网域名。配置保存、Agent 同步和升级完成属于不同状态，请查询状态确认。
+
 在运行 Codex 的环境设置 `VPS_PANEL_MCP_TOKEN` 后，在管理页面复制并执行生成的 `codex mcp add` 命令。令牌应由运行 Codex 的进程环境提供，不要写入命令示例；可用 `codex mcp list` 检查配置。连接语法见 [OpenAI MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)。
 
 工具读取 Panel 已保存的数据，不执行远程命令或主动网络探测。网速没有服务器端相邻样本时标记为不可用；中转健康检查只分析现有配置。最近的工具调用在管理页查看。原生部署通过本机反向代理转发时，须正确配置 `PANEL_DOMAIN`。

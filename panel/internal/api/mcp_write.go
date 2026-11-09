@@ -60,6 +60,11 @@ func (w *mcpResponseWriter) Write(p []byte) (int, error) {
 
 type mcpBusinessHandler func(http.ResponseWriter, *http.Request, auth.User)
 
+func (s *server) mcpAuditAction(ctx context.Context, identity mcpIdentity, action, kind string, id int64) {
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://localhost/internal", nil)
+	s.recordAudit(req, identity.user, action, kind, id, "通过 MCP 执行管理操作")
+}
+
 func (s *server) mcpInvoke(ctx context.Context, user auth.User, method string, id int64, body any, handler mcpBusinessHandler) (map[string]any, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -141,4 +146,7 @@ func (s *server) registerMCPWriteTools(ms *mcp.Server, identity mcpIdentity) {
 	s.registerMCPProxyTools(ms, identity)
 	s.registerMCPRelayWrites(ms, identity)
 	s.registerMCPOrders(ms, identity)
+	s.registerMCPP0ClientTools(ms, identity)
+	s.registerMCPP0LandingTools(ms, identity)
+	s.registerMCPP0ServerTools(ms, identity)
 }

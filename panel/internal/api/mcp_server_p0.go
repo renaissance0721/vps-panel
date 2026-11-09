@@ -47,13 +47,50 @@ func mcpRedactedAgentError(v string) string {
 	return ""
 }
 
+func mcpAgentDiagnostics(v serverstore.Server, panelVersion string) map[string]any {
+	metadata := agentcontrol.Metadata{Implementation: v.AgentImplementation, Version: v.AgentVersion, APIVersion: v.AgentAPIVersion, Capabilities: v.AgentCapabilities}
+	versionStatus := agentcontrol.AgentVersionStatusForMetadata(metadata, panelVersion)
+	issues := []string{}
+	if v.Status == serverstore.StatusOffline {
+		issues = append(issues, "agent_offline")
+	}
+	if v.AgentVersion != "" && !agentcontrol.CanSelfUpgrade(v.AgentImplementation, v.AgentAPIVersion, v.AgentCapabilities) {
+		issues = append(issues, "self_upgrade_unsupported")
+	}
+	if v.AgentImplementation != "" && v.AgentImplementation != agentcontrol.OfficialImplementation {
+		issues = append(issues, "self_upgrade_unsupported_implementation")
+	}
+	if v.AgentAPIVersion != 0 && v.AgentAPIVersion != agentcontrol.CurrentAPIVersion {
+		issues = append(issues, "incompatible_agent_api_version")
+	}
+	if versionStatus == agentcontrol.AgentVersionNewer {
+		issues = append(issues, "agent_newer_than_panel")
+	}
+	if v.AgentConfigSyncStatus == "pending" || (v.AgentVersion != "" && v.AgentAppliedConfigVersion < v.DesiredStateVersion && v.AgentConfigSyncStatus != "failed") {
+		issues = append(issues, "configuration_sync_pending")
+	}
+	if v.AgentConfigSyncStatus == "failed" {
+		issues = append(issues, "configuration_sync_failed")
+	}
+	if v.AgentUpgradeStatus == "upgrading" {
+		issues = append(issues, "upgrade_pending")
+	}
+	if v.AgentUpgradeStatus == "failed" {
+		issues = append(issues, "upgrade_failed")
+	}
+	if len(issues) == 0 && (v.AgentUpgradeError != "" || v.AgentConfigSyncError != "") {
+		issues = append(issues, "unknown_failure")
+	}
+	return map[string]any{"issues": issues, "version_status": versionStatus, "configuration_delivered": "unknown", "network_reachability": "unknown"}
+}
+
 func (s *server) registerMCPP0ServerTools(ms *mcp.Server, identity mcpIdentity) {
 	mcp.AddTool(ms, mcpDef("get_agent_status", "Get current Agent metadata, upgrade and configuration synchronization status."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpServerID) (*mcp.CallToolResult, any, error) {
 		v, err := s.mcpVisibleServer(ctx, identity.user, in.ServerID)
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, map[string]any{"server_id": v.ID, "status": v.Status, "implementation": v.AgentImplementation, "version": v.AgentVersion, "api_version": v.AgentAPIVersion, "capabilities": v.AgentCapabilities, "last_seen_at": v.LastSeenAt, "self_upgrade_supported": v.AgentVersion != "" && agentcontrol.CanSelfUpgrade(v.AgentImplementation, v.AgentAPIVersion, v.AgentCapabilities), "upgrade_target": v.AgentUpgradeTarget, "upgrade_status": v.AgentUpgradeStatus, "upgrade_error": mcpRedactedAgentError(v.AgentUpgradeError), "desired_version": v.DesiredStateVersion, "applied_version": v.AgentAppliedConfigVersion, "config_sync_status": v.AgentConfigSyncStatus, "config_sync_error": mcpRedactedAgentError(v.AgentConfigSyncError), "config_synced_at": v.AgentConfigSyncedAt}, nil
+		return nil, map[string]any{"server_id": v.ID, "status": v.Status, "implementation": v.AgentImplementation, "version": v.AgentVersion, "api_version": v.AgentAPIVersion, "capabilities": v.AgentCapabilities, "last_seen_at": v.LastSeenAt, "self_upgrade_supported": v.AgentVersion != "" && agentcontrol.CanSelfUpgrade(v.AgentImplementation, v.AgentAPIVersion, v.AgentCapabilities), "upgrade_target": v.AgentUpgradeTarget, "upgrade_status": v.AgentUpgradeStatus, "upgrade_error": mcpRedactedAgentError(v.AgentUpgradeError), "desired_version": v.DesiredStateVersion, "applied_version": v.AgentAppliedConfigVersion, "config_sync_status": v.AgentConfigSyncStatus, "config_sync_error": mcpRedactedAgentError(v.AgentConfigSyncError), "config_synced_at": v.AgentConfigSyncedAt, "diagnostics": mcpAgentDiagnostics(v, s.panelVersion)}, nil
 	})
 	mcp.AddTool(ms, mcpWriteDef("create_agent_enrollment", "Create sensitive one-time Agent enrollment command for one server using the configured public Panel domain.", true), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpServerID) (*mcp.CallToolResult, any, error) {
 		if err := s.requireMCPWrite(ctx, identity); err != nil {

@@ -378,3 +378,35 @@ func TestMCPP0TrafficWithoutAgentCountersIsUnavailable(t *testing.T) {
 		t.Fatal("synthetic adjustment was reported as a fresh Agent measurement")
 	}
 }
+
+func TestMCPAuthorizationStateAndSanitizedDiagnostics(t *testing.T) {
+	f, cleanup := newWriteFixture(t)
+	defer cleanup()
+	info := f.call(t, "get_panel_info", map[string]any{}, true)
+	if info["scope"] != "read_write" || info["token_scope"] != "read_write" || info["write_available"] != true {
+		t.Fatalf("writer state: %+v", info)
+	}
+	if r := performRequest(t, f.handler, "PATCH", "/api/mcp/settings", map[string]bool{"mcp_write_enabled": false}, f.cookie); r.Code != 200 {
+		t.Fatal("disable failed")
+	}
+	info = f.call(t, "get_panel_info", map[string]any{}, true)
+	if info["token_scope"] != "read_write" || info["write_available"] != false {
+		t.Fatal("disabled write state incorrect")
+	}
+	reader := phase1Session(t, f.handler, f.cookie)
+	result, err := reader.CallTool(t.Context(), &mcp.CallToolParams{Name: "get_panel_info", Arguments: map[string]any{}})
+	if err != nil || result.IsError || result.StructuredContent.(map[string]any)["token_scope"] != "read" {
+		t.Fatal("reader scope incorrect")
+	}
+	v := serverstore.Server{Status: serverstore.StatusOffline, AgentVersion: "v1.0.0", AgentImplementation: "third-party", AgentAPIVersion: 1, AgentConfigSyncStatus: "failed", AgentUpgradeStatus: "failed", AgentConfigSyncError: "secret-sync", AgentUpgradeError: "secret-upgrade"}
+	diag := mcpAgentDiagnostics(v, "v1.2.0")
+	raw, _ := json.Marshal(diag)
+	for _, want := range []string{"agent_offline", "self_upgrade_unsupported", "configuration_sync_failed", "upgrade_failed"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("missing diagnostic %s", want)
+		}
+	}
+	if strings.Contains(string(raw), "secret-") {
+		t.Fatal("diagnostics exposed raw error")
+	}
+}

@@ -10,8 +10,36 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate tests and builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test and build web
+        working-directory: web
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: panel/go.mod
+          cache-dependency-path: panel/go.sum
+      - name: Test, vet and build Go
+        working-directory: panel
+        run: |
+          go test ./...
+          go vet ./...
+          go build ./...
+
   build:
     name: Build linux-${{ matrix.arch }}
+    needs: validate
     runs-on: ubuntu-latest
     strategy:
       matrix:

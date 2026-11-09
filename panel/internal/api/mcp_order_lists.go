@@ -10,7 +10,8 @@ import (
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
-func (s *server) registerMCPOrderLists(ms *mcp.Server, user auth.User) {
+func (s *server) registerMCPOrderLists(ms *mcp.Server, identity mcpIdentity) {
+	user := identity.user
 	mcp.AddTool(ms, mcpDef("list_landings", "List accessible external landing metadata without connection credentials."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpPage) (*mcp.CallToolResult, any, error) {
 		values, err := s.landings.List(ctx, user.ID)
 		if err != nil {
@@ -69,6 +70,9 @@ func (s *server) registerMCPOrderLists(ms *mcp.Server, user auth.User) {
 		}
 		items := []map[string]any{}
 		for _, v := range values {
+			if _, err := s.mcpVisiblePublished(ctx, identity, v.ID); err != nil {
+				continue
+			}
 			items = append(items, map[string]any{"id": v.ID, "name": v.Name, "mode": v.Mode, "enabled": v.Enabled, "updated_at": v.UpdatedAt})
 		}
 		if err := s.mcpOrderItems(ctx, user, listorder.PublishedNodes, items); err != nil {

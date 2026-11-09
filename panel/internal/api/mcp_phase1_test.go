@@ -118,11 +118,11 @@ func TestMCPPhase1PaginationSubscriptionsAndReadOnly(t *testing.T) {
 		t.Fatalf("carpool page: %+v", page)
 	}
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 53 {
+	if err != nil || len(tools.Tools) != 94 {
 		t.Fatalf("tool count: %v", err)
 	}
 	for _, tool := range tools.Tools {
-		if strings.HasPrefix(tool.Name, "create_") || strings.HasPrefix(tool.Name, "update_") || strings.HasPrefix(tool.Name, "delete_") || strings.HasPrefix(tool.Name, "set_") || strings.HasPrefix(tool.Name, "reset_") || strings.HasPrefix(tool.Name, "assign_") || strings.HasPrefix(tool.Name, "upgrade_") || strings.HasPrefix(tool.Name, "clear_") {
+		if strings.HasPrefix(tool.Name, "create_") || strings.HasPrefix(tool.Name, "update_") || strings.HasPrefix(tool.Name, "delete_") || strings.HasPrefix(tool.Name, "set_") || strings.HasPrefix(tool.Name, "reset_") || strings.HasPrefix(tool.Name, "assign_") || strings.HasPrefix(tool.Name, "upgrade_") || strings.HasPrefix(tool.Name, "clear_") || strings.HasPrefix(tool.Name, "regenerate_") || tool.Name == "preview_subscription_user_mihomo" {
 			continue
 		}
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {

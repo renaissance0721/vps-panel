@@ -29,7 +29,8 @@ type mcpRelayHealthInput struct {
 	Offset  int   `json:"offset,omitempty"`
 }
 
-func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
+func (s *server) registerMCPTools(ms *mcp.Server, identity mcpIdentity) {
+	user := identity.user
 	mcp.AddTool(ms, mcpDef("list_carpool_nodes", "Summarize carpool assignments for administrators."), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpPage) (*mcp.CallToolResult, any, error) {
 		if user.Role != auth.RoleAdmin {
 			return nil, nil, errors.New("access denied")
@@ -289,6 +290,9 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 				return nil, nil, errors.New("subscription query failed")
 			}
 			for _, v := range subscribers {
+				if v.PlanID != nil && s.mcpVisiblePlan(ctx, identity, *v.PlanID) != nil {
+					continue
+				}
 				out = append(out, map[string]any{"id": v.UserID, "name": v.Username, "type": "subscriber", "enabled": v.ProfileEnabled, "node_count": v.EnabledNodeCount, "updated_at": v.UpdatedAt})
 			}
 		}
@@ -298,7 +302,12 @@ func (s *server) registerMCPTools(ms *mcp.Server, user auth.User) {
 		}
 		return nil, map[string]any{"items": out[a:b], "total": len(out)}, nil
 	})
-	mcp.AddTool(ms, mcpDef("get_panel_info", "Identify the Panel and current authorization."), func(_ context.Context, _ *mcp.CallToolRequest, _ mcpEmpty) (*mcp.CallToolResult, any, error) {
-		return nil, map[string]any{"panel_version": s.panelVersion, "scope": "read", "user": map[string]any{"id": user.ID, "username": user.Username, "role": user.Role}}, nil
+	mcp.AddTool(ms, mcpDef("get_panel_info", "Identify the Panel and current authorization."), func(ctx context.Context, _ *mcp.CallToolRequest, _ mcpEmpty) (*mcp.CallToolResult, any, error) {
+		var scope string
+		var enabled, writeEnabled bool
+		if err := s.db.QueryRowContext(ctx, `SELECT t.access_scope,m.enabled,m.write_enabled FROM mcp_tokens t JOIN mcp_settings m ON m.id=1 WHERE t.id=? AND t.owner_user_id=?`, identity.tokenID, user.ID).Scan(&scope, &enabled, &writeEnabled); err != nil {
+			return nil, nil, errors.New("authorization state unavailable")
+		}
+		return nil, map[string]any{"panel_version": s.panelVersion, "scope": scope, "token_scope": scope, "mcp_enabled": enabled, "mcp_write_enabled": writeEnabled, "write_available": enabled && writeEnabled && scope == "read_write" && user.Role == auth.RoleAdmin, "user": map[string]any{"id": user.ID, "username": user.Username, "role": user.Role}}, nil
 	})
 }

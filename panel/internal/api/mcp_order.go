@@ -54,6 +54,51 @@ func (s *server) mcpSetOrder(ctx context.Context, identity mcpIdentity, kind lis
 	return map[string]any{field: result, "dry_run": dryRun, "saved": !dryRun}, nil
 }
 
+// The web order contains all published nodes. Merge inaccessible entries in
+// their existing positions without returning them to the MCP caller.
+func (s *server) mcpSetPublishedOrder(ctx context.Context, identity mcpIdentity, ids []int64, dryRun bool) (any, error) {
+	if err := s.requireMCPWrite(ctx, identity); err != nil {
+		return nil, err
+	}
+	values, err := s.subscriptions.ListPublishedNodes(ctx)
+	if err != nil {
+		return nil, errors.New("order query failed")
+	}
+	all := make([]int64, 0, len(values))
+	visible := map[int64]bool{}
+	for _, v := range values {
+		all = append(all, v.ID)
+		if _, err := s.mcpVisiblePublished(ctx, identity, v.ID); err == nil {
+			visible[v.ID] = true
+		}
+	}
+	if len(ids) != len(visible) {
+		return nil, errors.New("IDs must contain each visible resource exactly once")
+	}
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if !visible[id] || seen[id] {
+			return nil, errors.New("IDs must contain each visible resource exactly once")
+		}
+		seen[id] = true
+	}
+	ordered, err := s.orders.Sort(ctx, identity.user.ID, listorder.PublishedNodes, all)
+	if err != nil {
+		return nil, errors.New("order query failed")
+	}
+	index := 0
+	for i, id := range ordered {
+		if visible[id] {
+			ordered[i] = ids[index]
+			index++
+		}
+	}
+	if _, err := s.mcpSetOrder(ctx, identity, listorder.PublishedNodes, "node_ids", ordered, dryRun); err != nil {
+		return nil, err
+	}
+	return map[string]any{"node_ids": ids, "dry_run": dryRun, "saved": !dryRun}, nil
+}
+
 func (s *server) registerMCPOrders(ms *mcp.Server, identity mcpIdentity) {
 	mcp.AddTool(ms, mcpWriteDef("set_proxy_order", "Set the complete visible proxy order for the current user; dry_run validates only.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpProxyOrder) (*mcp.CallToolResult, any, error) {
 		out, err := s.mcpSetOrder(ctx, identity, listorder.Proxies, "proxy_ids", in.ProxyIDs, in.DryRun)
@@ -76,7 +121,7 @@ func (s *server) registerMCPOrders(ms *mcp.Server, identity mcpIdentity) {
 		return nil, out, err
 	})
 	mcp.AddTool(ms, mcpWriteDef("set_published_node_order", "Set the complete administrator-visible subscription published node order; dry_run validates only.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in mcpPublishedNodeOrder) (*mcp.CallToolResult, any, error) {
-		out, err := s.mcpSetOrder(ctx, identity, listorder.PublishedNodes, "node_ids", in.NodeIDs, in.DryRun)
+		out, err := s.mcpSetPublishedOrder(ctx, identity, in.NodeIDs, in.DryRun)
 		return nil, out, err
 	})
 }

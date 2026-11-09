@@ -138,7 +138,8 @@ func (f *writeFixture) call(t *testing.T, name string, args map[string]any, succ
 		t.Fatalf("%s: %v", name, err)
 	}
 	if r.IsError == success {
-		t.Fatalf("%s error=%v content=%+v", name, r.IsError, r.Content)
+		raw, _ := json.Marshal(r.Content)
+		t.Fatalf("%s error=%v content=%s", name, r.IsError, raw)
 	}
 	if !success {
 		return nil

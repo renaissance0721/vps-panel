@@ -38,6 +38,7 @@ var (
 	writeAgentHeartbeat        = sendHeartbeat
 	writeAgentMetrics          = sendMetrics
 	newAgentMetrics            = newMetricsCollector
+	newAgentConfigSynchronizer = newConfigSynchronizer
 	collectAgentMetrics        = func(collector *metricsCollector) (metricsMessage, bool) {
 		return collector.collect()
 	}
@@ -357,7 +358,7 @@ func connectAgentWithPublicIPs(ctx context.Context, configPath string, detectIPv
 	if err != nil {
 		return err
 	}
-	configSync := newConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
+	configSync := newAgentConfigSynchronizer(value, &http.Client{Timeout: 10 * time.Second})
 	publicIPv4 := &publicIPState{detect: detectIPv4}
 	publicIPv6 := &publicIPState{detect: detectIPv6}
 	detectionContext, cancelDetection := context.WithTimeout(ctx, publicIPv4RequestTimeout)

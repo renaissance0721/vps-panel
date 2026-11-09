@@ -257,7 +257,20 @@ func TestDiagnosticShowsSpecificDesiredStateFetchError(t *testing.T) {
 	}
 }
 
+// Connection tests verify polling and result reporting, not host firewall or services.
+func isolateAgentConfigApplication(t *testing.T) {
+	t.Helper()
+	original := newAgentConfigSynchronizer
+	newAgentConfigSynchronizer = func(value config, client *http.Client) *configSynchronizer {
+		synchronizer := newConfigSynchronizer(value, client)
+		synchronizer.applyState = func(context.Context, desiredState) error { return nil }
+		return synchronizer
+	}
+	t.Cleanup(func() { newAgentConfigSynchronizer = original })
+}
+
 func TestConfigChangedFetchesCurrentDesiredStateAndPollsWithoutDuplicateResult(t *testing.T) {
+	isolateAgentConfigApplication(t)
 	originalHeartbeatInterval := agentHeartbeatInterval
 	originalMetricsInterval := agentMetricsInterval
 	originalConfigInterval := agentConfigPollInterval
@@ -364,6 +377,7 @@ func TestConfigChangedFetchesCurrentDesiredStateAndPollsWithoutDuplicateResult(t
 }
 
 func TestWebSocketUnavailableStillPerformsRESTConfigSync(t *testing.T) {
+	isolateAgentConfigApplication(t)
 	originalDial := dialAgentWebSocket
 	originalWait := waitAgentReconnect
 	t.Cleanup(func() {
@@ -412,6 +426,7 @@ func TestWebSocketUnavailableStillPerformsRESTConfigSync(t *testing.T) {
 }
 
 func TestAgentReconnectRechecksDesiredState(t *testing.T) {
+	isolateAgentConfigApplication(t)
 	originalHeartbeatInterval := agentHeartbeatInterval
 	originalMetricsInterval := agentMetricsInterval
 	originalWait := waitAgentReconnect

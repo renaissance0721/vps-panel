@@ -258,15 +258,18 @@ func TestDiagnosticShowsSpecificDesiredStateFetchError(t *testing.T) {
 }
 
 // Connection tests verify polling and result reporting, not host firewall or services.
-func isolateAgentConfigApplication(t *testing.T) {
+func isolateAgentConfigApplication(t *testing.T) <-chan *configSynchronizer {
 	t.Helper()
 	original := newAgentConfigSynchronizer
+	created := make(chan *configSynchronizer, 1)
 	newAgentConfigSynchronizer = func(value config, client *http.Client) *configSynchronizer {
 		synchronizer := newConfigSynchronizer(value, client)
 		synchronizer.applyState = func(context.Context, desiredState) error { return nil }
+		created <- synchronizer
 		return synchronizer
 	}
 	t.Cleanup(func() { newAgentConfigSynchronizer = original })
+	return created
 }
 
 func TestConfigChangedFetchesCurrentDesiredStateAndPollsWithoutDuplicateResult(t *testing.T) {
@@ -426,7 +429,7 @@ func TestWebSocketUnavailableStillPerformsRESTConfigSync(t *testing.T) {
 }
 
 func TestAgentReconnectRechecksDesiredState(t *testing.T) {
-	isolateAgentConfigApplication(t)
+	created := isolateAgentConfigApplication(t)
 	originalHeartbeatInterval := agentHeartbeatInterval
 	originalMetricsInterval := agentMetricsInterval
 	originalWait := waitAgentReconnect
@@ -442,6 +445,7 @@ func TestAgentReconnectRechecksDesiredState(t *testing.T) {
 	var getCount atomic.Int32
 	var connectionCount atomic.Int32
 	firstReported := make(chan struct{})
+	reportAcknowledged := make(chan struct{})
 	secondConnected := make(chan struct{})
 	results := make(chan configResult, 2)
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -469,7 +473,11 @@ func TestAgentReconnectRechecksDesiredState(t *testing.T) {
 				return
 			}
 			if connectionCount.Add(1) == 1 {
-				<-firstReported
+				select {
+				case <-reportAcknowledged:
+				case <-r.Context().Done():
+					return
+				}
 				_ = connection.Close(websocket.StatusNormalClosure, "reconnect test")
 				return
 			}
@@ -484,8 +492,24 @@ func TestAgentReconnectRechecksDesiredState(t *testing.T) {
 		PanelURL: panel.URL, ServerID: 51, AgentID: 52, AgentToken: "reconnect-config-secret",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- connectAgent(ctx, configPath) }()
+	synchronizer := <-created
+	select {
+	case <-firstReported:
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not report initial configuration")
+	}
+	// Closing the websocket cancels its in-flight HTTP report. Wait until the
+	// Agent has received the response before testing deduplication on reconnect.
+	synchronizer.mu.Lock()
+	version := synchronizer.lastSuccessfulVersion
+	synchronizer.mu.Unlock()
+	if version != 1 {
+		t.Fatal("Agent did not acknowledge initial configuration report")
+	}
+	close(reportAcknowledged)
 	select {
 	case <-secondConnected:
 	case <-time.After(time.Second):

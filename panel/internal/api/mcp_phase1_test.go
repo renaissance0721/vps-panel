@@ -118,7 +118,7 @@ func TestMCPPhase1PaginationSubscriptionsAndReadOnly(t *testing.T) {
 		t.Fatalf("carpool page: %+v", page)
 	}
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 94 {
+	if err != nil || len(tools.Tools) != 99 {
 		t.Fatalf("tool count: %v", err)
 	}
 	for _, tool := range tools.Tools {

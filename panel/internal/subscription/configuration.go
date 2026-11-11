@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -98,36 +99,8 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 	if err != nil {
 		return RoutingPreset{}, err
 	}
-	if input.Name != nil {
-		value.Name = *input.Name
-	}
-	if input.Enabled != nil {
-		if value.IsDefault && !*input.Enabled {
-			return RoutingPreset{}, ErrDefaultRoutingPreset
-		}
-		value.Enabled = *input.Enabled
-	}
-	if input.Groups != nil {
-		existingKeys := make(map[string]struct{}, len(value.Groups))
-		for _, group := range value.Groups {
-			existingKeys[group.Key] = struct{}{}
-		}
-		for _, group := range *input.Groups {
-			if group.Key != "" {
-				if _, exists := existingKeys[group.Key]; !exists {
-					return RoutingPreset{}, fmt.Errorf("策略组 Key %q 不能修改: %w", group.Key, ErrRoutingGroupKeyInvalid)
-				}
-			}
-		}
-		value.Groups = *input.Groups
-	}
-	if input.RuleProviders != nil {
-		value.RuleProviders = *input.RuleProviders
-	}
-	if input.Rules != nil {
-		value.Rules = *input.Rules
-	}
-	if err := normalizeRoutingPreset(&value); err != nil {
+	value, err = prepareRoutingPresetUpdate(value, input)
+	if err != nil {
 		return RoutingPreset{}, err
 	}
 	groups, _ := json.Marshal(value.Groups)
@@ -143,6 +116,50 @@ func (s *Service) UpdateRoutingPreset(ctx context.Context, id int64, input Updat
 		return RoutingPreset{}, fmt.Errorf("update subscription routing preset: %w", err)
 	}
 	return s.GetRoutingPreset(ctx, id)
+}
+
+func prepareRoutingPresetUpdate(value RoutingPreset, input UpdateRoutingPresetInput) (RoutingPreset, error) {
+	if input.Name != nil {
+		value.Name = *input.Name
+	}
+	if input.Enabled != nil {
+		if value.IsDefault && !*input.Enabled {
+			return RoutingPreset{}, ErrDefaultRoutingPreset
+		}
+		value.Enabled = *input.Enabled
+	}
+	if input.Groups != nil {
+		existingKeys := make(map[string]struct{}, len(value.Groups))
+		existingGroups := make(map[string]RoutingGroup, len(value.Groups))
+		for _, group := range value.Groups {
+			existingKeys[group.Key] = struct{}{}
+			existingGroups[group.Key] = group
+		}
+		groups := append([]RoutingGroup(nil), (*input.Groups)...)
+		for i, group := range groups {
+			if group.Key != "" {
+				if _, exists := existingKeys[group.Key]; !exists {
+					return RoutingPreset{}, fmt.Errorf("策略组 Key %q 不能修改: %w", group.Key, ErrRoutingGroupKeyInvalid)
+				}
+				// Existing clients that predate node_patterns omit it. An explicit
+				// empty array still clears the expressions.
+				if group.NodePatterns == nil {
+					groups[i].NodePatterns = existingGroups[group.Key].NodePatterns
+				}
+			}
+		}
+		value.Groups = groups
+	}
+	if input.RuleProviders != nil {
+		value.RuleProviders = *input.RuleProviders
+	}
+	if input.Rules != nil {
+		value.Rules = *input.Rules
+	}
+	if err := normalizeRoutingPreset(&value); err != nil {
+		return RoutingPreset{}, err
+	}
+	return value, nil
 }
 
 func (s *Service) DeleteRoutingPreset(ctx context.Context, id int64) error {
@@ -238,6 +255,17 @@ func normalizeRoutingConfiguration(groups []RoutingGroup, rules []string, provid
 			}
 		}
 		group.Proxies = proxies
+		if len(group.NodePatterns) > 16 {
+			return nil, nil, invalid
+		}
+		for _, pattern := range group.NodePatterns {
+			if pattern == "" || len(pattern) > 256 || strings.ContainsAny(pattern, "`\r\n") {
+				return nil, nil, invalid
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return nil, nil, fmt.Errorf("策略组 %q 的正则表达式无效: %w", group.Name, invalid)
+			}
+		}
 		normalizedGroups = append(normalizedGroups, group)
 		groupsByName[group.Name] = group
 	}

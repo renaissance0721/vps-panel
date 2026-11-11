@@ -266,11 +266,12 @@ type RoutingPreset struct {
 }
 
 type RoutingGroup struct {
-	Key        string   `json:"key"`
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	Proxies    []string `json:"proxies"`
-	IncludeAll bool     `json:"include_all,omitempty"`
+	Key          string   `json:"key"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Proxies      []string `json:"proxies"`
+	IncludeAll   bool     `json:"include_all,omitempty"`
+	NodePatterns []string `json:"node_patterns,omitempty"`
 }
 
 type RoutingBindings map[string][]int64

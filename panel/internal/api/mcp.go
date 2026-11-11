@@ -61,6 +61,8 @@ func (s *server) mcpServer(identity mcpIdentity, requestID string) *mcp.Server {
 					name = call.Params.Name
 				case "list_subscription_users", "get_subscription_user", "update_subscription_user", "reset_subscription_user_traffic", "regenerate_subscription_user_token", "preview_subscription_user_mihomo", "list_routing_presets", "get_routing_preset", "create_routing_preset", "update_routing_preset", "delete_routing_preset", "list_subscription_templates", "get_subscription_template", "create_subscription_template", "update_subscription_template", "delete_subscription_template", "get_builtin_mihomo_configuration", "get_builtin_shadowrocket_configuration", "get_effective_mihomo_configuration":
 					name = call.Params.Name
+				case "get_routing_ini", "validate_routing_ini", "preview_routing_ini", "create_routing_from_ini", "update_routing_from_ini":
+					name = call.Params.Name
 				}
 			}
 			start := time.Now()
@@ -86,6 +88,7 @@ func (s *server) mcpServer(identity mcpIdentity, requestID string) *mcp.Server {
 	s.registerMCPSubscriptionNodes(ms, identity)
 	s.registerMCPSubscriptionUsers(ms, identity)
 	s.registerMCPSubscriptionRouting(ms, identity)
+	s.registerMCPRoutingINI(ms, identity)
 	s.registerMCPSubscriptionTemplates(ms, identity)
 	s.registerMCPWriteTools(ms, identity)
 	return ms

@@ -8,11 +8,12 @@ import (
 )
 
 type mcpRoutingGroup struct {
-	Key        string   `json:"key,omitempty"`
-	Name       string   `json:"name"`
-	Type       string   `json:"type"`
-	Proxies    []string `json:"proxies"`
-	IncludeAll bool     `json:"include_all,omitempty"`
+	Key          string   `json:"key,omitempty"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Proxies      []string `json:"proxies"`
+	IncludeAll   bool     `json:"include_all,omitempty"`
+	NodePatterns []string `json:"node_patterns,omitempty"`
 }
 type mcpRoutingProvider struct {
 	Name     string `json:"name"`

@@ -9,6 +9,7 @@ export type RoutingGroup = {
   type: string
   proxies: string[]
   include_all?: boolean
+  node_patterns?: string[]
 }
 
 const props = withDefaults(defineProps<{ modelValue: RoutingGroup[]; rules?: string[]; readonly?: boolean }>(), {
@@ -26,7 +27,7 @@ const draggedGroupIndex = ref<number | null>(null)
 const groupDropTargetIndex = ref<number | null>(null)
 
 function cloneGroups() {
-  return props.modelValue.map((group) => ({ ...group, proxies: [...group.proxies] }))
+  return props.modelValue.map((group) => ({ ...group, proxies: [...group.proxies], ...(group.node_patterns ? { node_patterns: [...group.node_patterns] } : {}) }))
 }
 
 function update(mutator: (values: RoutingGroup[]) => void) {
@@ -88,6 +89,9 @@ function setName(index: number, name: string) {
 
 function setIncludeAll(index: number, value: boolean) {
   update((values) => { values[index].include_all = value })
+}
+function setNodePatterns(index: number, value: string) {
+  update((values) => { values[index].node_patterns = value.split('\n').map(line => line.trim()).filter(Boolean) })
 }
 
 function addProxy(index: number, value: string) {
@@ -167,6 +171,7 @@ onUnmounted(() => { if (draggedGroupIndex.value !== null) endGroupDrag() })
         <n-button v-if="!readonly" size="tiny" type="error" secondary @click="removeGroup(groupIndex)">删除</n-button>
       </div>
       <div v-if="!readonly" class="switch-row"><span>包含订阅全部节点</span><n-switch :value="Boolean(group.include_all)" @update:value="setIncludeAll(groupIndex, $event)" /></div>
+      <label v-if="!readonly || group.node_patterns?.length"><span>节点名称正则（每行一条，区分大小写）</span><textarea class="settings-input" rows="2" :readonly="readonly" :value="(group.node_patterns ?? []).join('\n')" @change="setNodePatterns(groupIndex, ($event.target as HTMLTextAreaElement).value)"></textarea></label>
       <div class="routing-member-list">
         <div v-for="(proxy, proxyIndex) in group.proxies" :key="proxyIndex" class="routing-member-row">
           <span v-if="readonly">{{ proxy }}</span>

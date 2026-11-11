@@ -24,7 +24,7 @@ export type RoutingPreset = {
 export type CreateRoutingPresetPayload = Pick<RoutingPreset, 'name' | 'enabled' | 'groups' | 'rule_providers' | 'rules'>
 
 export function cloneRoutingGroups(values: RoutingGroup[]) {
-  return values.map((group) => ({ ...group, proxies: [...group.proxies] }))
+  return values.map((group) => ({ ...group, proxies: [...group.proxies], ...(group.node_patterns ? { node_patterns: [...group.node_patterns] } : {}) }))
 }
 
 export function cloneRoutingProviders(values: RoutingRuleProvider[]) {

@@ -197,6 +197,18 @@ const routingGroups = ref<RoutingGroup[]>([])
 const routingProviders = ref<RoutingRuleProvider[]>([])
 const routingRulesText = ref('')
 const routingFormError = ref('')
+type RoutingINIDiagnostic = { line: number; directive: string; message: string; suggestion?: string }
+type RoutingINIPreview = { result: { diagnostics: RoutingINIDiagnostic[]; warnings: RoutingINIDiagnostic[] }; revision?: string; rendering?: { mihomo: string; shadowrocket: string }; changes: { groups_added: string[]; groups_removed: string[]; groups_changed: string[]; providers_added: string[]; providers_removed: string[]; providers_changed: string[]; rules_added: string[]; rules_removed: string[]; retained_group_keys: Record<string, string>; removed_group_keys: Record<string, string>; rules_before: string[]; rules_after: string[]; invalid_binding_groups: string[] } }
+const routingEditorMode = ref<'visual' | 'ini'>('visual')
+const routingINI = ref('')
+const routingINIOriginal = ref('')
+const routingINIRevision = ref('')
+const routingINIPersonalID = ref<number | null>(null)
+const routingINISubscriberID = ref<number | null>(null)
+const routingINILoaded = ref(false)
+const routingINIPreview = ref<RoutingINIPreview | null>(null)
+const routingINIPreviewSource = ref('')
+const routingVisualOriginal = ref('')
 const routingGroupsExpanded = ref(true)
 const routingProvidersExpanded = ref(true)
 const routingRulesExpanded = ref(true)
@@ -1132,6 +1144,7 @@ function openCreateRoutingPreset() {
   routingProviders.value = []
   routingRulesText.value = ''
   routingFormError.value = ''
+  resetRoutingINI()
   routingGroupsExpanded.value = true
   routingProvidersExpanded.value = true
   routingRulesExpanded.value = true
@@ -1146,13 +1159,88 @@ function openEditRoutingPreset(value: RoutingPreset) {
   routingProviders.value = cloneRoutingProviders(value.rule_providers)
   routingRulesText.value = value.rules.join('\n')
   routingFormError.value = ''
+  resetRoutingINI()
   routingGroupsExpanded.value = true
   routingProvidersExpanded.value = true
   routingRulesExpanded.value = true
   routingModalOpen.value = true
 }
 
+function routingVisualSnapshot() {
+  return JSON.stringify([routingName.value, routingEnabled.value, routingGroups.value, routingProviders.value, routingRulesText.value])
+}
+function resetRoutingINI() {
+  routingEditorMode.value = 'visual'
+  routingINI.value = '[custom]\n'
+  routingINIOriginal.value = routingINI.value
+  routingINIRevision.value = ''
+  routingINIPersonalID.value = null
+  routingINISubscriberID.value = null
+  routingINILoaded.value = false
+  routingINIPreview.value = null
+  routingINIPreviewSource.value = ''
+  routingVisualOriginal.value = routingVisualSnapshot()
+}
+function closeRoutingEditor() {
+  if ((routingVisualSnapshot() !== routingVisualOriginal.value || routingINI.value !== routingINIOriginal.value) && !window.confirm('存在未保存的分流方案修改，确定关闭吗？')) return
+  routingModalOpen.value = false
+}
+async function switchRoutingEditor(mode: 'visual' | 'ini') {
+  if (mode === routingEditorMode.value) return
+  const dirty = routingEditorMode.value === 'visual' ? routingVisualSnapshot() !== routingVisualOriginal.value : routingINI.value !== routingINIOriginal.value
+  if (dirty && !window.confirm('当前编辑模式有未保存的修改。切换后草稿会保留，但保存只应用当前模式的内容。继续吗？')) return
+  routingFormError.value = ''
+  if (mode === 'ini' && !routingINILoaded.value) {
+    try {
+      if (editingRoutingPreset.value) {
+        const value = await api<{ source: string; revision: string }>(`/api/admin/subscription/routing-presets/${editingRoutingPreset.value.id}/ini`)
+        routingINI.value = value.source
+        routingINIOriginal.value = value.source
+        routingINIRevision.value = value.revision
+      }
+      routingINILoaded.value = true
+    } catch (reason) { routingFormError.value = reason instanceof Error ? reason.message : '读取 INI 失败'; return }
+  }
+  routingEditorMode.value = mode
+}
+async function importRoutingINI(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (file.size > 10 * 1024) { routingFormError.value = 'INI 文件不能超过 10 KiB'; input.value = ''; return }
+  try {
+    routingINI.value = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer())
+    routingINIPreview.value = null
+    routingFormError.value = ''
+  } catch { routingFormError.value = '文件不是有效的 UTF-8 文本' }
+  input.value = ''
+}
+function exportRoutingINI() {
+  const url = URL.createObjectURL(new Blob([routingINI.value], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a'); link.href = url; link.download = 'routing.ini'; link.click(); URL.revokeObjectURL(url)
+}
+async function previewRoutingINI() {
+  routingFormError.value = ''
+  try {
+    const result = await api<RoutingINIPreview>('/api/admin/subscription/routing-ini/preview', { method: 'POST', body: JSON.stringify({ source: routingINI.value, preset_id: editingRoutingPreset.value?.id, personal_subscription_id: routingINIPersonalID.value ?? undefined, subscriber_user_id: routingINISubscriberID.value ?? undefined }) })
+    routingINIPreview.value = result
+    routingINIPreviewSource.value = routingINI.value
+  } catch (reason) { routingFormError.value = reason instanceof Error ? reason.message : '验证失败' }
+}
+async function saveRoutingINI() {
+  if (!routingName.value.trim()) { routingFormError.value = '名称不能为空'; return }
+  if (!routingINIPreview.value || routingINIPreviewSource.value !== routingINI.value || routingINIPreview.value.result.diagnostics.length || routingINIPreview.value.changes.invalid_binding_groups.length) { routingFormError.value = '请先验证并处理错误和绑定冲突'; return }
+  if (editingRoutingPreset.value && routingINIPreview.value.revision !== routingINIRevision.value) { routingFormError.value = '方案已更改，请重新打开编辑器'; return }
+  try {
+    const id = editingRoutingPreset.value?.id
+    await api(id ? `/api/admin/subscription/routing-presets/${id}/ini` : '/api/admin/subscription/routing-ini', { method: id ? 'PUT' : 'POST', body: JSON.stringify(id ? { source: routingINI.value, revision: routingINIRevision.value } : { source: routingINI.value, name: routingName.value.trim(), enabled: routingEnabled.value }) })
+    routingModalOpen.value = false
+    await loadAll()
+  } catch (reason) { routingFormError.value = reason instanceof Error ? reason.message : '保存失败' }
+}
+
 async function saveRoutingPreset() {
+  if (routingEditorMode.value === 'ini') { await saveRoutingINI(); return }
   routingFormError.value = ''
   const rules = routingLines(routingRulesText.value)
   if (!routingName.value.trim() || routingGroups.value.length === 0) {
@@ -1672,10 +1760,30 @@ onUnmounted(() => {
     <div class="modal-actions"><n-button @click="templatePreviewOpen = false">关闭</n-button></div>
   </n-card></n-modal>
 
-  <n-modal v-model:show="routingModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingRoutingPreset ? '编辑分流方案' : '新增分流方案'" closable @close="routingModalOpen = false"><form class="auth-form" @submit.prevent="saveRoutingPreset">
+  <n-modal v-model:show="routingModalOpen" :mask-closable="false" :close-on-esc="false"><n-card class="client-form-card subscription-form-card" :title="editingRoutingPreset ? '编辑分流方案' : '新增分流方案'" closable @close="closeRoutingEditor"><form class="auth-form" @submit.prevent="saveRoutingPreset">
     <n-alert v-if="routingFormError" type="error" closable @close="routingFormError = ''">{{ routingFormError }}</n-alert>
-    <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" /></label>
-    <div class="switch-row"><span>启用方案</span><n-switch v-model:value="routingEnabled" :disabled="Boolean(editingRoutingPreset?.is_default)" /></div>
+    <label><span>名称</span><n-input v-model:value="routingName" maxlength="100" :disabled="routingEditorMode === 'ini' && Boolean(editingRoutingPreset)" /></label>
+    <div class="switch-row"><span>启用方案</span><n-switch v-model:value="routingEnabled" :disabled="Boolean(editingRoutingPreset?.is_default) || (routingEditorMode === 'ini' && Boolean(editingRoutingPreset))" /></div>
+    <div class="modal-actions"><n-button attr-type="button" :type="routingEditorMode === 'visual' ? 'primary' : 'default'" @click="switchRoutingEditor('visual')">可视编辑</n-button><n-button attr-type="button" :type="routingEditorMode === 'ini' ? 'primary' : 'default'" @click="switchRoutingEditor('ini')">INI 编辑</n-button></div>
+    <template v-if="routingEditorMode === 'ini'">
+      <p class="form-help">支持的 INI 子集不等同于完整的订阅转换配置。远程规则源须明确声明格式；保存前请验证并预览。</p>
+      <n-input v-model:value="routingINI" type="textarea" class="routing-ini-editor" :autosize="{ minRows: 12, maxRows: 24 }" @update:value="routingINIPreview = null" />
+      <label><span>使用个人订阅验证实际渲染（可选）</span><select v-model="routingINIPersonalID" class="settings-input" @change="routingINISubscriberID = null; routingINIPreview = null"><option :value="null">不选择</option><option v-for="item in personalSubscriptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+      <label v-if="props.role === 'admin'"><span>或使用共享订阅用户验证当前配置</span><select v-model="routingINISubscriberID" class="settings-input" @change="routingINIPersonalID = null; routingINIPreview = null"><option :value="null">不选择</option><option v-for="item in users" :key="item.user_id" :value="item.user_id">{{ item.username }}</option></select></label>
+      <div class="modal-actions"><label>导入 .ini <input type="file" accept=".ini,text/plain" @change="importRoutingINI" /></label><n-button attr-type="button" @click="exportRoutingINI">导出 .ini</n-button><n-button attr-type="button" @click="previewRoutingINI">验证并预览</n-button></div>
+      <template v-if="routingINIPreview">
+        <n-alert v-for="(item, index) in routingINIPreview.result.diagnostics" :key="`error-${index}`" type="error">第 {{ item.line }} 行 · {{ item.directive }}：{{ item.message }} {{ item.suggestion }}</n-alert>
+        <n-alert v-for="(item, index) in routingINIPreview.result.warnings" :key="`warning-${index}`" type="warning">{{ item.message }} {{ item.suggestion }}</n-alert>
+        <n-alert v-if="routingINIPreview.changes.invalid_binding_groups.length" type="error">这些策略组仍有节点绑定：{{ routingINIPreview.changes.invalid_binding_groups.join('、') }}</n-alert>
+        <div v-if="routingINIPreview.rendering" class="form-help">实际渲染：Mihomo {{ routingINIPreview.rendering.mihomo }}；Shadowrocket {{ routingINIPreview.rendering.shadowrocket }}。渲染成功不代表网络连通。</div>
+        <div class="form-help">新增组：{{ routingINIPreview.changes.groups_added.join('、') || '无' }}；删除组：{{ routingINIPreview.changes.groups_removed.join('、') || '无' }}；修改组：{{ routingINIPreview.changes.groups_changed.join('、') || '无' }}</div>
+        <div class="form-help">新增规则源：{{ routingINIPreview.changes.providers_added.join('、') || '无' }}；删除规则源：{{ routingINIPreview.changes.providers_removed.join('、') || '无' }}；修改规则源：{{ routingINIPreview.changes.providers_changed.join('、') || '无' }}</div>
+        <div class="form-help">新增规则：{{ routingINIPreview.changes.rules_added.join('；') || '无' }}<br />删除规则：{{ routingINIPreview.changes.rules_removed.join('；') || '无' }}</div>
+        <div class="form-help">保留的策略组 Key：{{ Object.entries(routingINIPreview.changes.retained_group_keys).map(([name, key]) => `${name}: ${key}`).join('；') || '无' }}<br />移除的 Key：{{ Object.entries(routingINIPreview.changes.removed_group_keys).map(([name, key]) => `${name}: ${key}`).join('；') || '无' }}</div>
+        <div class="form-help">原规则：{{ routingINIPreview.changes.rules_before.join('；') || '无' }}<br />新规则：{{ routingINIPreview.changes.rules_after.join('；') || '无' }}</div>
+      </template>
+    </template>
+    <template v-else>
     <section class="routing-config-section">
       <div class="collapsible-section-header"><strong>策略组</strong><n-button size="tiny" secondary attr-type="button" :aria-expanded="routingGroupsExpanded" @click="routingGroupsExpanded = !routingGroupsExpanded">{{ routingGroupsExpanded ? '收起' : '展开' }}</n-button></div>
       <div v-if="routingGroupsExpanded" class="routing-config-scroll routing-config-scroll-groups">
@@ -1706,7 +1814,8 @@ onUnmounted(() => {
         <label><span>Rules（一行一条逻辑规则）</span><n-input v-model:value="routingRulesText" type="textarea" placeholder="RULE-SET,Lan,DIRECT&#10;RULE-SET,OpenAI,🤖 AI&#10;RULE-SET,ChinaDomain,DIRECT&#10;GEOIP,CN,DIRECT&#10;MATCH,🚀 默认代理" :autosize="{ minRows: 6, maxRows: 16 }" /></label>
       </div>
     </section>
-    <div class="modal-actions subscription-form-actions"><n-button @click="routingModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
+    </template>
+    <div class="modal-actions subscription-form-actions"><n-button attr-type="button" @click="closeRoutingEditor">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
   <n-modal v-model:show="templateModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingTemplate ? '编辑客户端模板' : '新增客户端模板'" closable @close="templateModalOpen = false"><form class="auth-form" @submit.prevent="saveTemplate">
@@ -2050,6 +2159,10 @@ onUnmounted(() => {
 
 .routing-preset-summary {
   min-width: 0;
+}
+
+.routing-ini-editor :deep(textarea) {
+  font-family: ui-monospace, Consolas, monospace;
 }
 
 .routing-preset-actions {

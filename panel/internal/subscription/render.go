@@ -3,6 +3,7 @@ package subscription
 import (
 	"encoding/base64"
 	"fmt"
+	"regexp"
 	"strings"
 
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
@@ -102,7 +103,7 @@ func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeName
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
-	resolvedGroups, err := resolveRoutingGroups(routing.Groups, routingBindings, nodeNames, proxyNames)
+	resolvedGroups, err := resolveRoutingGroups(routing.Groups, routingBindings, nodeNames, proxyNames, proxyNames)
 	if err != nil {
 		return nil, err
 	}
@@ -214,12 +215,31 @@ func encodeYAMLValue(value any) (*yaml.Node, error) {
 }
 
 func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
-	allNames []string,
+	allNames, matchNames []string,
 ) ([]resolvedRoutingGroup, error) {
 	values := make([]resolvedRoutingGroup, 0, len(groups))
 	for _, group := range groups {
 		members := make([]string, 0, len(group.Proxies)+len(bindings[group.Key])+len(allNames))
 		members = append(members, group.Proxies...)
+		patterns := make([]*regexp.Regexp, 0, len(group.NodePatterns))
+		for _, pattern := range group.NodePatterns {
+			expression, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, ErrInvalidRoutingPreset
+			}
+			patterns = append(patterns, expression)
+		}
+		for i, name := range matchNames {
+			if i >= len(allNames) {
+				break
+			}
+			for _, expression := range patterns {
+				if expression.MatchString(name) {
+					members = append(members, allNames[i])
+					break
+				}
+			}
+		}
 		for _, nodeID := range bindings[group.Key] {
 			if name, exists := names[nodeID]; exists {
 				members = append(members, name)

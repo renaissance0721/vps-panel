@@ -76,6 +76,10 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 		}
 		names[group.Name] = true
 	}
+	matchNames := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		matchNames = append(matchNames, node.Name)
+	}
 	nodes, nodeNames, err = shadowrocketNodeNames(nodes, nodeNames, names)
 	if err != nil {
 		return nil, err
@@ -94,7 +98,7 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 		allNames = append(allNames, node.Name)
 		proxyLines = append(proxyLines, line)
 	}
-	groups, err := resolveRoutingGroups(routing.Groups, bindings, nodeNames, allNames)
+	groups, err := resolveRoutingGroups(routing.Groups, bindings, nodeNames, allNames, matchNames)
 	if err != nil {
 		return nil, err
 	}

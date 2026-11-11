@@ -45,6 +45,17 @@ func (s *Service) GenerateSubscriptionDataForUser(ctx context.Context, userID in
 	if err != nil {
 		return SubscriptionData{}, nil, err
 	}
+	return s.subscriptionDataForUser(ctx, userID, mutations)
+}
+
+// PreviewSubscriptionDataForUser reads the current saved client state without
+// reconciling subscribers or notifying Agents. A later reconciliation may change it.
+func (s *Service) PreviewSubscriptionDataForUser(ctx context.Context, userID int64) (SubscriptionData, error) {
+	data, _, err := s.subscriptionDataForUser(ctx, userID, nil)
+	return data, err
+}
+
+func (s *Service) subscriptionDataForUser(ctx context.Context, userID int64, mutations []proxystore.Mutation) (SubscriptionData, []proxystore.Mutation, error) {
 	subscriber, err := s.GetSubscriber(ctx, userID)
 	if err != nil {
 		return SubscriptionData{}, nil, err

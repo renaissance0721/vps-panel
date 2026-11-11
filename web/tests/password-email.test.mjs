@@ -12,7 +12,7 @@ const originalWindow = globalThis.window
 const originalFetch = globalThis.fetch
 const anonymous = { requires_initialization: false, authenticated: false }
 before(async () => {
-  globalThis.window = { location: { pathname: '/', search: '', origin: 'https://panel.example.com' }, history: { replaceState() {} } }
+  globalThis.window = { location: { pathname: '/', search: '', hash: '', origin: 'https://panel.example.com' }, history: { replaceState() {} }, addEventListener() {}, removeEventListener() {} }
   loader = await createServer({
     configFile: false, root: fileURLToPath(new URL('..', import.meta.url)), plugins: [vue()],
     resolve: { alias: { 'naive-ui': fileURLToPath(new URL('./helpers/ui-stubs.mjs', import.meta.url)) } },
@@ -60,6 +60,33 @@ test('实际登录提交兼容 username 字段，用户名与邮箱均可输入'
     assert.deepEqual(requests[0], ['/api/auth/login', { username: identifier, password: 'current-password' }])
     assert.equal(bindings.password.value, '')
   }
+})
+
+test('实际登录按角色恢复目标路由，退出后清除路由', async () => {
+  const previousWindow = globalThis.window
+  const location = new URL('https://panel.example.com/#/subscriptions?tab=nodes')
+  globalThis.window = {
+    location,
+    history: { state: null, replaceState(_state, _title, url) { location.href = new URL(url, location).href } },
+    addEventListener() {}, removeEventListener() {}, setInterval() { return 1 }, clearInterval() {},
+  }
+  globalThis.fetch = async (url) => {
+    if (url === '/api/auth/state') return json({ authenticated: true, requires_initialization: false, user: { id: 1, username: 'vip', role: 'vip' } })
+    if (url.startsWith('/api/servers')) return json({ servers: [] })
+    if (url === '/api/users') return json({ users: [] })
+    return json({})
+  }
+  try {
+    const { bindings } = await mount(App, {}, b => { b.state.value = anonymous; b.loading.value = false })
+    await bindings.login()
+    assert.equal(bindings.currentPage.value, 'subscriptions')
+    assert.equal(bindings.currentSubscriptionTab.value, 'personal')
+    assert.equal(location.hash, '#/subscriptions?tab=personal')
+    await bindings.logout()
+    assert.equal(bindings.state.value.authenticated, false)
+    assert.equal(bindings.currentPage.value, 'overview')
+    assert.equal(location.hash, '#/overview')
+  } finally { globalThis.window = previousWindow }
 })
 
 test('邮箱找回默认显示，不收集新密码；管理员审核保留原表单', async () => {

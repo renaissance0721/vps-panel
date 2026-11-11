@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+const navigationSource = await readFile(new URL('../src/navigation.ts', import.meta.url), 'utf8')
 const accountSource = await readFile(new URL('../src/views/AccountManagementView.vue', import.meta.url), 'utf8')
 const carpoolSource = await readFile(new URL('../src/views/CarpoolPanelView.vue', import.meta.url), 'utf8')
 const composableSource = await readFile(new URL('../src/composables/useUserManagement.ts', import.meta.url), 'utf8')
@@ -20,7 +21,7 @@ test('Admin 左侧同时提供用户管理和拼车面板入口且页面保持 A
 })
 
 test('顶部页面标题使用 accounts 和 carpool 的统一明确映射', () => {
-  assert.match(appSource, /type AdminPage = [^\n]*'accounts'[^\n]*'carpool'/)
+  assert.match(navigationSource, /type AdminPage = [^\n]*'accounts'[^\n]*'carpool'/)
   assert.match(appSource, /const pageTitles: Record<AdminPage, string> = \{[\s\S]*accounts: '用户管理',[\s\S]*carpool: '拼车面板'/)
   assert.match(appSource, /<h1>\{\{ pageTitles\[currentPage\] \}\}<\/h1>/)
 })

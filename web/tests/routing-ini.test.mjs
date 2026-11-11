@@ -17,7 +17,7 @@ after(async () => { globalThis.fetch = originalFetch; globalThis.window = origin
 async function mount() {
   const setup = View.setup; let state
   View.setup = (props, context) => { state = setup(props, context); return state }
-  try { await renderToString(createSSRApp(View)); return state } finally { View.setup = setup }
+  try { await renderToString(createSSRApp(View, { currentTab: 'personal' })); return state } finally { View.setup = setup }
 }
 const json = value => new Response(JSON.stringify(value), { status: 200 })
 

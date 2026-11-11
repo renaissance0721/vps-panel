@@ -50,6 +50,7 @@ import MailSettingsView from './views/MailSettingsView.vue'
 import MCPSettingsView from './views/MCPSettingsView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 import { userRoleLabel } from './format'
+import { createNavigation, type AdminPage, type SubscriptionTab } from './navigation'
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -69,7 +70,6 @@ const state = ref<AuthState | null>(null)
 const health = ref<Health | null>(null)
 const users = ref<AccessUser[]>([])
 const sidebarOpen = ref(false)
-type AdminPage = 'overview' | 'monitor' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'settings' | 'audit'
 const pageTitles: Record<AdminPage, string> = {
   overview: '概览',
   monitor: '探针',
@@ -83,6 +83,7 @@ const pageTitles: Record<AdminPage, string> = {
   audit: '操作日志',
 }
 const currentPage = ref<AdminPage>('overview')
+const currentSubscriptionTab = ref<SubscriptionTab>('personal')
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
@@ -119,6 +120,10 @@ const isResetPasswordPage = computed(() => window.location.pathname === '/reset-
 
 async function loadState() {
   state.value = await api<AuthState>('/api/auth/state')
+  if (state.value.authenticated && window.location.pathname === '/register') {
+    window.history.replaceState({}, '', '/')
+  }
+  navigation.authenticate(state.value.authenticated ? state.value.user?.role : undefined)
   if (!state.value.authenticated && isInvitationPage.value) {
     const response = await api<{ invitation: { role: 'vip' | 'carpool' | 'subscriber' } }>(
       `/api/auth/invitation?token=${encodeURIComponent(invitationToken)}`,
@@ -288,7 +293,7 @@ async function logout() {
     overviewState.resetSession()
     users.value = []
     sidebarOpen.value = false
-    currentPage.value = 'overview'
+    navigation.logout()
   })
 }
 
@@ -314,19 +319,37 @@ function clearCredentials() {
 }
 
 function updateCurrentUser(user: NonNullable<AuthState['user']>) {
-  if (state.value) state.value.user = user
+  if (state.value) {
+    navigation.authenticate(user.role)
+    state.value.user = user
+  }
 }
 
-function selectPage(page: AdminPage) {
-  currentPage.value = page
-  sidebarOpen.value = false
-  if (page === 'overview') {
-    const requests: Promise<void>[] = [loadOverview()]
-    if (state.value?.user?.role === 'admin') requests.push(loadPasswordChangeRequests())
-    void Promise.all(requests).catch((reason) => {
-      error.value = reason instanceof Error ? reason.message : '无法加载概览'
-    })
+function refreshOverview() {
+  const requests: Promise<void>[] = [loadOverview()]
+  if (state.value?.user?.role === 'admin') requests.push(loadPasswordChangeRequests())
+  void Promise.all(requests).catch((reason) => {
+    error.value = reason instanceof Error ? reason.message : '无法加载概览'
+  })
+}
+
+const navigation = createNavigation(window, (route, refresh) => {
+  const pageChanged = currentPage.value !== route.page
+  currentPage.value = route.page
+  currentSubscriptionTab.value = route.tab
+  if (refresh && pageChanged && route.page === 'overview') {
+    refreshOverview()
   }
+})
+
+function selectPage(page: AdminPage) {
+  if (page === 'overview' && currentPage.value === 'overview') refreshOverview()
+  navigation.navigate({ page, tab: page === currentPage.value ? currentSubscriptionTab.value : 'personal' })
+  sidebarOpen.value = false
+}
+
+function selectSubscriptionTab(tab: SubscriptionTab) {
+  navigation.navigate({ page: 'subscriptions', tab })
 }
 
 onMounted(async () => {
@@ -340,7 +363,10 @@ onMounted(async () => {
   }
 })
 
-onUnmounted(stopServerPolling)
+onUnmounted(() => {
+  stopServerPolling()
+  navigation.dispose()
+})
 </script>
 
 <template>
@@ -582,6 +608,8 @@ onUnmounted(stopServerPolling)
                 <SubscriptionManagementView
                   v-if="currentPage === 'subscriptions' && (state.user?.role === 'admin' || state.user?.role === 'vip')"
                   :role="state.user?.role"
+                  :current-tab="currentSubscriptionTab"
+                  @select-tab="selectSubscriptionTab"
                 />
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />

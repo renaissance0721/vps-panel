@@ -17,8 +17,10 @@ import {
   type RoutingRuleProvider,
 } from '../subscriptionRouting'
 import type { ProxyRecord } from '../types/proxy'
+import type { SubscriptionTab } from '../navigation'
 
-const props = defineProps<{ role?: 'admin' | 'vip' }>()
+const props = defineProps<{ role?: 'admin' | 'vip'; currentTab: SubscriptionTab }>()
+const emit = defineEmits<{ selectTab: [tab: SubscriptionTab] }>()
 
 type PublishedNode = {
   id: number
@@ -144,8 +146,6 @@ type PersonalSource = {
   requires_client: boolean
 }
 
-type Tab = 'personal' | 'users' | 'plans' | 'nodes' | 'configuration'
-const currentTab = ref<Tab>('personal')
 const personalSubscriptions = ref<PersonalSubscription[]>([])
 const users = ref<Subscriber[]>([])
 const plans = ref<Plan[]>([])
@@ -279,7 +279,7 @@ const draggedPersonalNodeID = ref<number | null>(null)
 const personalDropTargetID = ref<number | null>(null)
 let nextPersonalNodeID = -1
 
-const tabs = computed<{ id: Tab; label: string }[]>(() => props.role === 'vip'
+const tabs = computed<{ id: SubscriptionTab; label: string }[]>(() => props.role === 'vip'
   ? [{ id: 'personal', label: '个人订阅' }]
   : [
       { id: 'personal', label: '个人订阅' },
@@ -1481,7 +1481,7 @@ onUnmounted(() => {
 <template>
   <n-alert v-if="error" class="page-alert" type="error" closable @close="error = ''">{{ error }}</n-alert>
   <div class="subscription-tabs" role="tablist">
-    <n-button v-for="tab in tabs" :key="tab.id" :type="currentTab === tab.id ? 'primary' : 'default'" @click="currentTab = tab.id">{{ tab.label }}</n-button>
+    <n-button v-for="tab in tabs" :key="tab.id" :type="currentTab === tab.id ? 'primary' : 'default'" @click="emit('selectTab', tab.id)">{{ tab.label }}</n-button>
   </div>
   <div v-if="loading" class="loading-row"><n-spin size="small" /><span>正在加载订阅管理…</span></div>
 

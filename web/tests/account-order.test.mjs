@@ -45,6 +45,7 @@ const publishedNodes = () => [1, 2, 3].map(id => ({
   source_server_name: 'Source',
 }))
 async function render(component, populate, props = {}) {
+  if (component === Subscriptions) props = { currentTab: 'personal', ...props }
   const setup = component.setup
   let state
   component.setup = (props, context) => {
@@ -145,9 +146,8 @@ test('个人订阅网格拖动后乐观排序、逐步持久化并刷新', async
 test('发布节点条状卡片拖动持久化，失败时刷新回服务端顺序', async () => {
   const { html, state } = await render(Subscriptions, state => {
     state.loading.value = false
-    state.currentTab.value = 'nodes'
     state.nodes.value = publishedNodes()
-  }, { role: 'admin' })
+  }, { role: 'admin', currentTab: 'nodes' })
   assert.equal((html.match(/aria-label="拖动发布节点排序"/g) ?? []).length, 3)
   assert.match(html, /published-node-list/)
   assert.match(html, /中转 \+ 落地/)
@@ -285,9 +285,9 @@ const subscriberDetail = () => ({
 test('订阅用户使用紧凑卡片显示摘要，不新增拖拽且沿用详情入口', async t => {
   const value = { ...subscriberDetail(), enabled_node_count: 3, expires_at: null, plan_name: 'Friendship' }
   const { html, state } = await render(Subscriptions, state => {
-    state.currentTab.value = 'users'; state.loading.value = false
+    state.loading.value = false
     state.users.value = [value, { ...value, user_id: 43, username: 'Second' }]
-  }, { role: 'admin' })
+  }, { role: 'admin', currentTab: 'users' })
   assert.equal((html.match(/class="subscription-user-card subscription-overview-card"/g) ?? []).length, 2)
   assert.match(html, /Revenant/); assert.match(html, /Second/)
   for (const label of ['正常', 'Friendship', '已用 / 总量', '6 G / 100 G', '到期时间', '节点数量', '3 个', '查看 / 编辑']) assert.ok(html.includes(label))
@@ -303,9 +303,9 @@ test('订阅用户使用紧凑卡片显示摘要，不新增拖拽且沿用详�
 
 test('共享订阅卡片把额度和节点数合并摘要，保留编辑删除入口', async () => {
   const { html } = await render(Subscriptions, state => {
-    state.currentTab.value = 'plans'; state.loading.value = false
+    state.loading.value = false
     state.plans.value = [1, 2].map(id => ({ id, name: `Shared ${id}`, enabled: true, traffic_limit_bytes: 100 * 2 ** 30, nodes: [{ id }] }))
-  }, { role: 'admin' })
+  }, { role: 'admin', currentTab: 'plans' })
   assert.match(html, /class="subscription-plan-grid"/)
   assert.equal((html.match(/class="subscription-plan-card subscription-overview-card"/g) ?? []).length, 2)
   assert.equal((html.match(/class="subscription-plan-summary"/g) ?? []).length, 2)

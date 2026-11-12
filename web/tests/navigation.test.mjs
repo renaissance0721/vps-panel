@@ -41,7 +41,7 @@ function setup(path, role) {
 }
 
 const pages = ['overview', 'monitor', 'servers', 'proxies', 'relays', 'subscriptions', 'accounts', 'carpool', 'settings', 'audit']
-const tabs = ['personal', 'users', 'plans', 'nodes', 'configuration']
+const tabs = ['personal', 'remote', 'users', 'plans', 'nodes', 'configuration']
 
 test('直接访问和刷新每个主页面及订阅标签时恢复路由', () => {
   for (const page of pages) {
@@ -82,11 +82,12 @@ test('无效页面和标签回退，VIP 不能访问管理员页面或标签', (
     assert.equal(app.route.page, 'overview')
     assert.equal(app.browser.location.hash, '#/overview')
   }
-  for (const tab of ['missing', ...tabs.slice(1)]) {
+  for (const tab of ['missing', ...tabs.slice(2)]) {
     const app = setup(`/#/subscriptions?tab=${tab}`, tab === 'missing' ? 'admin' : 'vip')
     assert.equal(app.route.tab, 'personal')
     assert.equal(app.browser.location.hash, '#/subscriptions?tab=personal')
   }
+  assert.equal(setup('/#/subscriptions?tab=remote', 'vip').route.tab, 'remote')
   for (const page of ['accounts', 'carpool', 'settings', 'audit']) {
     const app = setup(`/#/${page}`, 'vip')
     assert.equal(app.route.page, 'overview')

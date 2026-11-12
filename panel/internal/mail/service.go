@@ -16,7 +16,7 @@ const (
 
 type Service struct {
 	db      *sql.DB
-	secrets *secretStore
+	secrets *SecretStore
 	sender  Sender
 	now     func() time.Time
 }
@@ -54,7 +54,29 @@ func (s *Service) Save(ctx context.Context, value Update) (Settings, error) {
 		return Settings{}, err
 	}
 	if value.Password != "" {
-		ciphertext, err = s.secrets.Encrypt(value.Password)
+		keyRequired := current.passwordCiphertext != ""
+		// The same backed-up key also protects remote subscriptions. Never
+		// recreate it while either kind of existing ciphertext needs it.
+		if current.passwordCiphertext != "" {
+			if _, err := s.secrets.Decrypt(current.passwordCiphertext); err != nil {
+				return Settings{}, errors.New("mail encryption key is unavailable")
+			}
+		}
+		var remoteCiphertext string
+		err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext FROM remote_subscription_sources LIMIT 1`).Scan(&remoteCiphertext)
+		if err == nil {
+			keyRequired = true
+			if _, err := NewRemoteSubscriptionSecretStore(s.secrets.path).Decrypt(remoteCiphertext); err != nil {
+				return Settings{}, errors.New("remote subscription encryption key is unavailable")
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Settings{}, err
+		}
+		if keyRequired {
+			ciphertext, err = s.secrets.EncryptExisting(value.Password)
+		} else {
+			ciphertext, err = s.secrets.Encrypt(value.Password)
+		}
 		if err != nil {
 			return Settings{}, fmt.Errorf("encrypt SMTP password: %w", err)
 		}

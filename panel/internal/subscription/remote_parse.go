@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -26,7 +27,7 @@ var errRemoteContent = errors.New("远程订阅格式无效")
 // Payload contains credentials and must be encrypted before persistence; it
 // must never be included in ordinary API responses, logs, or warnings.
 type remoteParsedNode struct {
-	name, protocol, format, payload, identity string
+	name, originalName, protocol, format, payload, identity string
 }
 
 type remoteParseResult struct {
@@ -96,6 +97,10 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点协议不支持", index+1))
 			continue
 		}
+		if !remoteURIHasRequiredFields(parsed, protocol) {
+			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点缺少必要连接字段", index+1))
+			continue
+		}
 		name := strings.TrimSpace(parsed.Fragment)
 		if !remoteDisplayName(name) {
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点名称无效", index+1))
@@ -103,11 +108,42 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 		}
 		parsed.Fragment, parsed.RawFragment = "", ""
 		result.nodes = append(result.nodes, remoteParsedNode{
-			name: name, protocol: protocol, format: "uri", payload: line,
+			name: name, originalName: name, protocol: protocol, format: "uri", payload: line,
 			identity: remoteDigest([]byte(parsed.String())),
 		})
 	}
 	return finishRemoteParse(result)
+}
+
+func remoteURIHasRequiredFields(value *url.URL, protocol string) bool {
+	if value.Hostname() == "" {
+		return false
+	}
+	if value.Port() == "" {
+		if protocol != "hysteria2" && !(protocol == "ss" && value.User == nil) {
+			return false
+		}
+	} else {
+		port, err := strconv.Atoi(value.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return false
+		}
+	}
+	if protocol == "hysteria2" {
+		return true
+	}
+	if protocol == "ss" && value.User == nil {
+		decoded, ok := decodeRemoteBase64(value.Host)
+		if !ok {
+			return false
+		}
+		userinfo, host, ok := strings.Cut(string(decoded), "@")
+		method, password, hasPassword := strings.Cut(userinfo, ":")
+		_, port, err := net.SplitHostPort(host)
+		portNumber, portErr := strconv.Atoi(port)
+		return ok && hasPassword && method != "" && password != "" && err == nil && portErr == nil && portNumber >= 1 && portNumber <= 65535
+	}
+	return value.User != nil && value.User.Username() != ""
 }
 
 func remoteStartsWithURI(value string) bool {
@@ -172,6 +208,10 @@ func parseRemoteYAML(body []byte) (remoteParseResult, error) {
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 个节点协议不支持", index+1))
 			continue
 		}
+		if !remoteYAMLHasRequiredFields(node, protocol) {
+			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 个节点缺少必要连接字段", index+1))
+			continue
+		}
 		payload, err := yaml.Marshal(node)
 		if err != nil {
 			return remoteParseResult{}, errRemoteContent
@@ -186,11 +226,37 @@ func parseRemoteYAML(body []byte) (remoteParseResult, error) {
 			return remoteParseResult{}, errRemoteContent
 		}
 		result.nodes = append(result.nodes, remoteParsedNode{
-			name: strings.TrimSpace(nameNode.Value), protocol: protocol, format: "mihomo", payload: string(payload),
+			name: strings.TrimSpace(nameNode.Value), originalName: strings.TrimSpace(nameNode.Value), protocol: protocol, format: "mihomo", payload: string(payload),
 			identity: remoteDigest(identity),
 		})
 	}
 	return finishRemoteParse(result)
+}
+
+func remoteYAMLHasRequiredFields(node *yaml.Node, protocol string) bool {
+	field := func(key string) string {
+		value := mappingValue(node, key)
+		if value == nil || value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
+			return ""
+		}
+		return strings.TrimSpace(value.Value)
+	}
+	port, err := strconv.Atoi(field("port"))
+	if field("server") == "" || err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	switch protocol {
+	case "vless":
+		return field("uuid") != ""
+	case "ss":
+		return field("cipher") != "" && field("password") != ""
+	case "trojan", "hysteria2":
+		return field("password") != ""
+	case "tuic":
+		return field("token") != "" || (field("uuid") != "" && field("password") != "")
+	default:
+		return false
+	}
 }
 
 func remoteSafeYAML(root *yaml.Node) bool {

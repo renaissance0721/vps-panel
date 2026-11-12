@@ -29,6 +29,7 @@ type server struct {
 	landings             *landingstore.Service
 	relays               *relaystore.Service
 	subscriptions        *subscriptionstore.Service
+	remoteSubscriptions  *subscriptionstore.RemoteService
 	orders               *listorder.Store
 	webRoot              string
 	panelVersion         string
@@ -66,10 +67,12 @@ func NewHandlerWithVersion(db *sql.DB, webRoot, panelVersion string) http.Handle
 
 type Handler struct {
 	http.Handler
-	notifications *notification.Service
+	notifications       *notification.Service
+	remoteSubscriptions *subscriptionstore.RemoteService
 }
 
-func (h *Handler) RunNotifications(ctx context.Context) { h.notifications.Run(ctx) }
+func (h *Handler) RunNotifications(ctx context.Context)       { h.notifications.Run(ctx) }
+func (h *Handler) RunRemoteSubscriptions(ctx context.Context) { h.remoteSubscriptions.Run(ctx) }
 
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
 	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil, geoIPProviders...)
@@ -89,6 +92,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		landings:             landingstore.NewService(db),
 		relays:               relays,
 		subscriptions:        subscriptionstore.NewService(db, relays),
+		remoteSubscriptions:  subscriptionstore.NewRemoteService(db, keyPath),
 		orders:               listorder.NewStore(db),
 		webRoot:              webRoot,
 		panelVersion:         panelVersion,
@@ -136,6 +140,15 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("POST /api/auth/register", s.register)
 	mux.HandleFunc("GET /api/auth/invitation", s.getInvitation)
 	mux.HandleFunc("POST /api/auth/logout", s.logout)
+	mux.HandleFunc("GET /api/remote-subscriptions", s.requireManager(s.listRemoteSubscriptions))
+	mux.HandleFunc("POST /api/remote-subscriptions", s.requireManager(s.createRemoteSubscription))
+	mux.HandleFunc("POST /api/remote-subscriptions/test", s.requireManager(s.testRemoteSubscription))
+	mux.HandleFunc("GET /api/remote-subscriptions/{id}", s.requireManager(s.getRemoteSubscription))
+	mux.HandleFunc("PUT /api/remote-subscriptions/{id}", s.requireManager(s.updateRemoteSubscription))
+	mux.HandleFunc("DELETE /api/remote-subscriptions/{id}", s.requireManager(s.deleteRemoteSubscription))
+	mux.HandleFunc("POST /api/remote-subscriptions/{id}/refresh", s.requireManager(s.refreshRemoteSubscription))
+	mux.HandleFunc("POST /api/remote-subscriptions/{id}/test", s.requireManager(s.testSavedRemoteSubscription))
+	mux.HandleFunc("GET /api/remote-subscriptions/{id}/nodes", s.requireManager(s.remoteSubscriptionNodes))
 	mux.HandleFunc("GET /api/personal-subscriptions", s.requireManager(s.listPersonalSubscriptions))
 	mux.HandleFunc("POST /api/personal-subscriptions", s.requireManager(s.createPersonalSubscription))
 	mux.HandleFunc("GET /api/personal-subscriptions/sources", s.requireManager(s.listPersonalSubscriptionSources))
@@ -288,5 +301,5 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		mux.ServeHTTP(w, r)
-	})), notifications: s.notifications}
+	})), notifications: s.notifications, remoteSubscriptions: s.remoteSubscriptions}
 }

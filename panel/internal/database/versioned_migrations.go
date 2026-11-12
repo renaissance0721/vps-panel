@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 36
+const LatestSchemaVersion = 37
 
 type migration struct {
 	version            int
@@ -59,6 +59,51 @@ var migrations = []migration{
 	{version: 34, name: "mcp_access", up: createMCPAccess},
 	{version: 35, name: "mcp_change_plans", up: createMCPChangePlans},
 	{version: 36, name: "retire_mcp_approvals", up: retireMCPApprovals},
+	{version: 37, name: "remote_subscription_sources", up: createRemoteSubscriptions},
+}
+
+func createRemoteSubscriptions(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS remote_subscription_sources (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			url_ciphertext TEXT NOT NULL,
+			user_agent TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+			interval_seconds INTEGER NOT NULL CHECK(interval_seconds BETWEEN 300 AND 604800 AND interval_seconds % 60 = 0),
+			last_attempt_at INTEGER,
+			last_success_at INTEGER,
+			refresh_claim TEXT NOT NULL DEFAULT '',
+			refresh_lease_until INTEGER,
+			last_error TEXT NOT NULL DEFAULT '',
+			warnings_json TEXT NOT NULL DEFAULT '[]',
+			upload INTEGER, download INTEGER, total INTEGER, expire INTEGER,
+			revision INTEGER NOT NULL DEFAULT 1,
+			cache_generation INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_remote_subscription_sources_owner ON remote_subscription_sources(owner_user_id, id)`,
+		`CREATE TABLE IF NOT EXISTS remote_subscription_nodes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_id INTEGER NOT NULL REFERENCES remote_subscription_sources(id) ON DELETE CASCADE,
+			identity TEXT NOT NULL,
+			original_name TEXT NOT NULL,
+			display_name TEXT NOT NULL,
+			protocol TEXT NOT NULL,
+			format TEXT NOT NULL,
+			payload_ciphertext TEXT NOT NULL,
+			position INTEGER NOT NULL CHECK(position >= 0),
+			generation INTEGER NOT NULL,
+			UNIQUE(source_id, identity)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_remote_subscription_nodes_source ON remote_subscription_nodes(source_id, position, id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Older write tokens authorized only server.rename. Do not silently broaden

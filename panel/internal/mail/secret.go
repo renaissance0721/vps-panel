@@ -21,69 +21,137 @@ const (
 	secretAAD   = "vps-panel/mail-settings/password/v1"
 )
 
-type secretStore struct {
+type SecretStore struct {
 	path string
-	mu   sync.Mutex
+	aad  string
 }
 
-func newSecretStore(path string) *secretStore { return &secretStore{path: path} }
+var secretMu sync.Mutex
 
-func (s *secretStore) Encrypt(plaintext string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key, err := s.loadOrCreateKey()
+func newSecretStore(path string) *SecretStore { return &SecretStore{path: path, aad: secretAAD} }
+
+func NewMailSecretStore(path string) *SecretStore { return newSecretStore(path) }
+
+// NewRemoteSubscriptionSecretStore uses the backed-up Panel key with a
+// separate AEAD domain, so mail ciphertext cannot be swapped with remote data.
+func NewRemoteSubscriptionSecretStore(path string) *SecretStore {
+	return &SecretStore{path: path, aad: "vps-panel/remote-subscription/v1"}
+}
+
+func (s *SecretStore) Encrypt(plaintext string) (string, error) {
+	values, err := s.encryptMany([]string{plaintext}, true, "")
 	if err != nil {
 		return "", err
 	}
+	return values[0], nil
+}
+
+// EncryptExisting refuses to create a key when ciphertext already exists.
+func (s *SecretStore) EncryptExisting(plaintext string) (string, error) {
+	values, err := s.encryptMany([]string{plaintext}, false, "")
+	if err != nil {
+		return "", err
+	}
+	return values[0], nil
+}
+
+func (s *SecretStore) EncryptManyExistingChecked(plaintext []string, existingCiphertext string) ([]string, error) {
+	if existingCiphertext == "" {
+		return nil, errors.New("missing existing ciphertext")
+	}
+	return s.encryptMany(plaintext, false, existingCiphertext)
+}
+
+func (s *SecretStore) encryptMany(plaintext []string, allowCreate bool, existingCiphertext string) ([]string, error) {
+	secretMu.Lock()
+	defer secretMu.Unlock()
+	var key []byte
+	var err error
+	if allowCreate {
+		key, err = s.loadOrCreateKey()
+	} else {
+		key, err = s.loadKey()
+	}
+	if err != nil {
+		return nil, err
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("initialize mail secret cipher: %w", err)
+		return nil, fmt.Errorf("initialize mail secret cipher: %w", err)
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("initialize mail secret AEAD: %w", err)
+		return nil, fmt.Errorf("initialize mail secret AEAD: %w", err)
 	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("generate mail secret nonce: %w", err)
+	if existingCiphertext != "" {
+		if !strings.HasPrefix(existingCiphertext, "v1:") {
+			return nil, errors.New("unsupported secret format")
+		}
+		sealed, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(existingCiphertext, "v1:"))
+		if err != nil || len(sealed) < aead.NonceSize() {
+			return nil, errors.New("invalid encrypted secret")
+		}
+		if _, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(s.aad)); err != nil {
+			return nil, errors.New("authenticate encrypted secret")
+		}
 	}
-	sealed := aead.Seal(nonce, nonce, []byte(plaintext), []byte(secretAAD))
-	return "v1:" + base64.RawStdEncoding.EncodeToString(sealed), nil
+	result := make([]string, 0, len(plaintext))
+	for _, value := range plaintext {
+		nonce := make([]byte, aead.NonceSize())
+		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+			return nil, fmt.Errorf("generate mail secret nonce: %w", err)
+		}
+		sealed := aead.Seal(nonce, nonce, []byte(value), []byte(s.aad))
+		result = append(result, "v1:"+base64.RawStdEncoding.EncodeToString(sealed))
+	}
+	return result, nil
 }
 
-func (s *secretStore) Decrypt(ciphertext string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *SecretStore) Decrypt(ciphertext string) (string, error) {
+	values, err := s.DecryptMany([]string{ciphertext})
+	if err != nil {
+		return "", err
+	}
+	return values[0], nil
+}
+
+func (s *SecretStore) DecryptMany(ciphertexts []string) ([]string, error) {
+	secretMu.Lock()
+	defer secretMu.Unlock()
 	key, err := s.loadKey()
 	if err != nil {
-		return "", err
-	}
-	if !strings.HasPrefix(ciphertext, "v1:") {
-		return "", errors.New("unsupported mail secret format")
-	}
-	sealed, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(ciphertext, "v1:"))
-	if err != nil {
-		return "", errors.New("decode mail secret")
+		return nil, err
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("initialize mail secret cipher: %w", err)
+		return nil, fmt.Errorf("initialize mail secret cipher: %w", err)
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("initialize mail secret AEAD: %w", err)
+		return nil, fmt.Errorf("initialize mail secret AEAD: %w", err)
 	}
-	if len(sealed) < aead.NonceSize() {
-		return "", errors.New("mail secret is truncated")
+	values := make([]string, 0, len(ciphertexts))
+	for _, ciphertext := range ciphertexts {
+		if !strings.HasPrefix(ciphertext, "v1:") {
+			return nil, errors.New("unsupported mail secret format")
+		}
+		sealed, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(ciphertext, "v1:"))
+		if err != nil {
+			return nil, errors.New("decode mail secret")
+		}
+		if len(sealed) < aead.NonceSize() {
+			return nil, errors.New("mail secret is truncated")
+		}
+		plaintext, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(s.aad))
+		if err != nil {
+			return nil, errors.New("authenticate mail secret")
+		}
+		values = append(values, string(plaintext))
 	}
-	plaintext, err := aead.Open(nil, sealed[:aead.NonceSize()], sealed[aead.NonceSize():], []byte(secretAAD))
-	if err != nil {
-		return "", errors.New("authenticate mail secret")
-	}
-	return string(plaintext), nil
+	return values, nil
 }
 
-func (s *secretStore) loadOrCreateKey() ([]byte, error) {
+func (s *SecretStore) loadOrCreateKey() ([]byte, error) {
 	key, err := s.loadKey()
 	if err == nil {
 		return key, nil
@@ -118,7 +186,7 @@ func (s *secretStore) loadOrCreateKey() ([]byte, error) {
 	return key, nil
 }
 
-func (s *secretStore) loadKey() ([]byte, error) {
+func (s *SecretStore) loadKey() ([]byte, error) {
 	if s.path == "" {
 		return nil, os.ErrNotExist
 	}

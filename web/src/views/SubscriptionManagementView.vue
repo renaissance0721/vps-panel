@@ -18,6 +18,7 @@ import {
 } from '../subscriptionRouting'
 import type { ProxyRecord } from '../types/proxy'
 import type { SubscriptionTab } from '../navigation'
+import RemoteSubscriptionsView from './RemoteSubscriptionsView.vue'
 
 const props = defineProps<{ role?: 'admin' | 'vip'; currentTab: SubscriptionTab }>()
 const emit = defineEmits<{ selectTab: [tab: SubscriptionTab] }>()
@@ -280,9 +281,10 @@ const personalDropTargetID = ref<number | null>(null)
 let nextPersonalNodeID = -1
 
 const tabs = computed<{ id: SubscriptionTab; label: string }[]>(() => props.role === 'vip'
-  ? [{ id: 'personal', label: '个人订阅' }]
+  ? [{ id: 'personal', label: '个人订阅' }, { id: 'remote', label: '机场订阅' }]
   : [
       { id: 'personal', label: '个人订阅' },
+      { id: 'remote', label: '机场订阅' },
       { id: 'users', label: '订阅用户' },
       { id: 'plans', label: '共享订阅' },
       { id: 'nodes', label: '发布节点' },
@@ -1603,6 +1605,7 @@ onUnmounted(() => {
     </TransitionGroup>
   </section>
 
+  <RemoteSubscriptionsView v-else-if="currentTab === 'remote'" />
   <section v-else class="subscription-section configuration-grid">
     <p class="form-help">通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案，以及独立的 Mihomo、Shadowrocket 模板。</p>
     <n-card title="通用分流方案" :bordered="true">

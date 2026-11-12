@@ -48,3 +48,30 @@ func TestSecretStoreAuthenticatedEncryptionAndPersistence(t *testing.T) {
 		t.Fatal("ciphertext decrypted with a different key")
 	}
 }
+
+func TestRemoteSecretDomainAndMissingKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), KeyFileName)
+	remote := NewRemoteSubscriptionSecretStore(keyPath)
+	ciphertext, err := remote.Encrypt("synthetic-remote-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewMailSecretStore(keyPath).Decrypt(ciphertext); err == nil {
+		t.Fatal("remote ciphertext accepted as mail")
+	}
+	if _, err := remote.EncryptManyExistingChecked([]string{"next"}, ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.Decrypt(ciphertext); err == nil {
+		t.Fatal("missing key decrypted ciphertext")
+	}
+	if _, err := remote.EncryptManyExistingChecked([]string{"next"}, ciphertext); err == nil {
+		t.Fatal("missing key was recreated")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatal("missing key unexpectedly appeared")
+	}
+}

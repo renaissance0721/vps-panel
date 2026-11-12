@@ -211,6 +211,10 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 管理用户的个人订阅按 owner 隔离，组织可访问的节点来源、节点实例及路由绑定。
 
+机场订阅来源通过 `/api/remote-subscriptions` 管理，仅 admin / vip 可访问，且所有操作按 owner 隔离。`POST /test` 使用提交的地址预览，`POST /{id}/test` 使用已保存地址预览；`POST /{id}/refresh` 更新缓存，`GET /{id}/nodes` 只返回节点元数据。`PUT /{id}` 的 URL 留空表示保留已有地址，非空时显式替换。创建及更新使用 `name`、`url`、`user_agent`、`enabled` 和 `interval_seconds`，间隔范围为 300–604800 秒，按整分钟设置。
+
+Panel 后台按到期时间调度，限制并发和每来源刷新频率；数据库租约阻止同一来源的跨实例并发刷新，并在进程中断后过期回收。抓取与解析成功后在事务内更新缓存，失败保留上次成功结果。缓存按来源和内容身份维持节点 ID，支持顺序变化；地址更新时不会立即删除旧缓存。来源 URL、节点原始名称、显示名称和完整 payload 使用独立 AEAD 用途标识加密；API、审计和错误不返回 URL 或节点凭据。远程来源目前仅供管理和缓存，不参与个人或共享订阅的生成。
+
 个人订阅只直接分发受管直连节点、外部直连节点和本地中转；受管 / 外部落地节点及订阅发布中转从后端候选列表排除，并由 `inspectPersonalSource` 在保存及生成时再次校验。Relay 的目标用途不改变本地中转自身的分发资格，其余权限、凭据和状态检查保持原有规则。
 
 用途改为 landing 或历史误引用订阅发布中转时，已有个人订阅节点保留并显示来源不可用，生成时跳过。保存其他节点可保留原 ID 和原来源；不能新增非法来源，也不能借已有 ID 将来源改为非法节点。
@@ -281,7 +285,7 @@ Panel watcher 使用当前在线连接和正式 Server 流量数据判断事件�
 
 SMTP 支持 implicit TLS、STARTTLS 和无 TLS。TLS 始终验证证书链与 SMTP 主机名，没有跳过验证的配置；连接、单次命令和整体发送均有超时并响应 context cancellation。正常业务发送在 `enabled=false` 时返回明确错误，但管理员测试不受启用开关限制。
 
-SMTP 密码使用 AES-256-GCM 加密后存入 SQLite；GET API、审计摘要和普通错误不返回密码或密文。随机 32 字节 master key 位于 `PANEL_DATA_DIR/mail.key`，首次保存密码时以 `0600` 创建，不与密文同库存储。原生升级和 Docker volume 都会保留整个 data dir；管理员 ZIP 备份会把密钥作为独立敏感文件纳入校验、暂存、恢复和失败回滚。数据库存在 SMTP 密文但备份缺少对应 key 时，导出或导入会明确失败，不会把解密失败当作空密码。
+SMTP 密码和机场订阅密文使用 AES-256-GCM 加密，并使用不同的用途标识；GET API、审计摘要和普通错误不返回密码或密文。随机 32 字节 master key 位于 `PANEL_DATA_DIR/mail.key`，首次保存密码或机场来源时以 `0600` 创建，不与密文同库存储。原生升级和 Docker volume 都会保留整个 data dir；管理员 ZIP 备份会把密钥作为独立敏感文件纳入校验、暂存、恢复和失败回滚。数据库存在需该密钥的密文时，备份导出或导入会检查密钥能否解密数据，缺失或错误时明确失败。
 
 账号邮箱的归属和 token 生命周期由 [auth](panel/internal/auth) 管理：`users.email` 只保存 TrimSpace 后转为小写的已验证地址，`email_verified_at` 保存验证时间；待验证地址保存在 `account_tokens.target`。原始 token 使用 `crypto/rand` 生成，邮件发送 raw token，数据库只保存 SHA-256；token 一次性使用、30 分钟过期，同账号重发至少间隔 60 秒并使旧 token 失效。首次绑定或更换都要求当前密码，验证完成前保留原邮箱，最终占用检查、邮箱更新和 token 消费在同一事务中完成。
 

@@ -66,6 +66,9 @@ func validateRemoteURL(value *url.URL) error {
 		host == "metadata.google.internal" {
 		return errRemoteURL
 	}
+	if ip, err := netip.ParseAddr(host); err == nil && !remotePublicIP(ip) {
+		return errRemoteURL
+	}
 	port := value.Port()
 	if port != "" {
 		n, err := strconv.Atoi(port)

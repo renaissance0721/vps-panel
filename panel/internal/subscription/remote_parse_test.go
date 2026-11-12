@@ -63,6 +63,8 @@ func TestRemoteParseRejectsUnsafeYAMLAndMalformedContent(t *testing.T) {
 		"proxies: []\n---\nproxies: []\n",
 		"proxies:\n  - {name: a, type: ss, opts: !evil content}\n",
 		"proxies:\n  - {name: a, type: ss, opts: " + strings.Repeat("[", 70) + "x" + strings.Repeat("]", 70) + "}\n",
+		"proxies:\n  - {name: Missing, type: vless, server: example.com}\n",
+		"trojan://example.com:443#NoCredential\n",
 	} {
 		if _, err := parseRemoteSubscription([]byte(input)); err == nil {
 			t.Errorf("malformed content accepted")

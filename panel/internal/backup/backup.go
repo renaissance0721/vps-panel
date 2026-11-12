@@ -150,6 +150,22 @@ func CreateArchive(ctx context.Context, db *sql.DB, dataDir, panelVersion, panel
 	if needsMailKey && len(mailKey) != 32 {
 		return fail(errors.New("SMTP password is configured but the mail encryption key is unavailable"))
 	}
+	needsRemoteKey, err := databaseHasRemoteSources(snapshot)
+	if err != nil {
+		return fail(fmt.Errorf("inspect remote subscription settings: %w", err))
+	}
+	if needsRemoteKey && len(mailKey) != 32 {
+		return fail(errors.New("remote subscription encryption key is unavailable"))
+	}
+	if needsMailKey || needsRemoteKey {
+		keyCopy := filepath.Join(tempDir, "backup-encryption.key")
+		if err := os.WriteFile(keyCopy, mailKey, 0o600); err != nil {
+			return fail(errors.New("cannot stage encryption key for validation"))
+		}
+		if err := validateSecretKey(snapshot, keyCopy); err != nil {
+			return fail(errors.New("backup encryption key cannot decrypt stored secrets"))
+		}
+	}
 	for name, source := range map[string]string{
 		"deployment/environment":     environmentFile,
 		"deployment/vps-panel.caddy": caddyFile,
@@ -385,6 +401,10 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 	if err != nil {
 		return fmt.Errorf("无法检查备份邮件设置: %w", ErrInvalidBackup)
 	}
+	needsRemoteKey, err := databaseHasRemoteSources(staged)
+	if err != nil {
+		return fmt.Errorf("无法检查备份机场订阅设置: %w", ErrInvalidBackup)
+	}
 	keyEntryName := "data/" + mailservice.KeyFileName
 	keyHash := actual[keyEntryName]
 	if keyHash != "" {
@@ -392,8 +412,11 @@ func StageImport(ctx context.Context, archivePath, dataDir, currentVersion, curr
 		if err != nil || len(key) != 32 {
 			return fmt.Errorf("备份邮件加密密钥无效: %w", ErrInvalidBackup)
 		}
-	} else if needsMailKey {
-		return fmt.Errorf("备份缺少 SMTP 密码加密密钥: %w", ErrInvalidBackup)
+		if err := validateSecretKey(staged, filepath.Join(tempDir, mailservice.KeyFileName)); err != nil {
+			return fmt.Errorf("备份加密密钥无法解密数据: %w", ErrInvalidBackup)
+		}
+	} else if needsMailKey || needsRemoteKey {
+		return fmt.Errorf("备份缺少加密密钥: %w", ErrInvalidBackup)
 	}
 	restoreDir := filepath.Join(dataDir, "restore")
 	if err := os.MkdirAll(restoreDir, 0o700); err != nil {
@@ -484,6 +507,94 @@ func databaseHasMailPassword(path string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func databaseHasRemoteSources(path string) (bool, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var tableCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'remote_subscription_sources'`).Scan(&tableCount); err != nil {
+		return false, err
+	}
+	if tableCount == 0 {
+		return false, nil
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM remote_subscription_sources`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func validateSecretKey(databasePath, keyPath string) error {
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	for _, item := range []struct {
+		table, query string
+		store        *mailservice.SecretStore
+	}{
+		{"mail_settings", `SELECT password_ciphertext FROM mail_settings WHERE password_ciphertext <> ''`, mailservice.NewMailSecretStore(keyPath)},
+		{"remote_subscription_sources", `SELECT url_ciphertext FROM remote_subscription_sources`, mailservice.NewRemoteSubscriptionSecretStore(keyPath)},
+		{"remote_subscription_nodes", `SELECT original_name FROM remote_subscription_nodes UNION ALL SELECT display_name FROM remote_subscription_nodes UNION ALL SELECT payload_ciphertext FROM remote_subscription_nodes`, mailservice.NewRemoteSubscriptionSecretStore(keyPath)},
+	} {
+		var exists int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, item.table).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			continue
+		}
+		rows, err := db.Query(item.query)
+		if err != nil {
+			return err
+		}
+		batch := []string{}
+		batchBytes := 0
+		flush := func() error {
+			if len(batch) == 0 {
+				return nil
+			}
+			if _, err := item.store.DecryptMany(batch); err != nil {
+				return errors.New("cannot authenticate encrypted data")
+			}
+			batch = batch[:0]
+			batchBytes = 0
+			return nil
+		}
+		for rows.Next() {
+			var ciphertext string
+			if err := rows.Scan(&ciphertext); err != nil {
+				rows.Close()
+				return err
+			}
+			if batchBytes+len(ciphertext) > 4<<20 || len(batch) >= 128 {
+				if err := flush(); err != nil {
+					rows.Close()
+					return err
+				}
+			}
+			batch = append(batch, ciphertext)
+			batchBytes += len(ciphertext)
+		}
+		if err := flush(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidateDatabase reads a database without modifying its schema or rows.

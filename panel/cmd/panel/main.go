@@ -113,6 +113,9 @@ func run() error {
 	notificationsDone := make(chan struct{})
 	go func() { defer close(notificationsDone); handler.RunNotifications(shutdownContext) }()
 	defer func() { stop(); <-notificationsDone }()
+	remoteSubscriptionsDone := make(chan struct{})
+	go func() { defer close(remoteSubscriptionsDone); handler.RunRemoteSubscriptions(shutdownContext) }()
+	defer func() { stop(); <-remoteSubscriptionsDone }()
 	probeCleanupDone := make(chan struct{})
 	go func() {
 		defer close(probeCleanupDone)

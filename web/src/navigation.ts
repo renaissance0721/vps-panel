@@ -1,13 +1,13 @@
 import type { User } from './types/auth'
 
 export type AdminPage = 'overview' | 'monitor' | 'servers' | 'proxies' | 'relays' | 'subscriptions' | 'accounts' | 'carpool' | 'settings' | 'audit'
-export type SubscriptionTab = 'personal' | 'users' | 'plans' | 'nodes' | 'configuration'
+export type SubscriptionTab = 'personal' | 'remote' | 'users' | 'plans' | 'nodes' | 'configuration'
 type ManagementRole = Extract<User['role'], 'admin' | 'vip'>
 export type NavigationRoute = { page: AdminPage; tab: SubscriptionTab }
 
 const pages: AdminPage[] = ['overview', 'monitor', 'servers', 'proxies', 'relays', 'subscriptions', 'accounts', 'carpool', 'settings', 'audit']
 const adminPages: AdminPage[] = ['accounts', 'carpool', 'settings', 'audit']
-const tabs: SubscriptionTab[] = ['personal', 'users', 'plans', 'nodes', 'configuration']
+const tabs: SubscriptionTab[] = ['personal', 'remote', 'users', 'plans', 'nodes', 'configuration']
 
 export function resolveRoute(hash: string, role: ManagementRole): NavigationRoute {
   const [path, query = ''] = hash.slice(1).split('?')
@@ -16,7 +16,7 @@ export function resolveRoute(hash: string, role: ManagementRole): NavigationRout
   if (!page || (role !== 'admin' && adminPages.includes(page))) return { page: 'overview', tab: 'personal' }
   const requestedTab = new URLSearchParams(query).get('tab')
   const tab = tabs.find((item) => item === requestedTab)
-  return { page, tab: page === 'subscriptions' && tab && (role === 'admin' || tab === 'personal') ? tab : 'personal' }
+  return { page, tab: page === 'subscriptions' && tab && (role === 'admin' || tab === 'personal' || tab === 'remote') ? tab : 'personal' }
 }
 
 export function routeHash(route: NavigationRoute): string {

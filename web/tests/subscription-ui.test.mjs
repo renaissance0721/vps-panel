@@ -74,7 +74,7 @@ test('订阅管理对 Admin 和 VIP 开放，并严格限制可见 Tab', () => {
   assert.match(managementSource, /currentTab: SubscriptionTab/)
   assert.match(managementSource, /emit\('selectTab', tab.id\)/)
   assert.match(managementSource, /props\.role === 'vip'[\s\S]*\{ id: 'personal', label: '个人订阅' \}/)
-  assert.match(managementSource, /\{ id: 'personal', label: '个人订阅' \},\s*\{ id: 'users', label: '订阅用户' \},\s*\{ id: 'plans', label: '共享订阅' \},\s*\{ id: 'nodes', label: '发布节点' \},\s*\{ id: 'configuration', label: '分流模板' \}/)
+  assert.match(managementSource, /\{ id: 'personal', label: '个人订阅' \},\s*\{ id: 'remote', label: '机场订阅' \},\s*\{ id: 'users', label: '订阅用户' \},\s*\{ id: 'plans', label: '共享订阅' \},\s*\{ id: 'nodes', label: '发布节点' \},\s*\{ id: 'configuration', label: '分流模板' \}/)
 })
 
 test('订阅管理覆盖用户、套餐和发布节点操作且固定已创建节点拓扑', () => {

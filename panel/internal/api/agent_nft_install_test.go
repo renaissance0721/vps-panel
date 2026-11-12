@@ -31,6 +31,10 @@ func TestAgentInstallAndUpgradePrepareNFTables(t *testing.T) {
 			function := upgradeScriptSection(t, script.source, "prepare_nftables_dependency() {", "\ndetect_init_system() {")
 			function = strings.Replace(function, `if [ -r /etc/os-release ]; then . /etc/os-release; fi`, `ID="$TEST_OS"; ID_LIKE="$TEST_LIKE"`, 1)
 			function = strings.Replace(function, `[ -f /etc/alpine-release ]`, `[ "${TEST_ALPINE:-}" = yes ]`, 1)
+			// POSIX shells such as dash reject hyphens in function names.
+			function = strings.ReplaceAll(function, "command -v apt-get", "command -v mock_apt_get")
+			function = strings.ReplaceAll(function, "apt-get update ||", "mock_apt_get update ||")
+			function = strings.ReplaceAll(function, "apt-get install -y nftables ||", "mock_apt_get install -y nftables ||")
 			if strings.Contains(function, "/etc/os-release") || strings.Contains(function, "/etc/alpine-release") {
 				t.Fatal("host OS probes not isolated")
 			}
@@ -57,7 +61,7 @@ log() { printf 'log %s\n' "$*"; }
 fail() { printf 'error %s\n' "$*"; exit 1; }
 if [ "$TEST_INSTALLED" = yes ]; then nft() { :; }; fi
 apk() { printf 'apk %s\n' "$*"; [ "$TEST_FAIL" != apk ] || return 1; if [ "$TEST_FAIL" != missing ]; then nft() { :; }; fi; }
-apt-get() { printf 'apt-get %s\n' "$*"; [ "$TEST_FAIL" != "$1" ] || return 1; if [ "$1" = install ]; then nft() { :; }; fi; }
+mock_apt_get() { printf 'apt-get %s\n' "$*"; [ "$TEST_FAIL" != "$1" ] || return 1; if [ "$1" = install ]; then nft() { :; }; fi; }
 `
 					command := exec.Command(sh, "-s")
 					command.Stdin = strings.NewReader(preamble + function + "\nprepare_nftables_dependency\nprepare_nftables_dependency\n")

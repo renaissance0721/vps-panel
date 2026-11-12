@@ -387,9 +387,6 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range proxies {
-		if value.NodeRole != noderole.Direct {
-			continue
-		}
 		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceProxy, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -419,9 +416,6 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 		return nil, err
 	}
 	for _, value := range landings {
-		if value.NodeRole != noderole.Direct {
-			continue
-		}
 		state, err := s.inspectPersonalSource(ctx, actor, PersonalSourceLanding, value.ID, clientName, value.Name, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -633,10 +627,7 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if serverStatus == "" {
 			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "Proxy 不存在或不可访问"), nil
 		}
-		if value.NodeRole != noderole.Direct {
-			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "落地节点不能用于个人订阅，请更换为直连节点。"), nil
-		}
-		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name,
+		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name + " · " + personalNodeRoleLabel(value.NodeRole),
 			accessible: true, selectable: value.Enabled, requiresClient: true}
 		if !value.Enabled {
 			state.status, state.statusDetail = PersonalNodeProxyDisabled, "Proxy 已停用"
@@ -800,11 +791,8 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		if err != nil {
 			return personalSourceState{}, err
 		}
-		if value.NodeRole != noderole.Direct {
-			return unavailablePersonalSource(value.Name, PersonalNodeUnavailable, "落地节点不能用于个人订阅，请更换为直连节点。"), nil
-		}
 		state := personalSourceState{
-			name: value.Name, detail: fmt.Sprintf("%s · %s:%d", value.Protocol, value.Host, value.Port),
+			name: value.Name, detail: fmt.Sprintf("%s · %s:%d · %s", value.Protocol, value.Host, value.Port, personalNodeRoleLabel(value.NodeRole)),
 			status: PersonalNodeReady, statusDetail: "节点自带凭据", accessible: true, selectable: true,
 		}
 		raw, err := s.landings.GetURI(ctx, sourceID, actor.UserID)
@@ -824,6 +812,13 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 	default:
 		return personalSourceState{}, ErrInvalidPersonalNodes
 	}
+}
+
+func personalNodeRoleLabel(role string) string {
+	if role == noderole.Landing {
+		return "落地用途"
+	}
+	return "直连用途"
 }
 
 func (s *Service) matchPersonalClient(ctx context.Context, actor PersonalSubscriptionActor, proxyID int64,

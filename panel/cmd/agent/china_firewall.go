@@ -34,7 +34,11 @@ const (
 
 var (
 	errManagedChinaInboundFirewall    = errors.New("managed China inbound firewall synchronization failed")
-	errManagedChinaInboundRequiresNFT = errors.New("managed China inbound firewall requires nftables")
+	errManagedChinaInboundRequiresNFT = errors.New("managed China inbound firewall requires nftables; install nftables (Alpine: apk add --no-cache nftables; Debian/Ubuntu: apt-get update && apt-get install -y nftables) or run the Agent upgrade installer")
+	errChinaNFTPrivileges             = errors.New("managed China inbound firewall: insufficient firewall privileges; check CAP_NET_ADMIN and container permissions")
+	errChinaNFTKernel                 = errors.New("managed China inbound firewall: nftables kernel or container support is unavailable")
+	errChinaNFTInspect                = errors.New("managed China inbound firewall: nftables inspection failed; check kernel, container and rule compatibility")
+	errChinaNFTApply                  = errors.New("managed China inbound firewall: applying nftables rules failed; check kernel, container and rule compatibility")
 )
 
 type chinaPrefixes struct {
@@ -163,13 +167,16 @@ func (f *chinaInboundFirewall) purge(ctx context.Context) error {
 func (f *chinaInboundFirewall) inspectOwnedTable(ctx context.Context, command string) (bool, error) {
 	output, err := f.runCommand(ctx, command, "list", "tables")
 	if err != nil {
-		return false, chinaInboundFirewallError("list nftables tables", err)
+		return false, chinaNFTCommandError("list nftables tables", output, err)
 	}
 	if !nftTablesContain(string(output), "inet", chinaFirewallTable) {
 		return false, nil
 	}
 	output, err = f.runCommand(ctx, command, "list", "chain", "inet", chinaFirewallTable, "input")
-	if err != nil || !strings.Contains(string(output), chinaFirewallOwnerMarker) {
+	if err != nil {
+		return false, chinaNFTCommandError("inspect managed nftables table", output, err)
+	}
+	if !strings.Contains(string(output), chinaFirewallOwnerMarker) {
 		return false, chinaInboundFirewallError("refuse unmanaged nftables table", nil)
 	}
 	return true, nil
@@ -202,8 +209,8 @@ func (f *chinaInboundFirewall) runBatch(ctx context.Context, command string, bat
 		return chinaInboundFirewallError("write nftables batch", err)
 	}
 	defer os.Remove(path)
-	if _, err := f.runCommand(ctx, command, "-f", path); err != nil {
-		return chinaInboundFirewallError("apply nftables batch", err)
+	if output, err := f.runCommand(ctx, command, "-f", path); err != nil {
+		return chinaNFTCommandError("apply nftables batch", output, err)
 	}
 	return nil
 }
@@ -475,4 +482,21 @@ func chinaInboundFirewallError(action string, err error) error {
 		return fmt.Errorf("%w: %s", errManagedChinaInboundFirewall, action)
 	}
 	return fmt.Errorf("%w: %s: %v", errManagedChinaInboundFirewall, action, err)
+}
+
+// Do not return nft's raw output: failed commands may echo configuration.
+func chinaNFTCommandError(action string, output []byte, err error) error {
+	diagnostic := strings.ToLower(string(output) + " " + err.Error())
+	var reason error
+	switch {
+	case strings.Contains(diagnostic, "operation not permitted"), strings.Contains(diagnostic, "permission denied"), strings.Contains(diagnostic, "must be root"):
+		reason = errChinaNFTPrivileges
+	case strings.Contains(diagnostic, "operation not supported"), strings.Contains(diagnostic, "protocol not supported"), strings.Contains(diagnostic, "address family not supported"), strings.Contains(diagnostic, "not supported by kernel"):
+		reason = errChinaNFTKernel
+	case action == "apply nftables batch":
+		reason = errChinaNFTApply
+	default:
+		reason = errChinaNFTInspect
+	}
+	return fmt.Errorf("%w: %s: %w", errManagedChinaInboundFirewall, action, reason)
 }

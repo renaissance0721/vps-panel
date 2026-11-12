@@ -202,6 +202,10 @@ func TestDesiredStateErrorMessageDoesNotExposeDiagnostics(t *testing.T) {
 		{fmt.Errorf("%w: certificate private diagnostic", errManagedACME), errManagedACME.Error()},
 		{fmt.Errorf("%w: nft exit status", errManagedChinaInboundFirewall), errManagedChinaInboundFirewall.Error()},
 		{errManagedChinaInboundRequiresNFT, errManagedChinaInboundRequiresNFT.Error()},
+		{chinaNFTCommandError("list tables", []byte("Operation not permitted secret"), errors.New("exit status")), errChinaNFTPrivileges.Error()},
+		{chinaNFTCommandError("list tables", []byte("Operation not supported secret"), errors.New("exit status")), errChinaNFTKernel.Error()},
+		{chinaNFTCommandError("list tables", []byte("secret"), errors.New("exit status")), errChinaNFTInspect.Error()},
+		{chinaNFTCommandError("apply nftables batch", []byte("secret"), errors.New("exit status")), errChinaNFTApply.Error()},
 		{fmt.Errorf("%w: private diagnostic", errUnsupportedInitSystem), errUnsupportedInitSystem.Error()},
 		{errors.New("internal path detail"), "managed runtime apply failed"},
 	}

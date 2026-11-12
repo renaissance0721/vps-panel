@@ -180,7 +180,7 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 	}
 
 	manager.lookPath = func(string) (string, error) { return "", errors.New("not found") }
-	if err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true}); !errors.Is(err, errManagedChinaInboundRequiresNFT) || err.Error() != "managed China inbound firewall requires nftables" {
+	if err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true}); !errors.Is(err, errManagedChinaInboundRequiresNFT) || !strings.Contains(err.Error(), "apk add --no-cache nftables") {
 		t.Fatalf("enabled missing nft error = %v", err)
 	}
 	if err := manager.disable(t.Context()); err != nil {
@@ -220,6 +220,39 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 	}
 	if err := manager.disable(t.Context()); err != nil {
 		t.Fatalf("disable managed table: %v", err)
+	}
+}
+
+func TestChinaFirewallReportsNFTFailuresWithoutLeakingOutput(t *testing.T) {
+	for _, tc := range []struct{ name, output, expected string }{
+		{"permission", "Operation not permitted synthetic-secret", "insufficient firewall privileges"},
+		{"kernel", "Protocol not supported synthetic-secret", "kernel or container support"},
+		{"other", "syntax error synthetic-secret", "nftables inspection failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, _ := newTestChinaInboundFirewall(t)
+			manager.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+				return []byte(tc.output), errors.New("exit status 1")
+			}
+			err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true})
+			if !errors.Is(err, errManagedChinaInboundFirewall) || !strings.Contains(err.Error(), tc.expected) || strings.Contains(err.Error(), "synthetic-secret") {
+				t.Fatalf("diagnostic: %v", err)
+			}
+		})
+	}
+	manager, now := newTestChinaInboundFirewall(t)
+	if err := manager.writeCache(chinaPrefixes{FetchedAt: now, IPv4: []string{"1.0.1.0/24"}, IPv6: []string{"2400:3200::/32"}}); err != nil {
+		t.Fatal(err)
+	}
+	manager.runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if args[0] == "list" {
+			return nil, nil
+		}
+		return []byte("syntax error synthetic-secret"), errors.New("exit status 1")
+	}
+	err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true})
+	if !errors.Is(err, errManagedChinaInboundFirewall) || !strings.Contains(err.Error(), "apply nftables batch") || strings.Contains(err.Error(), "synthetic-secret") {
+		t.Fatalf("apply diagnostic: %v", err)
 	}
 }
 

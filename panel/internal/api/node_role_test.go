@@ -126,7 +126,7 @@ func TestNodeRoleAPIDTOValidationAndPermissions(t *testing.T) {
 	}
 }
 
-func TestPersonalSourceAPIRejectsClassifiedSourcesAndRelayFlagsAreReadOnly(t *testing.T) {
+func TestPersonalSourceAPIAcceptsBothRolesAndRelayFlagsAreReadOnly(t *testing.T) {
 	f := newProxyDeleteFixture(t)
 	targetID, sourceID := f.createServer(t, "target"), f.createServer(t, "source")
 	direct := f.createProxy(t, targetID, 443, "direct")
@@ -148,6 +148,10 @@ func TestPersonalSourceAPIRejectsClassifiedSourcesAndRelayFlagsAreReadOnly(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	manual, _, err := relaystore.NewService(f.db).Create(t.Context(), relaystore.CreateInput{ServerID: sourceID, Name: "manual", ListenPort: 9001, EntryHostMode: "manual", EntryHost: "relay.example.com", TargetType: "manual", TargetHost: "example.com", TargetPort: 443, Network: "tcp", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	published, _, err := f.subscriptions.CreatePublishedNode(t.Context(), subscriptionstore.CreatePublishedNodeInput{Name: "published", Mode: "relay", SourceServerID: &sourceID, TargetProxyID: landing.ID, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +166,7 @@ func TestPersonalSourceAPIRejectsClassifiedSourcesAndRelayFlagsAreReadOnly(t *te
 		allowed bool
 	}{
 		{"proxy", direct.ID, true}, {"landing", externalDirect.ID, true}, {"relay", local.ID, true},
-		{"proxy", landing.ID, false}, {"landing", externalLanding.ID, false}, {"relay", *published.RelayID, false},
+		{"proxy", landing.ID, true}, {"landing", externalLanding.ID, true}, {"relay", *published.RelayID, false}, {"relay", manual.ID, false},
 	} {
 		body := map[string]any{"nodes": []map[string]any{{"source_type": source.kind, "source_id": source.id, "display_name": "node", "enabled": true}}}
 		response := performRequest(t, f.handler, http.MethodPut, fmt.Sprintf("/api/personal-subscriptions/%d/nodes", group.ID), body, f.cookie)
@@ -174,7 +178,7 @@ func TestPersonalSourceAPIRejectsClassifiedSourcesAndRelayFlagsAreReadOnly(t *te
 	var payload struct {
 		Relays []relayResponse `json:"relays"`
 	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil || len(payload.Relays) != 2 {
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil || len(payload.Relays) != 3 {
 		t.Fatalf("relay List DTO: %d", response.Code)
 	}
 	for _, value := range payload.Relays {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
+	"github.com/renaissance0721/vps-panel/panel/internal/noderole"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"gopkg.in/yaml.v3"
@@ -63,6 +64,10 @@ func TestPersonalDisabledSourcesRejectNewNodesAndPreserveExisting(t *testing.T) 
 			if sourceType == PersonalSourceProxy {
 				value := createSubscriptionTestRealityProxy(t, db, 1, "proxy", 443)
 				sourceID = value.ID
+				role := noderole.Landing
+				if _, _, err := service.proxies.Update(t.Context(), sourceID, proxystore.UpdateInput{NodeRole: &role}); err != nil {
+					t.Fatal(err)
+				}
 				setEnabled = func(enabled bool) {
 					t.Helper()
 					if _, _, err := service.proxies.Update(t.Context(), sourceID, proxystore.UpdateInput{Enabled: &enabled}); err != nil {
@@ -164,6 +169,10 @@ func TestPersonalGenerationSkipsUnavailableClientsAndEndpoints(t *testing.T) {
 	insertPersonalTestUser(t, db, 100, "admin", "admin")
 	insertSubscriptionTestServer(t, db, 1, "source", "198.51.100.10")
 	value := createSubscriptionTestRealityProxy(t, db, 1, "proxy", 443)
+	role := noderole.Landing
+	if _, _, err := service.proxies.Update(t.Context(), value.ID, proxystore.UpdateInput{NodeRole: &role}); err != nil {
+		t.Fatal(err)
+	}
 	external, err := service.landings.Create(t.Context(), 100, landingstore.CreateInput{Name: "fallback", URI: "vless://uuid@healthy.example.com:443"})
 	if err != nil {
 		t.Fatal(err)
@@ -188,9 +197,11 @@ func TestPersonalGenerationSkipsUnavailableClientsAndEndpoints(t *testing.T) {
 	for _, test := range []struct {
 		name, status, serverStatus, address string
 		enabled                             bool
+		missing                             bool
 		expiresAt, limit                    any
 	}{
 		{name: "ready", status: PersonalNodeReady, serverStatus: "online", address: "198.51.100.10", enabled: true},
+		{name: "missing client", status: PersonalNodeMissing, serverStatus: "online", address: "198.51.100.10", enabled: true, missing: true},
 		{name: "disabled client", status: PersonalNodeClientDisabled, serverStatus: "online", address: "198.51.100.10"},
 		{name: "expired client", status: PersonalNodeClientExpired, serverStatus: "online", address: "198.51.100.10", enabled: true, expiresAt: service.now().Add(-time.Second).Unix()},
 		{name: "exhausted client", status: PersonalNodeClientExhausted, serverStatus: "online", address: "198.51.100.10", enabled: true, limit: 100},
@@ -198,8 +209,12 @@ func TestPersonalGenerationSkipsUnavailableClientsAndEndpoints(t *testing.T) {
 		{name: "missing entry address", status: PersonalNodeEndpointUnavailable, serverStatus: "online", enabled: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := db.Exec(`UPDATE clients SET enabled = ?, expires_at = ?, traffic_limit_bytes = ? WHERE id = ?`,
-				test.enabled, test.expiresAt, test.limit, value.Clients[0].ID); err != nil {
+			clientName := "default"
+			if test.missing {
+				clientName = "different"
+			}
+			if _, err := db.Exec(`UPDATE clients SET name = ?, enabled = ?, expires_at = ?, traffic_limit_bytes = ? WHERE id = ?`,
+				clientName, test.enabled, test.expiresAt, test.limit, value.Clients[0].ID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Exec(`UPDATE servers SET status = ? WHERE id = 1`, test.serverStatus); err != nil {

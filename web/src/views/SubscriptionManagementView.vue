@@ -833,7 +833,7 @@ function subscriberLinks(value: Subscriber): SubscriptionLinks {
 function personalSourceLabel(value: string, candidate = false) {
 	if (value === 'remote_source') return '机场订阅（全部节点）'
 	if (value === 'remote_node') return '机场订阅节点'
-  if (candidate) return value === 'proxy' ? '受管直连节点' : value === 'relay' ? '本地中转' : '外部直连节点'
+  if (candidate) return value === 'proxy' ? '受管 Proxy 节点' : value === 'relay' ? '本地中转' : '外部 Landing 节点'
   return value === 'proxy' ? '本地 Proxy' : value === 'relay' ? '中转 Relay' : '外部节点 Landing'
 }
 
@@ -1677,7 +1677,7 @@ onUnmounted(() => {
       <n-button secondary attr-type="button" :loading="personalSourcesLoading" :disabled="!personalClientName.trim()" @click="addAllPersonalSources">添加全部可用节点</n-button>
     </div>
     <section v-if="personalSourceAdderExpanded" class="subscription-node-picker personal-source-adder">
-      <p class="form-help">可添加受管直连节点、外部直连节点、本地中转和机场订阅。已有的不可用来源会保留，生成订阅时跳过。</p>
+      <p class="form-help">可添加受管 Proxy、外部 Landing、本地中转和机场订阅；直连或落地用途均可选择。已有的不可用来源会保留，生成订阅时跳过。</p>
       <div class="collapsible-section-header"><strong>添加节点</strong><n-button size="tiny" secondary attr-type="button" @click="personalSourceAdderExpanded = false">收起</n-button></div>
       <div class="personal-source-toolbar">
         <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" />

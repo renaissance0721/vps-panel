@@ -45,6 +45,13 @@ func TestRemoteBackupRestoresKeyAndRejectsMissingOrWrongKey(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO remote_subscription_nodes(source_id,identity,original_name,display_name,protocol,format,payload_ciphertext,position,generation) VALUES(?,?,?,?,?,?,?,?,?)`, source.ID, "synthetic-id", name, name, "trojan", "uri", payload, 0, 1); err != nil {
 		t.Fatal(err)
 	}
+	manual, err := service.Create(t.Context(), actor, subscription.RemoteInput{Mode: "manual", Name: "Manual", Enabled: true, IntervalSeconds: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Import(t.Context(), actor, manual.ID, []byte("trojan://synthetic-manual@example.com:443#ManualNode\n")); err != nil {
+		t.Fatal(err)
+	}
 	archive, cleanup, err := backup.CreateArchive(t.Context(), db, dir, version, domain, "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +101,14 @@ func TestRemoteBackupRestoresKeyAndRejectsMissingOrWrongKey(t *testing.T) {
 	nodes, err := restored.Nodes(t.Context(), actor, source.ID)
 	if err != nil || len(nodes) != 1 || nodes[0].Name != "Node" {
 		t.Fatalf("restored nodes: %+v %v", nodes, err)
+	}
+	manualState, err := restored.Get(t.Context(), actor, manual.ID)
+	if err != nil || manualState.Mode != "manual" || !manualState.Enabled {
+		t.Fatalf("restored manual source: %+v %v", manualState, err)
+	}
+	manualNodes, err := restored.Nodes(t.Context(), actor, manual.ID)
+	if err != nil || len(manualNodes) != 1 || manualNodes[0].Name != "ManualNode" {
+		t.Fatalf("restored manual nodes: %+v %v", manualNodes, err)
 	}
 	input.URL = ""
 	if _, err := restored.Update(t.Context(), actor, source.ID, input); err != nil {

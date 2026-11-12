@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 38
+const LatestSchemaVersion = 39
 
 type migration struct {
 	version            int
@@ -61,6 +61,39 @@ var migrations = []migration{
 	{version: 36, name: "retire_mcp_approvals", up: retireMCPApprovals},
 	{version: 37, name: "remote_subscription_sources", up: createRemoteSubscriptions},
 	{version: 38, name: "personal_remote_sources", up: migratePersonalRemoteSources},
+	{version: 39, name: "manual_remote_sources", up: addManualRemoteSourceMode},
+}
+
+func addManualRemoteSourceMode(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(remote_subscription_sources)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, kind string
+		var def sql.NullString
+		if err := rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "source_mode" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE remote_subscription_sources ADD COLUMN source_mode TEXT NOT NULL DEFAULT 'url' CHECK(source_mode IN ('url','manual'))`)
+	return err
 }
 
 func migratePersonalRemoteSources(ctx context.Context, tx *sql.Tx) error {

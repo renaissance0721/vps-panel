@@ -26,16 +26,20 @@ var (
 	ErrRemoteBusy     = errors.New("机场订阅正在刷新或请求过于频繁")
 	ErrRemoteKey      = errors.New("机场订阅加密密钥不可用")
 	ErrRemoteChanged  = errors.New("机场订阅已修改，请重新刷新")
+	ErrRemoteManual   = errors.New("手动来源没有订阅地址，请导入文件")
+	ErrRemoteImport   = errors.New("文件内容无效或没有可用节点")
 )
 
 const (
 	remoteMinAttempt     = 60 * time.Second
 	remoteRefreshTimeout = 2 * time.Minute
 	remoteRefreshLease   = 3 * time.Minute
+	MaxRemoteImportBytes = remoteSubscriptionMaxBytes
 )
 
 type RemoteSource struct {
 	ID              int64      `json:"id"`
+	Mode            string     `json:"mode"`
 	Name            string     `json:"name"`
 	UserAgent       string     `json:"user_agent"`
 	Enabled         bool       `json:"enabled"`
@@ -62,6 +66,7 @@ type RemoteNode struct {
 }
 
 type RemoteInput struct {
+	Mode            string `json:"mode"`
 	Name            string `json:"name"`
 	URL             string `json:"url"`
 	UserAgent       string `json:"user_agent"`
@@ -99,7 +104,7 @@ func NewRemoteService(db *sql.DB, keyPath string) *RemoteService {
 		active: make(map[int64]bool), previewLast: make(map[int64]time.Time), semaphore: make(chan struct{}, 4)}
 }
 
-const remoteSourceSelect = `SELECT s.id,s.name,s.user_agent,s.enabled,s.interval_seconds,
+const remoteSourceSelect = `SELECT s.id,s.source_mode,s.name,s.user_agent,s.enabled,s.interval_seconds,
 	s.last_attempt_at,s.last_success_at,s.last_error,s.warnings_json,
 	(SELECT COUNT(*) FROM remote_subscription_nodes n WHERE n.source_id=s.id),
 	s.upload,s.download,s.total,s.expire,s.refresh_lease_until FROM remote_subscription_sources s`
@@ -108,7 +113,7 @@ func scanRemoteSource(row rowScanner) (RemoteSource, error) {
 	var value RemoteSource
 	var attempt, success sql.NullInt64
 	var warnings string
-	err := row.Scan(&value.ID, &value.Name, &value.UserAgent, &value.Enabled, &value.IntervalSeconds,
+	err := row.Scan(&value.ID, &value.Mode, &value.Name, &value.UserAgent, &value.Enabled, &value.IntervalSeconds,
 		&attempt, &success, &value.LastError, &warnings, &value.NodeCount,
 		&value.Upload, &value.Download, &value.Total, &value.Expire, &value.leaseUntil)
 	if err != nil {
@@ -170,7 +175,11 @@ func (s *RemoteService) decorateStatus(value *RemoteSource) {
 	now := s.now().UTC().Unix()
 	value.Refreshing = s.isRefreshing(value.ID) || (value.leaseUntil.Valid && value.leaseUntil.Int64 > now)
 	if !value.Refreshing && value.leaseUntil.Valid && value.LastError == "" {
-		value.LastError = "上次刷新中断，等待重试"
+		if value.Mode == "manual" {
+			value.LastError = "上次导入中断，请重新导入"
+		} else {
+			value.LastError = "上次刷新中断，等待重试"
+		}
 	}
 }
 
@@ -228,7 +237,10 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 	if validatePersonalActor(actor) != nil {
 		return RemoteSource{}, ErrRemoteNotFound
 	}
-	if !validRemoteInput(input, true) {
+	if input.Mode == "" {
+		input.Mode = "url"
+	}
+	if (input.Mode != "url" && input.Mode != "manual") || (input.Mode == "manual" && input.URL != "") || !validRemoteInput(input, input.Mode == "url") {
 		return RemoteSource{}, ErrRemoteInvalid
 	}
 	s.mu.Lock()
@@ -248,8 +260,8 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 	}
 	now := s.now().UTC().Unix()
 	result, err := s.db.ExecContext(ctx, `INSERT INTO remote_subscription_sources
-		(owner_user_id,name,url_ciphertext,user_agent,enabled,interval_seconds,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?)`, actor.UserID, input.Name, secret, input.UserAgent, input.Enabled, input.IntervalSeconds, now, now)
+		(owner_user_id,name,url_ciphertext,user_agent,enabled,interval_seconds,created_at,updated_at,source_mode)
+		VALUES(?,?,?,?,?,?,?,?,?)`, actor.UserID, input.Name, secret, input.UserAgent, input.Enabled, input.IntervalSeconds, now, now, input.Mode)
 	if err != nil {
 		return RemoteSource{}, err
 	}
@@ -261,8 +273,12 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 }
 
 func (s *RemoteService) Update(ctx context.Context, actor PersonalSubscriptionActor, id int64, input RemoteInput) (RemoteSource, error) {
-	if _, err := s.Get(ctx, actor, id); err != nil {
+	current, err := s.Get(ctx, actor, id)
+	if err != nil {
 		return RemoteSource{}, err
+	}
+	if (input.Mode != "" && input.Mode != current.Mode) || (current.Mode == "manual" && input.URL != "") {
+		return RemoteSource{}, ErrRemoteInvalid
 	}
 	if !validRemoteInput(input, false) {
 		return RemoteSource{}, ErrRemoteInvalid
@@ -603,13 +619,16 @@ func (s *RemoteService) TestSaved(ctx context.Context, actor PersonalSubscriptio
 	if validatePersonalActor(actor) != nil || id <= 0 {
 		return RemotePreview{}, ErrRemoteNotFound
 	}
-	var ciphertext string
-	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&ciphertext)
+	var ciphertext, mode string
+	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,source_mode FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&ciphertext, &mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RemotePreview{}, ErrRemoteNotFound
 	}
 	if err != nil {
 		return RemotePreview{}, err
+	}
+	if mode == "manual" {
+		return RemotePreview{}, ErrRemoteManual
 	}
 	address, err := s.secrets.Decrypt(ciphertext)
 	if err != nil {
@@ -618,12 +637,88 @@ func (s *RemoteService) TestSaved(ctx context.Context, actor PersonalSubscriptio
 	return s.Test(ctx, actor, address, userAgent)
 }
 
-func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionActor, id int64) (RemoteSource, error) {
+func (s *RemoteService) Import(ctx context.Context, actor PersonalSubscriptionActor, id int64, body []byte) (RemoteSource, error) {
 	if validatePersonalActor(actor) != nil || id <= 0 {
 		return RemoteSource{}, ErrRemoteNotFound
 	}
 	if _, err := s.Get(ctx, actor, id); err != nil {
 		return RemoteSource{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, remoteRefreshTimeout)
+	defer cancel()
+	s.activeMu.Lock()
+	if s.active[id] {
+		s.activeMu.Unlock()
+		return RemoteSource{}, ErrRemoteBusy
+	}
+	select {
+	case s.semaphore <- struct{}{}:
+	default:
+		s.activeMu.Unlock()
+		return RemoteSource{}, ErrRemoteBusy
+	}
+	s.active[id] = true
+	s.activeMu.Unlock()
+	defer func() { s.activeMu.Lock(); delete(s.active, id); s.activeMu.Unlock(); <-s.semaphore }()
+	var ciphertext string
+	var revision int64
+	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,revision FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&ciphertext, &revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RemoteSource{}, ErrRemoteNotFound
+	}
+	if err != nil {
+		return RemoteSource{}, err
+	}
+	parsed, err := parseRemoteSubscription(body)
+	if err != nil || parsed.invalid || len(parsed.nodes) == 0 {
+		return RemoteSource{}, ErrRemoteImport
+	}
+	address, err := s.secrets.Decrypt(ciphertext)
+	if err != nil {
+		return RemoteSource{}, ErrRemoteKey
+	}
+	claimBytes := make([]byte, 16)
+	if _, err = rand.Read(claimBytes); err != nil {
+		return RemoteSource{}, errors.New("cannot create import claim")
+	}
+	claim := hex.EncodeToString(claimBytes)
+	now := s.now().UTC().Unix()
+	result, err := s.db.ExecContext(ctx, `UPDATE remote_subscription_sources SET last_attempt_at=?,last_error='',refresh_claim=?,refresh_lease_until=? WHERE id=? AND owner_user_id=? AND revision=? AND (refresh_lease_until IS NULL OR refresh_lease_until<=?)`, now, claim, now+int64(remoteRefreshLease.Seconds()), id, actor.UserID, revision, now)
+	if err != nil {
+		return RemoteSource{}, err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		var current int64
+		err := s.db.QueryRowContext(ctx, `SELECT revision FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&current)
+		if errors.Is(err, sql.ErrNoRows) {
+			return RemoteSource{}, ErrRemoteNotFound
+		}
+		if err != nil {
+			return RemoteSource{}, err
+		}
+		if current != revision {
+			return RemoteSource{}, ErrRemoteChanged
+		}
+		return RemoteSource{}, ErrRemoteBusy
+	}
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_, _ = s.db.ExecContext(cleanup, `UPDATE remote_subscription_sources SET refresh_claim='',refresh_lease_until=NULL WHERE id=? AND owner_user_id=? AND refresh_claim=?`, id, actor.UserID, claim)
+	}()
+	return s.commitRemoteCache(ctx, actor, id, revision, claim, ciphertext, address, parsed, "")
+}
+
+func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionActor, id int64) (RemoteSource, error) {
+	if validatePersonalActor(actor) != nil || id <= 0 {
+		return RemoteSource{}, ErrRemoteNotFound
+	}
+	value, err := s.Get(ctx, actor, id)
+	if err != nil {
+		return RemoteSource{}, err
+	}
+	if value.Mode == "manual" {
+		return RemoteSource{}, ErrRemoteManual
 	}
 	ctx, cancel := context.WithTimeout(ctx, remoteRefreshTimeout)
 	defer cancel()
@@ -650,7 +745,7 @@ func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionA
 	var ciphertext, userAgent string
 	var revision int64
 	var lastAttempt sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,user_agent,revision,last_attempt_at FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).
+	err = s.db.QueryRowContext(ctx, `SELECT url_ciphertext,user_agent,revision,last_attempt_at FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).
 		Scan(&ciphertext, &userAgent, &revision, &lastAttempt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RemoteSource{}, ErrRemoteNotFound
@@ -708,7 +803,12 @@ func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionA
 	if len(parsed.nodes) == 0 {
 		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, revision, claim, errRemoteContent)
 	}
+	return s.commitRemoteCache(ctx, actor, id, revision, claim, ciphertext, address, parsed, fetched.subscriptionInfo)
+}
 
+// Commit both downloaded and manually imported nodes with the same lease,
+// encryption, stable-identity upsert and atomic cache replacement.
+func (s *RemoteService) commitRemoteCache(ctx context.Context, actor PersonalSubscriptionActor, id, revision int64, claim, ciphertext, address string, parsed remoteParseResult, info string) (RemoteSource, error) {
 	type encryptedNode struct{ identity, originalName, displayName, protocol, format, payload string }
 	values := make([]string, 0, len(parsed.nodes)*3)
 	names := safeRemoteNodeNames(parsed.nodes, address)
@@ -727,13 +827,13 @@ func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionA
 	if err != nil {
 		return RemoteSource{}, err
 	}
-	upload, download, total, expire := remoteMetadata(fetched.subscriptionInfo)
+	upload, download, total, expire := remoteMetadata(info)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RemoteSource{}, err
 	}
 	defer tx.Rollback()
-	result, err = tx.ExecContext(ctx, `UPDATE remote_subscription_sources SET cache_generation=cache_generation+1,last_success_at=?,
+	result, err := tx.ExecContext(ctx, `UPDATE remote_subscription_sources SET cache_generation=cache_generation+1,last_success_at=?,
 		last_error='',warnings_json=?,upload=?,download=?,total=?,expire=?,refresh_claim='',refresh_lease_until=NULL
 		WHERE id=? AND owner_user_id=? AND revision=? AND refresh_claim=? AND refresh_lease_until>?`,
 		s.now().UTC().Unix(), string(warnings), upload, download, total, expire, id, actor.UserID, revision, claim, s.now().UTC().Unix())
@@ -848,7 +948,7 @@ func (s *RemoteService) Run(ctx context.Context) {
 func (s *RemoteService) refreshDue(ctx context.Context) {
 	now := s.now().UTC().Unix()
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.owner_user_id,u.role FROM remote_subscription_sources s
-		JOIN users u ON u.id=s.owner_user_id WHERE s.enabled=1 AND u.role IN ('admin','vip')
+		JOIN users u ON u.id=s.owner_user_id WHERE s.enabled=1 AND s.source_mode='url' AND u.role IN ('admin','vip')
 		AND ((s.refresh_lease_until IS NOT NULL AND s.refresh_lease_until<=?) OR
 		(s.refresh_lease_until IS NULL AND (s.last_attempt_at IS NULL OR s.last_attempt_at+s.interval_seconds<=?)))
 		ORDER BY COALESCE(s.last_attempt_at,0),s.id LIMIT 64`, now, now)

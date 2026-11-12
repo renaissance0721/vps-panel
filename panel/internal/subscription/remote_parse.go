@@ -33,6 +33,7 @@ type remoteParsedNode struct {
 type remoteParseResult struct {
 	nodes    []remoteParsedNode
 	warnings []string
+	invalid  bool
 }
 
 func remoteProtocol(value string) string {
@@ -68,6 +69,7 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 		return remoteParseResult{}, errRemoteContent
 	}
 	text := strings.TrimSpace(string(body))
+	text = strings.TrimSpace(strings.TrimPrefix(text, "\ufeff"))
 	if text == "" {
 		return remoteParseResult{}, errRemoteContent
 	}
@@ -89,6 +91,7 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 		}
 		parsed, err := url.Parse(line)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点格式无效", index+1))
 			continue
 		}
@@ -98,11 +101,13 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 			continue
 		}
 		if !remoteURIHasRequiredFields(parsed, protocol) {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点缺少必要连接字段", index+1))
 			continue
 		}
 		name := strings.TrimSpace(parsed.Fragment)
 		if !remoteDisplayName(name) {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点名称无效", index+1))
 			continue
 		}
@@ -195,11 +200,13 @@ func parseRemoteYAML(body []byte) (remoteParseResult, error) {
 	result := remoteParseResult{}
 	for index, node := range proxies.Content {
 		if node.Kind != yaml.MappingNode {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 个节点格式无效", index+1))
 			continue
 		}
 		nameNode, typeNode := mappingValue(node, "name"), mappingValue(node, "type")
 		if nameNode == nil || typeNode == nil || nameNode.Kind != yaml.ScalarNode || typeNode.Kind != yaml.ScalarNode || !remoteDisplayName(strings.TrimSpace(nameNode.Value)) {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 个节点名称或协议无效", index+1))
 			continue
 		}
@@ -209,6 +216,7 @@ func parseRemoteYAML(body []byte) (remoteParseResult, error) {
 			continue
 		}
 		if !remoteYAMLHasRequiredFields(node, protocol) {
+			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 个节点缺少必要连接字段", index+1))
 			continue
 		}

@@ -211,7 +211,7 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 管理用户的个人订阅按 owner 隔离，组织可访问的节点来源、节点实例及路由绑定。
 
-机场订阅来源通过 `/api/remote-subscriptions` 管理，仅 admin / vip 可访问，且所有操作按 owner 隔离。`POST /test` 使用提交的地址预览，`POST /{id}/test` 使用已保存地址预览；`POST /{id}/refresh` 更新缓存，`GET /{id}/nodes` 只返回节点元数据。`PUT /{id}` 的 URL 留空表示保留已有地址，非空时显式替换。创建及更新使用 `name`、`url`、`user_agent`、`enabled` 和 `interval_seconds`，间隔范围为 300–604800 秒，按整分钟设置。
+机场订阅来源通过 `/api/remote-subscriptions` 管理，仅 admin / vip 可访问，且所有操作按 owner 隔离。`POST /test` 使用提交的地址预览，`POST /{id}/test` 使用已保存地址预览；`POST /{id}/refresh` 更新缓存，`GET /{id}/nodes` 只返回节点元数据。`PUT /{id}` 的 URL 留空表示保留已有地址，非空时显式替换。创建及更新使用 `name`、`url`、`user_agent`、`enabled` 和 `interval_seconds`，间隔范围为 300–604800 秒，按整分钟设置。创建时可传 `mode=manual` 且 URL 留空，默认 `mode=url`；手动来源不参与网络调度。`POST /{id}/import` 以 `multipart/form-data` 的 `file` 字段导入最多 4 MiB，复用现有解析器、加密缓存和刷新租约。格式错误或空内容不替换缓存；不支持的协议可跳过并返回警告。导入不携带流量元数据，因此清空旧上游流量与到期值；网络来源后续成功刷新会替换导入结果。
 
 Panel 后台按到期时间调度，限制并发和每来源刷新频率；数据库租约阻止同一来源的跨实例并发刷新，并在进程中断后过期回收。抓取与解析成功后在事务内更新缓存，失败保留上次成功结果。缓存按来源和内容身份维持节点 ID，支持顺序变化；地址更新时不会立即删除旧缓存。来源 URL、节点原始名称、显示名称和完整 payload 使用独立 AEAD 用途标识加密；普通 API、审计和错误不返回 URL 或节点凭据。个人订阅可选择整个来源或单个缓存节点，生成时再次检查 owner 并只读取本地缓存；整源动态展开，停用、删除或移除的来源和节点跳过输出，原选择项及绑定保留。共享订阅不读取远程来源。
 

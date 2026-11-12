@@ -61,3 +61,45 @@ test('节点预览和删除使用对应来源接口', async () => {
   await state.remove(source)
   assert.deepEqual(calls.slice(0, 2), [['/api/remote-subscriptions/1/nodes', undefined], ['/api/remote-subscriptions/1', 'DELETE']])
 })
+
+test('手动来源可无地址创建并导入文件，显示结果和解析警告', async () => {
+  const manual = { ...source, mode: 'manual', name: 'Manual', warnings: ['发现重名节点'], node_count: 2 }
+  const calls = []
+  globalThis.fetch = async (path, options = {}) => {
+    calls.push([path, options])
+    if (path.endsWith('/import')) return json({ source: manual })
+    if (options.method === 'POST') return json({ source: manual })
+    return json({ sources: [manual] })
+  }
+  const { state } = await render()
+  state.openForm(); state.url.value = 'https://example.com/?token=synthetic'; state.userAgent.value = 'Previous'; state.mode.value = 'manual'; state.name.value = 'Manual'
+  await state.save()
+  assert.deepEqual(JSON.parse(calls[0][1].body), { name: 'Manual', url: '', user_agent: '', enabled: true, interval_seconds: 3600, mode: 'manual' })
+  const file = new File(['trojan://synthetic@example.com:443#Node'], 'manual.txt', { type: 'text/plain' })
+  const input = { files: [file], value: 'selected' }
+  await state.importFile(manual, { target: input })
+  const upload = calls.find(([path]) => path.endsWith('/import'))
+  assert.equal(upload[0], '/api/remote-subscriptions/1/import')
+  assert.equal(await upload[1].body.get('file').text(), await file.text())
+  assert.equal(input.value, '')
+  assert.match(state.importNotice.value, /导入 2 个节点/)
+  assert.deepEqual(state.sources.value[0].warnings, ['发现重名节点'])
+  const { html } = await render(state => { state.loading.value = false; state.sources.value = [manual] })
+  assert.match(html, /手动导入来源/)
+  assert.match(html, /导入文件/)
+  assert.doesNotMatch(html, /立即刷新/)
+})
+
+test('文件导入拒绝空文件、超大文件并显示服务端错误', async () => {
+  let calls = 0
+  globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: '文件内容无效或没有可用节点' }), { status: 400 }) }
+  const { state } = await render()
+  for (const file of [new File([], 'empty.txt'), new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'large.txt')]) {
+    await state.importFile(source, { target: { files: [file], value: 'selected' } })
+    assert.match(state.error.value, /非空且不超过/)
+  }
+  assert.equal(calls, 0)
+  await state.importFile(source, { target: { files: [new File(['bad'], 'bad.txt')], value: 'selected' } })
+  assert.equal(calls, 1)
+  assert.equal(state.error.value, '文件内容无效或没有可用节点')
+})

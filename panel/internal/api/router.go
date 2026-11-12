@@ -147,6 +147,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("PUT /api/remote-subscriptions/{id}", s.requireManager(s.updateRemoteSubscription))
 	mux.HandleFunc("DELETE /api/remote-subscriptions/{id}", s.requireManager(s.deleteRemoteSubscription))
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/refresh", s.requireManager(s.refreshRemoteSubscription))
+	mux.HandleFunc("POST /api/remote-subscriptions/{id}/import", s.requireManager(s.importRemoteSubscription))
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/test", s.requireManager(s.testSavedRemoteSubscription))
 	mux.HandleFunc("GET /api/remote-subscriptions/{id}/nodes", s.requireManager(s.remoteSubscriptionNodes))
 	mux.HandleFunc("GET /api/personal-subscriptions", s.requireManager(s.listPersonalSubscriptions))

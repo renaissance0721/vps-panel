@@ -2,11 +2,59 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
+
+func (s *server) importRemoteSubscription(w http.ResponseWriter, r *http.Request, user auth.User) {
+	w.Header().Set("Cache-Control", "no-store")
+	id, ok := readPositiveID(w, r.PathValue("id"), "机场订阅 ID 无效")
+	if !ok {
+		return
+	}
+	if _, err := s.remoteSubscriptions.Get(r.Context(), personalActor(user), id); err != nil {
+		writeRemoteSubscriptionError(w, err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, subscriptionstore.MaxRemoteImportBytes+(64<<10))
+	reader, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择有效的订阅文件")
+		return
+	}
+	part, err := reader.NextPart()
+	if err != nil || part.FormName() != "file" || part.FileName() == "" {
+		writeError(w, http.StatusBadRequest, "请选择有效的订阅文件")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(part, subscriptionstore.MaxRemoteImportBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无法读取订阅文件")
+		return
+	}
+	if len(body) > subscriptionstore.MaxRemoteImportBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "订阅文件不能超过 4 MiB")
+		return
+	}
+	if err = part.Close(); err != nil {
+		writeError(w, http.StatusBadRequest, "无法读取订阅文件")
+		return
+	}
+	if _, err = reader.NextPart(); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "每次只能导入一个订阅文件")
+		return
+	}
+	value, err := s.remoteSubscriptions.Import(r.Context(), personalActor(user), id, body)
+	if err != nil {
+		writeRemoteSubscriptionError(w, err)
+		return
+	}
+	s.recordAudit(r, user, "remote_subscription.import", "remote_subscription", id, "导入机场订阅文件")
+	writeJSON(w, http.StatusOK, map[string]any{"source": value})
+}
 
 func (s *server) listRemoteSubscriptions(w http.ResponseWriter, r *http.Request, user auth.User) {
 	values, err := s.remoteSubscriptions.List(r.Context(), personalActor(user))
@@ -143,6 +191,8 @@ func writeRemoteSubscriptionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "机场订阅不存在")
 	case errors.Is(err, subscriptionstore.ErrRemoteInvalid):
 		writeError(w, http.StatusBadRequest, "机场订阅设置无效")
+	case errors.Is(err, subscriptionstore.ErrRemoteImport), errors.Is(err, subscriptionstore.ErrRemoteManual):
+		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, subscriptionstore.ErrRemoteBusy):
 		writeError(w, http.StatusTooManyRequests, "机场订阅正在刷新或请求过于频繁")
 	case errors.Is(err, subscriptionstore.ErrRemoteChanged):

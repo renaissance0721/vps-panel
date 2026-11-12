@@ -61,6 +61,25 @@ func RenderResolvedBase64Subscription(nodes []ResolvedSubscriptionNode) string {
 	return base64.StdEncoding.EncodeToString([]byte(strings.Join(values, "\n")))
 }
 
+func RenderPersonalBase64Subscription(data PersonalSubscriptionData) (string, error) {
+	values := make([]string, 0, len(data.Nodes))
+	for i, node := range data.Nodes {
+		value := node.URI
+		if node.RemoteFormat != "" {
+			var err error
+			value, err = remoteURI(node)
+			if err != nil {
+				return "", remoteRenderError(i, err)
+			}
+		}
+		if value == "" {
+			return "", remoteRenderError(i, ErrRemoteUnsupported)
+		}
+		values = append(values, value)
+	}
+	return base64.StdEncoding.EncodeToString([]byte(strings.Join(values, "\n"))), nil
+}
+
 func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	nodes := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
@@ -70,31 +89,41 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 }
 
 func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, error) {
-	return renderMihomoResolvedSubscription(data.Nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.MihomoTemplate)
+	names, bindings := expandedPersonalBindings(data)
+	return renderMihomoResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.MihomoTemplate)
 }
 
 func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
 	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate,
 ) ([]byte, error) {
-	proxies := make([]mihomoProxy, 0, len(nodes))
+	proxies := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	proxyNames := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		value, err := renderMihomoProxy(node)
-		if err != nil {
-			return nil, err
+	for i, node := range nodes {
+		var proxy *yaml.Node
+		var err error
+		if node.RemoteFormat != "" {
+			proxy, err = renderRemoteMihomo(node)
+			if err != nil {
+				return nil, remoteRenderError(i, err)
+			}
+		} else {
+			value, e := renderMihomoProxy(node)
+			if e != nil {
+				return nil, e
+			}
+			proxy, err = encodeYAMLValue(value)
+			if err != nil {
+				return nil, err
+			}
 		}
-		proxies = append(proxies, value)
+		proxies.Content = append(proxies.Content, proxy)
 		proxyNames = append(proxyNames, node.Name)
 	}
 	document, root, err := decodeMihomoTemplateDocument(template)
 	if err != nil {
 		return nil, err
 	}
-	proxyNode, err := encodeYAMLValue(proxies)
-	if err != nil {
-		return nil, fmt.Errorf("encode Mihomo proxies: %w", err)
-	}
-	setMappingValue(root, "proxies", proxyNode)
+	setMappingValue(root, "proxies", proxies)
 
 	if routingPreset == nil {
 		return nil, ErrInvalidRoutingPreset

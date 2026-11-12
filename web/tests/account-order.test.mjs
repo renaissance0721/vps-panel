@@ -165,7 +165,7 @@ test('发布节点条状卡片拖动持久化，失败时刷新回服务端顺�
   assert.equal(state.reorderingPublishedNodeID.value, null)
 })
 
-test('个人订阅卡片保留四个主要操作并移除独立 Shadowrocket 操作', async () => {
+test('个人订阅卡片保留四个主要操作，编辑器提供配置预览', async () => {
   const { html } = await render(Subscriptions, state => {
     state.loading.value = false
     state.personalSubscriptions.value = [{ id: 1, name: 'iPhone', enabled: true, client_name: 'refrain', nodes: [], routing_preset_name: '个人自用' }]
@@ -173,9 +173,35 @@ test('个人订阅卡片保留四个主要操作并移除独立 Shadowrocket 操
   for (const label of ['复制链接', '二维码', '编辑', '删除']) assert.match(html, new RegExp(`>${label}<`))
   assert.doesNotMatch(html, /复制 Shadowrocket URL|预览 Shadowrocket|>预览<|重置链接|个人订阅 Mihomo Preview/)
   const source = await readFile(new URL('../src/views/SubscriptionManagementView.vue', import.meta.url), 'utf8')
-  assert.doesNotMatch(source, /personalPreviewOpen|personalPreviewYAML|regeneratePersonalToken/)
-  assert.doesNotMatch(source, /shadowrocket-preview/)
-  assert.doesNotMatch(source, /mihomo-preview|regenerateUserToken/)
+  assert.match(source, /personalPreviewOpen/)
+  assert.match(source, /previewPersonal\('mihomo'\)/)
+  assert.match(source, /previewPersonal\('shadowrocket'\)/)
+  assert.doesNotMatch(source, /regeneratePersonalToken|regenerateUserToken/)
+})
+
+test('个人订阅可添加远程整源和单节点，并展示预览错误', async t => {
+  t.after(() => { globalThis.fetch = originalFetch })
+  const sources = [
+    { source_type: 'remote_source', source_id: 1, name: '机场', detail: '全部缓存', default_name: '机场', status: 'ready', status_detail: '使用本地缓存', requires_client: false },
+    { source_type: 'remote_node', source_id: 2, name: '东京', detail: '机场 · trojan', default_name: '东京', status: 'ready', status_detail: '使用本地缓存', requires_client: false },
+  ]
+  globalThis.fetch = async url => url.includes('/sources?')
+    ? { ok: true, status: 200, json: async () => ({ sources }) }
+    : url.includes('/mihomo-preview')
+      ? { ok: true, status: 200, json: async () => ({ yaml: 'proxies: []' }) }
+      : { ok: false, status: 422, json: async () => ({ error: '远程节点参数不兼容' }) }
+  const { state } = await render(Subscriptions, state => {
+    state.loading.value = false
+    state.personalClientName.value = 'owner'
+    state.editingPersonal.value = { id: 5 }
+  }, { role: 'vip' })
+  await state.loadPersonalSources()
+  for (const source of state.personalSources.value) state.addPersonalSource(source)
+  assert.deepEqual(state.personalNodes.value.map(node => node.source_type), ['remote_source', 'remote_node'])
+  await state.previewPersonal('mihomo')
+  assert.equal(state.personalPreviewContent.value, 'proxies: []')
+  await state.previewPersonal('shadowrocket')
+  assert.equal(state.personalFormError.value, '远程节点参数不兼容')
 })
 
 test('个人和共享模板选择按客户端类型隔离，停用模板仅保留当前引用', async () => {

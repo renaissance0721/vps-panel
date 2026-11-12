@@ -91,7 +91,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		proxies:              proxystore.NewService(db),
 		landings:             landingstore.NewService(db),
 		relays:               relays,
-		subscriptions:        subscriptionstore.NewService(db, relays),
+		subscriptions:        subscriptionstore.NewService(db, relays, keyPath),
 		remoteSubscriptions:  subscriptionstore.NewRemoteService(db, keyPath),
 		orders:               listorder.NewStore(db),
 		webRoot:              webRoot,

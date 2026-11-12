@@ -139,7 +139,9 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 	case subscriptionFormatShadowrocket:
 		body, err = subscriptionstore.RenderPersonalShadowrocketSubscription(value)
 	default:
-		body = []byte(subscriptionstore.RenderResolvedBase64Subscription(value.Nodes))
+		var encoded string
+		encoded, err = subscriptionstore.RenderPersonalBase64Subscription(value)
+		body = []byte(encoded)
 	}
 	if err != nil {
 		writePublicSubscriptionRenderError(w, err)
@@ -159,6 +161,8 @@ func subscriptionRenderErrorMessage(err error) string {
 	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch):
 		return "客户端模板类型不匹配"
 	case errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketProtocol), errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketRule):
+		return err.Error()
+	case errors.Is(err, subscriptionstore.ErrRemoteUnsupported):
 		return err.Error()
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingBindings):
 		return "策略组节点绑定无效"

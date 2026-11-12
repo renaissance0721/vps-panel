@@ -232,6 +232,9 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		if err != nil {
 			return PersonalSubscription{}, err
 		}
+		if (input.SourceType == PersonalSourceRemoteSource || input.SourceType == PersonalSourceRemoteNode) && (input.EntryHost != nil || input.EntryPort != nil) {
+			return PersonalSubscription{}, ErrInvalidPersonalNodes
+		}
 		state, err := s.inspectPersonalSource(ctx, actor, input.SourceType, input.SourceID, group.ClientName,
 			input.DisplayName, input.EntryHost, input.EntryPort, false)
 		if err != nil {
@@ -427,7 +430,11 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 			values = append(values, personalSourceResponse(PersonalSourceLanding, value.ID, value.Name, state))
 		}
 	}
-	return values, nil
+	remote, err := s.listPersonalRemoteSources(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	return append(values, remote...), nil
 }
 
 func (s *Service) GeneratePersonalSubscriptionData(ctx context.Context, tokenValue string) (PersonalSubscriptionData, error) {
@@ -462,7 +469,7 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 		return PersonalSubscriptionData{}, err
 	}
 	result := PersonalSubscriptionData{
-		Title: group.SubscriptionTitle, NodeNames: make(map[int64]string),
+		Title: group.SubscriptionTitle, NodeNames: make(map[int64]string), NodeGroupNames: make(map[int64][]string),
 		RoutingBindings: group.RoutingBindings, RoutingPreset: &routing,
 	}
 	if result.Title == "" {
@@ -486,8 +493,50 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 			result.ShadowrocketTemplate = &template
 		}
 	}
+	usedNames := map[string]bool{"DIRECT": true, "REJECT": true}
+	for _, group := range routing.Groups {
+		usedNames[group.Name] = true
+	}
+	for _, node := range group.Nodes {
+		if node.Enabled && node.SourceType != PersonalSourceRemoteSource {
+			usedNames[node.DisplayName] = true
+		}
+	}
 	for _, node := range group.Nodes {
 		if !node.Enabled {
+			continue
+		}
+		if node.SourceType == PersonalSourceRemoteSource || node.SourceType == PersonalSourceRemoteNode {
+			var sourceID, nodeID int64
+			if node.SourceType == PersonalSourceRemoteSource {
+				sourceID = node.SourceID
+				result.NodeGroupNames[node.ID] = []string{}
+			} else {
+				nodeID = node.SourceID
+			}
+			remoteNodes, err := s.personalRemoteNodes(ctx, actor.UserID, sourceID, nodeID, true)
+			if err != nil {
+				return PersonalSubscriptionData{}, err
+			}
+			for _, remote := range remoteNodes {
+				name := node.DisplayName
+				if sourceID > 0 {
+					name = remote.name
+					if usedNames[name] {
+						name = fmt.Sprintf("%s [%d]", name, remote.id)
+					}
+					for suffix := 2; usedNames[name]; suffix++ {
+						name = fmt.Sprintf("%s [%d-%d]", remote.name, remote.id, suffix)
+					}
+					usedNames[name] = true
+				}
+				result.Nodes = append(result.Nodes, ResolvedSubscriptionNode{Name: name, Protocol: remote.protocol, RemoteFormat: remote.format, RemotePayload: remote.payload})
+				if sourceID > 0 {
+					result.NodeGroupNames[node.ID] = append(result.NodeGroupNames[node.ID], name)
+				} else {
+					result.NodeNames[node.ID] = name
+				}
+			}
 			continue
 		}
 		state, err := s.inspectPersonalSource(ctx, actor, node.SourceType, node.SourceID,
@@ -567,6 +616,8 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 	sourceID int64, clientName, displayName string, entryHost *string, entryPort *int, resolve bool,
 ) (personalSourceState, error) {
 	switch sourceType {
+	case PersonalSourceRemoteSource, PersonalSourceRemoteNode:
+		return s.inspectPersonalRemote(ctx, actor, sourceType, sourceID)
 	case PersonalSourceProxy:
 		value, err := s.proxies.Get(ctx, sourceID)
 		if errors.Is(err, proxystore.ErrNotFound) {
@@ -938,7 +989,7 @@ func validatePersonalActor(actor PersonalSubscriptionActor) error {
 }
 
 func validPersonalSourceType(value string) bool {
-	return value == PersonalSourceProxy || value == PersonalSourceRelay || value == PersonalSourceLanding
+	return value == PersonalSourceProxy || value == PersonalSourceRelay || value == PersonalSourceLanding || value == PersonalSourceRemoteSource || value == PersonalSourceRemoteNode
 }
 
 func normalizePersonalNodeEndpoint(entryHost *string, entryPort *int) (*string, *int, error) {

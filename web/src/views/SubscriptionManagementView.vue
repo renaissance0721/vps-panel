@@ -102,7 +102,7 @@ type Subscriber = {
 
 type PersonalNode = {
   id: number
-  source_type: 'proxy' | 'relay' | 'landing'
+  source_type: 'proxy' | 'relay' | 'landing' | 'remote_source' | 'remote_node'
   source_id: number
   source_name: string
   source_detail: string
@@ -137,7 +137,7 @@ type PersonalSubscription = {
 type SubscriptionLinkFormat = 'auto' | 'mihomo' | 'shadowrocket' | 'base64'
 type SubscriptionLinks = Pick<PersonalSubscription, 'name' | 'subscription_auto_url' | 'subscription_base64_url' | 'subscription_mihomo_url' | 'subscription_shadowrocket_url'>
 type PersonalSource = {
-  source_type: 'proxy' | 'relay' | 'landing'
+  source_type: 'proxy' | 'relay' | 'landing' | 'remote_source' | 'remote_node'
   source_id: number
   name: string
   detail: string
@@ -257,6 +257,10 @@ const personalRoutingBindings = ref<RoutingBindings>({})
 const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
+const personalPreviewOpen = ref(false)
+const personalPreviewTitle = ref('')
+const personalPreviewContent = ref('')
+const personalPreviewLoading = ref(false)
 const subscriptionLinkModalOpen = ref(false)
 const subscriptionLinkTarget = ref<SubscriptionLinks | null>(null)
 const subscriptionLinkFormat = ref<SubscriptionLinkFormat>('auto')
@@ -264,7 +268,7 @@ const subscriptionLinkCopied = ref(false)
 const subscriptionLinkError = ref('')
 const subscriptionQR = ref<SubscriptionLinks | null>(null)
 const subscriptionQROpen = ref(false)
-const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing']
+const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing', 'remote_source', 'remote_node']
 const personalSourceAdderExpanded = ref(false)
 const personalSourceSearch = ref('')
 const personalBindingEditorKey = ref(0)
@@ -617,7 +621,7 @@ function addPersonalSource(source: PersonalSource) {
 
 async function addAllPersonalSources() {
   if (personalSources.value.length === 0) await loadPersonalSources()
-  for (const source of personalSources.value) addPersonalSource(source)
+  for (const source of personalSources.value) if (source.source_type !== 'remote_node') addPersonalSource(source)
 }
 
 function removePersonalNode(index: number) {
@@ -827,8 +831,24 @@ function subscriberLinks(value: Subscriber): SubscriptionLinks {
 }
 
 function personalSourceLabel(value: string, candidate = false) {
+	if (value === 'remote_source') return '机场订阅（全部节点）'
+	if (value === 'remote_node') return '机场订阅节点'
   if (candidate) return value === 'proxy' ? '受管直连节点' : value === 'relay' ? '本地中转' : '外部直连节点'
   return value === 'proxy' ? '本地 Proxy' : value === 'relay' ? '中转 Relay' : '外部节点 Landing'
+}
+
+async function previewPersonal(format: 'mihomo' | 'shadowrocket') {
+  if (!editingPersonal.value || personalPreviewLoading.value) return
+  personalFormError.value = ''
+  personalPreviewLoading.value = true
+  try {
+    const result = await api<{ yaml?: string; conf?: string }>(`/api/personal-subscriptions/${editingPersonal.value.id}/${format}-preview`)
+    personalPreviewTitle.value = format === 'mihomo' ? 'Mihomo 预览' : 'Shadowrocket 预览'
+    personalPreviewContent.value = result.yaml ?? result.conf ?? ''
+    personalPreviewOpen.value = true
+  } catch (reason) {
+    personalFormError.value = reason instanceof Error ? reason.message : '预览失败'
+  } finally { personalPreviewLoading.value = false }
 }
 
 function personalStatusType(value: string) {
@@ -1657,7 +1677,7 @@ onUnmounted(() => {
       <n-button secondary attr-type="button" :loading="personalSourcesLoading" :disabled="!personalClientName.trim()" @click="addAllPersonalSources">添加全部可用节点</n-button>
     </div>
     <section v-if="personalSourceAdderExpanded" class="subscription-node-picker personal-source-adder">
-      <p class="form-help">可添加受管直连节点、外部直连节点和本地中转。已有的不可用来源会保留，生成订阅时跳过。</p>
+      <p class="form-help">可添加受管直连节点、外部直连节点、本地中转和机场订阅。已有的不可用来源会保留，生成订阅时跳过。</p>
       <div class="collapsible-section-header"><strong>添加节点</strong><n-button size="tiny" secondary attr-type="button" @click="personalSourceAdderExpanded = false">收起</n-button></div>
       <div class="personal-source-toolbar">
         <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" />
@@ -1697,8 +1717,9 @@ onUnmounted(() => {
             <dl><div><dt>来源类型</dt><dd>{{ personalSourceLabel(node.source_type) }}</dd></div><div><dt>实际来源</dt><dd>{{ node.source_name }}</dd></div></dl>
             <p class="form-help">{{ node.source_detail }}</p>
             <label><span>自定义显示名称</span><n-input v-model:value="node.display_name" maxlength="100" /></label>
-            <label><span>入口地址</span><n-input :value="node.entry_host ?? ''" placeholder="留空使用来源默认入口" @update:value="setPersonalEntryHost(node, $event)" /></label>
-            <label><span>入口端口</span><n-input-number v-model:value="node.entry_port" :min="1" :max="65535" :precision="0" placeholder="留空使用来源默认端口" /></label>
+            <p v-if="node.source_type === 'remote_source'" class="form-help">来源启用时自动包含最新缓存中的全部节点；此名称用于标识选择项。</p>
+            <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口地址</span><n-input :value="node.entry_host ?? ''" placeholder="留空使用来源默认入口" @update:value="setPersonalEntryHost(node, $event)" /></label>
+            <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口端口</span><n-input-number v-model:value="node.entry_port" :min="1" :max="65535" :precision="0" placeholder="留空使用来源默认端口" /></label>
             <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
@@ -1713,8 +1734,12 @@ onUnmounted(() => {
       default-collapsed
       :reset-key="personalBindingEditorKey"
     />
+    <p class="form-help">预览使用已保存的订阅配置；更改后请先保存。转换不兼容时会显示错误，Base64 也可能因节点格式无法转换而失败。预览内容包含节点凭据，请妥善保管。</p>
+    <div class="modal-actions"><n-button attr-type="button" :disabled="!editingPersonal" :loading="personalPreviewLoading" @click="previewPersonal('mihomo')">预览 Mihomo</n-button><n-button attr-type="button" :disabled="!editingPersonal" :loading="personalPreviewLoading" @click="previewPersonal('shadowrocket')">预览 Shadowrocket</n-button></div>
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
+
+  <n-modal v-model:show="personalPreviewOpen" @after-leave="personalPreviewContent = ''"><n-card class="client-form-card subscription-form-card" :title="personalPreviewTitle" closable @close="personalPreviewOpen = false"><n-alert type="warning">预览包含节点凭据，请勿分享给不可信的人。</n-alert><n-input :value="personalPreviewContent" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" /><div class="modal-actions"><n-button @click="personalPreviewOpen = false">关闭</n-button></div></n-card></n-modal>
 
   <n-modal v-model:show="subscriptionLinkModalOpen"><n-card class="personal-link-modal-card" title="复制订阅链接" closable @close="subscriptionLinkModalOpen = false">
     <form class="auth-form" @submit.prevent="copySubscriptionLink">

@@ -334,9 +334,11 @@ type SubscriberNode struct {
 }
 
 const (
-	PersonalSourceProxy   = "proxy"
-	PersonalSourceRelay   = "relay"
-	PersonalSourceLanding = "landing"
+	PersonalSourceProxy        = "proxy"
+	PersonalSourceRelay        = "relay"
+	PersonalSourceLanding      = "landing"
+	PersonalSourceRemoteSource = "remote_source"
+	PersonalSourceRemoteNode   = "remote_node"
 
 	PersonalNodeReady               = "ready"
 	PersonalNodeMissing             = "missing"
@@ -454,12 +456,16 @@ type ResolvedSubscriptionNode struct {
 	Network             string
 	ShadowsocksPassword string
 	URI                 string
+	RemoteFormat        string
+	RemotePayload       string `json:"-"`
+	RemoteUDP           *bool  `json:"-"`
 }
 
 type PersonalSubscriptionData struct {
 	Title                string
 	Nodes                []ResolvedSubscriptionNode
 	NodeNames            map[int64]string
+	NodeGroupNames       map[int64][]string
 	RoutingBindings      RoutingBindings
 	RoutingPreset        *RoutingPreset
 	MihomoTemplate       *SubscriptionTemplate

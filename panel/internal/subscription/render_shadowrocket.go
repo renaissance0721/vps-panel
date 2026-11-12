@@ -22,7 +22,8 @@ func RenderShadowrocketSubscription(data SubscriptionData) ([]byte, error) {
 }
 
 func RenderPersonalShadowrocketSubscription(data PersonalSubscriptionData) ([]byte, error) {
-	return renderShadowrocketResolvedSubscription(data.Nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.ShadowrocketTemplate)
+	names, bindings := expandedPersonalBindings(data)
+	return renderShadowrocketResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.ShadowrocketTemplate)
 }
 
 func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
@@ -228,6 +229,9 @@ func splitShadowrocketLeadingFlag(name string) (string, string) {
 }
 
 func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
+	if node.RemoteFormat != "" {
+		return renderRemoteShadowrocket(node)
+	}
 	// Do not put credentials or raw node data in errors.
 	for _, value := range []string{node.Name, node.Address, node.UUID, node.ServerName, node.Flow,
 		node.Fingerprint, node.RealityPublicKey, node.RealityShortID, node.Method, node.ShadowsocksPassword} {
@@ -239,13 +243,17 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 		return "", ErrUnsupportedShadowrocketProtocol
 	}
 	fields := []string{"", shadowrocketValue(node.Address), strconv.Itoa(node.Port)}
+	udpRelay := "udp-relay=true"
+	if node.RemoteUDP != nil {
+		udpRelay = "udp-relay=" + strconv.FormatBool(*node.RemoteUDP)
+	}
 	switch node.Protocol {
 	case proxystore.ProtocolVLESS:
 		if node.UUID == "" || (node.Network != "" && node.Network != proxystore.TransportTCP) {
 			return "", ErrUnsupportedShadowrocketProtocol
 		}
 		fields[0] = "vless"
-		fields = append(fields, "encrypt-method=none", "password="+shadowrocketValue(node.UUID), "obfs=none", "udp-relay=true")
+		fields = append(fields, "encrypt-method=none", "password="+shadowrocketValue(node.UUID), "obfs=none", udpRelay)
 		if node.Security != "" && node.Security != "none" && node.Security != proxystore.SecurityTLS && node.Security != proxystore.SecurityReality {
 			return "", ErrUnsupportedShadowrocketProtocol
 		}
@@ -273,7 +281,7 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 		}
 		fields[0] = "ss"
 		// SS2022's server:user key pair is already resolved by the source.
-		fields = append(fields, "encrypt-method="+shadowrocketValue(node.Method), "password="+shadowrocketValue(node.ShadowsocksPassword), "udp-relay=true")
+		fields = append(fields, "encrypt-method="+shadowrocketValue(node.Method), "password="+shadowrocketValue(node.ShadowsocksPassword), udpRelay)
 	default:
 		return "", ErrUnsupportedShadowrocketProtocol
 	}

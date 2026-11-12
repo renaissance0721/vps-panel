@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 37
+const LatestSchemaVersion = 38
 
 type migration struct {
 	version            int
@@ -60,6 +60,43 @@ var migrations = []migration{
 	{version: 35, name: "mcp_change_plans", up: createMCPChangePlans},
 	{version: 36, name: "retire_mcp_approvals", up: retireMCPApprovals},
 	{version: 37, name: "remote_subscription_sources", up: createRemoteSubscriptions},
+	{version: 38, name: "personal_remote_sources", up: migratePersonalRemoteSources},
+}
+
+func migratePersonalRemoteSources(ctx context.Context, tx *sql.Tx) error {
+	var sequence sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM sqlite_sequence WHERE name='personal_subscription_nodes'`).Scan(&sequence); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TABLE personal_subscription_nodes_v38 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			group_id INTEGER NOT NULL REFERENCES personal_subscription_groups(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK (source_type IN ('proxy', 'relay', 'landing', 'remote_source', 'remote_node')),
+			source_id INTEGER NOT NULL CHECK (source_id > 0), display_name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), position INTEGER NOT NULL CHECK (position > 0),
+			entry_host TEXT CHECK (entry_host IS NULL OR entry_host != ''),
+			entry_port INTEGER CHECK (entry_port IS NULL OR entry_port BETWEEN 1 AND 65535),
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			UNIQUE (group_id, display_name), UNIQUE (group_id, position))`,
+		`INSERT INTO personal_subscription_nodes_v38 SELECT * FROM personal_subscription_nodes`,
+		`DROP TABLE personal_subscription_nodes`,
+		`ALTER TABLE personal_subscription_nodes_v38 RENAME TO personal_subscription_nodes`,
+		`CREATE INDEX idx_personal_subscription_nodes_source ON personal_subscription_nodes(source_type, source_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate personal remote sources: %w", err)
+		}
+	}
+	if sequence.Valid {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sqlite_sequence(name,seq) SELECT 'personal_subscription_nodes',? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='personal_subscription_nodes')`, sequence.Int64); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='personal_subscription_nodes'`, sequence.Int64); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func createRemoteSubscriptions(ctx context.Context, tx *sql.Tx) error {

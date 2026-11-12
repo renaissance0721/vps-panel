@@ -323,6 +323,7 @@ func (s *server) previewPersonalSubscriptionShadowrocket(w http.ResponseWriter, 
 }
 
 func (s *server) previewPersonalSubscriptionMihomo(w http.ResponseWriter, r *http.Request, user auth.User) {
+	w.Header().Set("Cache-Control", "no-store")
 	id, ok := readPositiveID(w, r.PathValue("id"), "个人订阅 ID 无效")
 	if !ok {
 		return
@@ -334,8 +335,8 @@ func (s *server) previewPersonalSubscriptionMihomo(w http.ResponseWriter, r *htt
 	}
 	value, err := subscriptionstore.RenderPersonalMihomoSubscription(data)
 	if err != nil {
-		if errors.Is(err, subscriptionstore.ErrRoutingGroupEmpty) {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		if message := subscriptionRenderErrorMessage(err); message != "" {
+			writeError(w, http.StatusUnprocessableEntity, message)
 			return
 		}
 		writeInternalError(w, err)

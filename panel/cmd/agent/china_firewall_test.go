@@ -108,16 +108,28 @@ func (n *fakeChinaNFT) run(_ context.Context, _ string, args ...string) ([]byte,
 			return []byte("table inet vps_panel_cn_block\n"), nil
 		}
 		return nil, nil
-	case len(args) == 5 && args[0] == "list" && args[1] == "chain":
-		return []byte(n.chain), nil
-	case len(args) == 5 && args[0] == "-t" && args[1] == "list" && args[2] == "sets":
-		var out strings.Builder
-		for name := range n.sets {
-			fmt.Fprintf(&out, "set %s {\n}\n", name)
+	case reflect.DeepEqual(args, []string{"list", "chain", "inet", chinaFirewallTable, "input"}):
+		if !n.exists {
+			return nil, errors.New("table does not exist")
 		}
+		return []byte(n.chain), nil
+	case reflect.DeepEqual(args, []string{"-t", "list", "table", "inet", chinaFirewallTable}):
+		if !n.exists {
+			return nil, errors.New("table does not exist")
+		}
+		var out strings.Builder
+		fmt.Fprintf(&out, "table inet %s {\n", chinaFirewallTable)
+		for name := range n.sets {
+			fmt.Fprintf(&out, "\tset %s {\n\t\ttype ipv4_addr\n\t}\n", name)
+		}
+		fmt.Fprintf(&out, "\tchain input {\n\t\t%s\n\t}\n}\n", n.chain)
 		return []byte(out.String()), nil
-	case len(args) == 6 && args[0] == "-t" && args[1] == "list" && args[2] == "set":
-		return []byte(n.sets[args[5]]), nil
+	case len(args) == 6 && reflect.DeepEqual(args[:5], []string{"-t", "list", "set", "inet", chinaFirewallTable}):
+		set, exists := n.sets[args[5]]
+		if !n.exists || !exists {
+			return nil, errors.New("set does not exist")
+		}
+		return []byte(set), nil
 	case len(args) == 2 && args[0] == "-f":
 		data, err := os.ReadFile(args[1])
 		if err != nil {
@@ -129,18 +141,18 @@ func (n *fakeChinaNFT) run(_ context.Context, _ string, args ...string) ([]byte,
 			n.fail = ""
 			return []byte("synthetic failure"), errors.New("exit status")
 		}
-		if strings.HasPrefix(batch, "create table") {
+		if strings.HasPrefix(batch, "create table inet "+chinaFirewallTable+"\n") {
 			n.exists = true
 			n.chain = `counter comment "` + chinaFirewallOwnerMarker + `"`
 			return nil, nil
 		}
-		if strings.HasPrefix(batch, "delete table") {
+		if batch == "delete table inet "+chinaFirewallTable+"\n" {
 			n.exists = false
 			n.chain = ""
 			n.sets = map[string]string{}
 			return nil, nil
 		}
-		if strings.HasPrefix(batch, "create set") {
+		if strings.HasPrefix(batch, "create set inet "+chinaFirewallTable+" ") {
 			fields := strings.Fields(batch)
 			name := fields[4]
 			if _, ok := n.sets[name]; ok {
@@ -149,7 +161,7 @@ func (n *fakeChinaNFT) run(_ context.Context, _ string, args ...string) ([]byte,
 			n.sets[name] = batch
 			return nil, nil
 		}
-		if strings.HasPrefix(batch, "add element") {
+		if strings.HasPrefix(batch, "add element inet "+chinaFirewallTable+" ") {
 			fields := strings.Fields(batch)
 			name := fields[4]
 			vals := strings.Split(strings.TrimSpace(strings.Split(strings.Split(batch, "{")[1], "}")[0]), ", ")
@@ -159,11 +171,11 @@ func (n *fakeChinaNFT) run(_ context.Context, _ string, args ...string) ([]byte,
 			n.elements[name] = append(n.elements[name], vals...)
 			return nil, nil
 		}
-		if strings.HasPrefix(batch, "flush chain") {
+		if strings.HasPrefix(batch, "flush chain inet "+chinaFirewallTable+" input\n") {
 			n.chain = batch
 			return nil, nil
 		}
-		if strings.HasPrefix(batch, "delete set") {
+		if strings.HasPrefix(batch, "delete set inet "+chinaFirewallTable+" ") {
 			fields := strings.Fields(batch)
 			name := fields[4]
 			if strings.Contains(n.chain, "@"+name) {
@@ -275,6 +287,69 @@ func TestChinaInboundFirewallLegacyMigration(t *testing.T) {
 	}
 	if len(nft.sets) != 4 {
 		t.Fatalf("legacy sets not cleaned: %v", nft.sets)
+	}
+}
+
+func TestChinaFirewallCleanupParsesTableOutput(t *testing.T) {
+	manager, _ := newTestChinaInboundFirewall(t)
+	const active = "c4_0123456789abcdef"
+	const stale = "c6_0123456789abcdef"
+	chain := `chain input {
+		type filter hook input priority -20; policy accept;
+		counter comment "vps-panel-cn-block-owner"
+		ip saddr @c4_0123456789abcdef drop
+	}`
+	table := `table inet vps_panel_cn_block {
+	set c4_0123456789abcdef {
+		type ipv4_addr
+		flags interval
+	}
+
+	set c6_0123456789abcdef {
+		type ipv6_addr
+		flags interval
+	}
+
+	set cn_ipv4 {
+		type ipv4_addr
+		flags interval
+	}
+
+	set unrelated_set {
+		type inet_service
+	}
+
+	chain input {
+		type filter hook input priority -20; policy accept;
+		counter comment "vps-panel-cn-block-owner"
+		ip saddr @c4_0123456789abcdef drop
+	}
+}`
+	var deleted []string
+	manager.runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		switch {
+		case reflect.DeepEqual(args, []string{"list", "chain", "inet", chinaFirewallTable, "input"}):
+			return []byte(chain), nil
+		case reflect.DeepEqual(args, []string{"-t", "list", "table", "inet", chinaFirewallTable}):
+			return []byte(table), nil
+		case len(args) == 2 && args[0] == "-f":
+			data, err := os.ReadFile(args[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleted = append(deleted, string(data))
+			return nil, nil
+		default:
+			t.Fatalf("unexpected nft command: %v", args)
+			return nil, nil
+		}
+	}
+	if err := manager.cleanupInactiveSets(t.Context(), "nft"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"delete set inet " + chinaFirewallTable + " " + stale + "\n", "delete set inet " + chinaFirewallTable + " cn_ipv4\n"}
+	if !reflect.DeepEqual(deleted, want) {
+		t.Fatalf("deleted %v, want %v; active set %s must remain", deleted, want, active)
 	}
 }
 
@@ -455,10 +530,10 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 		if reflect.DeepEqual(arguments, []string{"list", "tables"}) {
 			return []byte("table inet vps_panel_cn_block\n"), nil
 		}
-		if len(arguments) >= 2 && arguments[0] == "list" && arguments[1] == "chain" {
+		if reflect.DeepEqual(arguments, []string{"list", "chain", "inet", chinaFirewallTable, "input"}) {
 			return []byte(`counter comment "vps-panel-cn-block-owner"`), nil
 		}
-		if arguments[0] == "-f" {
+		if len(arguments) == 2 && arguments[0] == "-f" {
 			data, err := os.ReadFile(arguments[1])
 			if err != nil {
 				t.Fatal(err)

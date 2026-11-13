@@ -355,7 +355,7 @@ func (f *chinaInboundFirewall) cleanupInactiveSets(ctx context.Context, command 
 	if !chinaNFTChainOwned(string(chain)) {
 		return chinaInboundFirewallError("refuse unmanaged nftables table", nil)
 	}
-	output, err := f.runCommand(ctx, command, "-t", "list", "sets", "inet", chinaFirewallTable)
+	output, err := f.runCommand(ctx, command, "-t", "list", "table", "inet", chinaFirewallTable)
 	if err != nil {
 		return chinaNFTCommandError("inspect managed sets", output, err)
 	}

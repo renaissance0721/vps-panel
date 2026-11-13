@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +33,8 @@ const (
 	chinaFirewallTable         = "vps_panel_cn_block"
 	chinaFirewallOwnerMarker   = "vps-panel-cn-block-owner"
 	chinaFirewallInputPriority = -20
+	chinaNFTBatchElements      = 64
+	chinaNFTBatchBytes         = 4096
 )
 
 var (
@@ -38,6 +43,11 @@ var (
 	errChinaNFTPrivileges             = errors.New("managed China inbound firewall: insufficient firewall privileges; check CAP_NET_ADMIN and container permissions")
 	errChinaNFTKernel                 = errors.New("managed China inbound firewall: nftables kernel or container support is unavailable")
 	errChinaNFTInspect                = errors.New("managed China inbound firewall: nftables inspection failed; check kernel, container and rule compatibility")
+	errChinaNFTLoad                   = errors.New("managed China inbound firewall: failed to prepare or load candidate sets; existing rules remain unchanged")
+	errChinaNFTActivation             = errors.New("managed China inbound firewall: failed to activate candidate rules; inspect the Agent log and retry")
+	errChinaNFTTooLarge               = errors.New("managed China inbound firewall: nftables message too large even for a single element; check container netlink limits")
+	errChinaNFTInterval               = errors.New("managed China inbound firewall: invalid or overlapping nftables address interval")
+	errChinaNFTCleanup                = errors.New("managed China inbound firewall: filtering is active, but inactive set cleanup failed; retry synchronization")
 	errChinaNFTApply                  = errors.New("managed China inbound firewall: applying nftables rules failed; check kernel, container and rule compatibility")
 )
 
@@ -48,11 +58,12 @@ type chinaPrefixes struct {
 }
 
 type chinaInboundFirewall struct {
-	cachePath  string
-	now        func() time.Time
-	download   func(context.Context) ([]byte, error)
-	lookPath   func(string) (string, error)
-	runCommand func(context.Context, string, ...string) ([]byte, error)
+	cachePath      string
+	now            func() time.Time
+	download       func(context.Context) ([]byte, error)
+	lookPath       func(string) (string, error)
+	runCommand     func(context.Context, string, ...string) ([]byte, error)
+	refreshPending bool
 }
 
 func newChinaInboundFirewall() *chinaInboundFirewall {
@@ -134,9 +145,10 @@ func (f *chinaInboundFirewall) refresh(ctx context.Context, state desiredState) 
 	if err != nil {
 		return chinaInboundFirewallError("refresh China prefixes", err)
 	}
-	if !refreshed {
+	if !refreshed && !f.refreshPending {
 		return nil
 	}
+	f.refreshPending = true
 	command, err := f.lookPath("nft")
 	if err != nil {
 		return errManagedChinaInboundRequiresNFT
@@ -145,7 +157,11 @@ func (f *chinaInboundFirewall) refresh(ctx context.Context, state desiredState) 
 	if err != nil {
 		return err
 	}
-	return f.install(ctx, command, exists, prefixes, state)
+	err = f.install(ctx, command, exists, prefixes, state)
+	if err == nil {
+		f.refreshPending = false
+	}
+	return err
 }
 
 func (f *chinaInboundFirewall) disable(ctx context.Context) error {
@@ -176,10 +192,20 @@ func (f *chinaInboundFirewall) inspectOwnedTable(ctx context.Context, command st
 	if err != nil {
 		return false, chinaNFTCommandError("inspect managed nftables table", output, err)
 	}
-	if !strings.Contains(string(output), chinaFirewallOwnerMarker) {
+	if !chinaNFTChainOwned(string(output)) {
 		return false, chinaInboundFirewallError("refuse unmanaged nftables table", nil)
 	}
 	return true, nil
+}
+
+func chinaNFTChainOwned(chain string) bool {
+	for _, line := range strings.Split(chain, "\n") {
+		fields := strings.Fields(strings.ReplaceAll(line, `"`, ""))
+		if comment, ok := fieldAfter(fields, "comment"); ok && comment == chinaFirewallOwnerMarker {
+			return true
+		}
+	}
+	return false
 }
 
 func nftTablesContain(output, family, name string) bool {
@@ -192,15 +218,91 @@ func nftTablesContain(output, family, name string) bool {
 	return false
 }
 
-func (f *chinaInboundFirewall) install(
-	ctx context.Context,
-	command string,
-	exists bool,
-	prefixes chinaPrefixes,
-	state desiredState,
-) error {
-	tcpPorts, udpPorts := managedChinaInboundPorts(state)
-	return f.runBatch(ctx, command, renderChinaInboundNFT(exists, prefixes, tcpPorts, udpPorts))
+// Each generation has fresh set names. Never mutate a set referenced by live rules.
+func (f *chinaInboundFirewall) install(ctx context.Context, command string, exists bool, prefixes chinaPrefixes, state desiredState) (result error) {
+	ipv4, err := optimizeChinaPrefixes(prefixes.IPv4, true)
+	if err != nil {
+		return chinaInboundFirewallError("invalid IPv4 prefixes", err)
+	}
+	ipv6, err := optimizeChinaPrefixes(prefixes.IPv6, false)
+	if err != nil {
+		return chinaInboundFirewallError("invalid IPv6 prefixes", err)
+	}
+	if len(ipv4) == 0 || len(ipv6) == 0 {
+		return chinaInboundFirewallError("empty address prefixes", nil)
+	}
+	if !exists {
+		bootstrap := fmt.Sprintf("create table inet %s\nadd chain inet %s input { type filter hook input priority %d; policy accept; }\nadd rule inet %s input counter comment \"%s\"\n", chinaFirewallTable, chinaFirewallTable, chinaFirewallInputPriority, chinaFirewallTable, chinaFirewallOwnerMarker)
+		if err := f.runBatch(ctx, command, []byte(bootstrap)); err != nil {
+			return fmt.Errorf("initialize managed table: %w", err)
+		}
+	}
+	// Remove abandoned generations only after inspecting the currently active chain.
+	if err := f.cleanupInactiveSets(ctx, command); err != nil {
+		return fmt.Errorf("recover inactive sets: %w", err)
+	}
+	// On failure, inspect the chain again before deleting any candidate. If the
+	// activation outcome is uncertain this also protects a committed generation.
+	defer func() {
+		if result != nil && ctx.Err() == nil {
+			if cleanupErr := f.cleanupInactiveSets(ctx, command); cleanupErr != nil {
+				result = errors.Join(result, fmt.Errorf("cleanup inactive candidates: %w", cleanupErr))
+			}
+		}
+	}()
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return chinaInboundFirewallError("generate set names", err)
+	}
+	suffix := hex.EncodeToString(random[:])
+	tcp, udp := managedChinaInboundPorts(state)
+	portStrings := func(ports []int) []string {
+		out := make([]string, len(ports))
+		for i, p := range ports {
+			out[i] = strconv.Itoa(p)
+		}
+		return out
+	}
+	sets := []struct {
+		name, typ, flags string
+		elements         []string
+	}{
+		{"c4_" + suffix, "ipv4_addr", "flags interval;", ipv4},
+		{"c6_" + suffix, "ipv6_addr", "flags interval;", ipv6},
+		{"tp_" + suffix, "inet_service", "", portStrings(tcp)},
+		{"up_" + suffix, "inet_service", "", portStrings(udp)},
+	}
+	for _, set := range sets {
+		create := fmt.Sprintf("create set inet %s %s { type %s; %s }\n", chinaFirewallTable, set.name, set.typ, set.flags)
+		if err := f.runBatch(ctx, command, []byte(create)); err != nil {
+			return fmt.Errorf("%w: %w", errChinaNFTLoad, err)
+		}
+		if err := f.loadNFTElements(ctx, command, set.name, set.elements); err != nil {
+			return fmt.Errorf("%w: %w", errChinaNFTLoad, err)
+		}
+		output, err := f.runCommand(ctx, command, "-t", "list", "set", "inet", chinaFirewallTable, set.name)
+		if err != nil {
+			return chinaNFTCommandError("validate candidate set", output, err)
+		}
+		if !strings.Contains(string(output), "type "+set.typ) || (set.flags != "" && !strings.Contains(string(output), "flags interval")) {
+			return chinaInboundFirewallError("candidate set schema mismatch", nil)
+		}
+	}
+	var activation strings.Builder
+	fmt.Fprintf(&activation, "flush chain inet %s input\nadd rule inet %s input counter comment \"%s\"\n", chinaFirewallTable, chinaFirewallTable, chinaFirewallOwnerMarker)
+	for _, rule := range []struct{ family, addr, proto, port string }{
+		{"ip", sets[0].name, "tcp", sets[2].name}, {"ip6", sets[1].name, "tcp", sets[2].name},
+		{"ip", sets[0].name, "udp", sets[3].name}, {"ip6", sets[1].name, "udp", sets[3].name},
+	} {
+		fmt.Fprintf(&activation, "add rule inet %s input %s saddr @%s %s dport @%s drop\n", chinaFirewallTable, rule.family, rule.addr, rule.proto, rule.port)
+	}
+	if err := f.runBatch(ctx, command, []byte(activation.String())); err != nil {
+		return fmt.Errorf("%w: %w", errChinaNFTActivation, err)
+	}
+	if err := f.cleanupInactiveSets(ctx, command); err != nil {
+		return fmt.Errorf("%w: %v", errChinaNFTCleanup, err)
+	}
+	return nil
 }
 
 func (f *chinaInboundFirewall) runBatch(ctx context.Context, command string, batch []byte) error {
@@ -215,48 +317,104 @@ func (f *chinaInboundFirewall) runBatch(ctx context.Context, command string, bat
 	return nil
 }
 
-func renderChinaInboundNFT(exists bool, prefixes chinaPrefixes, tcpPorts, udpPorts []int) []byte {
-	var value strings.Builder
-	if exists {
-		value.WriteString("delete table inet " + chinaFirewallTable + "\n")
-	}
-	value.WriteString("table inet " + chinaFirewallTable + " {\n")
-	writeNFTAddressSet(&value, "cn_ipv4", "ipv4_addr", prefixes.IPv4)
-	writeNFTAddressSet(&value, "cn_ipv6", "ipv6_addr", prefixes.IPv6)
-	writeNFTPortSet(&value, "tcp_ports", tcpPorts)
-	writeNFTPortSet(&value, "udp_ports", udpPorts)
-	value.WriteString("  chain input {\n")
-	value.WriteString(fmt.Sprintf("    type filter hook input priority %d; policy accept;\n", chinaFirewallInputPriority))
-	value.WriteString("    counter comment \"" + chinaFirewallOwnerMarker + "\"\n")
-	value.WriteString("    ip saddr @cn_ipv4 tcp dport @tcp_ports drop\n")
-	value.WriteString("    ip6 saddr @cn_ipv6 tcp dport @tcp_ports drop\n")
-	value.WriteString("    ip saddr @cn_ipv4 udp dport @udp_ports drop\n")
-	value.WriteString("    ip6 saddr @cn_ipv6 udp dport @udp_ports drop\n")
-	value.WriteString("  }\n}\n")
-	return []byte(value.String())
-}
-
-func writeNFTAddressSet(value *strings.Builder, name, addressType string, elements []string) {
-	value.WriteString("  set " + name + " {\n")
-	value.WriteString("    type " + addressType + "\n")
-	value.WriteString("    flags interval\n")
-	if len(elements) != 0 {
-		value.WriteString("    elements = { " + strings.Join(elements, ", ") + " }\n")
-	}
-	value.WriteString("  }\n")
-}
-
-func writeNFTPortSet(value *strings.Builder, name string, ports []int) {
-	value.WriteString("  set " + name + " {\n")
-	value.WriteString("    type inet_service\n")
-	if len(ports) != 0 {
-		values := make([]string, len(ports))
-		for index, port := range ports {
-			values[index] = strconv.Itoa(port)
+func (f *chinaInboundFirewall) loadNFTElements(ctx context.Context, command, name string, values []string) error {
+	for start := 0; start < len(values); {
+		end := start
+		size := len(name) + len(chinaFirewallTable) + 40
+		for end < len(values) && end-start < chinaNFTBatchElements && size+len(values[end])+2 <= chinaNFTBatchBytes {
+			size += len(values[end]) + 2
+			end++
 		}
-		value.WriteString("    elements = { " + strings.Join(values, ", ") + " }\n")
+		if end == start {
+			return chinaInboundFirewallError("element exceeds batch size limit", nil)
+		}
+		for {
+			batch := fmt.Sprintf("add element inet %s %s { %s }\n", chinaFirewallTable, name, strings.Join(values[start:end], ", "))
+			err := f.runBatch(ctx, command, []byte(batch))
+			if err == nil {
+				start = end
+				break
+			}
+			if !errors.Is(err, errChinaNFTTooLarge) || end-start == 1 {
+				return err
+			}
+			end = start + (end-start)/2
+		}
 	}
-	value.WriteString("  }\n")
+	return nil
+}
+
+var chinaManagedSetName = regexp.MustCompile(`^(?:c4|c6|tp|up)_[0-9a-f]{16}$`)
+var chinaSetDefinition = regexp.MustCompile(`(?m)^\s*set\s+([A-Za-z0-9_]+)\s*\{`)
+
+func (f *chinaInboundFirewall) cleanupInactiveSets(ctx context.Context, command string) error {
+	chain, err := f.runCommand(ctx, command, "list", "chain", "inet", chinaFirewallTable, "input")
+	if err != nil {
+		return chinaNFTCommandError("inspect active rules", chain, err)
+	}
+	if !chinaNFTChainOwned(string(chain)) {
+		return chinaInboundFirewallError("refuse unmanaged nftables table", nil)
+	}
+	output, err := f.runCommand(ctx, command, "-t", "list", "sets", "inet", chinaFirewallTable)
+	if err != nil {
+		return chinaNFTCommandError("inspect managed sets", output, err)
+	}
+	for _, match := range chinaSetDefinition.FindAllStringSubmatch(string(output), -1) {
+		name := match[1]
+		if !chinaManagedSetName.MatchString(name) && name != "cn_ipv4" && name != "cn_ipv6" && name != "tcp_ports" && name != "udp_ports" {
+			continue
+		}
+		// Match whole identifiers so one set name cannot hide another.
+		if regexp.MustCompile(`@` + regexp.QuoteMeta(name) + `\b`).Match(chain) {
+			continue
+		}
+		if err := f.runBatch(ctx, command, []byte("delete set inet "+chinaFirewallTable+" "+name+"\n")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Normalize, sort, remove contained prefixes and recursively merge sibling CIDRs.
+func optimizeChinaPrefixes(values []string, ipv4 bool) ([]string, error) {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		p, err := netip.ParsePrefix(value)
+		if err != nil || p.Addr().Is4() != ipv4 || p.Addr().Is4In6() {
+			return nil, errors.New("invalid address prefix")
+		}
+		prefixes = append(prefixes, p.Masked())
+	}
+	sort.Slice(prefixes, func(i, j int) bool {
+		c := prefixes[i].Addr().Compare(prefixes[j].Addr())
+		if c != 0 {
+			return c < 0
+		}
+		return prefixes[i].Bits() < prefixes[j].Bits()
+	})
+	stack := make([]netip.Prefix, 0, len(prefixes))
+	for _, p := range prefixes {
+		if len(stack) > 0 && stack[len(stack)-1].Contains(p.Addr()) {
+			continue
+		}
+		stack = append(stack, p)
+		for len(stack) >= 2 {
+			a, b := stack[len(stack)-2], stack[len(stack)-1]
+			if a.Bits() != b.Bits() || a.Bits() == 0 {
+				break
+			}
+			parent := netip.PrefixFrom(a.Addr(), a.Bits()-1).Masked()
+			if !parent.Contains(b.Addr()) {
+				break
+			}
+			stack = append(stack[:len(stack)-2], parent)
+		}
+	}
+	result := make([]string, len(stack))
+	for i, p := range stack {
+		result[i] = p.String()
+	}
+	return result, nil
 }
 
 func managedChinaInboundPorts(state desiredState) ([]int, []int) {
@@ -376,13 +534,11 @@ func validateChinaPrefixes(value chinaPrefixes) error {
 		values []string
 		ipv4   bool
 	}{{value.IPv4, true}, {value.IPv6, false}} {
-		seen := make(map[string]bool, len(group.values))
 		for _, raw := range group.values {
 			prefix, err := netip.ParsePrefix(raw)
-			if err != nil || prefix != prefix.Masked() || prefix.Addr().Is4() != group.ipv4 || seen[raw] {
+			if err != nil || prefix.Addr().Is4() != group.ipv4 || prefix.Addr().Is4In6() {
 				return errors.New("invalid China prefix cache")
 			}
-			seen[raw] = true
 		}
 	}
 	return nil
@@ -489,6 +645,10 @@ func chinaNFTCommandError(action string, output []byte, err error) error {
 	diagnostic := strings.ToLower(string(output) + " " + err.Error())
 	var reason error
 	switch {
+	case strings.Contains(diagnostic, "message too large"):
+		reason = errChinaNFTTooLarge
+	case strings.Contains(diagnostic, "conflicting intervals"), strings.Contains(diagnostic, "overlapping"), strings.Contains(diagnostic, "invalid interval"):
+		reason = errChinaNFTInterval
 	case strings.Contains(diagnostic, "operation not permitted"), strings.Contains(diagnostic, "permission denied"), strings.Contains(diagnostic, "must be root"):
 		reason = errChinaNFTPrivileges
 	case strings.Contains(diagnostic, "operation not supported"), strings.Contains(diagnostic, "protocol not supported"), strings.Contains(diagnostic, "address family not supported"), strings.Contains(diagnostic, "not supported by kernel"):

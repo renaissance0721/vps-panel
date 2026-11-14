@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NInput, NModal, NPopconfirm, NSelect, NSwitch } from 'naive-ui'
 import { api } from '../api/client'
+import { mcpTools } from '../mcpTools'
 import { generateMCPAgentPrompt, generateMCPConnection, type MCPClient, type MCPPlatform } from '../mcpConnection'
 
 type Token = { id: number; name: string; prefix: string; scope: string; created_at: number; expires_at: number; last_used_at: number | null; revoked_at: number | null }
@@ -23,29 +24,25 @@ const days = ref(90)
 const secret = ref('')
 const controller = new AbortController()
 const endpoint = computed(() => `${window.location.origin}/mcp`)
-const selectedClient = ref<MCPClient>('codex')
+const selectedClient = ref<MCPClient | null>(null)
+const activeClient = computed(() => selectedClient.value ?? 'codex')
+const showTools = ref(false)
+const showAdvanced = ref(false)
 const selectedPlatform = ref<MCPPlatform>('windows')
-const connection = computed(() => generateMCPConnection(selectedClient.value, selectedPlatform.value, endpoint.value))
-const agentPrompt = computed(() => generateMCPAgentPrompt(selectedClient.value, selectedPlatform.value, endpoint.value))
-const clientOptions = [
-  { label: 'Codex Desktop / CLI', value: 'codex' },
-  { label: 'Claude Code', value: 'claude' },
-  { label: 'Cursor', value: 'cursor' },
+const connection = computed(() => generateMCPConnection(activeClient.value, selectedPlatform.value, endpoint.value))
+const agentPrompt = computed(() => generateMCPAgentPrompt(activeClient.value, selectedPlatform.value, endpoint.value))
+const clients: { label: string; value: MCPClient; method: string; icon: string }[] = [
+  { label: 'Codex', value: 'codex', method: 'Desktop / CLI', icon: '✳' },
+  { label: 'Claude Code', value: 'claude', method: '终端命令', icon: '✺' },
+  { label: 'Cursor', value: 'cursor', method: '配置文件', icon: '◈' },
 ]
 const platformOptions = [
   { label: 'Windows PowerShell', value: 'windows' },
   { label: 'macOS / Linux（Bash）', value: 'unix' },
 ]
-const tools = [
-  ['list_servers', '列出可访问的服务器'], ['get_server_details', '读取服务器基本信息'],
-  ['get_server_metrics', '读取最新资源指标'], ['get_latency_history', '汇总探测延迟历史'],
-  ['list_proxies', '列出代理节点'], ['list_relays', '列出中转'],
-  ['check_relay_health', '检查中转配置状态'], ['list_subscriptions', '列出可访问的订阅摘要'],
-  ['list_carpool_nodes', '汇总拼车分配'], ['get_panel_info', '查看面板和授权信息'],
-  ['list_proxy_clients', '列出代理客户端标识'],
-  ['list_landings', '列出可访问的外部节点'], ['list_users', '列出用户摘要'],
-  ['list_personal_subscriptions', '列出个人订阅'], ['list_published_nodes', '列出订阅发布节点'],
-]
+const toolGroups = Array.from(new Set(mcpTools.map(tool => tool.domain)), domain => ({ domain, tools: mcpTools.filter(tool => tool.domain === domain) }))
+const readCount = mcpTools.filter(tool => !tool.write).length
+const writeCount = mcpTools.length - readCount
 const options = [30, 90, 180].map(value => ({ label: `${value} 天`, value }))
 function date(value: number | null) { return value ? new Date(value * 1000).toLocaleString() : '—' }
 function close() { if (busy.value) return; open.value = false; secret.value = ''; name.value = ''; tokenScope.value = 'read'; copyStatus.value = '' }
@@ -86,73 +83,109 @@ async function copy(value: string) {
 }
 async function copyConnectionWithToken() {
   if (!secret.value) return
-  await copy(generateMCPConnection(selectedClient.value, selectedPlatform.value, endpoint.value, secret.value))
+  await copy(generateMCPConnection(activeClient.value, selectedPlatform.value, endpoint.value, secret.value))
 }
 async function copyAgentPromptWithToken() {
   if (!secret.value) return
-  await copy(generateMCPAgentPrompt(selectedClient.value, selectedPlatform.value, endpoint.value, secret.value))
+  await copy(generateMCPAgentPrompt(activeClient.value, selectedPlatform.value, endpoint.value, secret.value))
 }
 onMounted(load)
 onUnmounted(() => { secret.value = ''; controller.abort() })
 </script>
 
 <template>
-  <n-card title="AI / MCP 集成" style="margin-top: 16px">
-    <n-alert v-if="error" type="error">{{ error }}</n-alert>
-    <p>通过 HTTPS 连接 MCP 客户端。读写令牌可直接执行管理操作，请仅授予可信的 MCP 客户端。</p>
-    <p>MCP 服务：<n-switch :value="enabled" :loading="busy" :disabled="!loaded" @update:value="change" /> {{ enabled ? '已启用' : '已关闭' }}</p>
-    <p>MCP 写操作：<n-switch :value="writeEnabled" :loading="busy" :disabled="!loaded" @update:value="changeWrite" /> {{ writeEnabled ? '已启用' : '已关闭' }}（允许读写令牌执行管理操作）</p>
-    <p>服务地址：<code>{{ endpoint }}</code> <n-button size="small" @click="copy(endpoint)">复制地址</n-button></p>
-    <n-alert type="info">旧版本中仅获准重命名的读写令牌升级后会变为只读；需要直接管理时请新建读写令牌。</n-alert>
-    <h3>访问令牌</h3>
-    <n-button :disabled="!loaded" @click="copyStatus = ''; open = true">创建令牌</n-button>
-    <div class="mcp-table-scroll"><table class="mcp-token-table"><thead><tr><th>名称</th><th>前缀</th><th>权限</th><th>创建时间</th><th>到期时间</th><th>最近使用</th><th>状态</th><th></th></tr></thead><tbody>
-      <tr v-for="item in tokens" :key="item.id"><td>{{ item.name }}</td><td>{{ item.prefix }}…</td><td>{{ item.scope === 'read_write' ? '读写' : '只读' }}</td><td>{{ date(item.created_at) }}</td><td>{{ date(item.expires_at) }}</td><td>{{ date(item.last_used_at) }}</td><td>{{ item.revoked_at ? '已撤销' : item.expires_at * 1000 <= Date.now() ? '已过期' : '有效' }}</td><td><n-popconfirm v-if="!item.revoked_at" @positive-click="revoke(item.id)"><template #trigger><n-button size="small" :disabled="busy">撤销</n-button></template>撤销后该令牌立即失效，确定撤销？</n-popconfirm></td></tr>
-    </tbody></table></div>
-    <h3>可用工具（只读）</h3><ul><li v-for="tool in tools" :key="tool[0]"><code>{{ tool[0] }}</code>：{{ tool[1] }}</li></ul>
-    <h3>写操作工具</h3><p>服务器：<code>create_server</code>、<code>update_server</code>；代理：<code>create_proxy</code>、<code>update_proxy</code>、<code>set_proxy_enabled</code>、<code>delete_proxy</code>；中转：<code>create_relay</code>、<code>update_relay</code>、<code>set_relay_enabled</code>、<code>delete_relay</code>。配置保存后 Agent 同步可能仍在进行。</p>
-    <p>列表排序：<code>set_server_order</code>、<code>set_proxy_order</code>、<code>set_relay_order</code>、<code>set_landing_order</code>、<code>set_user_order</code>、<code>set_personal_subscription_order</code>、<code>set_published_node_order</code>。</p>
-    <h3>客户端连接配置</h3>
-    <div class="mcp-connection-options">
-      <label><span>客户端</span><n-select v-model:value="selectedClient" :options="clientOptions" /></label>
-      <label v-if="selectedClient !== 'cursor'"><span>操作系统 / 终端</span><n-select v-model:value="selectedPlatform" :options="platformOptions" /></label>
-    </div>
-    <p>推荐复制提示词并发送给 AI 助手，让它在具备必要权限时帮助配置 MCP 并验证连接。</p>
-    <template v-if="selectedClient === 'codex'">
-      <p>复制提示词并粘贴到 Codex Desktop 对话框，Codex 可在具备必要执行权限时协助配置和验证；已有正确配置时，可按其实际环境变量名补齐令牌。也可以复制原始命令，在对应终端执行；该命令遇到同名配置时仍会请求替换确认。完成后可能需要完全退出并重启 Codex Desktop。</p>
-      <p v-if="selectedPlatform === 'windows'">命令会隐藏输入令牌，并将其保存到当前 Windows 用户环境变量及当前 PowerShell 进程；同一用户的其他程序可能读取该变量。</p>
-      <p v-else>命令使用 Bash 隐藏输入令牌，并仅为当前终端设置环境变量。后续终端或桌面应用也需要获得该变量；从此终端启动 Codex，或自行在桌面会话中配置该变量。</p>
-    </template>
-    <template v-else-if="selectedClient === 'claude'">
-      <p>可将提示词发给 AI 助手，或复制命令并在对应终端执行一次。然后运行 <code>claude mcp get vps-panel</code> 或在 Claude Code 中使用 <code>/mcp</code> 检查连接。若存在同名配置，请先检查其作用域。</p>
-      <n-alert type="warning">Claude Code 会将 Bearer 令牌作为请求头保存到用户配置文件，请保护该文件。</n-alert>
-    </template>
-    <template v-else>
-      <p>可让 AI 助手协助配置，或复制 JSON，将 <code>vps-panel</code> 条目合并到已有 <code>~/.cursor/mcp.json</code> 的 <code>mcpServers</code> 中，不要覆盖其他配置。也可以使用项目目录的 <code>.cursor/mcp.json</code>。</p>
-      <p>先在启动 Cursor 的用户环境中设置 <code>VPS_PANEL_MCP_TOKEN</code>，然后完全退出并重启 Cursor；环境变量需要对 Cursor 进程可见。</p>
-    </template>
-    <pre class="mcp-connection-code" aria-label="AI 安装提示词预览">{{ agentPrompt }}</pre>
-    <div class="mcp-modal-actions">
-      <n-button type="primary" size="small" @click="copy(agentPrompt)">复制给 AI 的安装提示词</n-button>
-      <n-button size="small" @click="copy(connection)">{{ selectedClient === 'cursor' ? '复制原始 MCP JSON' : '复制原始配置命令' }}</n-button>
-    </div>
-    <span v-if="copyStatus && !open" class="mcp-copy-status" role="status">{{ copyStatus }}</span>
-    <h3>历史审批记录</h3><div class="mcp-table-scroll"><table class="mcp-audit-table"><thead><tr><th>时间</th><th>令牌</th><th>服务器 ID</th><th>事件</th></tr></thead><tbody><tr v-for="(item, index) in changeEvents" :key="`${item.plan_id}-${index}`"><td>{{ date(item.created_at) }}</td><td>{{ item.token_name }}</td><td>{{ item.server_id }}</td><td>{{ item.event }}</td></tr></tbody></table></div>
-    <h3>最近调用</h3><div class="mcp-table-scroll"><table class="mcp-audit-table"><thead><tr><th>时间</th><th>令牌</th><th>工具</th><th>状态</th><th>耗时</th></tr></thead><tbody><tr v-for="item in logs" :key="item.id"><td>{{ date(item.called_at) }}</td><td>{{ item.token_name }}</td><td>{{ item.tool_name }}</td><td>{{ item.success ? '成功' : '失败' }}</td><td>{{ item.duration_ms }} ms</td></tr></tbody></table></div>
-  </n-card>
-  <n-modal :show="open" :mask-closable="!busy" :close-on-esc="!busy" @update:show="value => { if (!value) close() }"><n-card class="account-modal-card" title="创建 MCP 令牌" :closable="!busy" @close="close"><template v-if="secret"><n-alert type="warning">令牌仅显示一次，请立即保存。含令牌的 AI 提示词可能被记录在剪贴板、AI 对话历史和工具执行记录中，只建议在受信任的个人环境使用。原始命令也可能留在终端历史中；Cursor JSON 会将令牌保存到配置文件。</n-alert><n-alert v-if="error" type="error">{{ error }}</n-alert><p style="overflow-wrap: anywhere">{{ secret }}</p><div class="mcp-modal-actions"><n-button @click="copy(secret)">复制令牌</n-button><n-button type="primary" @click="copyAgentPromptWithToken">复制含令牌的 AI 安装提示词（推荐）</n-button><n-button @click="copyConnectionWithToken">{{ selectedClient === 'cursor' ? '复制带令牌的原始 MCP JSON' : '复制带令牌的原始配置命令' }}</n-button></div><p v-if="copyStatus" role="status">{{ copyStatus }}</p><p>使用连接配置区域当前选择的客户端<span v-if="selectedClient !== 'cursor'">和终端</span>生成。复制后可粘贴到 AI 对话框，助手将在具备必要执行权限时协助配置。</p></template><form v-else class="auth-form" @submit.prevent="create"><label><span>令牌名称</span><n-input v-model:value="name" maxlength="100" /></label><label><span>权限</span><n-select v-model:value="tokenScope" :options="[{ label: '只读', value: 'read' }, { label: '读写：直接管理资源', value: 'read_write' }]" /></label><n-alert v-if="tokenScope === 'read_write'" type="warning">读写令牌可直接修改资源，且可能影响节点服务；请妥善保管。</n-alert><label><span>有效期</span><n-select v-model:value="days" :options="options" /></label><div class="modal-actions"><n-button :disabled="busy" @click="close">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">创建</n-button></div></form></n-card></n-modal>
+  <div class="mcp-page">
+    <header class="mcp-page-header"><h2>AI / MCP 集成</h2><p>连接 AI 客户端，安全地访问和管理 VPS Panel。</p></header>
+    <n-alert v-if="error && !open" type="error" role="alert">{{ error }}</n-alert>
+    <div v-if="copyStatus && !open" class="mcp-feedback" role="status">{{ copyStatus }}</div>
 
+    <section class="mcp-card mcp-status-card" aria-label="MCP 服务状态">
+      <div class="mcp-status-row"><div><h3>MCP 服务 <span class="mcp-badge">{{ enabled ? '已启用' : '已关闭' }}</span></h3><p>通过 HTTPS 允许 AI 客户端连接面板。</p></div><n-switch :value="enabled" :loading="busy" :disabled="!loaded" aria-label="MCP 服务" @update:value="change" /></div>
+      <button type="button" class="mcp-endpoint" title="复制 MCP 地址" @click="copy(endpoint)"><span>MCP 地址</span><code>{{ endpoint }}</code><span>复制 ⧉</span></button>
+    </section>
+
+    <section class="mcp-card mcp-content-card">
+      <header><h3>连接客户端</h3><p>选择客户端，查看适合当前环境的连接方法。</p></header>
+      <div class="mcp-clients" role="group" aria-label="选择客户端">
+        <button v-for="client in clients" :key="client.value" type="button" class="mcp-client" :class="{ selected: selectedClient === client.value }" :aria-pressed="selectedClient === client.value" @click="selectedClient = selectedClient === client.value ? null : client.value">
+          <span class="mcp-client-icon" aria-hidden="true">{{ client.icon }}</span><span><strong>{{ client.label }}</strong><small>{{ client.method }}</small></span>
+        </button>
+      </div>
+      <div v-if="selectedClient" class="mcp-setup">
+        <div class="mcp-setup-heading"><strong>配置 {{ clients.find(client => client.value === selectedClient)?.label }}</strong><label v-if="selectedClient !== 'cursor'" class="mcp-platform"><span>操作系统 / 终端</span><n-select v-model:value="selectedPlatform" :options="platformOptions" /></label></div>
+        <p>先创建访问令牌，再复制安装提示词交给 AI 助手，或复制原始配置自行安装。</p>
+        <template v-if="selectedClient === 'codex'"><p>已有配置时先检查地址和认证方式；完成后可能需要完全退出并重启 Codex Desktop。</p><p v-if="selectedPlatform === 'windows'">命令隐藏令牌输入，并将其保存到当前 Windows 用户环境变量及 PowerShell 进程；同一用户的其他程序可能读取该变量。</p><p v-else>命令隐藏令牌输入并仅为当前终端设置环境变量；桌面应用或后续终端也需要获得该变量。</p></template>
+        <template v-else-if="selectedClient === 'claude'"><p>安装后可运行 <code>claude mcp get vps-panel</code> 或在 Claude Code 中使用 <code>/mcp</code> 检查连接；同名配置请先检查作用域。</p><n-alert type="warning">Claude Code 会将 Bearer 令牌作为请求头保存到用户配置文件，请保护该文件。</n-alert></template>
+        <template v-else><p>将 JSON 的 <code>vps-panel</code> 条目合并到 <code>~/.cursor/mcp.json</code> 或项目的 <code>.cursor/mcp.json</code>，保留其他配置。先在 Cursor 的启动环境中设置 <code>VPS_PANEL_MCP_TOKEN</code>，然后完全退出并重启。</p></template>
+        <div class="mcp-code"><div class="mcp-code-label">{{ selectedClient === 'cursor' ? 'JSON 配置预览' : '命令预览' }}</div><pre aria-label="原始配置预览">{{ connection }}</pre></div>
+        <div class="mcp-actions"><n-button type="primary" size="small" @click="copy(agentPrompt)">复制给 AI 的安装提示词</n-button><n-button size="small" @click="copy(connection)">{{ selectedClient === 'cursor' ? '复制原始 MCP JSON' : '复制原始配置命令' }}</n-button></div>
+      </div>
+    </section>
+
+    <section class="mcp-card mcp-content-card">
+      <header class="mcp-card-heading"><div><h3>访问令牌 <span class="mcp-badge">{{ tokens.length }}</span></h3><p>管理客户端访问凭据。</p></div><n-button size="small" type="primary" :disabled="!loaded" @click="copyStatus = ''; open = true">创建令牌</n-button></header>
+      <div v-if="loaded && !tokens.length" class="mcp-empty">还没有访问令牌，创建令牌后即可连接客户端。</div>
+      <div v-else-if="!loaded" class="mcp-empty">{{ error ? '令牌加载失败。' : '正在加载令牌…' }}</div>
+      <div v-else class="mcp-tokens">
+        <div v-for="item in tokens" :key="item.id" class="mcp-token">
+          <div class="mcp-token-name"><strong>{{ item.name }}</strong><span class="mcp-badge" :class="{ write: item.scope === 'read_write' }">{{ item.scope === 'read_write' ? '读写' : '只读' }}</span><span class="mcp-badge">{{ item.revoked_at ? '已撤销' : item.expires_at * 1000 <= Date.now() ? '已过期' : '有效' }}</span></div>
+          <code class="mcp-token-prefix">{{ item.prefix }}…</code>
+          <div class="mcp-token-meta"><span>创建 {{ date(item.created_at) }}</span><span>最近使用 {{ date(item.last_used_at) }}</span><span>到期 {{ date(item.expires_at) }}</span></div>
+          <div class="mcp-token-action"><n-popconfirm v-if="!item.revoked_at" @positive-click="revoke(item.id)"><template #trigger><n-button size="small" :disabled="busy">撤销</n-button></template>撤销后该令牌立即失效，确定撤销？</n-popconfirm></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="mcp-card mcp-content-card">
+      <button type="button" class="mcp-disclosure" :aria-expanded="showTools" aria-controls="mcp-tools" @click="showTools = !showTools"><span><strong>可用 MCP 工具</strong><small>只读 {{ readCount }} · 写操作 {{ writeCount }}</small></span><span aria-hidden="true">{{ showTools ? '⌃' : '⌄' }}</span></button>
+      <div v-if="showTools" id="mcp-tools" class="mcp-tools"><p>工具按 MCP 的只读标注分类；部分读取敏感信息的工具仍要求读写令牌和写操作权限。配置保存后 Agent 同步可能仍在进行。</p><div class="mcp-tool-groups"><section v-for="group in toolGroups" :key="group.domain" class="mcp-tool-group"><h4>{{ group.domain }} <span>{{ group.tools.length }}</span></h4><div class="mcp-tool-list"><div v-for="tool in group.tools" :key="tool.name" class="mcp-tool"><span class="mcp-tool-icon" :class="{ write: tool.write }" aria-hidden="true">{{ tool.write ? '✎' : '⌕' }}</span><div><code>{{ tool.name }}</code><small>{{ tool.description }}</small></div></div></div></section></div></div>
+    </section>
+
+    <section class="mcp-card mcp-content-card">
+      <button type="button" class="mcp-disclosure" :aria-expanded="showAdvanced" aria-controls="mcp-advanced" @click="showAdvanced = !showAdvanced"><span><strong>高级设置与审计</strong><small>写操作权限、历史审批记录和最近调用</small></span><span aria-hidden="true">{{ showAdvanced ? '⌃' : '⌄' }}</span></button>
+      <div v-if="showAdvanced" id="mcp-advanced" class="mcp-advanced"><div class="mcp-write-row"><div><strong>允许 MCP 写操作</strong><p>允许读写令牌直接执行管理操作，请仅授予可信客户端。</p></div><n-switch :value="writeEnabled" :loading="busy" :disabled="!loaded" aria-label="MCP 写操作" @update:value="changeWrite" /></div><p>旧版本中仅获准重命名的读写令牌升级后会变为只读；需要直接管理时请新建读写令牌。</p>
+        <h4>历史审批记录</h4><div v-if="!changeEvents.length" class="mcp-empty">暂无历史审批记录</div><div v-else class="mcp-table-scroll"><table><thead><tr><th>时间</th><th>令牌</th><th>服务器 ID</th><th>事件</th></tr></thead><tbody><tr v-for="(item, index) in changeEvents" :key="`${item.plan_id}-${index}`"><td>{{ date(item.created_at) }}</td><td>{{ item.token_name }}</td><td>{{ item.server_id }}</td><td>{{ item.event }}</td></tr></tbody></table></div>
+        <h4>最近调用</h4><div v-if="!logs.length" class="mcp-empty">暂无调用记录</div><div v-else class="mcp-table-scroll"><table><thead><tr><th>时间</th><th>令牌</th><th>工具</th><th>状态</th><th>耗时</th></tr></thead><tbody><tr v-for="item in logs" :key="item.id"><td>{{ date(item.called_at) }}</td><td>{{ item.token_name }}</td><td>{{ item.tool_name }}</td><td>{{ item.success ? '成功' : '失败' }}</td><td>{{ item.duration_ms }} ms</td></tr></tbody></table></div>
+      </div>
+    </section>
+  </div>
+  <n-modal :show="open" :mask-closable="!busy" :close-on-esc="!busy" @update:show="value => { if (!value) close() }"><n-card class="account-modal-card" title="创建 MCP 令牌" :closable="!busy" @close="close"><template v-if="secret"><n-alert type="warning">令牌仅显示一次，请立即保存。含令牌的 AI 提示词可能被记录在剪贴板、AI 对话历史和工具执行记录中，只建议在受信任的个人环境使用。原始命令也可能留在终端历史中；Cursor JSON 会将令牌保存到配置文件。</n-alert><n-alert v-if="error" type="error">{{ error }}</n-alert><p style="overflow-wrap: anywhere">{{ secret }}</p><div class="mcp-modal-actions"><n-button @click="copy(secret)">复制令牌</n-button><n-button type="primary" @click="copyAgentPromptWithToken">复制含令牌的 AI 安装提示词（推荐）</n-button><n-button @click="copyConnectionWithToken">{{ activeClient === 'cursor' ? '复制带令牌的原始 MCP JSON' : '复制带令牌的原始配置命令' }}</n-button></div><p v-if="copyStatus" role="status">{{ copyStatus }}</p><p>使用连接配置区域当前选择的客户端<span v-if="activeClient !== 'cursor'">和终端</span>生成；未选择客户端时使用 Codex。复制后可粘贴到 AI 对话框，助手将在具备必要执行权限时协助配置。</p></template><form v-else class="auth-form" @submit.prevent="create"><n-alert v-if="error" type="error">{{ error }}</n-alert><label><span>令牌名称</span><n-input v-model:value="name" maxlength="100" /></label><label><span>权限</span><n-select v-model:value="tokenScope" :options="[{ label: '只读', value: 'read' }, { label: '读写：直接管理资源', value: 'read_write' }]" /></label><n-alert v-if="tokenScope === 'read_write'" type="warning">读写令牌可直接修改资源，且可能影响节点服务；请妥善保管。</n-alert><label><span>有效期</span><n-select v-model:value="days" :options="options" /></label><div class="modal-actions"><n-button :disabled="busy" @click="close">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy">创建</n-button></div></form></n-card></n-modal>
 </template>
 
 <style scoped>
-.mcp-table-scroll { overflow-x: auto; max-width: 100%; }
-.mcp-token-table { min-width: 900px; }
-.mcp-audit-table { min-width: 600px; }
-.mcp-table-scroll th, .mcp-table-scroll td { padding: 6px 10px; text-align: left; white-space: nowrap; }
-.mcp-connection-options { display: flex; flex-wrap: wrap; gap: 12px; }
-.mcp-connection-options label { flex: 1 1 220px; min-width: 0; }
-.mcp-connection-options label span { display: block; margin-bottom: 6px; }
-.mcp-connection-code { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; }
-.mcp-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.mcp-copy-status { margin-left: 8px; }
+.mcp-page { max-width: 880px; width: 100%; margin: 24px auto; display: flex; flex-direction: column; gap: 14px; color: var(--color-text); }
+.mcp-page-header h2 { margin: 0; font-size: 20px; }
+.mcp-page p, .mcp-page-header p { margin: 5px 0 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.55; }
+.mcp-card { min-width: 0; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
+.mcp-content-card { padding: 20px; }
+.mcp-content-card > header { margin-bottom: 16px; }
+.mcp-card h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.mcp-card-heading, .mcp-status-row, .mcp-write-row, .mcp-setup-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.mcp-status-card { overflow: hidden; }
+.mcp-status-row { padding: 18px 20px; }
+.mcp-badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 999px; background: var(--color-surface-muted); color: var(--color-text-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.mcp-badge.write, .mcp-tool-icon.write { color: var(--color-warning, #b87516); }
+.mcp-endpoint { display: flex; align-items: center; width: 100%; gap: 12px; padding: 12px 20px; border: 0; border-top: 1px solid var(--color-border); background: var(--color-surface-muted); color: var(--color-text-secondary); text-align: left; cursor: pointer; font: inherit; font-size: 12px; }
+.mcp-endpoint code { flex: 1; color: var(--color-text); overflow-wrap: anywhere; }
+.mcp-endpoint:hover, .mcp-client:hover { background: var(--color-primary-soft); }
+.mcp-clients { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.mcp-client { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid transparent; border-radius: 10px; background: var(--color-surface-muted); color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
+.mcp-client.selected { border-color: var(--color-primary); background: var(--color-surface); }
+.mcp-client-icon { display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 8px; background: var(--color-surface); border: 1px solid var(--color-border); font-size: 20px; }
+.mcp-client strong, .mcp-client small { display: block; overflow-wrap: anywhere; }
+.mcp-client strong { font-size: 13px; }.mcp-client small { margin-top: 2px; color: var(--color-text-secondary); font-size: 11px; }
+.mcp-setup { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.mcp-setup-heading { align-items: end; font-size: 13px; }.mcp-platform { width: min(240px, 50%); }.mcp-platform span { display: block; color: var(--color-text-secondary); font-size: 12px; margin-bottom: 5px; }
+.mcp-setup .n-alert { margin-top: 10px; }.mcp-code { margin: 14px 0 10px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-muted); }
+.mcp-code-label { padding: 8px 12px; border-bottom: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: 11px; }
+.mcp-code pre { margin: 0; max-height: 260px; overflow: auto; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }
+.mcp-actions, .mcp-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; }.mcp-feedback { color: var(--color-primary); font-size: 13px; }
+.mcp-empty { padding: 18px; border-radius: 10px; background: var(--color-surface-muted); color: var(--color-text-secondary); font-size: 13px; text-align: center; }
+.mcp-token { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(80px, .6fr) minmax(180px, 1.3fr) auto; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--color-border); font-size: 12px; }
+.mcp-token-name { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }.mcp-token-prefix { overflow-wrap: anywhere; color: var(--color-text-secondary); }.mcp-token-meta { display: flex; flex-direction: column; gap: 3px; color: var(--color-text-secondary); }
+.mcp-disclosure { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0; border: 0; background: transparent; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }.mcp-disclosure strong { font-size: 15px; }.mcp-disclosure small { display: block; margin-top: 4px; color: var(--color-text-secondary); font-size: 12px; }
+.mcp-tools, .mcp-advanced { margin-top: 16px; border-top: 1px solid var(--color-border); padding-top: 14px; }.mcp-tool-groups { columns: 2; column-gap: 18px; margin-top: 16px; }.mcp-tool-group { break-inside: avoid; margin-bottom: 18px; }.mcp-tool-group h4, .mcp-advanced h4 { margin: 0 0 8px; font-size: 12px; color: var(--color-text-secondary); }.mcp-tool-list { border-radius: 10px; background: var(--color-surface-muted); overflow: hidden; }.mcp-tool { display: flex; gap: 9px; padding: 9px 10px; font-size: 12px; }.mcp-tool + .mcp-tool { border-top: 1px solid var(--color-border); }.mcp-tool > div { min-width: 0; }.mcp-tool code { overflow-wrap: anywhere; }.mcp-tool small { display: block; margin-top: 3px; color: var(--color-text-secondary); line-height: 1.4; }.mcp-tool-icon { color: var(--color-text-secondary); font-size: 15px; }.mcp-advanced h4 { margin-top: 18px; }.mcp-write-row { align-items: center; }.mcp-table-scroll { overflow-x: auto; max-width: 100%; }.mcp-table-scroll table { min-width: 600px; width: 100%; border-collapse: collapse; font-size: 12px; }.mcp-table-scroll th, .mcp-table-scroll td { padding: 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--color-border); }
+.mcp-endpoint:focus-visible, .mcp-client:focus-visible, .mcp-disclosure:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+@media (max-width: 720px) { .mcp-token { grid-template-columns: minmax(0, 1fr) auto; }.mcp-token-name { grid-column: 1; }.mcp-token-prefix, .mcp-token-meta { grid-column: 1; }.mcp-token-action { grid-column: 2; grid-row: 1; }.mcp-tool-groups { columns: 1; } }
+@media (max-width: 520px) { .mcp-content-card { padding: 16px; }.mcp-clients { grid-template-columns: repeat(2, minmax(0, 1fr)); }.mcp-status-row { padding: 16px; }.mcp-endpoint { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 10px 16px; }.mcp-endpoint > span:first-child { grid-column: 1 / -1; }.mcp-setup-heading { align-items: stretch; flex-direction: column; gap: 10px; }.mcp-platform { width: 100%; } }
 </style>

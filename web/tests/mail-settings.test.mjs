@@ -52,7 +52,21 @@ async function mountSettings(prepare = () => {}) {
 test('系统设置入口和邮件页面仅按管理员条件渲染', async () => {
   const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
   assert.match(app, /v-if="state\.user\?\.role === 'admin'"[\s\S]*currentPage === 'settings'[\s\S]*系统设置/)
-  assert.match(app, /MailSettingsView v-if="currentPage === 'settings' && state\.user\?\.role === 'admin'"/)
+  assert.match(app, /v-if="currentPage === 'settings' && state\.user\?\.role === 'admin'" class="settings-page"[\s\S]*<MailSettingsView \/>[\s\S]*<MCPSettingsView \/>/)
+  assert.match(app, /'page-heading--settings': currentPage === 'settings'/)
+})
+
+test('邮件和 MCP 设置共享居中容器，表单保留桌面双列与手机单列', async () => {
+  const [css, mail, mcp] = await Promise.all([
+    readFile(new URL('../src/style.css', import.meta.url), 'utf8'),
+    readFile(new URL('../src/views/MailSettingsView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../src/views/MCPSettingsView.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(css, /\.page-heading--settings, \.settings-page\s*\{[^}]*max-width:\s*880px;[^}]*margin-left:\s*auto;[^}]*margin-right:\s*auto;/)
+  assert.match(mail, /\.mail-form-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\)/)
+  assert.match(mail, /@media \(max-width: 720px\)[\s\S]*\.mail-form-grid, \.mail-test-row\s*\{\s*grid-template-columns:\s*1fr/)
+  assert.doesNotMatch(mail, /max-width:\s*860px/)
+  assert.doesNotMatch(mcp, /margin:\s*24px auto/)
 })
 
 test('邮件设置显示密码保留提示、三种安全模式和无 TLS 警告', async () => {

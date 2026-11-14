@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NInput, NInputNumber, NSelect, NSpin, NSwitch } from 'naive-ui'
+import { NAlert, NButton, NInput, NInputNumber, NSelect, NSpin, NSwitch } from 'naive-ui'
 import { api } from '../api/client'
 
 type Security = 'tls' | 'starttls' | 'none'
@@ -118,7 +118,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <n-card title="邮件服务" :bordered="true" class="mail-settings-card">
+  <section class="mail-page">
+    <header class="mail-page-header"><h2>邮件服务</h2><p>配置 SMTP 服务，用于发送面板邮件。</p></header>
+  <div class="mail-settings-card">
     <n-alert v-if="error" type="error" class="mail-alert">{{ error }}</n-alert>
     <n-alert v-if="success" type="success" class="mail-alert">{{ success }}</n-alert>
     <n-spin v-if="loading" description="正在加载邮件设置…" />
@@ -133,7 +135,7 @@ onUnmounted(() => {
       </div>
 
       <div class="mail-form-grid">
-        <label class="mail-wide-field">
+        <label>
           <span>SMTP 服务器</span>
           <n-input v-model:value="form.host" :maxlength="253" placeholder="smtp.example.com" aria-label="SMTP 服务器" />
         </label>
@@ -194,17 +196,24 @@ onUnmounted(() => {
         <n-button type="primary" attr-type="submit" :loading="saving" :disabled="saving || testing">保存</n-button>
       </div>
     </form>
-  </n-card>
+  </div>
+  </section>
 </template>
 
 <style scoped>
-.mail-settings-card { max-width: 860px; }
+.mail-page { width: 100%; min-width: 0; color: var(--color-text); }
+.mail-page-header { margin-bottom: 14px; }
+.mail-page-header h2 { margin: 0; font-size: 20px; }
+.mail-page-header p { margin: 5px 0 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.55; }
+.mail-settings-card { width: 100%; min-width: 0; padding: 20px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
 .mail-alert { margin-bottom: 14px; }
-.mail-settings-form { display: grid; gap: 22px; }
-.mail-switch-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.mail-settings-form { display: grid; gap: 16px; }
+.mail-switch-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.mail-switch-row strong, .mail-test-section h3 { font-size: 15px; font-weight: 650; }
 .mail-switch-row p, .mail-test-section p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 13px; }
-.mail-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-.mail-form-grid label { display: grid; gap: 7px; }
+.mail-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.mail-form-grid label { display: grid; gap: 6px; min-width: 0; font-size: 13px; }
+.mail-form-grid :deep(.n-input-number) { width: 100%; }
 .mail-form-grid small { color: var(--color-text-secondary); }
 .mail-wide-field { grid-column: 1 / -1; }
 .mail-test-section { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--color-border); }
@@ -216,4 +225,5 @@ onUnmounted(() => {
   .mail-wide-field { grid-column: auto; }
   .mail-test-row .n-button, .mail-actions .n-button { width: 100%; }
 }
+@media (max-width: 520px) { .mail-settings-card { padding: 16px; } }
 </style>

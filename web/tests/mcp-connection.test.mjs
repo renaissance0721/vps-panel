@@ -142,6 +142,21 @@ test('含令牌提示词授权必要工具使用且说明记录风险', () => {
   assert.doesNotMatch(prompt, /不要输出、记录或发送给其他服务/)
 })
 
+test('三个客户端在两种平台生成的含令牌配置与无令牌配置分离', () => {
+  const clientToken = 'one-time-client-secret'
+  for (const client of ['codex', 'claude', 'cursor']) {
+    for (const platform of ['windows', 'unix']) {
+      const connection = generateMCPConnection(client, platform, endpoint, clientToken)
+      assert.ok(connection.includes(clientToken))
+      assert.ok(!generateMCPConnection(client, platform, endpoint).includes(clientToken))
+      assert.ok(generateMCPAgentPrompt(client, platform, endpoint, clientToken).includes(connection))
+      if (client === 'cursor') assert.equal(JSON.parse(connection).mcpServers['vps-panel'].headers.Authorization, `Bearer ${clientToken}`)
+      if (client === 'claude') assert.match(connection, /claude mcp add --transport http/)
+      if (client === 'codex') assert.match(connection, /--bearer-token-env-var VPS_PANEL_MCP_TOKEN/)
+    }
+  }
+})
+
 test('Claude 和 Cursor 的提示词分别说明验证与合并配置', () => {
   const claude = generateMCPAgentPrompt('claude', 'unix', endpoint)
   assert.match(claude, /Claude Code/)

@@ -592,7 +592,7 @@ onUnmounted(() => {
             <strong class="app-brand app-brand--sidebar">夕凪云</strong>
           </header>
           <div class="admin-page">
-            <header class="page-heading">
+            <header class="page-heading" :class="{ 'page-heading--settings': currentPage === 'settings' }">
               <h1>{{ pageTitles[currentPage] }}</h1>
               <AccountMenu v-if="state.user" :user="state.user" @updated="updateCurrentUser" @logout="logout" />
             </header>
@@ -613,8 +613,10 @@ onUnmounted(() => {
                 />
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
-                <MailSettingsView v-if="currentPage === 'settings' && state.user?.role === 'admin'" />
-                <MCPSettingsView v-if="currentPage === 'settings' && state.user?.role === 'admin'" />
+                <div v-if="currentPage === 'settings' && state.user?.role === 'admin'" class="settings-page">
+                  <MailSettingsView />
+                  <MCPSettingsView />
+                </div>
                 <AuditLogView v-if="currentPage === 'audit' && state.user?.role === 'admin'" />
                 <ServersView :active="currentPage === 'servers'" :model="serverView" />
               </div>

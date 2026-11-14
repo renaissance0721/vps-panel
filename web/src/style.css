@@ -266,6 +266,19 @@ h1 {
   font-size: 30px;
 }
 
+.page-heading--settings, .settings-page {
+  width: 100%;
+  max-width: 880px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
 .mobile-header,
 .sidebar-backdrop {
   display: none;

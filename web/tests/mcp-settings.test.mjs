@@ -19,17 +19,19 @@ async function mount(prepare = () => {}) {
   try { const html = await renderToString(createSSRApp(View)); return { bindings, html } } finally { View.setup = original }
 }
 test('首次展示弹窗明确提示 AI 对话历史风险并保留原始命令入口', async () => {
-  const { bindings, html } = await mount(value => { value.open.value = true; value.secret.value = 'temporary-secret' })
+  const { bindings, html } = await mount(value => { value.open.value = true; value.creationClient.value = 'codex'; value.creationPlatform.value = 'windows'; value.secret.value = 'temporary-secret' })
   assert.match(html, /AI 对话历史/)
   assert.match(html, /工具执行记录/)
   assert.match(html, /受信任的个人环境/)
   assert.match(html, /复制含令牌的 AI 安装提示词/)
-  assert.match(html, /复制带令牌的原始配置命令/)
+  assert.match(html, /复制带令牌的连接命令/)
+  assert.match(html, /含令牌的连接配置/)
+  assert.match(html, /temporary-secret/)
   assert.doesNotMatch(bindings.agentPrompt.value, /temporary-secret/)
 })
 test('MCP 设置仅管理员可见，地址和说明随当前域名生成', async () => {
   const app = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
-  assert.match(app, /MCPSettingsView v-if="currentPage === 'settings' && state\.user\?\.role === 'admin'"/)
+  assert.match(app, /v-if="currentPage === 'settings' && state\.user\?\.role === 'admin'" class="settings-page"[\s\S]*<MCPSettingsView \/>/)
   const { bindings, html } = await mount()
   assert.equal(bindings.enabled.value, false)
   assert.equal(bindings.endpoint.value, 'https://panel.example.com/mcp')
@@ -41,6 +43,7 @@ test('MCP 设置仅管理员可见，地址和说明随当前域名生成', asyn
   assert.match(selected.html, /复制给 AI 的安装提示词/)
   assert.match(selected.html, /复制原始配置命令/)
   assert.match(selected.html, /原始配置预览/)
+  assert.match(selected.html, /为 Codex 创建令牌/)
   assert.match(bindings.connection.value, /--bearer-token-env-var VPS_PANEL_MCP_TOKEN/)
   assert.notEqual(bindings.agentPrompt.value, bindings.connection.value)
   assert.ok(bindings.agentPrompt.value.includes(bindings.connection.value))
@@ -68,7 +71,7 @@ test('令牌只显示一次并可撤销；失败显示错误', async () => {
     return new Response(JSON.stringify({ logs: [] }))
   }
   try {
-    const { bindings } = await mount(); await bindings.load(); bindings.name.value = 'test'; await bindings.create()
+    const { bindings } = await mount(); await bindings.load(); bindings.startCreate('codex'); bindings.name.value = 'test'; await bindings.create()
     assert.equal(bindings.secret.value, 'one-time-secret')
     assert.equal(clipboard.length, 0)
     assert.doesNotMatch(bindings.connection.value, /one-time-secret/)
@@ -115,7 +118,7 @@ test('读写令牌直接授权管理，保留历史审计并移除审批界面',
     return new Response(JSON.stringify({ logs: [] }))
   }
   try {
-    const { bindings, html } = await mount(); await bindings.load()
+    const { bindings, html } = await mount(); await bindings.load(); bindings.startCreate()
     assert.equal(bindings.writeEnabled.value, true)
     assert.doesNotMatch(html, /set_server_order/)
     const expanded = await mount(value => { value.showTools.value = true; value.showAdvanced.value = true })
@@ -125,6 +128,53 @@ test('读写令牌直接授权管理，保留历史审计并移除审批界面',
     assert.equal(created.scope, 'read_write'); assert.equal(created.capabilities, undefined)
     assert.ok(!requests.some(item => item.url.includes('/change-plans')))
   } finally { globalThis.fetch = original }
+})
+
+test('按创建时的客户端和平台生成一次性配置，关闭后清除秘密', async () => {
+  const original = globalThis.fetch
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const copied = []; const requests = []
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async value => copied.push(value) } } })
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, options })
+    if (options.method === 'POST') return Response.json({ token: 'one-time-client-secret' })
+    if (url.endsWith('/settings')) return Response.json({ mcp_enabled: true })
+    if (url.endsWith('/tokens')) return Response.json({ tokens: [] })
+    return Response.json({ logs: [], events: [] })
+  }
+  try {
+    for (const [client, label, platform] of [['codex', 'Codex', 'windows'], ['codex', 'Codex', 'unix'], ['claude', 'Claude Code', 'windows'], ['claude', 'Claude Code', 'unix'], ['cursor', 'Cursor', 'windows'], ['cursor', 'Cursor', 'unix']]) {
+      const { bindings, html } = await mount(value => { value.loaded.value = true; value.selectedClient.value = client; value.selectedPlatform.value = platform })
+      assert.match(html, new RegExp(`为 ${label} 创建令牌`))
+      bindings.startCreate(client)
+      assert.equal(bindings.name.value, label)
+      assert.equal(bindings.creationClient.value, client)
+      assert.equal(bindings.creationPlatform.value, platform)
+      bindings.tokenScope.value = 'read_write'; bindings.days.value = 180
+      const before = Date.now()
+      await bindings.create()
+      const posted = JSON.parse(requests.filter(item => item.options.method === 'POST').at(-1).options.body)
+      assert.equal(posted.name, label); assert.equal(posted.scope, 'read_write')
+      assert.ok(Math.abs(Date.parse(posted.expires_at) - before - 180 * 86400000) < 5000)
+      assert.equal(copied.length, 0)
+      bindings.selectedClient.value = client === 'cursor' ? 'claude' : 'cursor'
+      bindings.selectedPlatform.value = platform === 'windows' ? 'unix' : 'windows'
+      const preview = bindings.connectionWithToken()
+      assert.match(preview, /one-time-client-secret/)
+      if (client === 'cursor') assert.equal(JSON.parse(preview).mcpServers['vps-panel'].headers.Authorization, 'Bearer one-time-client-secret')
+      else {
+        assert.match(preview, client === 'claude' ? /claude mcp add --transport http/ : /codex mcp add vps-panel/)
+        assert.match(preview, platform === 'windows' ? /Get-Command/ : /command -v/)
+      }
+      await bindings.copyConnectionWithToken(); assert.equal(copied.pop(), preview)
+      await bindings.copyAgentPromptWithToken(); assert.match(copied.pop(), /one-time-client-secret/)
+      assert.doesNotMatch(bindings.connection.value, /one-time-client-secret/)
+      bindings.close(); assert.equal(bindings.secret.value, ''); assert.equal(bindings.connectionWithToken(), '')
+      assert.equal(bindings.creationClient.value, null); assert.equal(bindings.creationPlatform.value, null)
+      bindings.startCreate(client); assert.equal(bindings.secret.value, ''); assert.equal(bindings.connectionWithToken(), '')
+      bindings.close()
+    }
+  } finally { globalThis.fetch = original; if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator); else delete globalThis.navigator }
 })
 
 test('工具清单与后端注册和只读标注保持一致', async () => {

@@ -927,6 +927,14 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     })
   }
 
+  function chinaWhitelistSaved(server: ServerRecord) {
+    servers.value = servers.value.map(value => value.id === server.id ? server : value)
+    if (selectedServer.value?.id === server.id) {
+      selectedServer.value = server
+      startChinaInboundConfigPolling(server)
+    }
+  }
+
   function stopChinaInboundConfigPolling() {
     if (chinaInboundConfigPollTimer !== undefined) clearTimeout(chinaInboundConfigPollTimer)
     chinaInboundConfigPollTimer = undefined
@@ -1247,6 +1255,7 @@ export function useServers(state: Ref<AuthState | null>, users: Ref<AccessUser[]
     saveBasicInfo,
     setOutboundPreference,
     setBlockChinaInbound,
+    chinaWhitelistSaved,
     openTrafficAdjustmentModal,
     closeTrafficAdjustmentModal,
     resetTrafficAdjustmentForm,

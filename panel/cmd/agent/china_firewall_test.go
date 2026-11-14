@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +102,74 @@ type fakeChinaNFT struct {
 
 func newFakeChinaNFT(t *testing.T) *fakeChinaNFT {
 	return &fakeChinaNFT{t: t, sets: map[string]string{}, elements: map[string][]string{}}
+}
+
+// Evaluate the generated drop rules against the fake nftables sets, including
+// whitelist precedence and protocol/port scope, rather than matching names only.
+func (n *fakeChinaNFT) drops(source, protocol string, port int) bool {
+	address := netip.MustParseAddr(source)
+	pattern := regexp.MustCompile(`(ip6|ip) saddr != @([a-z0-9_]+) (?:ip6|ip) saddr @([a-z0-9_]+) (tcp|udp) dport @([a-z0-9_]+) drop`)
+	contains := func(name string) bool {
+		for _, raw := range n.elements[name] {
+			if p, err := netip.ParsePrefix(raw); err == nil && p.Contains(address) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, match := range pattern.FindAllStringSubmatch(n.chain, -1) {
+		if (match[1] == "ip") != address.Is4() || match[4] != protocol || contains(match[2]) || !contains(match[3]) {
+			continue
+		}
+		for _, value := range n.elements[match[5]] {
+			if value == strconv.Itoa(port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestChinaInboundWhitelistPrecedenceAndRollback(t *testing.T) {
+	manager, now := newTestChinaInboundFirewall(t)
+	nft := newFakeChinaNFT(t)
+	manager.runCommand = nft.run
+	if err := manager.writeCache(chinaPrefixes{FetchedAt: now, IPv4: []string{"1.0.1.0/24"}, IPv6: []string{"2400:3200::/32"}}); err != nil {
+		t.Fatal(err)
+	}
+	state := desiredState{BlockChinaInbound: true, ChinaInboundWhitelist: []string{"1.0.1.8/32", "2400:3200:10::/48"}, Xray: desiredXrayState{Enabled: true, Proxies: []desiredProxy{{Port: 8388, Protocol: "shadowsocks"}}}}
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		ip, proto string
+		port      int
+		drop      bool
+	}{
+		{"1.0.1.8", "tcp", 8388, false}, {"1.0.1.9", "tcp", 8388, true},
+		{"1.0.1.9", "udp", 8388, true}, {"1.0.1.9", "tcp", 22, false},
+		{"8.8.8.8", "tcp", 8388, false}, {"2400:3200:10::1", "udp", 8388, false},
+		{"2400:3200:11::1", "udp", 8388, true},
+	} {
+		if got := nft.drops(tc.ip, tc.proto, tc.port); got != tc.drop {
+			t.Fatalf("%s %s/%d drop = %v", tc.ip, tc.proto, tc.port, got)
+		}
+	}
+	old := nft.chain
+	state.ChinaInboundWhitelist = []string{"1.0.1.9/32"}
+	nft.fail = "add element inet " + chinaFirewallTable + " a4_"
+	if err := manager.apply(t.Context(), state); err == nil || nft.chain != old || nft.drops("1.0.1.8", "tcp", 8388) {
+		t.Fatal("failed candidate changed active whitelist")
+	}
+	if err := manager.apply(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if !nft.drops("1.0.1.8", "tcp", 8388) || nft.drops("1.0.1.9", "tcp", 8388) {
+		t.Fatal("whitelist edit/removal was not applied")
+	}
+	if strings.Contains(nft.chain, " accept") {
+		t.Fatal("whitelist must not create global accept rules")
+	}
 }
 func (n *fakeChinaNFT) run(_ context.Context, _ string, args ...string) ([]byte, error) {
 	switch {
@@ -235,10 +305,10 @@ func TestChinaInboundFirewallAtomicUpdatesAndRecovery(t *testing.T) {
 	if err := manager2.apply(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}
-	if nft.chain == old || len(nft.sets) != 4 {
+	if nft.chain == old || len(nft.sets) != 6 {
 		t.Fatalf("recovery did not replace and clean sets: %d", len(nft.sets))
 	}
-	if err := manager2.apply(t.Context(), state); err != nil || len(nft.sets) != 4 {
+	if err := manager2.apply(t.Context(), state); err != nil || len(nft.sets) != 6 {
 		t.Fatalf("repeat apply: %v, sets %d", err, len(nft.sets))
 	}
 	if err := manager2.writeCache(chinaPrefixes{FetchedAt: now, IPv4: []string{"2.0.0.0/8"}, IPv6: []string{"2401::/32"}}); err != nil {
@@ -285,7 +355,7 @@ func TestChinaInboundFirewallLegacyMigration(t *testing.T) {
 	if err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true}); err != nil {
 		t.Fatal(err)
 	}
-	if len(nft.sets) != 4 {
+	if len(nft.sets) != 6 {
 		t.Fatalf("legacy sets not cleaned: %v", nft.sets)
 	}
 }
@@ -459,7 +529,7 @@ func TestChinaInboundInitialFailureAndCleanupFailure(t *testing.T) {
 	if !errors.Is(err, errChinaNFTCleanup) || !strings.Contains(nft.chain, " drop") {
 		t.Fatalf("cleanup failure: %v; chain %s", err, nft.chain)
 	}
-	if err := manager.apply(t.Context(), state); err != nil || len(nft.sets) != 4 {
+	if err := manager.apply(t.Context(), state); err != nil || len(nft.sets) != 6 {
 		t.Fatalf("cleanup recovery: %v, %d sets", err, len(nft.sets))
 	}
 }

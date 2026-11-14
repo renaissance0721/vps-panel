@@ -105,6 +105,8 @@ API v1 通过显式 capabilities 表达支持的功能。一般代理能力与 L
 
 Server 管理包含基本信息、分组、归属、访问范围、续期、流量配置和生命周期。
 
+管理员可通过 `GET` / `PUT /api/servers/{id}/china-inbound-whitelist` 管理服务器的来源地址例外；接口仍检查 Server 访问权限，PUT 替换完整列表并独立校验、规范化 IP/CIDR。配置与 desired-state version 在同一事务中更新，Agent 使用独立受管 nftables 表和代际集合排除这些来源，配置保存不等于远端已应用。Agent 能力和兼容性见 [Agent API v1](docs/agent-api-v1.md)。
+
 `bandwidth_mbps` 是可空的套餐标称带宽（1–10000000 Mbps），与月流量额度和实时网速独立；`network_stack` 是可空的管理员网络栈分类（`ipv4` / `ipv6` / `dual`）。历史及未填写的服务器均保留 NULL，界面显示“未设置”。
 两者仅属于 Panel 元数据，修改不递增 Agent desired-state version，也不修改实际网络配置；Agent 实际观测的 IPv4 / IPv6 仍由 `SystemInfo` 独立表示。现有 Server 创建、PATCH、Get / List DTO 提供这两个字段，PATCH 中省略保持原值，显式 null 清空。
 

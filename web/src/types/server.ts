@@ -17,6 +17,7 @@ export type ServerRecord = {
   visibility: 'public' | 'private'
   outbound_preference: 'auto' | 'prefer_ipv4' | 'prefer_ipv6'
   block_china_inbound: boolean
+  china_inbound_whitelist_configured?: boolean
   desired_state_version: number
   decommissioning_at: string | null
   decommission_status: '' | 'pending' | 'failed'

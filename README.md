@@ -72,6 +72,8 @@ Agent 安装器按服务管理器选择 systemd 或 OpenRC；OpenRC 环境需要
 
 Agent 安装和脚本升级会在缺少 `nft` 时为 Alpine 或 Debian / Ubuntu 安装 nftables，不会启动系统 nftables 服务或清空现有规则。其他系统需自行准备 nftables；内核或容器仍须允许 Agent 管理防火墙。面板内的一键自升级与升级脚本是不同流程，已有 Agent 若缺少 nftables，可运行升级脚本或在服务器上手动安装后重试配置同步。
 
+服务器详情中的中国 IP 入站限制支持由管理员设置最多 128 条来源 IP / CIDR 白名单；填写目标服务器实际看到的来源地址。白名单仅排除此项限制，不影响 SSH、其他防火墙规则或服务认证。关闭限制后白名单仍会保留；保存后需查看 Agent 配置同步状态，旧 Agent 须升级后才支持白名单。
+
 ## 🖥️ Agent
 
 1. 在 Panel 的服务器页面创建 Server。

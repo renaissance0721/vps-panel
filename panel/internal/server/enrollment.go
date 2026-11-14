@@ -19,7 +19,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 	value, err := scanServer(tx.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.country_override_code, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
-		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
+		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound, EXISTS(SELECT 1 FROM server_china_inbound_whitelist WHERE server_id = servers.id),
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(server_access.user_id) FROM server_access JOIN users ON users.id = server_access.user_id
 		   WHERE server_id = servers.id AND users.role IN ('admin', 'vip')), ''),

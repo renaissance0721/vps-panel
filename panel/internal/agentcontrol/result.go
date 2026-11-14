@@ -42,6 +42,26 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 	if result.Version < appliedVersion {
 		return nil
 	}
+	// An older Agent may ignore an additive desired-state field and claim success.
+	// Never record that claim for an enabled, nonempty whitelist.
+	if result.Status == ConfigSyncSuccess && result.Version == desiredVersion {
+		var needsWhitelist bool
+		var implementation, version, capabilitiesJSON string
+		var apiVersion int
+		if err := tx.QueryRowContext(ctx, `SELECT servers.block_china_inbound AND servers.decommission_status = '' AND EXISTS(SELECT 1 FROM server_china_inbound_whitelist WHERE server_id = servers.id), agents.implementation, agents.version, agents.api_version, agents.capabilities_json FROM agents JOIN servers ON servers.id = agents.server_id WHERE agents.id = ? AND servers.id = ?`, agentID, serverID).Scan(&needsWhitelist, &implementation, &version, &apiVersion, &capabilitiesJSON); err != nil {
+			return err
+		}
+		if needsWhitelist {
+			capabilities, err := DecodeCapabilities(capabilitiesJSON)
+			if err != nil {
+				return err
+			}
+			if !DeclaresCapability(Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityFirewallCNWhitelist) {
+				result.Status = ConfigSyncFailed
+				result.Message = "当前 Agent 不支持中国 IP 入站白名单，请升级 Agent"
+			}
+		}
+	}
 
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	if result.Status == ConfigSyncSuccess {

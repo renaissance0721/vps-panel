@@ -23,6 +23,7 @@ const (
 	CapabilityDiagnosticsV1       = "diagnostics_v1"
 	CapabilitySelfUpgrade         = "self_upgrade"
 	CapabilityFirewallCNBlock     = "firewall.cn_block"
+	CapabilityFirewallCNWhitelist = "firewall.cn_whitelist"
 	CapabilityManagedRuntimePurge = "managed_runtime_purge"
 	CapabilitySelfDecommission    = "self_decommission"
 

@@ -35,6 +35,7 @@ import {
 } from '../../server'
 import { countryLabel } from '../../country'
 import ServerTraffic from './ServerTraffic.vue'
+import ChinaInboundWhitelist from './ChinaInboundWhitelist.vue'
 type TrafficModel = InstanceType<typeof ServerTraffic>['$props']['model']
 const props = defineProps<{
   model: TrafficModel & Pick<ServersViewState,
@@ -59,6 +60,7 @@ const props = defineProps<{
     | 'copiedUpgradeCommand'
     | 'setOutboundPreference'
     | 'setBlockChinaInbound'
+    | 'chinaWhitelistSaved'
     | 'archiveServer'
     | 'forceRemoveServer'
     | 'regenerateEnrollment'
@@ -96,6 +98,7 @@ const {
   copiedUpgradeCommand,
   setOutboundPreference,
   setBlockChinaInbound,
+  chinaWhitelistSaved,
   archiveServer,
   forceRemoveServer,
   regenerateEnrollment,
@@ -353,6 +356,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               <small class="secondary-text">
                 仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。支持 IPv4 和 IPv6。数据来源：APNIC。SSH 和其他服务不受影响。
               </small>
+              <ChinaInboundWhitelist v-if="state?.user?.role === 'admin'" :server="selectedServer" :readonly="serverReadOnly" @saved="chinaWhitelistSaved" />
               </div>
             </section>
 

@@ -176,6 +176,7 @@ test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
     outboundPreference: 'outbound_preference',
     diagnosticsV1: 'diagnostics_v1',
     firewallCNBlock: 'firewall.cn_block',
+    firewallCNWhitelist: 'firewall.cn_whitelist',
     managedRuntimePurge: 'managed_runtime_purge',
     selfDecommission: 'self_decommission',
   })
@@ -255,6 +256,8 @@ test('中国 IP 入站限制按 desired/apply 状态和 capability 准确展示'
   assert.equal(chinaInboundApplyState(server({ status: 'offline' })).label, '等待 Agent 上线')
   assert.equal(chinaInboundApplyState(server({ status: 'offline', block_china_inbound: false })).label, '等待 Agent 上线关闭')
   assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'failed' })).label, '配置应用失败')
+  assert.equal(chinaInboundApplyState(server({ china_inbound_whitelist_configured: true, agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '无法确认')
+  assert.equal(chinaInboundApplyState(server({ china_inbound_whitelist_configured: true, agent_capabilities: ['firewall.cn_block', 'firewall.cn_whitelist'], agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '已生效')
 
   const legacyDisabled = server({
     block_china_inbound: false, agent_implementation: '', agent_api_version: 0,

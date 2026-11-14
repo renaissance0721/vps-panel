@@ -59,54 +59,55 @@ type updateTrafficAdjustmentRequest struct {
 }
 
 type serverResponse struct {
-	ID                        int64               `json:"id"`
-	Name                      string              `json:"name"`
-	BandwidthMbps             *int64              `json:"bandwidth_mbps"`
-	NetworkStack              *string             `json:"network_stack"`
-	CountryOverrideCode       *string             `json:"country_override_code"`
-	BoundDomainIPv4           string              `json:"bound_domain_ipv4"`
-	BoundDomainIPv6           string              `json:"bound_domain_ipv6"`
-	OwnerUserID               *int64              `json:"owner_user_id"`
-	OwnerUsername             string              `json:"owner_username"`
-	CreatedByUserID           *int64              `json:"created_by_user_id"`
-	CreatedByUsername         string              `json:"created_by_username"`
-	CreatedByRole             string              `json:"created_by_role"`
-	Status                    string              `json:"status"`
-	Visibility                string              `json:"visibility"`
-	OutboundPreference        string              `json:"outbound_preference"`
-	BlockChinaInbound         bool                `json:"block_china_inbound"`
-	DesiredStateVersion       int64               `json:"desired_state_version"`
-	DecommissioningAt         *time.Time          `json:"decommissioning_at"`
-	DecommissionStatus        string              `json:"decommission_status"`
-	DecommissionError         string              `json:"decommission_error"`
-	AccessUserIDs             []int64             `json:"access_user_ids"`
-	ArchivedAt                *time.Time          `json:"archived_at,omitempty"`
-	ExpiresAt                 *time.Time          `json:"expires_at"`
-	RenewalPeriodMonths       *int                `json:"renewal_period_months"`
-	AutoRenew                 bool                `json:"auto_renew"`
-	MonthlyTrafficLimitBytes  *int64              `json:"monthly_traffic_limit_bytes"`
-	TrafficCountMode          string              `json:"traffic_count_mode"`
-	TrafficResetDay           int                 `json:"traffic_reset_day"`
-	TrafficResetTime          string              `json:"traffic_reset_time"`
-	TrafficUsedBytes          int64               `json:"traffic_used_bytes"`
-	LastSeenAt                *time.Time          `json:"last_seen_at"`
-	SystemInfo                *systemInfoResponse `json:"system_info"`
-	Metrics                   *metricsResponse    `json:"metrics"`
-	CreatedAt                 time.Time           `json:"created_at"`
-	UpdatedAt                 time.Time           `json:"updated_at"`
-	AgentImplementation       string              `json:"agent_implementation"`
-	AgentVersion              string              `json:"agent_version"`
-	AgentAPIVersion           int                 `json:"agent_api_version"`
-	AgentCapabilities         []string            `json:"agent_capabilities"`
-	AgentCanSelfUpgrade       bool                `json:"agent_can_self_upgrade"`
-	AgentVersionStatus        string              `json:"agent_version_status"`
-	AgentUpgradeTarget        string              `json:"agent_upgrade_target,omitempty"`
-	AgentUpgradeStatus        string              `json:"agent_upgrade_status,omitempty"`
-	AgentUpgradeError         string              `json:"agent_upgrade_error,omitempty"`
-	AgentAppliedConfigVersion int64               `json:"agent_applied_config_version"`
-	AgentConfigSyncStatus     string              `json:"agent_config_sync_status"`
-	AgentConfigSyncError      string              `json:"agent_config_sync_error"`
-	AgentConfigSyncedAt       *time.Time          `json:"agent_config_synced_at"`
+	ID                              int64               `json:"id"`
+	Name                            string              `json:"name"`
+	BandwidthMbps                   *int64              `json:"bandwidth_mbps"`
+	NetworkStack                    *string             `json:"network_stack"`
+	CountryOverrideCode             *string             `json:"country_override_code"`
+	BoundDomainIPv4                 string              `json:"bound_domain_ipv4"`
+	BoundDomainIPv6                 string              `json:"bound_domain_ipv6"`
+	OwnerUserID                     *int64              `json:"owner_user_id"`
+	OwnerUsername                   string              `json:"owner_username"`
+	CreatedByUserID                 *int64              `json:"created_by_user_id"`
+	CreatedByUsername               string              `json:"created_by_username"`
+	CreatedByRole                   string              `json:"created_by_role"`
+	Status                          string              `json:"status"`
+	Visibility                      string              `json:"visibility"`
+	OutboundPreference              string              `json:"outbound_preference"`
+	BlockChinaInbound               bool                `json:"block_china_inbound"`
+	ChinaInboundWhitelistConfigured bool                `json:"china_inbound_whitelist_configured"`
+	DesiredStateVersion             int64               `json:"desired_state_version"`
+	DecommissioningAt               *time.Time          `json:"decommissioning_at"`
+	DecommissionStatus              string              `json:"decommission_status"`
+	DecommissionError               string              `json:"decommission_error"`
+	AccessUserIDs                   []int64             `json:"access_user_ids"`
+	ArchivedAt                      *time.Time          `json:"archived_at,omitempty"`
+	ExpiresAt                       *time.Time          `json:"expires_at"`
+	RenewalPeriodMonths             *int                `json:"renewal_period_months"`
+	AutoRenew                       bool                `json:"auto_renew"`
+	MonthlyTrafficLimitBytes        *int64              `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode                string              `json:"traffic_count_mode"`
+	TrafficResetDay                 int                 `json:"traffic_reset_day"`
+	TrafficResetTime                string              `json:"traffic_reset_time"`
+	TrafficUsedBytes                int64               `json:"traffic_used_bytes"`
+	LastSeenAt                      *time.Time          `json:"last_seen_at"`
+	SystemInfo                      *systemInfoResponse `json:"system_info"`
+	Metrics                         *metricsResponse    `json:"metrics"`
+	CreatedAt                       time.Time           `json:"created_at"`
+	UpdatedAt                       time.Time           `json:"updated_at"`
+	AgentImplementation             string              `json:"agent_implementation"`
+	AgentVersion                    string              `json:"agent_version"`
+	AgentAPIVersion                 int                 `json:"agent_api_version"`
+	AgentCapabilities               []string            `json:"agent_capabilities"`
+	AgentCanSelfUpgrade             bool                `json:"agent_can_self_upgrade"`
+	AgentVersionStatus              string              `json:"agent_version_status"`
+	AgentUpgradeTarget              string              `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeStatus              string              `json:"agent_upgrade_status,omitempty"`
+	AgentUpgradeError               string              `json:"agent_upgrade_error,omitempty"`
+	AgentAppliedConfigVersion       int64               `json:"agent_applied_config_version"`
+	AgentConfigSyncStatus           string              `json:"agent_config_sync_status"`
+	AgentConfigSyncError            string              `json:"agent_config_sync_error"`
+	AgentConfigSyncedAt             *time.Time          `json:"agent_config_synced_at"`
 }
 
 type systemInfoResponse struct {
@@ -148,44 +149,45 @@ type createdServerResponse struct {
 
 func toServerResponse(value serverstore.Server, panelVersion string) serverResponse {
 	response := serverResponse{
-		ID:                       value.ID,
-		Name:                     value.Name,
-		BandwidthMbps:            value.BandwidthMbps,
-		NetworkStack:             value.NetworkStack,
-		CountryOverrideCode:      value.CountryOverrideCode,
-		BoundDomainIPv4:          value.BoundDomainIPv4,
-		BoundDomainIPv6:          value.BoundDomainIPv6,
-		OwnerUserID:              value.OwnerUserID,
-		OwnerUsername:            value.OwnerUsername,
-		CreatedByUserID:          value.CreatedByUserID,
-		CreatedByUsername:        value.CreatedByUsername,
-		CreatedByRole:            value.CreatedByRole,
-		Status:                   value.Status,
-		Visibility:               value.Visibility,
-		OutboundPreference:       value.OutboundPreference,
-		BlockChinaInbound:        value.BlockChinaInbound,
-		DesiredStateVersion:      value.DesiredStateVersion,
-		DecommissioningAt:        value.DecommissioningAt,
-		DecommissionStatus:       value.DecommissionStatus,
-		DecommissionError:        value.DecommissionError,
-		AccessUserIDs:            append([]int64{}, value.AccessUserIDs...),
-		ArchivedAt:               value.ArchivedAt,
-		ExpiresAt:                value.ExpiresAt,
-		RenewalPeriodMonths:      value.RenewalPeriodMonths,
-		AutoRenew:                value.AutoRenew,
-		MonthlyTrafficLimitBytes: value.MonthlyTrafficLimitBytes,
-		TrafficCountMode:         value.TrafficCountMode,
-		TrafficResetDay:          value.TrafficResetDay,
-		TrafficResetTime:         value.TrafficResetTime,
-		TrafficUsedBytes:         value.TrafficUsedBytes(),
-		LastSeenAt:               value.LastSeenAt,
-		CreatedAt:                value.CreatedAt,
-		UpdatedAt:                value.UpdatedAt,
-		AgentImplementation:      value.AgentImplementation,
-		AgentVersion:             value.AgentVersion,
-		AgentAPIVersion:          value.AgentAPIVersion,
-		AgentCapabilities:        append([]string{}, value.AgentCapabilities...),
-		AgentCanSelfUpgrade:      value.AgentVersion != "" && agentcontrol.CanSelfUpgrade(value.AgentImplementation, value.AgentAPIVersion, value.AgentCapabilities),
+		ID:                              value.ID,
+		Name:                            value.Name,
+		BandwidthMbps:                   value.BandwidthMbps,
+		NetworkStack:                    value.NetworkStack,
+		CountryOverrideCode:             value.CountryOverrideCode,
+		BoundDomainIPv4:                 value.BoundDomainIPv4,
+		BoundDomainIPv6:                 value.BoundDomainIPv6,
+		OwnerUserID:                     value.OwnerUserID,
+		OwnerUsername:                   value.OwnerUsername,
+		CreatedByUserID:                 value.CreatedByUserID,
+		CreatedByUsername:               value.CreatedByUsername,
+		CreatedByRole:                   value.CreatedByRole,
+		Status:                          value.Status,
+		Visibility:                      value.Visibility,
+		OutboundPreference:              value.OutboundPreference,
+		BlockChinaInbound:               value.BlockChinaInbound,
+		ChinaInboundWhitelistConfigured: value.ChinaInboundWhitelistConfigured,
+		DesiredStateVersion:             value.DesiredStateVersion,
+		DecommissioningAt:               value.DecommissioningAt,
+		DecommissionStatus:              value.DecommissionStatus,
+		DecommissionError:               value.DecommissionError,
+		AccessUserIDs:                   append([]int64{}, value.AccessUserIDs...),
+		ArchivedAt:                      value.ArchivedAt,
+		ExpiresAt:                       value.ExpiresAt,
+		RenewalPeriodMonths:             value.RenewalPeriodMonths,
+		AutoRenew:                       value.AutoRenew,
+		MonthlyTrafficLimitBytes:        value.MonthlyTrafficLimitBytes,
+		TrafficCountMode:                value.TrafficCountMode,
+		TrafficResetDay:                 value.TrafficResetDay,
+		TrafficResetTime:                value.TrafficResetTime,
+		TrafficUsedBytes:                value.TrafficUsedBytes(),
+		LastSeenAt:                      value.LastSeenAt,
+		CreatedAt:                       value.CreatedAt,
+		UpdatedAt:                       value.UpdatedAt,
+		AgentImplementation:             value.AgentImplementation,
+		AgentVersion:                    value.AgentVersion,
+		AgentAPIVersion:                 value.AgentAPIVersion,
+		AgentCapabilities:               append([]string{}, value.AgentCapabilities...),
+		AgentCanSelfUpgrade:             value.AgentVersion != "" && agentcontrol.CanSelfUpgrade(value.AgentImplementation, value.AgentAPIVersion, value.AgentCapabilities),
 		AgentVersionStatus: agentcontrol.AgentVersionStatusForMetadata(agentcontrol.Metadata{
 			Implementation: value.AgentImplementation,
 			Version:        value.AgentVersion,

@@ -91,6 +91,7 @@ export const agentCapabilities = {
   outboundPreference: 'outbound_preference',
   diagnosticsV1: 'diagnostics_v1',
   firewallCNBlock: 'firewall.cn_block',
+  firewallCNWhitelist: 'firewall.cn_whitelist',
   managedRuntimePurge: 'managed_runtime_purge',
   selfDecommission: 'self_decommission',
 } as const
@@ -141,6 +142,9 @@ export function chinaInboundApplyState(server: ServerRecord): ChinaInboundApplyS
     return server.block_china_inbound
       ? { key: 'unsupported_enabled', label: '无法确认', type: 'warning', detail: '已配置禁止中国 IP 入站，但当前 Agent 不支持该功能，无法确认规则仍然生效。' }
       : { key: 'unsupported', label: '当前 Agent 不支持', type: 'default', detail: chinaInboundUnsupportedReason(server) }
+  }
+  if (server.block_china_inbound && server.china_inbound_whitelist_configured && !agentDeclaresCapability(server, agentCapabilities.firewallCNWhitelist)) {
+    return { key: 'unsupported_enabled', label: '无法确认', type: 'warning', detail: '已保存白名单，但当前 Agent 不支持白名单，无法确认配置生效，请升级 Agent。' }
   }
   const currentVersionApplied = server.agent_config_sync_status === 'success'
     && server.agent_applied_config_version >= server.desired_state_version

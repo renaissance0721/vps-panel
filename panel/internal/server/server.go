@@ -336,7 +336,7 @@ func (s *Service) listFiltered(ctx context.Context, archived bool, userID int64,
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.country_override_code, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
-		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
+		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound, EXISTS(SELECT 1 FROM server_china_inbound_whitelist WHERE server_id = servers.id),
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(server_access.user_id) FROM server_access JOIN users ON users.id = server_access.user_id
 		   WHERE server_id = servers.id AND users.role IN ('admin', 'vip')), ''),
@@ -385,7 +385,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 	value, err := scanServer(s.db.QueryRowContext(ctx,
 		`SELECT servers.id, servers.name, servers.bandwidth_mbps, servers.network_stack, servers.country_override_code, servers.bound_domain_ipv4, servers.bound_domain_ipv6, servers.owner_user_id, owner.username,
 		 servers.created_by_user_id, creator.username, servers.created_by_role,
-		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound,
+		 servers.status, servers.visibility, servers.outbound_preference, servers.block_china_inbound, EXISTS(SELECT 1 FROM server_china_inbound_whitelist WHERE server_id = servers.id),
 		 servers.desired_state_version, servers.decommissioning_at, servers.decommission_status, servers.decommission_error,
 		 COALESCE((SELECT group_concat(server_access.user_id) FROM server_access JOIN users ON users.id = server_access.user_id
 		   WHERE server_id = servers.id AND users.role IN ('admin', 'vip')), ''),
@@ -447,7 +447,7 @@ func scanServer(row rowScanner) (Server, error) {
 	if err := row.Scan(
 		&value.ID, &value.Name, &value.BandwidthMbps, &value.NetworkStack, &value.CountryOverrideCode, &value.BoundDomainIPv4, &value.BoundDomainIPv6, &ownerUserID, &ownerUsername,
 		&createdByUserID, &createdByUsername, &value.CreatedByRole,
-		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.DesiredStateVersion,
+		&value.Status, &value.Visibility, &value.OutboundPreference, &value.BlockChinaInbound, &value.ChinaInboundWhitelistConfigured, &value.DesiredStateVersion,
 		&decommissioningAt, &value.DecommissionStatus, &value.DecommissionError, &accessUserIDs, &archivedAt, &expiresAt,
 		&renewalPeriod, &value.AutoRenew, &renewalAnchorDay,
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,

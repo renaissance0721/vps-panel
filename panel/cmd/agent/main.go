@@ -64,6 +64,7 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilityDiagnosticsV1,
 	agentcontrol.CapabilitySelfUpgrade,
 	agentcontrol.CapabilityFirewallCNBlock,
+	agentcontrol.CapabilityFirewallCNWhitelist,
 	agentcontrol.CapabilityManagedRuntimePurge,
 	agentcontrol.CapabilitySelfDecommission,
 }

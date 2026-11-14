@@ -13,7 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 39
+const LatestSchemaVersion = 40
+
+const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
+	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+	address TEXT NOT NULL,
+	remark TEXT NOT NULL DEFAULT '',
+	position INTEGER NOT NULL,
+	PRIMARY KEY (server_id, address), UNIQUE (server_id, position)
+)`
 
 type migration struct {
 	version            int
@@ -62,6 +70,12 @@ var migrations = []migration{
 	{version: 37, name: "remote_subscription_sources", up: createRemoteSubscriptions},
 	{version: 38, name: "personal_remote_sources", up: migratePersonalRemoteSources},
 	{version: 39, name: "manual_remote_sources", up: addManualRemoteSourceMode},
+	{version: 40, name: "china_inbound_whitelist", up: createChinaInboundWhitelist},
+}
+
+func createChinaInboundWhitelist(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, chinaInboundWhitelistStatement)
+	return err
 }
 
 func addManualRemoteSourceMode(ctx context.Context, tx *sql.Tx) error {

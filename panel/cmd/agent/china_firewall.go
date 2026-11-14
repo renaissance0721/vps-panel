@@ -231,6 +231,29 @@ func (f *chinaInboundFirewall) install(ctx context.Context, command string, exis
 	if len(ipv4) == 0 || len(ipv6) == 0 {
 		return chinaInboundFirewallError("empty address prefixes", nil)
 	}
+	if len(state.ChinaInboundWhitelist) > 128 {
+		return chinaInboundFirewallError("too many whitelist entries", nil)
+	}
+	var allow4, allow6 []string
+	for _, raw := range state.ChinaInboundWhitelist {
+		p, err := netip.ParsePrefix(raw)
+		if err != nil || p.Addr().Is4In6() || p.Bits() == 0 {
+			return chinaInboundFirewallError("invalid whitelist prefix", nil)
+		}
+		if p.Addr().Is4() {
+			allow4 = append(allow4, p.Masked().String())
+		} else {
+			allow6 = append(allow6, p.Masked().String())
+		}
+	}
+	allow4, err = optimizeChinaPrefixes(allow4, true)
+	if err != nil {
+		return chinaInboundFirewallError("invalid IPv4 whitelist", err)
+	}
+	allow6, err = optimizeChinaPrefixes(allow6, false)
+	if err != nil {
+		return chinaInboundFirewallError("invalid IPv6 whitelist", err)
+	}
 	if !exists {
 		bootstrap := fmt.Sprintf("create table inet %s\nadd chain inet %s input { type filter hook input priority %d; policy accept; }\nadd rule inet %s input counter comment \"%s\"\n", chinaFirewallTable, chinaFirewallTable, chinaFirewallInputPriority, chinaFirewallTable, chinaFirewallOwnerMarker)
 		if err := f.runBatch(ctx, command, []byte(bootstrap)); err != nil {
@@ -271,6 +294,8 @@ func (f *chinaInboundFirewall) install(ctx context.Context, command string, exis
 		{"c6_" + suffix, "ipv6_addr", "flags interval;", ipv6},
 		{"tp_" + suffix, "inet_service", "", portStrings(tcp)},
 		{"up_" + suffix, "inet_service", "", portStrings(udp)},
+		{"a4_" + suffix, "ipv4_addr", "flags interval;", allow4},
+		{"a6_" + suffix, "ipv6_addr", "flags interval;", allow6},
 	}
 	for _, set := range sets {
 		create := fmt.Sprintf("create set inet %s %s { type %s; %s }\n", chinaFirewallTable, set.name, set.typ, set.flags)
@@ -290,11 +315,11 @@ func (f *chinaInboundFirewall) install(ctx context.Context, command string, exis
 	}
 	var activation strings.Builder
 	fmt.Fprintf(&activation, "flush chain inet %s input\nadd rule inet %s input counter comment \"%s\"\n", chinaFirewallTable, chinaFirewallTable, chinaFirewallOwnerMarker)
-	for _, rule := range []struct{ family, addr, proto, port string }{
-		{"ip", sets[0].name, "tcp", sets[2].name}, {"ip6", sets[1].name, "tcp", sets[2].name},
-		{"ip", sets[0].name, "udp", sets[3].name}, {"ip6", sets[1].name, "udp", sets[3].name},
+	for _, rule := range []struct{ family, addr, allow, proto, port string }{
+		{"ip", sets[0].name, sets[4].name, "tcp", sets[2].name}, {"ip6", sets[1].name, sets[5].name, "tcp", sets[2].name},
+		{"ip", sets[0].name, sets[4].name, "udp", sets[3].name}, {"ip6", sets[1].name, sets[5].name, "udp", sets[3].name},
 	} {
-		fmt.Fprintf(&activation, "add rule inet %s input %s saddr @%s %s dport @%s drop\n", chinaFirewallTable, rule.family, rule.addr, rule.proto, rule.port)
+		fmt.Fprintf(&activation, "add rule inet %s input %s saddr != @%s %s saddr @%s %s dport @%s drop\n", chinaFirewallTable, rule.family, rule.allow, rule.family, rule.addr, rule.proto, rule.port)
 	}
 	if err := f.runBatch(ctx, command, []byte(activation.String())); err != nil {
 		return fmt.Errorf("%w: %w", errChinaNFTActivation, err)
@@ -344,7 +369,7 @@ func (f *chinaInboundFirewall) loadNFTElements(ctx context.Context, command, nam
 	return nil
 }
 
-var chinaManagedSetName = regexp.MustCompile(`^(?:c4|c6|tp|up)_[0-9a-f]{16}$`)
+var chinaManagedSetName = regexp.MustCompile(`^(?:c4|c6|a4|a6|tp|up)_[0-9a-f]{16}$`)
 var chinaSetDefinition = regexp.MustCompile(`(?m)^\s*set\s+([A-Za-z0-9_]+)\s*\{`)
 
 func (f *chinaInboundFirewall) cleanupInactiveSets(ctx context.Context, command string) error {

@@ -90,6 +90,7 @@ func schemaStatements() []string {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		chinaInboundWhitelistStatement,
 		`CREATE TABLE IF NOT EXISTS server_access (
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -64,14 +64,15 @@ type AgentUpgrade struct {
 }
 
 type DesiredState struct {
-	Version            int64
-	Decommission       bool
-	BlockChinaInbound  bool
-	OutboundPreference string
-	XrayPurge          bool
-	RealmPurge         bool
-	Proxies            []proxystore.DesiredProxy
-	Relays             []relaystore.DesiredRelay
+	Version               int64
+	Decommission          bool
+	BlockChinaInbound     bool
+	ChinaInboundWhitelist []string
+	OutboundPreference    string
+	XrayPurge             bool
+	RealmPurge            bool
+	Proxies               []proxystore.DesiredProxy
+	Relays                []relaystore.DesiredRelay
 }
 
 type ConfigResult struct {

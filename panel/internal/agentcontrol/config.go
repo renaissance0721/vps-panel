@@ -13,6 +13,8 @@ import (
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
+var ErrChinaWhitelistUnsupported = errors.New("Agent does not support China inbound whitelist")
+
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -72,6 +74,40 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		 FROM servers WHERE id = ? AND archived_at IS NULL`, serverID,
 	).Scan(&state.Version, &state.BlockChinaInbound, &state.OutboundPreference); err != nil {
 		return DesiredState{}, fmt.Errorf("refresh desired state after client lifecycle reconciliation: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT address FROM server_china_inbound_whitelist WHERE server_id = ? ORDER BY position`, serverID)
+	if err != nil {
+		return DesiredState{}, fmt.Errorf("read China whitelist: %w", err)
+	}
+	state.ChinaInboundWhitelist = []string{}
+	for rows.Next() {
+		var address string
+		if err := rows.Scan(&address); err != nil {
+			rows.Close()
+			return DesiredState{}, err
+		}
+		state.ChinaInboundWhitelist = append(state.ChinaInboundWhitelist, address)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return DesiredState{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return DesiredState{}, err
+	}
+	if state.BlockChinaInbound && len(state.ChinaInboundWhitelist) != 0 {
+		var implementation, version, capabilitiesJSON string
+		var apiVersion int
+		if err := tx.QueryRowContext(ctx, `SELECT implementation, version, api_version, capabilities_json FROM agents WHERE id = ?`, agentID).Scan(&implementation, &version, &apiVersion, &capabilitiesJSON); err != nil {
+			return DesiredState{}, err
+		}
+		capabilities, err := DecodeCapabilities(capabilitiesJSON)
+		if err != nil {
+			return DesiredState{}, err
+		}
+		if !DeclaresCapability(Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityFirewallCNWhitelist) {
+			return DesiredState{}, ErrChinaWhitelistUnsupported
+		}
 	}
 	state.Proxies, err = proxystore.ListDesired(ctx, tx, serverID)
 	if err != nil {

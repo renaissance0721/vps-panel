@@ -43,16 +43,21 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := s.agents.GetDesiredState(r.Context(), agent.ID, agent.ServerID)
 	if err != nil {
-		if recordErr := s.agents.RecordDesiredStateFailure(r.Context(), agent.ID, agent.ServerID, desiredStateFailureMessage()); recordErr != nil {
+		message := desiredStateFailureMessage()
+		if errors.Is(err, agentcontrol.ErrChinaWhitelistUnsupported) {
+			message = "当前 Agent 不支持中国 IP 入站白名单，请升级 Agent"
+		}
+		if recordErr := s.agents.RecordDesiredStateFailure(r.Context(), agent.ID, agent.ServerID, message); recordErr != nil {
 			log.Printf("record desired state failure for server %d: %v", agent.ServerID, recordErr)
 		}
 		writeServerError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
-		Version:           state.Version,
-		Decommission:      state.Decommission,
-		BlockChinaInbound: state.BlockChinaInbound,
+		Version:               state.Version,
+		Decommission:          state.Decommission,
+		BlockChinaInbound:     state.BlockChinaInbound,
+		ChinaInboundWhitelist: state.ChinaInboundWhitelist,
 		Xray: agentDesiredXrayState{
 			Enabled:            len(state.Proxies) > 0,
 			Purge:              state.XrayPurge,

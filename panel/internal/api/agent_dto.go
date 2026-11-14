@@ -21,11 +21,12 @@ type agentRegistrationResponse struct {
 }
 
 type agentDesiredStateResponse struct {
-	Version           int64                  `json:"version"`
-	Decommission      bool                   `json:"decommission"`
-	BlockChinaInbound bool                   `json:"block_china_inbound"`
-	Xray              agentDesiredXrayState  `json:"xray"`
-	Realm             agentDesiredRealmState `json:"realm"`
+	Version               int64                  `json:"version"`
+	Decommission          bool                   `json:"decommission"`
+	BlockChinaInbound     bool                   `json:"block_china_inbound"`
+	ChinaInboundWhitelist []string               `json:"china_inbound_whitelist"`
+	Xray                  agentDesiredXrayState  `json:"xray"`
+	Realm                 agentDesiredRealmState `json:"realm"`
 }
 
 type agentDesiredXrayState struct {

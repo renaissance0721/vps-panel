@@ -733,8 +733,9 @@ func TestPersonalNodeIDsStayStableAndBindingsAreScopedAndPruned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chainEntry := "机场入口"
 	firstGroup, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, firstGroup.ID, []SetPersonalSubscriptionNodeInput{
-		{SourceType: PersonalSourceLanding, SourceID: firstSource.ID, DisplayName: "A", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: firstSource.ID, DisplayName: "A", Enabled: true, DialerProxy: &chainEntry},
 		{SourceType: PersonalSourceLanding, SourceID: secondSource.ID, DisplayName: "B", Enabled: true},
 	})
 	if err != nil {
@@ -766,11 +767,86 @@ func TestPersonalNodeIDsStayStableAndBindingsAreScopedAndPruned(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(firstGroup.Nodes) != 2 || firstGroup.Nodes[1].ID != stableID || firstGroup.Nodes[0].ID == stableID ||
-		firstGroup.Nodes[0].ID == removedID || firstGroup.Nodes[1].DisplayName != "A renamed" {
+		firstGroup.Nodes[0].ID == removedID || firstGroup.Nodes[1].DisplayName != "A renamed" || firstGroup.Nodes[1].DialerProxy != chainEntry {
 		t.Fatalf("stable/new personal node IDs = %+v", firstGroup.Nodes)
 	}
 	if got := firstGroup.RoutingBindings[key]; len(got) != 1 || got[0] != stableID {
 		t.Fatalf("personal bindings after node deletion = %+v", firstGroup.RoutingBindings)
+	}
+}
+
+func TestPersonalChainPersistsAcrossEditsAndReorder(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	insertPersonalTestUser(t, db, 100, "admin", "admin")
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "admin"}
+	landings := landingstore.NewService(db)
+	first, err := landings.Create(t.Context(), actor.UserID, landingstore.CreateInput{Name: "First", URI: "ss://aes-256-gcm:first@first.example.com:8388#First"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := landings.Create(t.Context(), actor.UserID, landingstore.CreateInput{Name: "Second", URI: "ss://aes-256-gcm:second@second.example.com:8388#Second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := service.CreatePersonalSubscription(t.Context(), actor, CreatePersonalSubscriptionInput{Name: "Personal", ClientName: "admin", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: "A", Enabled: true},
+		{SourceType: PersonalSourceLanding, SourceID: second.ID, DisplayName: "B", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.Nodes[0].DialerProxy != "" {
+		t.Fatal("chain should be disabled by default")
+	}
+	a, b := group.Nodes[0].ID, group.Nodes[1].ID
+	upstream := "机场入口"
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{ID: &a, SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: "A", Enabled: true, DialerProxy: &upstream},
+		{ID: &b, SourceType: PersonalSourceLanding, SourceID: second.ID, DisplayName: "B", Enabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err = service.GetPersonalSubscription(t.Context(), actor, group.ID)
+	if err != nil || group.Nodes[0].DialerProxy != upstream || group.Nodes[1].DialerProxy != "" {
+		t.Fatalf("reopen: %+v, %v", group.Nodes, err)
+	}
+	// A legacy client omits the new field while reordering; the setting follows its node ID.
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{ID: &b, SourceType: PersonalSourceLanding, SourceID: second.ID, DisplayName: "B", Enabled: true},
+		{ID: &a, SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: "A renamed", Enabled: true},
+	})
+	if err != nil || group.Nodes[1].ID != a || group.Nodes[1].DialerProxy != upstream {
+		t.Fatalf("reorder: %+v, %v", group.Nodes, err)
+	}
+	upstream = "另一入口"
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{ID: &a, SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: "A renamed", Enabled: true, DialerProxy: &upstream},
+	})
+	if err != nil || len(group.Nodes) != 1 || group.Nodes[0].DialerProxy != upstream {
+		t.Fatalf("remove/update: %+v, %v", group.Nodes, err)
+	}
+	data, err := service.GeneratePersonalMihomoProviderData(t.Context(), group.Token)
+	if err != nil || len(data.Nodes) != 1 || data.Nodes[0].DialerProxy != upstream {
+		t.Fatalf("resolved chain: %+v, %v", data.Nodes, err)
+	}
+	self := "A renamed"
+	_, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{ID: &a, SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: self, Enabled: true, DialerProxy: &self},
+	})
+	if !errors.Is(err, ErrInvalidPersonalNodes) {
+		t.Fatalf("self-reference error = %v", err)
+	}
+	clear := ""
+	group, err = service.SetPersonalSubscriptionNodes(t.Context(), actor, group.ID, []SetPersonalSubscriptionNodeInput{
+		{ID: &a, SourceType: PersonalSourceLanding, SourceID: first.ID, DisplayName: self, Enabled: true, DialerProxy: &clear},
+	})
+	if err != nil || group.Nodes[0].DialerProxy != "" {
+		t.Fatalf("disable chain: %+v, %v", group.Nodes, err)
 	}
 }
 

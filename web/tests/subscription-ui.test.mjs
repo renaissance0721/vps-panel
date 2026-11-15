@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import vm from 'node:vm'
 
 const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 const portalSource = await readFile(new URL('../src/views/SubscriberPortalView.vue', import.meta.url), 'utf8')
@@ -10,6 +11,34 @@ const bindingEditorSource = await readFile(new URL('../src/components/subscripti
 const relaySource = await readFile(new URL('../src/views/RelaysView.vue', import.meta.url), 'utf8')
 const clientSource = await readFile(new URL('../src/components/proxy/ClientList.vue', import.meta.url), 'utf8')
 const styleSource = await readFile(new URL('../src/style.css', import.meta.url), 'utf8')
+
+test('个人订阅提供按节点启用链式代理和复制 Provider 地址', () => {
+  assert.match(managementSource, /clonePersonalNodes[\s\S]*chain_enabled: !!value\.dialer_proxy/)
+  assert.match(managementSource, /启用链式代理[\s\S]*前置代理策略组[\s\S]*Mihomo dialer-proxy/)
+  assert.match(managementSource, /dialer_proxy: node\.chain_enabled \? node\.dialer_proxy\.trim\(\) : ''/)
+  assert.match(managementSource, /case 'mihomo-provider': return value\.subscription_mihomo_provider_url/)
+  assert.match(managementSource, /Mihomo Provider[\s\S]*Base64 \/ URI 和 Shadowrocket 格式不会包含链式代理设置/)
+})
+
+test('Clash Verge 脚本保留原配置、避免循环并可重复应用', async () => {
+  const source = (await readFile(new URL('../../docs/examples/clash-verge-mihomo-chain.js', import.meta.url), 'utf8'))
+    .replace('https://YOUR-PANEL/sub/personal/YOUR-TOKEN/mihomo-provider', 'https://example.com/sub/personal/example/mihomo-provider')
+    .replace("['花云节点名称 1', '花云节点名称 2']", "['Airport 1', 'Airport 2']")
+  const context = vm.createContext({})
+  vm.runInContext(source, context)
+  const config = { proxies: [{ name: 'Airport 1', type: 'ss' }, { name: 'Airport 2', type: 'ss' }], 'proxy-providers': { original: { type: 'file' } }, 'proxy-groups': [{ name: '原有组', type: 'select', proxies: ['DIRECT'] }], rules: ['MATCH,原有组'] }
+  context.main(config)
+  context.main(config)
+  assert.deepEqual(Array.from(config['proxy-groups'][0].proxies), ['Airport 1', 'Airport 2'])
+  assert.equal(config['proxy-groups'].length, 6)
+  assert.equal(config.rules.filter(rule => rule === 'GEOIP,CN,DIRECT').length, 1)
+  assert.equal(config.rules.at(-1), 'MATCH,原有组')
+  assert.ok(config['proxy-providers'].original)
+  assert.ok(config['proxy-providers']['vps-panel-landing'])
+  assert.deepEqual(Array.from(config['proxy-groups'].slice(1, 5), group => group.filter), ['^美国链式落地$', '^新加坡链式落地$', '^菲律宾链式落地$', '^德国链式落地$'])
+  assert.throws(() => context.main({ proxies: [{ name: 'Airport 1', 'dialer-proxy': '机场入口' }, { name: 'Airport 2' }] }), /未配置前置代理/)
+  assert.throws(() => context.main({ proxies: [] }), /花云入口/)
+})
 
 test('订阅用户自适应卡片、共享订阅双列且窄屏单列', () => {
   const users = managementSource.slice(managementSource.indexOf("currentTab === 'users'"), managementSource.indexOf("currentTab === 'plans'"))

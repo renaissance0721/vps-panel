@@ -28,6 +28,7 @@ type mcpPersonalNode struct {
 	Enabled     bool    `json:"enabled"`
 	EntryHost   *string `json:"entry_host,omitempty"`
 	EntryPort   *int    `json:"entry_port,omitempty"`
+	DialerProxy *string `json:"dialer_proxy,omitempty"`
 }
 type mcpPersonalNodes struct {
 	ID    int64             `json:"id"`
@@ -45,7 +46,7 @@ type mcpPersonalSources struct {
 
 func mcpSanitizeSubscription(out map[string]any, key string) map[string]any {
 	if value, ok := out[key].(map[string]any); ok {
-		for _, k := range []string{"subscription_token", "subscription_url", "subscription_base64_url", "subscription_mihomo_url", "subscription_shadowrocket_url", "subscription_auto_url"} {
+		for _, k := range []string{"subscription_token", "subscription_url", "subscription_base64_url", "subscription_mihomo_url", "subscription_mihomo_provider_url", "subscription_shadowrocket_url", "subscription_auto_url"} {
 			delete(value, k)
 		}
 	}

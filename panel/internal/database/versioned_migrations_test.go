@@ -14,6 +14,42 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestPersonalChainMigrationPreservesExistingNode(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, item := range migrations[:40] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (1, 'admin', 'hash', 'admin', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO personal_subscription_groups (id, owner_user_id, name, token, client_name, routing_preset_id, created_at, updated_at) VALUES (1, 1, 'legacy', 'token', 'admin', (SELECT id FROM subscription_routing_presets WHERE is_default = 1), 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO personal_subscription_nodes (id, group_id, source_type, source_id, display_name, enabled, position, created_at, updated_at) VALUES (42, 1, 'landing', 9, 'legacy-node', 1, 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMigration(context.Background(), db, migrations[40]); err != nil {
+		t.Fatal(err)
+	}
+	var id, sourceID int64
+	var name, upstream string
+	if err := db.QueryRow(`SELECT id, source_id, display_name, dialer_proxy FROM personal_subscription_nodes`).Scan(&id, &sourceID, &name, &upstream); err != nil {
+		t.Fatal(err)
+	}
+	if id != 42 || sourceID != 9 || name != "legacy-node" || upstream != "" {
+		t.Fatalf("legacy node changed: %d %d %q %q", id, sourceID, name, upstream)
+	}
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
+}
+
 func TestMigrationSixToSevenCreatesRuntimeRoutingProfiles(t *testing.T) {
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "panel.db")

@@ -36,7 +36,7 @@ func TestMCPPersonalSubscriptionCRUDAndSecrets(t *testing.T) {
 	}
 	for _, out := range []map[string]any{created, f.call(t, "get_personal_subscription", map[string]any{"id": id}, true)} {
 		raw, _ := json.Marshal(out)
-		if strings.Contains(string(raw), token) || strings.Contains(string(raw), "subscription_mihomo_url") {
+		if strings.Contains(string(raw), token) || strings.Contains(string(raw), "subscription_mihomo_url") || strings.Contains(string(raw), "subscription_mihomo_provider_url") {
 			t.Fatal("ordinary response leaked subscription credential")
 		}
 	}

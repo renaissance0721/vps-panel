@@ -23,7 +23,10 @@ func TestChinaWhitelistMigrationPreservesServers(t *testing.T) {
 	if _, err = db.Exec(`DROP TABLE server_china_inbound_whitelist`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DELETE FROM schema_migrations WHERE version = 40`); err != nil {
+	if _, err = db.Exec(`ALTER TABLE personal_subscription_nodes DROP COLUMN dialer_proxy`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DELETE FROM schema_migrations WHERE version >= 40`); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Close(); err != nil {

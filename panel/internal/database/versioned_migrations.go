@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 40
+const LatestSchemaVersion = 41
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -71,6 +71,16 @@ var migrations = []migration{
 	{version: 38, name: "personal_remote_sources", up: migratePersonalRemoteSources},
 	{version: 39, name: "manual_remote_sources", up: addManualRemoteSourceMode},
 	{version: 40, name: "china_inbound_whitelist", up: createChinaInboundWhitelist},
+	{version: 41, name: "personal_node_dialer_proxy", up: addPersonalNodeDialerProxy},
+}
+
+func addPersonalNodeDialerProxy(ctx context.Context, tx *sql.Tx) error {
+	exists, err := migrationColumnExists(ctx, tx, "personal_subscription_nodes", "dialer_proxy")
+	if err != nil || exists {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE personal_subscription_nodes ADD COLUMN dialer_proxy TEXT NOT NULL DEFAULT ''`)
+	return err
 }
 
 func createChinaInboundWhitelist(ctx context.Context, tx *sql.Tx) error {

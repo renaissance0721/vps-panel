@@ -27,6 +27,85 @@ func defaultRoutingPresetForTest(t *testing.T) *RoutingPreset {
 	return nil
 }
 
+func TestPersonalMihomoProviderAndChainValidation(t *testing.T) {
+	data := PersonalSubscriptionData{RoutingPreset: defaultRoutingPresetForTest(t), Nodes: []ResolvedSubscriptionNode{
+		{Name: "US", Protocol: proxystore.ProtocolVLESS, Address: "us.example.com", Port: 443, UUID: "example", TLS: true, Security: proxystore.SecurityReality, RealityPublicKey: "public", RealityShortID: "short", DialerProxy: "机场入口", URI: "vless://example@us.example.com:443"},
+		{Name: "SG", Protocol: proxystore.ProtocolShadowsocks, Address: "sg.example.com", Port: 8388, Method: proxystore.ShadowsocksMethodAES128GCM, ShadowsocksPassword: "example", DialerProxy: "机场入口", URI: "ss://example@sg.example.com:8388"},
+		{Name: "remote", RemoteFormat: "mihomo"},
+	}}
+	body, err := RenderPersonalMihomoProvider(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var provider struct {
+		Proxies []mihomoProxy `yaml:"proxies"`
+		Groups  any           `yaml:"proxy-groups"`
+		Rules   any           `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(body, &provider); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.Proxies) != 2 || provider.Groups != nil || provider.Rules != nil {
+		t.Fatalf("provider = %+v", provider)
+	}
+	if provider.Proxies[0].DialerProxy != "机场入口" || provider.Proxies[0].RealityOptions == nil || provider.Proxies[0].RealityOptions.PublicKey != "public" || provider.Proxies[1].DialerProxy != "机场入口" || provider.Proxies[1].Cipher != proxystore.ShadowsocksMethodAES128GCM {
+		t.Fatalf("provider proxies = %+v", provider.Proxies)
+	}
+	data.Nodes = data.Nodes[:2]
+	if _, err := RenderPersonalMihomoSubscription(data); !errors.Is(err, ErrMihomoChain) {
+		t.Fatalf("external group in full config = %v", err)
+	}
+	data.RoutingPreset = &RoutingPreset{Name: "internal", Enabled: true, Groups: []RoutingGroup{{Key: "grp_airport", Name: "机场入口", Type: "select", Proxies: []string{"DIRECT"}}}, Rules: []string{"MATCH,机场入口"}}
+	full, err := RenderPersonalMihomoSubscription(data)
+	if err != nil || !strings.Contains(string(full), "dialer-proxy: 机场入口") {
+		t.Fatalf("full config with internal group: %v", err)
+	}
+	data.RoutingPreset.Groups[0].IncludeAll = true
+	if _, err := RenderPersonalMihomoSubscription(data); !errors.Is(err, ErrMihomoChain) {
+		t.Fatalf("full config with chained nodes in upstream: %v", err)
+	}
+	data.RoutingPreset.Groups[0].IncludeAll = false
+	base, err := RenderPersonalBase64Subscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.Nodes[0].DialerProxy, data.Nodes[1].DialerProxy = "", ""
+	unchained, err := RenderPersonalBase64Subscription(data)
+	if err != nil || base != unchained {
+		t.Fatalf("base64 changed with chain: %v", err)
+	}
+	if _, err := RenderPersonalMihomoSubscription(data); err != nil {
+		t.Fatalf("unchained full config: %v", err)
+	}
+	if _, err := RenderPersonalMihomoProvider(PersonalSubscriptionData{}); !errors.Is(err, ErrPersonalSubscriptionEmpty) {
+		t.Fatalf("empty provider = %v", err)
+	}
+}
+
+func TestMihomoChainDependencyGraph(t *testing.T) {
+	proxies, _, err := renderMihomoNodes([]ResolvedSubscriptionNode{{Name: "US", Protocol: proxystore.ProtocolVLESS, Address: "example.com", Port: 443, UUID: "example", DialerProxy: "Airport"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMihomoDialers(proxies, nil, true); err != nil {
+		t.Fatalf("external provider group: %v", err)
+	}
+	if err := validateMihomoDialers(proxies, nil, false); !errors.Is(err, ErrMihomoChain) {
+		t.Fatalf("unresolved full group: %v", err)
+	}
+	if err := validateMihomoDialers(proxies, []resolvedRoutingGroup{{Name: "Airport", Proxies: []string{"DIRECT"}}}, false); err != nil {
+		t.Fatalf("valid internal group: %v", err)
+	}
+	groups := []resolvedRoutingGroup{{Name: "Airport", Proxies: []string{"Other"}}, {Name: "Other", Proxies: []string{"US"}}}
+	if err := validateMihomoDialers(proxies, groups, false); !errors.Is(err, ErrMihomoChain) {
+		t.Fatalf("indirect cycle: %v", err)
+	}
+	groups = []resolvedRoutingGroup{{Name: "Airport", Proxies: []string{"US"}}}
+	if err := validateMihomoDialers(proxies, groups, false); !errors.Is(err, ErrMihomoChain) {
+		t.Fatalf("direct cycle: %v", err)
+	}
+}
+
 func TestRenderMihomoSubscriptionUsesStructuredShares(t *testing.T) {
 	data := SubscriptionData{
 		Title:         "我的机场",

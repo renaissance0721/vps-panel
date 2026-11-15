@@ -177,6 +177,8 @@ MCP 还支持代理客户端、外部节点、服务器访问权限与流量校�
 | `/shadowrocket` | Shadowrocket 完整 `.conf` 配置 |
 | `/auto` | 按 User-Agent 选择；Shadowrocket 返回 `.conf`，Clash / Mihomo / Clash Verge / FlClash / Stash 返回 YAML，其他客户端保留原有识别行为 |
 
+个人订阅额外支持 `/mihomo-provider`，只输出所选本地节点的 Mihomo 代理集合。节点可配置独立的前置策略组；客户端合并示例和格式限制见 [Mihomo 链式代理](docs/mihomo-chain.md)。
+
 在个人订阅卡片中可复制 Shadowrocket 地址、预览最终配置。将该地址添加到 Shadowrocket 的配置文件 URL 导入入口；它包含节点、策略组和规则，不能按普通节点二维码导入。共享订阅用户可在自己的门户复制对应地址。
 
 管理员在现有“客户端模板”区域创建 Mihomo 或 Shadowrocket 模板。个人订阅与共享套餐分别选择两种模板，留空使用对应内置模板；停用模板的已有引用保留，生成时回退到对应内置模板。旧 Mihomo 模板与选择在升级时保留。

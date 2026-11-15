@@ -151,6 +151,37 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	if rocketAuto.Code != http.StatusOK || rocketAuto.Body.String() != rocket.Body.String() {
 		t.Fatal("personal Shadowrocket auto detection")
 	}
+	providerPath := personalPath(payload.Personal.SubscriptionMihomoProviderURL)
+	nodes = performRequest(t, handler, http.MethodPut, "/api/personal-subscriptions/"+strconv.FormatInt(id, 10)+"/nodes", map[string]any{
+		"nodes": []map[string]any{
+			{"id": payload.Personal.Nodes[0].ID, "source_type": "landing", "source_id": landing.ID, "display_name": "🇬🇧 英国 | 家宽", "enabled": true, "dialer_proxy": "机场入口"},
+			{"id": payload.Personal.Nodes[1].ID, "source_type": "landing", "source_id": landing.ID, "display_name": "🇬🇧 英国 | 备用入口", "enabled": true, "entry_host": "backup.example.com", "entry_port": 8443},
+		},
+	}, adminCookie)
+	if nodes.Code != http.StatusOK || json.Unmarshal(nodes.Body.Bytes(), &payload) != nil || payload.Personal.Nodes[0].DialerProxy != "机场入口" {
+		t.Fatal("save chain setting failed")
+	}
+	provider := performRequest(t, handler, http.MethodGet, providerPath, nil, nil)
+	var providerYAML map[string]any
+	if provider.Code != http.StatusOK || yaml.Unmarshal(provider.Body.Bytes(), &providerYAML) != nil || len(providerYAML) != 1 || !strings.Contains(provider.Body.String(), "dialer-proxy: 机场入口") || provider.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("provider status %d", provider.Code)
+	}
+	if response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionMihomoURL), nil, nil); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "未在完整配置中定义") {
+		t.Fatal("full config accepted unresolved upstream")
+	}
+	if response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionBase64URL), nil, nil); response.Code != http.StatusOK || response.Body.String() != base64Response.Body.String() || response.Header().Get("X-VPS-Panel-Chain-Warning") == "" {
+		t.Fatal("base64 compatibility or warning")
+	}
+	if response := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); response.Code != http.StatusOK || response.Body.String() != rocket.Body.String() || response.Header().Get("X-VPS-Panel-Chain-Warning") == "" {
+		t.Fatal("Shadowrocket compatibility or warning")
+	}
+	if response := performRequest(t, handler, http.MethodGet, "/sub/personal/not-a-token/mihomo-provider", nil, nil); response.Code != http.StatusNotFound {
+		t.Fatal("invalid provider token accepted")
+	}
+	// Restore the unchained fixture for the remaining format lifecycle checks.
+	if _, err := db.Exec(`UPDATE personal_subscription_nodes SET dialer_proxy = '' WHERE group_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
 	var originalProviders string
 	if err := db.QueryRow(`SELECT rule_providers_yaml FROM subscription_routing_presets WHERE is_default = 1`).Scan(&originalProviders); err != nil {
 		t.Fatal(err)
@@ -206,6 +237,9 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	if response := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); response.Code != http.StatusForbidden {
 		t.Fatal("disabled subscription is available")
 	}
+	if response := performRequest(t, handler, http.MethodGet, providerPath, nil, nil); response.Code != http.StatusForbidden {
+		t.Fatal("disabled provider is available")
+	}
 	if _, err := db.Exec(`UPDATE personal_subscription_groups SET enabled = 1 WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +254,9 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	}
 	if old := performRequest(t, handler, http.MethodGet, oldPath, nil, nil); old.Code != http.StatusNotFound {
 		t.Fatalf("old personal token = %d %s", old.Code, old.Body.String())
+	}
+	if old := performRequest(t, handler, http.MethodGet, providerPath, nil, nil); old.Code != http.StatusNotFound {
+		t.Fatal("old provider token still available")
 	}
 	if current := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionBase64URL), nil, nil); current.Code != http.StatusOK {
 		t.Fatalf("new personal token = %d %s", current.Code, current.Body.String())

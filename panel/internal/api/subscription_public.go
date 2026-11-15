@@ -13,9 +13,10 @@ import (
 type subscriptionFormat string
 
 const (
-	subscriptionFormatBase64       subscriptionFormat = "base64"
-	subscriptionFormatMihomo       subscriptionFormat = "mihomo"
-	subscriptionFormatShadowrocket subscriptionFormat = "shadowrocket"
+	subscriptionFormatBase64         subscriptionFormat = "base64"
+	subscriptionFormatMihomo         subscriptionFormat = "mihomo"
+	subscriptionFormatMihomoProvider subscriptionFormat = "mihomo-provider"
+	subscriptionFormatShadowrocket   subscriptionFormat = "shadowrocket"
 )
 
 func (s *server) getPublicSubscription(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +70,8 @@ func (s *server) getPublicSubscriptionPath(w http.ResponseWriter, r *http.Reques
 		switch parts[2] {
 		case "mihomo":
 			s.getPublicPersonalSubscriptionMihomo(w, r)
+		case "mihomo-provider":
+			s.servePublicPersonalSubscription(w, r, subscriptionFormatMihomoProvider)
 		case "shadowrocket":
 			s.getPublicPersonalSubscriptionShadowrocket(w, r)
 		case "auto":
@@ -127,7 +130,13 @@ func (s *server) servePublicSubscription(w http.ResponseWriter, r *http.Request,
 
 func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.Request, format subscriptionFormat) {
 	w.Header().Set("Cache-Control", "no-store")
-	value, err := s.subscriptions.GeneratePersonalSubscriptionData(r.Context(), r.PathValue("token"))
+	var value subscriptionstore.PersonalSubscriptionData
+	var err error
+	if format == subscriptionFormatMihomoProvider {
+		value, err = s.subscriptions.GeneratePersonalMihomoProviderData(r.Context(), r.PathValue("token"))
+	} else {
+		value, err = s.subscriptions.GeneratePersonalSubscriptionData(r.Context(), r.PathValue("token"))
+	}
 	if err != nil {
 		writePublicPersonalSubscriptionError(w, err)
 		return
@@ -136,6 +145,8 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 	switch format {
 	case subscriptionFormatMihomo:
 		body, err = subscriptionstore.RenderPersonalMihomoSubscription(value)
+	case subscriptionFormatMihomoProvider:
+		body, err = subscriptionstore.RenderPersonalMihomoProvider(value)
 	case subscriptionFormatShadowrocket:
 		body, err = subscriptionstore.RenderPersonalShadowrocketSubscription(value)
 	default:
@@ -144,8 +155,20 @@ func (s *server) servePublicPersonalSubscription(w http.ResponseWriter, r *http.
 		body = []byte(encoded)
 	}
 	if err != nil {
+		if errors.Is(err, subscriptionstore.ErrPersonalSubscriptionEmpty) {
+			writePublicPersonalSubscriptionError(w, err)
+			return
+		}
 		writePublicSubscriptionRenderError(w, err)
 		return
+	}
+	if format == subscriptionFormatBase64 || format == subscriptionFormatShadowrocket {
+		for _, node := range value.Nodes {
+			if node.DialerProxy != "" {
+				w.Header().Set("X-VPS-Panel-Chain-Warning", "dialer-proxy is not included in this format")
+				break
+			}
+		}
 	}
 	writeSubscriptionProfileHeaders(w, value.Title, format)
 	w.WriteHeader(http.StatusOK)
@@ -168,6 +191,8 @@ func subscriptionRenderErrorMessage(err error) string {
 		return "策略组节点绑定无效"
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
 		return "分流方案无法转换为当前客户端配置"
+	case errors.Is(err, subscriptionstore.ErrMihomoChain):
+		return err.Error()
 	}
 	return ""
 }
@@ -214,7 +239,7 @@ func writeSubscriptionHeaders(w http.ResponseWriter, value subscriptionstore.Sub
 
 func writeSubscriptionProfileHeaders(w http.ResponseWriter, title string, format subscriptionFormat) {
 	contentType := "text/plain; charset=utf-8"
-	if format == subscriptionFormatMihomo {
+	if format == subscriptionFormatMihomo || format == subscriptionFormatMihomoProvider {
 		contentType = "text/yaml; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", contentType)

@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -32,7 +33,10 @@ type mihomoProxy struct {
 	RealityOptions    *mihomoRealityOpts `yaml:"reality-opts,omitempty"`
 	Cipher            string             `yaml:"cipher,omitempty"`
 	Password          string             `yaml:"password,omitempty"`
+	DialerProxy       string             `yaml:"dialer-proxy,omitempty"`
 }
+
+var ErrMihomoChain = errors.New("Mihomo 链式代理配置无效")
 
 type mihomoRealityOpts struct {
 	PublicKey string `yaml:"public-key"`
@@ -93,9 +97,31 @@ func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, er
 	return renderMihomoResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.MihomoTemplate)
 }
 
-func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
-	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate,
-) ([]byte, error) {
+// Provider output intentionally contains only selected local nodes; airport
+// profiles and their policy groups remain on the client.
+func RenderPersonalMihomoProvider(data PersonalSubscriptionData) ([]byte, error) {
+	local := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
+	for _, node := range data.Nodes {
+		if node.RemoteFormat == "" {
+			local = append(local, node)
+		}
+	}
+	if len(local) == 0 {
+		return nil, ErrPersonalSubscriptionEmpty
+	}
+	proxies, _, err := renderMihomoNodes(local)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateMihomoDialers(proxies, nil, true); err != nil {
+		return nil, err
+	}
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setMappingValue(root, "proxies", proxies)
+	return yaml.Marshal(root)
+}
+
+func renderMihomoNodes(nodes []ResolvedSubscriptionNode) (*yaml.Node, []string, error) {
 	proxies := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	proxyNames := make([]string, 0, len(nodes))
 	for i, node := range nodes {
@@ -104,20 +130,30 @@ func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeName
 		if node.RemoteFormat != "" {
 			proxy, err = renderRemoteMihomo(node)
 			if err != nil {
-				return nil, remoteRenderError(i, err)
+				return nil, nil, remoteRenderError(i, err)
 			}
 		} else {
 			value, e := renderMihomoProxy(node)
 			if e != nil {
-				return nil, e
+				return nil, nil, e
 			}
 			proxy, err = encodeYAMLValue(value)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		proxies.Content = append(proxies.Content, proxy)
 		proxyNames = append(proxyNames, node.Name)
+	}
+	return proxies, proxyNames, nil
+}
+
+func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
+	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate,
+) ([]byte, error) {
+	proxies, proxyNames, err := renderMihomoNodes(nodes)
+	if err != nil {
+		return nil, err
 	}
 	document, root, err := decodeMihomoTemplateDocument(template)
 	if err != nil {
@@ -157,6 +193,14 @@ func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeName
 	setMappingValue(root, "rules", rulesNode)
 	if err := validateRenderedMihomo(root, proxyNames); err != nil {
 		return nil, err
+	}
+	for _, node := range nodes {
+		if node.DialerProxy != "" {
+			if err := validateMihomoDialers(proxies, resolvedGroups, false); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	return yaml.Marshal(document)
 }
@@ -364,6 +408,69 @@ func validateRenderedMihomo(root *yaml.Node, proxyNames []string) error {
 	return nil
 }
 
+// Groups depend on all their members because the user can select any member.
+// For a standalone config every dialer must resolve and the combined graph must
+// be acyclic; provider output may instead depend on a client-side group.
+func validateMihomoDialers(proxies *yaml.Node, groups []resolvedRoutingGroup, allowExternal bool) error {
+	edges := map[string][]string{}
+	nodes := map[string]bool{}
+	for _, proxy := range proxies.Content {
+		name := mappingValue(proxy, "name")
+		if name == nil || name.Value == "" || nodes[name.Value] {
+			return fmt.Errorf("节点名称无效或重复: %w", ErrMihomoChain)
+		}
+		nodes[name.Value] = true
+		edges[name.Value] = nil
+	}
+	for _, group := range groups {
+		if nodes[group.Name] {
+			return fmt.Errorf("节点和策略组名称冲突: %w", ErrMihomoChain)
+		}
+		edges[group.Name] = append([]string(nil), group.Proxies...)
+	}
+	for _, proxy := range proxies.Content {
+		name := mappingValue(proxy, "name").Value
+		dialer := mappingValue(proxy, "dialer-proxy")
+		if dialer == nil {
+			continue
+		}
+		if dialer.Kind != yaml.ScalarNode || dialer.Tag != "!!str" || strings.TrimSpace(dialer.Value) == "" {
+			return fmt.Errorf("节点前置代理无效: %w", ErrMihomoChain)
+		}
+		if nodes[dialer.Value] {
+			return fmt.Errorf("前置代理不能引用订阅节点: %w", ErrMihomoChain)
+		}
+		if _, ok := edges[dialer.Value]; !ok && !allowExternal {
+			return fmt.Errorf("前置策略组 %q 未在完整配置中定义，请使用 provider 并在客户端配置该组: %w", dialer.Value, ErrMihomoChain)
+		}
+		edges[name] = append(edges[name], dialer.Value)
+	}
+	states := map[string]int{}
+	var visit func(string) bool
+	visit = func(name string) bool {
+		if states[name] == 1 {
+			return true
+		}
+		if states[name] == 2 {
+			return false
+		}
+		states[name] = 1
+		for _, target := range edges[name] {
+			if _, ok := edges[target]; ok && visit(target) {
+				return true
+			}
+		}
+		states[name] = 2
+		return false
+	}
+	for name := range edges {
+		if visit(name) {
+			return fmt.Errorf("前置代理与策略组存在循环引用: %w", ErrMihomoChain)
+		}
+	}
+	return nil
+}
+
 func uniqueStrings(values []string) []string {
 	result := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -396,7 +503,7 @@ func resolvedNodeFromClientShare(share proxystore.ClientShare) ResolvedSubscript
 
 func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 	value := mihomoProxy{
-		Name: share.Name, Server: share.Address, Port: share.Port, UDP: true,
+		Name: share.Name, Server: share.Address, Port: share.Port, UDP: true, DialerProxy: share.DialerProxy,
 	}
 	switch share.Protocol {
 	case proxystore.ProtocolVLESS:

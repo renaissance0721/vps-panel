@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
@@ -221,6 +222,19 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		}
 		input.SourceType = strings.ToLower(strings.TrimSpace(input.SourceType))
 		input.DisplayName = strings.TrimSpace(input.DisplayName)
+		if input.DialerProxy == nil {
+			previous := ""
+			if input.ID != nil && existing[*input.ID].SourceType == input.SourceType && existing[*input.ID].SourceID == input.SourceID {
+				previous = existing[*input.ID].DialerProxy
+			}
+			input.DialerProxy = &previous
+		}
+		upstream := strings.TrimSpace(*input.DialerProxy)
+		if !utf8.ValidString(upstream) || utf8.RuneCountInString(upstream) > maxNameRunes || strings.IndexFunc(upstream, unicode.IsControl) >= 0 || upstream == "DIRECT" || upstream == "REJECT" ||
+			(upstream != "" && (input.SourceType == PersonalSourceRemoteSource || input.SourceType == PersonalSourceRemoteNode)) {
+			return PersonalSubscription{}, ErrInvalidPersonalNodes
+		}
+		input.DialerProxy = &upstream
 		if !validPersonalSourceType(input.SourceType) || input.SourceID <= 0 || input.DisplayName == "" ||
 			utf8.RuneCountInString(input.DisplayName) > maxNameRunes {
 			return PersonalSubscription{}, ErrInvalidPersonalNodes
@@ -248,6 +262,14 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		seenNames[input.DisplayName] = struct{}{}
 		normalized = append(normalized, input)
 	}
+	// Upstreams are policy groups, never one of this subscription's nodes.
+	for _, input := range normalized {
+		if *input.DialerProxy != "" {
+			if _, exists := seenNames[*input.DialerProxy]; exists {
+				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			}
+		}
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -266,9 +288,9 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		if input.ID != nil {
 			result, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes SET
 				source_type = ?, source_id = ?, display_name = ?, enabled = ?, position = ?,
-				entry_host = ?, entry_port = ?, updated_at = ? WHERE id = ? AND group_id = ?`,
+				entry_host = ?, entry_port = ?, dialer_proxy = ?, updated_at = ? WHERE id = ? AND group_id = ?`,
 				input.SourceType, input.SourceID, input.DisplayName, input.Enabled, index+1,
-				nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, *input.ID, id)
+				nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), *input.DialerProxy, now, *input.ID, id)
 			if err != nil {
 				return PersonalSubscription{}, fmt.Errorf("update personal subscription node: %w", err)
 			}
@@ -279,9 +301,9 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 			continue
 		}
 		result, err := tx.ExecContext(ctx, `INSERT INTO personal_subscription_nodes
-			(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
-			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), now, now)
+			(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, dialer_proxy, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
+			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), *input.DialerProxy, now, now)
 		if err != nil {
 			return PersonalSubscription{}, fmt.Errorf("create personal subscription node: %w", err)
 		}
@@ -432,6 +454,14 @@ func (s *Service) ListPersonalSubscriptionSources(ctx context.Context, actor Per
 }
 
 func (s *Service) GeneratePersonalSubscriptionData(ctx context.Context, tokenValue string) (PersonalSubscriptionData, error) {
+	return s.generatePersonalSubscriptionData(ctx, tokenValue, false)
+}
+
+func (s *Service) GeneratePersonalMihomoProviderData(ctx context.Context, tokenValue string) (PersonalSubscriptionData, error) {
+	return s.generatePersonalSubscriptionData(ctx, tokenValue, true)
+}
+
+func (s *Service) generatePersonalSubscriptionData(ctx context.Context, tokenValue string, localOnly bool) (PersonalSubscriptionData, error) {
 	if strings.TrimSpace(tokenValue) == "" {
 		return PersonalSubscriptionData{}, ErrPersonalSubscriptionNotFound
 	}
@@ -448,11 +478,17 @@ func (s *Service) GeneratePersonalSubscriptionData(ctx context.Context, tokenVal
 	if enabled == 0 || (role != "admin" && role != "vip") {
 		return PersonalSubscriptionData{}, ErrSubscriptionUnavailable
 	}
-	return s.GeneratePersonalSubscriptionDataForOwner(ctx, PersonalSubscriptionActor{UserID: ownerID, Role: role}, id)
+	return s.generatePersonalSubscriptionDataForOwner(ctx, PersonalSubscriptionActor{UserID: ownerID, Role: role}, id, localOnly)
 }
 
 func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, actor PersonalSubscriptionActor,
 	id int64,
+) (PersonalSubscriptionData, error) {
+	return s.generatePersonalSubscriptionDataForOwner(ctx, actor, id, false)
+}
+
+func (s *Service) generatePersonalSubscriptionDataForOwner(ctx context.Context, actor PersonalSubscriptionActor,
+	id int64, localOnly bool,
 ) (PersonalSubscriptionData, error) {
 	group, err := s.GetPersonalSubscription(ctx, actor, id)
 	if err != nil {
@@ -500,6 +536,9 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 		if !node.Enabled {
 			continue
 		}
+		if localOnly && (node.SourceType == PersonalSourceRemoteSource || node.SourceType == PersonalSourceRemoteNode) {
+			continue
+		}
 		if node.SourceType == PersonalSourceRemoteSource || node.SourceType == PersonalSourceRemoteNode {
 			var sourceID, nodeID int64
 			if node.SourceType == PersonalSourceRemoteSource {
@@ -541,6 +580,7 @@ func (s *Service) GeneratePersonalSubscriptionDataForOwner(ctx context.Context, 
 		if state.status != PersonalNodeReady || state.resolved == nil {
 			continue
 		}
+		state.resolved.DialerProxy = node.DialerProxy
 		result.Nodes = append(result.Nodes, *state.resolved)
 		result.NodeNames[node.ID] = state.resolved.Name
 	}
@@ -554,7 +594,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 	group PersonalSubscription,
 ) ([]PersonalSubscriptionNode, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, group_id, source_type, source_id, display_name,
-		enabled, position, entry_host, entry_port, created_at, updated_at FROM personal_subscription_nodes
+		enabled, position, entry_host, entry_port, dialer_proxy, created_at, updated_at FROM personal_subscription_nodes
 		WHERE group_id = ? ORDER BY position, id`, group.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list personal subscription nodes: %w", err)
@@ -567,7 +607,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 		var entryPort sql.NullInt64
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.GroupID, &value.SourceType, &value.SourceID,
-			&value.DisplayName, &enabled, &value.Position, &entryHost, &entryPort, &createdAt, &updatedAt); err != nil {
+			&value.DisplayName, &enabled, &value.Position, &entryHost, &entryPort, &value.DialerProxy, &createdAt, &updatedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan personal subscription node: %w", err)
 		}

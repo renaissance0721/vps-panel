@@ -37,6 +37,7 @@ func TestServerCountryMigrationPreservesSystemInformation(t *testing.T) {
 		`ALTER TABLE server_system_info DROP COLUMN country_ip`,
 		`ALTER TABLE server_system_info DROP COLUMN country_lookup_at`,
 		`DROP TRIGGER IF EXISTS server_change_revision`, `ALTER TABLE servers DROP COLUMN country_override_code`,
+		`ALTER TABLE personal_subscription_nodes DROP COLUMN dialer_proxy`,
 		`DELETE FROM schema_migrations WHERE version >= 31`,
 	} {
 		if _, err := db.Exec(statement); err != nil {

@@ -111,6 +111,8 @@ type PersonalNode = {
   position: number
   entry_host: string | null
   entry_port: number | null
+  dialer_proxy: string
+  chain_enabled?: boolean
   requires_client: boolean
   status: string
   status_detail: string
@@ -131,11 +133,12 @@ type PersonalSubscription = {
   routing_bindings: RoutingBindings
   subscription_base64_url: string
   subscription_mihomo_url: string
+  subscription_mihomo_provider_url: string
   subscription_shadowrocket_url: string
   subscription_auto_url: string
 }
-type SubscriptionLinkFormat = 'auto' | 'mihomo' | 'shadowrocket' | 'base64'
-type SubscriptionLinks = Pick<PersonalSubscription, 'name' | 'subscription_auto_url' | 'subscription_base64_url' | 'subscription_mihomo_url' | 'subscription_shadowrocket_url'>
+type SubscriptionLinkFormat = 'auto' | 'mihomo' | 'mihomo-provider' | 'shadowrocket' | 'base64'
+type SubscriptionLinks = Pick<PersonalSubscription, 'name' | 'subscription_auto_url' | 'subscription_base64_url' | 'subscription_mihomo_url' | 'subscription_shadowrocket_url'> & { subscription_mihomo_provider_url?: string; nodes?: PersonalNode[] }
 type PersonalSource = {
   source_type: 'proxy' | 'relay' | 'landing' | 'remote_source' | 'remote_node'
   source_id: number
@@ -507,7 +510,7 @@ async function dropPublishedNode(id: number) {
 }
 
 function clonePersonalNodes(values: PersonalNode[]) {
-  return values.map((value) => ({ ...value }))
+  return values.map((value) => ({ ...value, dialer_proxy: value.dialer_proxy ?? '', chain_enabled: !!value.dialer_proxy }))
 }
 
 function cloneRoutingBindings(value: RoutingBindings) {
@@ -614,7 +617,7 @@ function addPersonalSource(source: PersonalSource) {
     id, source_type: source.source_type, source_id: source.source_id,
     source_name: source.name, source_detail: source.detail, display_name: displayName,
     enabled: true, position: personalNodes.value.length + 1,
-    entry_host: null, entry_port: null, requires_client: source.requires_client,
+    entry_host: null, entry_port: null, dialer_proxy: '', chain_enabled: false, requires_client: source.requires_client,
     status: source.status, status_detail: source.status_detail,
   })
 }
@@ -695,6 +698,10 @@ async function savePersonal() {
     personalFormError.value = '节点显示名称不能为空且不能重复'
     return
   }
+  if (personalNodes.value.some(node => node.chain_enabled && (!node.dialer_proxy.trim() || names.includes(node.dialer_proxy.trim())))) {
+    personalFormError.value = '链式代理的前置策略组不能为空，也不能与订阅节点同名。'
+    return
+  }
   busy.value = true
   let id = editingPersonal.value?.id
   const creating = id === undefined
@@ -727,6 +734,7 @@ async function savePersonal() {
           source_type: node.source_type, source_id: node.source_id,
           display_name: node.display_name.trim(), enabled: node.enabled,
           entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
+          dialer_proxy: node.chain_enabled ? node.dialer_proxy.trim() : '',
         })),
       }),
     })
@@ -788,6 +796,7 @@ function subscriptionURL(value: SubscriptionLinks, format: SubscriptionLinkForma
   switch (format) {
     case 'auto': return value.subscription_auto_url
     case 'mihomo': return value.subscription_mihomo_url
+    case 'mihomo-provider': return value.subscription_mihomo_provider_url ?? ''
     case 'shadowrocket': return value.subscription_shadowrocket_url
     case 'base64': return value.subscription_base64_url
   }
@@ -1720,6 +1729,11 @@ onUnmounted(() => {
             <p v-if="node.source_type === 'remote_source'" class="form-help">来源启用时自动包含最新缓存中的全部节点；此名称用于标识选择项。</p>
             <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口地址</span><n-input :value="node.entry_host ?? ''" placeholder="留空使用来源默认入口" @update:value="setPersonalEntryHost(node, $event)" /></label>
             <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口端口</span><n-input-number v-model:value="node.entry_port" :min="1" :max="65535" :precision="0" placeholder="留空使用来源默认端口" /></label>
+            <template v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'">
+              <div class="switch-row"><span>启用链式代理</span><n-switch v-model:value="node.chain_enabled" @update:value="value => { if (value && !node.dialer_proxy) node.dialer_proxy = '机场入口' }" /></div>
+              <label v-if="node.chain_enabled"><span>前置代理策略组</span><n-input v-model:value="node.dialer_proxy" maxlength="100" placeholder="机场入口" /></label>
+              <p v-if="node.chain_enabled" class="form-help">使用 Mihomo dialer-proxy 建立链式连接；最终配置必须提供该策略组，且不能包含此落地节点。Base64 / URI 和 Shadowrocket 不支持此设置。</p>
+            </template>
             <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
@@ -1748,9 +1762,12 @@ onUnmounted(() => {
       <n-radio-group v-model:value="subscriptionLinkFormat" class="personal-link-formats" aria-labelledby="personal-link-format-label" @update:value="subscriptionLinkCopied = false; subscriptionLinkError = ''">
         <n-radio value="auto">Auto</n-radio>
         <n-radio value="mihomo">Mihomo</n-radio>
+        <n-radio v-if="subscriptionLinkTarget?.subscription_mihomo_provider_url" value="mihomo-provider">Mihomo Provider</n-radio>
         <n-radio value="shadowrocket">Shadowrocket</n-radio>
         <n-radio value="base64">Base64</n-radio>
       </n-radio-group>
+      <p v-if="subscriptionLinkTarget?.nodes?.some(node => node.enabled && node.dialer_proxy) && ['auto', 'base64', 'shadowrocket'].includes(subscriptionLinkFormat)" class="form-help">Base64 / URI 和 Shadowrocket 格式不会包含链式代理设置；Auto 格式取决于客户端识别结果。请使用 Mihomo Provider，并在客户端定义前置策略组。</p>
+      <p v-if="subscriptionLinkFormat === 'mihomo-provider'" class="form-help">仅包含所选本地节点；前置策略组须在客户端最终配置中提供。</p>
       <div class="modal-actions"><n-button attr-type="button" @click="subscriptionLinkModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit">{{ subscriptionLinkCopied ? '已复制' : '复制' }}</n-button></div>
     </form>
   </n-card></n-modal>

@@ -389,6 +389,7 @@ type PersonalSubscriptionNode struct {
 	Position       int
 	EntryHost      *string
 	EntryPort      *int
+	DialerProxy    string
 	RequiresClient bool
 	Status         string
 	StatusDetail   string
@@ -437,6 +438,7 @@ type SetPersonalSubscriptionNodeInput struct {
 	Enabled     bool
 	EntryHost   *string
 	EntryPort   *int
+	DialerProxy *string
 }
 
 type ResolvedSubscriptionNode struct {
@@ -459,6 +461,7 @@ type ResolvedSubscriptionNode struct {
 	RemoteFormat        string
 	RemotePayload       string `json:"-"`
 	RemoteUDP           *bool  `json:"-"`
+	DialerProxy         string `json:"-"`
 }
 
 type PersonalSubscriptionData struct {

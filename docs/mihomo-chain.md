@@ -4,7 +4,11 @@ Panel 只输出自己管理的落地节点；花云订阅留在 Clash Verge Rev�
 
 ## Panel 设置
 
-1. 在个人订阅中添加四个可用的本地 Proxy、Relay 或 Landing 节点，分别命名为 `美国链式落地`、`新加坡链式落地`、`菲律宾链式落地`、`德国链式落地`。
+认证 SOCKS5 住宅代理可先在「代理节点 → 外部节点 → 导入外部节点」粘贴 `socks5://example_user:example_password@203.0.113.10:9492#Webshare-Japan`，选择「落地节点」并保持私有。用户名和密码中具有 URL 特殊含义的字符须分别进行百分号编码（例如 `@` 写成 `%40`，`:` 写成 `%3A`）。链接和数据库中的 URI 含明文凭据，公开节点会让其他登录用户获得凭据。
+
+在个人订阅中选择该外部节点后，按下述步骤启用链式代理。SOCKS5 节点的 Mihomo 输出默认关闭 UDP；SOCKS5 不能作为服务端中转目标，也不能通过 Base64/URI 或 Shadowrocket 订阅输出。普通节点详情可复制原链接，但不能携带链式设置。
+
+1. 在个人订阅中添加可用的本地 Proxy、Relay 或外部落地节点。本示例使用四个节点，分别命名为 `美国链式落地`、`新加坡链式落地`、`菲律宾链式落地`、`德国链式落地`。
 2. 展开每个节点，启用「链式代理」，将「前置代理策略组」设为 `机场入口`，保存。重新打开可检查设置。前置组名称可改，但必须与客户端最终配置完全一致。
 3. 在「复制链接」选择 **Mihomo Provider**。这是携带订阅凭据的私密地址，脚本和客户端缓存也应妥善保管。
 
@@ -29,7 +33,7 @@ proxies:
 ## Clash Verge Rev 配置
 
 1. 保留本地花云配置，关闭其自动更新并按需手动更新。选中花云配置，按照 [Clash Verge Rev 的配置文件脚本说明](https://www.clashverge.dev/guide/script.html) 为**该配置文件**添加脚本，不要将其设为所有配置的全局脚本。
-2. 复制 [示例脚本](examples/clash-verge-mihomo-chain.js) 的全部内容到该脚本编辑器。把 `PANEL_PROVIDER_URL` 换成刚复制的 Provider 链接；把 `AIRPORT_NODES` 换成当前花云配置 `proxies` 中的准确节点名称；把 `LANDING_NODES` 的四个值换成 Panel 显示名称。
+2. 复制 [示例脚本](examples/clash-verge-mihomo-chain.js) 的全部内容到该脚本编辑器。把 `PANEL_PROVIDER_URL` 换成刚复制的 Provider 链接；把 `AIRPORT_NODES` 换成当前花云配置 `proxies` 中的准确节点名称；把 `LANDING_NODES` 的值换成 Panel 显示名称；只使用一个节点时，可以只保留一项（例如 `'AI-美国': 'Webshare-Japan'`），并按需调整脚本中的示例域名规则。
 3. 保存并应用配置，以 Rule 模式运行。在「机场入口」选择花云节点；四个地区策略组各自选中对应落地节点。切换机场入口不需要重新生成 Panel 订阅。
 
 脚本只把明确列出的、无 `dialer-proxy` 的内联花云节点放入机场入口，不引用全部节点或 Panel provider。若节点名不存在、重复或自身带前置代理，脚本报错；更新花云导致名称变化时需调整列表。此示例要求花云节点在当前配置的 `proxies` 中；如果花云节点只存在于另一个 provider，先使用能在本地展开其节点的花云配置，再按上述方式选择。不要把落地节点或其他链式节点加入机场入口。

@@ -171,7 +171,7 @@ func writeLandingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, landingstore.ErrInvalidVisibility):
 		writeError(w, http.StatusBadRequest, "可见性仅支持私有或公开")
 	case errors.Is(err, landingstore.ErrUnsupportedProtocol):
-		writeError(w, http.StatusBadRequest, "当前仅支持导入 VLESS 和 Shadowsocks 外部节点")
+		writeError(w, http.StatusBadRequest, "当前仅支持导入 VLESS、Shadowsocks 和 SOCKS5 外部节点")
 	case errors.Is(err, landingstore.ErrUnsupportedVLESSTransport):
 		writeError(w, http.StatusBadRequest, "当前仅支持导入 TCP VLESS 外部节点")
 	case errors.Is(err, landingstore.ErrUnsupportedSSPlugin):

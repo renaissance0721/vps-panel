@@ -46,6 +46,11 @@ func TestPersonalChainMigrationPreservesExistingNode(t *testing.T) {
 	if id != 42 || sourceID != 9 || name != "legacy-node" || upstream != "" {
 		t.Fatalf("legacy node changed: %d %d %q %q", id, sourceID, name, upstream)
 	}
+	for _, item := range migrations[41:] {
+		if err := applyMigration(context.Background(), db, item); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertLatestMigrationHistory(t, db)
 	assertForeignKeysValid(t, db)
 }

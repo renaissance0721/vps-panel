@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+
 	"errors"
 	"fmt"
+	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"math/big"
 	"net"
 	"strconv"
@@ -193,15 +195,18 @@ func validateTarget(ctx context.Context, query interface {
 		return nil
 	}
 	if value.TargetType == TargetLanding {
-		var landingID int64
+		var protocol string
 		err := query.QueryRowContext(ctx,
-			`SELECT id FROM landing_nodes WHERE id = ?`, *value.TargetLandingID,
-		).Scan(&landingID)
+			`SELECT protocol FROM landing_nodes WHERE id = ?`, *value.TargetLandingID,
+		).Scan(&protocol)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrLandingNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("validate relay target landing: %w", err)
+		}
+		if protocol == landingstore.ProtocolSOCKS5 {
+			return ErrSOCKS5TargetUnsupported
 		}
 		value.TargetAddressReady = true
 		return nil

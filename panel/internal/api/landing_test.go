@@ -150,7 +150,7 @@ func TestLandingAPIAccessAndSecretRedaction(t *testing.T) {
 	}
 
 	unsupported := performRequest(t, handler, http.MethodPost, "/api/landings", createLandingRequest{URI: "trojan://secret@example.com:443"}, accounts.adminCookie)
-	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "当前仅支持导入 VLESS 和 Shadowsocks 外部节点") {
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "当前仅支持导入 VLESS、Shadowsocks 和 SOCKS5 外部节点") {
 		t.Fatalf("unsupported landing = %d, %s", unsupported.Code, unsupported.Body.String())
 	}
 	plugin := performRequest(t, handler, http.MethodPost, "/api/landings", createLandingRequest{URI: "ss://aes-256-gcm:password@example.com:8388?plugin=x"}, accounts.adminCookie)

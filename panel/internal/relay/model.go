@@ -25,6 +25,7 @@ var (
 	ErrServerNotFound                 = errors.New("server not found")
 	ErrProxyNotFound                  = errors.New("target proxy not found")
 	ErrLandingNotFound                = errors.New("target landing not found")
+	ErrSOCKS5TargetUnsupported        = errors.New("SOCKS5 external nodes cannot be used as server-side relay targets")
 	ErrInvalidName                    = errors.New("relay name must be 1-100 characters")
 	ErrInvalidListenIP                = errors.New("listen address must be an IP address")
 	ErrInvalidPort                    = errors.New("port must be 1-65535")

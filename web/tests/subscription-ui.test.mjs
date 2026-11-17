@@ -40,6 +40,20 @@ test('Clash Verge 脚本保留原配置、避免循环并可重复应用', async
   assert.throws(() => context.main({ proxies: [] }), /花云入口/)
 })
 
+test('Clash Verge 示例支持单个 SOCKS5 落地节点', async () => {
+  const source = (await readFile(new URL('../../docs/examples/clash-verge-mihomo-chain.js', import.meta.url), 'utf8'))
+    .replace('https://YOUR-PANEL/sub/personal/YOUR-TOKEN/mihomo-provider', 'https://example.com/provider')
+    .replace("['花云节点名称 1', '花云节点名称 2']", "['Airport 1']")
+    .replace(/const LANDING_NODES = \{[\s\S]*?\n\}/, "const LANDING_NODES = { 'AI-美国': 'Webshare-Japan' }")
+  const context = vm.createContext({})
+  vm.runInContext(source, context)
+  const result = context.main({ proxies: [{ name: 'Airport 1', type: 'ss' }], rules: ['MATCH,DIRECT'] })
+  assert.equal(result['proxy-groups'][1].filter, '^Webshare-Japan$')
+  assert.equal(result['proxy-groups'][0].name, '机场入口')
+  assert.ok(result.rules.includes('DOMAIN-SUFFIX,openai.com,AI-美国'))
+  assert.ok(!result.rules.some(rule => rule.endsWith(',X-新加坡')))
+})
+
 test('订阅用户自适应卡片、共享订阅双列且窄屏单列', () => {
   const users = managementSource.slice(managementSource.indexOf("currentTab === 'users'"), managementSource.indexOf("currentTab === 'plans'"))
   assert.match(users, /class="subscription-user-grid"/)

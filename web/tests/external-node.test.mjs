@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import { autofillExternalNodeName, externalNodeNameFromURI } from '../src/landing.ts'
+import { autofillExternalNodeName, externalNodeNameFromURI, landingProtocolLabel } from '../src/landing.ts'
 
 test('外部节点名称从 URI fragment 解码', () => {
   assert.equal(externalNodeNameFromURI('vless://uuid@example.com:443#US-LAX'), 'US-LAX')
@@ -41,4 +41,12 @@ test('代理节点页同时展示受管节点和外部节点管理', async () =>
   assert.match(externalNodes, /<QRCodeModal[^>]*:uri="qrURI"/)
   assert.match(externalNodes, /:value="selectedShare\.uri"[^>]*readonly/)
   assert.doesNotMatch(externalNodes, /<td>\s*{{\s*value\.uri/)
+})
+
+ test('SOCKS5 标签和导入提示使用现有外部节点流程', async () => {
+  assert.equal(landingProtocolLabel('socks5'), 'SOCKS5')
+  assert.equal(externalNodeNameFromURI('socks5://user:pass@203.0.113.10:9492#Webshare%20Japan'), 'Webshare Japan')
+  const component = await readFile(new URL('../src/components/proxy/ExternalNodeManager.vue', import.meta.url), 'utf8')
+  assert.match(component, /socks5:\/\//)
+  assert.match(component, /SOCKS5 不支持服务端中转/)
 })

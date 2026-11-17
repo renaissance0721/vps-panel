@@ -95,6 +95,8 @@ func (s *Service) Create(ctx context.Context, userID int64, input CreateInput) (
 		if name == "" {
 			if parsed.Protocol == ProtocolVLESS {
 				name = "VLESS 外部节点"
+			} else if parsed.Protocol == ProtocolSOCKS5 {
+				name = "SOCKS5 外部节点"
 			} else {
 				name = "Shadowsocks 外部节点"
 			}

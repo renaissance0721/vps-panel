@@ -191,6 +191,8 @@ func subscriptionRenderErrorMessage(err error) string {
 		return "策略组节点绑定无效"
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
 		return "分流方案无法转换为当前客户端配置"
+	case errors.Is(err, subscriptionstore.ErrSOCKS5Export):
+		return err.Error()
 	case errors.Is(err, subscriptionstore.ErrMihomoChain):
 		return err.Error()
 	}

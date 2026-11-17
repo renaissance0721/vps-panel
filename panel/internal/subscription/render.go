@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	"gopkg.in/yaml.v3"
 )
@@ -32,11 +33,13 @@ type mihomoProxy struct {
 	ClientFingerprint string             `yaml:"client-fingerprint,omitempty"`
 	RealityOptions    *mihomoRealityOpts `yaml:"reality-opts,omitempty"`
 	Cipher            string             `yaml:"cipher,omitempty"`
+	Username          string             `yaml:"username,omitempty"`
 	Password          string             `yaml:"password,omitempty"`
 	DialerProxy       string             `yaml:"dialer-proxy,omitempty"`
 }
 
 var ErrMihomoChain = errors.New("Mihomo 链式代理配置无效")
+var ErrSOCKS5Export = errors.New("SOCKS5 外部节点仅支持 Mihomo 配置或 Provider 输出；其他格式无法保证兼容或保留链式设置")
 
 type mihomoRealityOpts struct {
 	PublicKey string `yaml:"public-key"`
@@ -68,6 +71,9 @@ func RenderResolvedBase64Subscription(nodes []ResolvedSubscriptionNode) string {
 func RenderPersonalBase64Subscription(data PersonalSubscriptionData) (string, error) {
 	values := make([]string, 0, len(data.Nodes))
 	for i, node := range data.Nodes {
+		if node.Protocol == landingstore.ProtocolSOCKS5 && node.RemoteFormat == "" {
+			return "", ErrSOCKS5Export
+		}
 		value := node.URI
 		if node.RemoteFormat != "" {
 			var err error
@@ -518,6 +524,14 @@ func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 			value.RealityOptions = &mihomoRealityOpts{
 				PublicKey: share.RealityPublicKey, ShortID: share.RealityShortID,
 			}
+		}
+	case landingstore.ProtocolSOCKS5:
+		value.Type = "socks5"
+		value.UDP = false
+		value.Username = share.SOCKSUsername
+		value.Password = share.SOCKSPassword
+		if value.Username == "" || value.Password == "" {
+			return mihomoProxy{}, errors.New("SOCKS5 节点缺少认证信息")
 		}
 	case proxystore.ProtocolShadowsocks:
 		value.Type = "ss"

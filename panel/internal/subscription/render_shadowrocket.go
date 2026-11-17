@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 )
 
@@ -229,6 +230,9 @@ func splitShadowrocketLeadingFlag(name string) (string, string) {
 }
 
 func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
+	if node.Protocol == landingstore.ProtocolSOCKS5 && node.RemoteFormat == "" {
+		return "", ErrSOCKS5Export
+	}
 	if node.RemoteFormat != "" {
 		return renderRemoteShadowrocket(node)
 	}

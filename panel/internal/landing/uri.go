@@ -28,6 +28,8 @@ func ParseURI(raw string) (ParsedURI, error) {
 		return parseVLESS(raw)
 	case "ss":
 		return parseShadowsocks(raw)
+	case ProtocolSOCKS5:
+		return parseSOCKS5(raw)
 	default:
 		return ParsedURI{}, ErrUnsupportedProtocol
 	}
@@ -110,6 +112,23 @@ func parseVLESS(raw string) (ParsedURI, error) {
 		ServerName: query.Get("sni"), Flow: query.Get("flow"), Fingerprint: query.Get("fp"),
 		RealityPublicKey: query.Get("pbk"), RealityShortID: query.Get("sid"), Network: "tcp",
 	}, nil
+}
+
+func parseSOCKS5(raw string) (ParsedURI, error) {
+	value, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(value.Scheme, ProtocolSOCKS5) || value.Opaque != "" || value.User == nil || value.Path != "" || value.RawQuery != "" || value.ForceQuery {
+		return ParsedURI{}, ErrInvalidURI
+	}
+	username := value.User.Username()
+	password, ok := value.User.Password()
+	if !ok || strings.TrimSpace(username) == "" || password == "" || !utf8.ValidString(username) || !utf8.ValidString(password) || strings.IndexFunc(username+password, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 || len(username) > 255 || len(password) > 255 {
+		return ParsedURI{}, ErrInvalidURI
+	}
+	host, port, err := parseHostPort(value)
+	if err != nil {
+		return ParsedURI{}, err
+	}
+	return ParsedURI{Protocol: ProtocolSOCKS5, Host: host, Port: port, Fragment: value.Fragment, Username: username, Password: password, Network: "tcp"}, nil
 }
 
 func parseShadowsocks(raw string) (ParsedURI, error) {

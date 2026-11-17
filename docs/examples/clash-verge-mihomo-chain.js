@@ -15,7 +15,8 @@ function main(config) {
   const nodes = Array.isArray(config.proxies) ? config.proxies : []
   const seen = new Set()
   if (!/^https?:\/\//.test(PANEL_PROVIDER_URL) || PANEL_PROVIDER_URL.includes('YOUR-')) throw new Error('请填写 VPS Panel Provider 链接')
-  if (Object.values(LANDING_NODES).some(name => !name) || new Set(Object.values(LANDING_NODES)).size !== 4) throw new Error('请填写四个不同的落地节点名称')
+  const landingNames = Object.values(LANDING_NODES)
+  if (!landingNames.length || landingNames.some(name => !name) || new Set(landingNames).size !== landingNames.length) throw new Error('请填写至少一个落地节点，名称不能重复')
   if (!AIRPORT_NODES.length) throw new Error('请填写至少一个花云节点名称')
   for (const name of AIRPORT_NODES) {
     if (seen.has(name)) throw new Error('花云入口名称重复: ' + name)
@@ -49,6 +50,7 @@ function main(config) {
     'DOMAIN-SUFFIX,nodeseek.com,NodeSeek-德国',
     'GEOIP,CN,DIRECT',
   ]
-  config.rules = [...rules, ...(Array.isArray(config.rules) ? config.rules : []).filter(rule => !rules.includes(rule))]
+  const activeRules = rules.filter(rule => rule.endsWith(',DIRECT') || Object.prototype.hasOwnProperty.call(LANDING_NODES, rule.split(',').pop()))
+  config.rules = [...activeRules, ...(Array.isArray(config.rules) ? config.rules : []).filter(rule => !rules.includes(rule))]
   return config
 }

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 41
+const LatestSchemaVersion = 42
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -72,6 +72,45 @@ var migrations = []migration{
 	{version: 39, name: "manual_remote_sources", up: addManualRemoteSourceMode},
 	{version: 40, name: "china_inbound_whitelist", up: createChinaInboundWhitelist},
 	{version: 41, name: "personal_node_dialer_proxy", up: addPersonalNodeDialerProxy},
+	{version: 42, name: "socks5_external_nodes", up: migrateSOCKS5ExternalNodes, disableForeignKeys: true},
+}
+
+func migrateSOCKS5ExternalNodes(ctx context.Context, tx *sql.Tx) error {
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'landing_nodes'), 0)`).Scan(&sequence); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TABLE landing_nodes_v42 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id),
+			name TEXT NOT NULL,
+			visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks', 'socks5')),
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+			uri TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			node_role TEXT NOT NULL DEFAULT 'direct' CHECK (node_role IN ('direct', 'landing'))
+		)`,
+		`INSERT INTO landing_nodes_v42 (id, owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at, node_role)
+		 SELECT id, owner_user_id, name, visibility, protocol, host, port, uri, created_at, updated_at, node_role FROM landing_nodes`,
+		`DROP TABLE landing_nodes`,
+		`ALTER TABLE landing_nodes_v42 RENAME TO landing_nodes`,
+		`CREATE INDEX idx_landing_nodes_owner_user_id ON landing_nodes(owner_user_id)`,
+		`CREATE INDEX idx_landing_nodes_visibility ON landing_nodes(visibility)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate external node protocols: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sqlite_sequence(name, seq)
+		SELECT 'landing_nodes', ? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'landing_nodes')`, sequence); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'landing_nodes'`, sequence)
+	return err
 }
 
 func addPersonalNodeDialerProxy(ctx context.Context, tx *sql.Tx) error {

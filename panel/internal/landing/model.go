@@ -10,6 +10,7 @@ const (
 	VisibilityPublic  = "public"
 	ProtocolVLESS     = "vless"
 	ProtocolSS        = "shadowsocks"
+	ProtocolSOCKS5    = "socks5"
 	maxNameRunes      = 100
 	maxURIBytes       = 16 * 1024
 )
@@ -19,7 +20,7 @@ var (
 	ErrInvalidName               = errors.New("landing name must be 1-100 characters")
 	ErrInvalidVisibility         = errors.New("landing visibility must be private or public")
 	ErrInvalidURI                = errors.New("invalid landing URI")
-	ErrUnsupportedProtocol       = errors.New("only VLESS and Shadowsocks landings are supported")
+	ErrUnsupportedProtocol       = errors.New("only VLESS, Shadowsocks and SOCKS5 landings are supported")
 	ErrUnsupportedVLESSTransport = errors.New("only TCP VLESS landings are supported")
 	ErrUnsupportedSSPlugin       = errors.New("Shadowsocks plugins are not supported")
 	ErrImmutableProtocol         = errors.New("landing protocol is immutable")
@@ -53,6 +54,7 @@ type ParsedURI struct {
 	RealityPublicKey string
 	RealityShortID   string
 	Method           string
+	Username         string
 	Password         string
 	Network          string
 }

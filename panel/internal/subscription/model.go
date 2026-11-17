@@ -457,6 +457,8 @@ type ResolvedSubscriptionNode struct {
 	Method              string
 	Network             string
 	ShadowsocksPassword string
+	SOCKSUsername       string `json:"-"`
+	SOCKSPassword       string `json:"-"`
 	URI                 string
 	RemoteFormat        string
 	RemotePayload       string `json:"-"`

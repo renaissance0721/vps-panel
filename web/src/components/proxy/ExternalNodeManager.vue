@@ -300,7 +300,7 @@ onUnmounted(() => {
         <n-alert v-if="error" type="error">{{ error }}</n-alert>
         <label>
           <span>{{ editingID === null ? '节点链接' : '替换节点链接（可选）' }}</span>
-          <n-input v-model:value="uri" type="textarea" :autosize="{ minRows: 3 }" :placeholder="editingID === null ? 'vless://... 或 ss://...' : '留空保持当前节点链接不变'" />
+          <n-input v-model:value="uri" type="textarea" :autosize="{ minRows: 3 }" :placeholder="editingID === null ? 'vless://...、ss://... 或 socks5://用户名:密码@主机:端口' : '留空保持当前节点链接不变'" />
         </label>
         <label><span>名称</span><n-input v-model:value="name" maxlength="100" placeholder="可留空，将从链接名称自动读取" /></label>
         <label>
@@ -314,7 +314,7 @@ onUnmounted(() => {
             <option value="public">公开（其他 Panel 用户可看到并作为中转目标使用）</option>
           </select>
         </label>
-        <n-alert v-if="visibility === 'public'" type="warning">公开外部节点后，其他 Panel 用户可以查看、复制完整节点链接并生成二维码，也可以使用该节点创建中转。公开即意味着其他登录用户能够获得完整连接凭据。</n-alert>
+        <n-alert v-if="visibility === 'public'" type="warning">公开外部节点后，其他 Panel 用户可以查看、复制完整节点链接并生成二维码，支持的节点还可以作为中转目标；SOCKS5 不支持服务端中转。公开即意味着其他登录用户能够获得完整连接凭据。</n-alert>
         <div class="modal-actions">
           <n-button attr-type="button" @click="closeForm">取消</n-button>
           <n-button type="primary" attr-type="submit" :loading="submitting" :disabled="editingID === null && !uri.trim()">{{ editingID === null ? '导入' : '保存修改' }}</n-button>

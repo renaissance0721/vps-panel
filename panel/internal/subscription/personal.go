@@ -966,14 +966,20 @@ func resolvePersonalLandingNode(raw, displayName string, defaultEndpoint *proxys
 	if err != nil {
 		return ResolvedSubscriptionNode{}, err
 	}
-	return ResolvedSubscriptionNode{
+	node := ResolvedSubscriptionNode{
 		Name: displayName, Protocol: parsed.Protocol, Address: parsed.Host, Port: parsed.Port,
 		UUID: parsed.UUID, Security: parsed.Security,
 		TLS:        parsed.Security == proxystore.SecurityTLS || parsed.Security == proxystore.SecurityReality,
 		ServerName: parsed.ServerName, Flow: parsed.Flow, Fingerprint: parsed.Fingerprint,
 		RealityPublicKey: parsed.RealityPublicKey, RealityShortID: parsed.RealityShortID,
-		Method: parsed.Method, Network: parsed.Network, ShadowsocksPassword: parsed.Password, URI: rewritten,
-	}, nil
+		Method: parsed.Method, Network: parsed.Network, URI: rewritten,
+	}
+	if parsed.Protocol == landingstore.ProtocolSOCKS5 {
+		node.SOCKSUsername, node.SOCKSPassword = parsed.Username, parsed.Password
+	} else if parsed.Protocol == landingstore.ProtocolSS {
+		node.ShadowsocksPassword = parsed.Password
+	}
+	return node, nil
 }
 
 func (s *Service) personalAccessibleServerStatus(ctx context.Context, userID, serverID int64) (string, error) {

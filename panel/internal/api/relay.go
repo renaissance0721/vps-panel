@@ -504,6 +504,8 @@ func writeRelayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "当前源服务器未检测到 IPv6 地址")
 	case errors.Is(err, relaystore.ErrEntryUnavailable):
 		writeError(w, http.StatusConflict, "中转入口地址不可用，请填写手动入口地址或等待源服务器上报对应公网地址")
+	case errors.Is(err, relaystore.ErrSOCKS5TargetUnsupported):
+		writeError(w, http.StatusBadRequest, "SOCKS5 外部节点不支持作为服务端中转目标，请使用 Mihomo 链式代理")
 	case errors.Is(err, relaystore.ErrInvalidTarget):
 		writeError(w, http.StatusBadRequest, "目标必须是有效代理节点、外部节点或 Host/IP 与端口")
 	case errors.Is(err, relaystore.ErrInvalidTargetClient):

@@ -1,7 +1,7 @@
 import type { NodeRole } from './node'
 
 export type LandingVisibility = 'private' | 'public'
-export type LandingProtocol = 'vless' | 'shadowsocks'
+export type LandingProtocol = 'vless' | 'shadowsocks' | 'socks5'
 
 export type LandingRecord = {
   node_role: NodeRole
@@ -17,7 +17,7 @@ export type LandingRecord = {
 }
 
 export function landingProtocolLabel(protocol: LandingProtocol) {
-  return protocol === 'vless' ? 'VLESS' : 'Shadowsocks'
+  return protocol === 'vless' ? 'VLESS' : protocol === 'socks5' ? 'SOCKS5' : 'Shadowsocks'
 }
 
 export function landingVisibilityLabel(visibility: LandingVisibility) {

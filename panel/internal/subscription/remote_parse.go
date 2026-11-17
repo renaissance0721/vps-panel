@@ -27,7 +27,7 @@ var errRemoteContent = errors.New("远程订阅格式无效")
 // Payload contains credentials and must be encrypted before persistence; it
 // must never be included in ordinary API responses, logs, or warnings.
 type remoteParsedNode struct {
-	name, originalName, protocol, format, payload, identity string
+	name, originalName, protocol, format, payload, identity, connectionIdentity string
 }
 
 type remoteParseResult struct {
@@ -62,6 +62,12 @@ func remoteDisplayName(value string) bool {
 func remoteDigest(value []byte) string {
 	sum := sha256.Sum256(value)
 	return hex.EncodeToString(sum[:])
+}
+
+// Hash an unambiguous pair without exposing the original name or credentials.
+func remoteNodeIdentity(name, connectionIdentity string) string {
+	encoded, _ := json.Marshal([2]string{name, connectionIdentity})
+	return remoteDigest(encoded)
 }
 
 func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
@@ -112,9 +118,10 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 			continue
 		}
 		parsed.Fragment, parsed.RawFragment = "", ""
+		connectionIdentity := remoteDigest([]byte(parsed.String()))
 		result.nodes = append(result.nodes, remoteParsedNode{
 			name: name, originalName: name, protocol: protocol, format: "uri", payload: line,
-			identity: remoteDigest([]byte(parsed.String())),
+			identity: remoteNodeIdentity(name, connectionIdentity), connectionIdentity: connectionIdentity,
 		})
 	}
 	return finishRemoteParse(result)
@@ -224,21 +231,30 @@ func parseRemoteYAML(body []byte) (remoteParseResult, error) {
 		if err != nil {
 			return remoteParseResult{}, errRemoteContent
 		}
-		var canonical map[string]any
-		if err := node.Decode(&canonical); err != nil {
-			return remoteParseResult{}, errRemoteContent
-		}
-		delete(canonical, "name")
-		identity, err := json.Marshal(canonical)
+		connectionIdentity, err := remoteYAMLConnectionIdentity(node)
 		if err != nil {
 			return remoteParseResult{}, errRemoteContent
 		}
+		name := strings.TrimSpace(nameNode.Value)
 		result.nodes = append(result.nodes, remoteParsedNode{
-			name: strings.TrimSpace(nameNode.Value), originalName: strings.TrimSpace(nameNode.Value), protocol: protocol, format: "mihomo", payload: string(payload),
-			identity: remoteDigest(identity),
+			name: name, originalName: name, protocol: protocol, format: "mihomo", payload: string(payload),
+			identity: remoteNodeIdentity(name, connectionIdentity), connectionIdentity: connectionIdentity,
 		})
 	}
 	return finishRemoteParse(result)
+}
+
+func remoteYAMLConnectionIdentity(node *yaml.Node) (string, error) {
+	var canonical map[string]any
+	if err := node.Decode(&canonical); err != nil {
+		return "", errRemoteContent
+	}
+	delete(canonical, "name")
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return "", errRemoteContent
+	}
+	return remoteDigest(encoded), nil
 }
 
 func remoteYAMLHasRequiredFields(node *yaml.Node, protocol string) bool {
@@ -313,13 +329,17 @@ func finishRemoteParse(result remoteParseResult) (remoteParseResult, error) {
 	}
 	identities := make(map[string]bool, len(result.nodes))
 	unique := make([]remoteParsedNode, 0, len(result.nodes))
+	duplicates := 0
 	for _, node := range result.nodes {
 		if identities[node.identity] {
-			result.warnings = append(result.warnings, "发现重复节点，已保留第一项")
+			duplicates++
 			continue
 		}
 		identities[node.identity] = true
 		unique = append(unique, node)
+	}
+	if duplicates > 0 {
+		result.warnings = append(result.warnings, fmt.Sprintf("发现 %d 个完全重复的节点，已保留第一项", duplicates))
 	}
 	counts := make(map[string]int, len(unique))
 	for _, node := range unique {

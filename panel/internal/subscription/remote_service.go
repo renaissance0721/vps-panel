@@ -806,6 +806,131 @@ func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionA
 	return s.commitRemoteCache(ctx, actor, id, revision, claim, ciphertext, address, parsed, fetched.subscriptionInfo)
 }
 
+// Reconcile old and new identities inside the cache replacement transaction.
+// An unchanged name and connection wins; a rename is reused only when that
+// connection occurs once in both the old and new cache.
+func (s *RemoteService) reconcileRemoteIdentities(ctx context.Context, tx *sql.Tx, sourceID int64, nodes []remoteParsedNode) error {
+	type cachedNode struct {
+		id                                          int64
+		identity, format, name, payload, connection string
+		matched                                     bool
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,identity,format,original_name,payload_ciphertext FROM remote_subscription_nodes WHERE source_id=?`, sourceID)
+	if err != nil {
+		return err
+	}
+	var cached []cachedNode
+	var ciphertexts []string
+	for rows.Next() {
+		var node cachedNode
+		var name, payload string
+		if err := rows.Scan(&node.id, &node.identity, &node.format, &name, &payload); err != nil {
+			rows.Close()
+			return err
+		}
+		cached = append(cached, node)
+		ciphertexts = append(ciphertexts, name, payload)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(cached) == 0 {
+		return nil
+	}
+	newByIdentity := make(map[string]int, len(nodes))
+	for i, node := range nodes {
+		newByIdentity[node.identity] = i
+	}
+	matchedNew := make([]bool, len(nodes))
+	matchedCount := 0
+	// Reserve exact identities first. No decryption is needed if either side
+	// has no unmatched nodes, which is common on a routine refresh.
+	for i := range cached {
+		if index, ok := newByIdentity[cached[i].identity]; ok {
+			cached[i].matched, matchedNew[index] = true, true
+			matchedCount++
+		}
+	}
+	if matchedCount == len(cached) || matchedCount == len(nodes) {
+		return nil
+	}
+	plaintext, err := s.secrets.DecryptMany(ciphertexts)
+	if err != nil {
+		return ErrRemoteKey
+	}
+	oldCounts := make(map[string]int, len(cached))
+	newCounts := make(map[string]int, len(nodes))
+	for _, node := range nodes {
+		newCounts[node.format+":"+node.connectionIdentity]++
+	}
+	for i := range cached {
+		node := &cached[i]
+		node.name, node.payload = plaintext[2*i], plaintext[2*i+1]
+		switch node.format {
+		case "uri":
+			value, err := url.Parse(node.payload)
+			if err != nil {
+				return errRemoteContent
+			}
+			value.Fragment, value.RawFragment = "", ""
+			node.connection = remoteDigest([]byte(value.String()))
+		case "mihomo":
+			var doc yaml.Node
+			if yaml.Unmarshal([]byte(node.payload), &doc) != nil || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+				return errRemoteContent
+			}
+			node.connection, err = remoteYAMLConnectionIdentity(doc.Content[0])
+			if err != nil {
+				return errRemoteContent
+			}
+		default:
+			return errRemoteContent
+		}
+		oldCounts[node.format+":"+node.connection]++
+	}
+	assign := func(old *cachedNode, index int) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE remote_subscription_nodes SET identity=? WHERE source_id=? AND id=?`, nodes[index].identity, sourceID, old.id); err != nil {
+			return err
+		}
+		old.matched, matchedNew[index] = true, true
+		return nil
+	}
+	for i := range cached {
+		old := &cached[i]
+		if old.matched {
+			continue
+		}
+		index, ok := newByIdentity[remoteNodeIdentity(old.name, old.connection)]
+		if ok && !matchedNew[index] && nodes[index].format == old.format {
+			if err := assign(old, index); err != nil {
+				return err
+			}
+		}
+	}
+	uniqueNew := make(map[string]int, len(nodes))
+	for i, node := range nodes {
+		key := node.format + ":" + node.connectionIdentity
+		if newCounts[key] == 1 {
+			uniqueNew[key] = i
+		}
+	}
+	for i := range cached {
+		old := &cached[i]
+		key := old.format + ":" + old.connection
+		index, ok := uniqueNew[key]
+		if !old.matched && ok && !matchedNew[index] && oldCounts[key] == 1 {
+			if err := assign(old, index); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Commit both downloaded and manually imported nodes with the same lease,
 // encryption, stable-identity upsert and atomic cache replacement.
 func (s *RemoteService) commitRemoteCache(ctx context.Context, actor PersonalSubscriptionActor, id, revision int64, claim, ciphertext, address string, parsed remoteParseResult, info string) (RemoteSource, error) {
@@ -845,6 +970,9 @@ func (s *RemoteService) commitRemoteCache(ctx context.Context, actor PersonalSub
 	}
 	var generation int64
 	if err := tx.QueryRowContext(ctx, `SELECT cache_generation FROM remote_subscription_sources WHERE id=?`, id).Scan(&generation); err != nil {
+		return RemoteSource{}, err
+	}
+	if err := s.reconcileRemoteIdentities(ctx, tx, id, parsed.nodes); err != nil {
 		return RemoteSource{}, err
 	}
 	statement, err := tx.PrepareContext(ctx, `INSERT INTO remote_subscription_nodes(source_id,identity,original_name,display_name,protocol,format,payload_ciphertext,position,generation)

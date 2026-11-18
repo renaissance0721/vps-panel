@@ -160,7 +160,38 @@ MCP 还支持代理客户端、外部节点、服务器访问权限与流量校�
 
 管理员和 VIP 可在「订阅管理 → 机场订阅」管理各自的远程来源，测试、手动或定时刷新并查看缓存节点。来源地址和节点内容加密保存，列表不展示原始地址或凭据；刷新失败保留上次成功的缓存。个人订阅可选择整个来源或单个缓存节点；整源会包含刷新后的当前节点，停用或删除的来源不会输出。共享订阅不使用机场节点。Mihomo 保留导入的 YAML 字段，URI 转换、Shadowrocket 和 Base64 仅支持可安全表示的参数，不兼容时返回错误；可在个人订阅编辑器中预览已保存的配置。
 
-机场订阅支持创建不需要地址的手动来源，并从本地文件导入 Mihomo / Clash YAML、Base64 内容或纯文本节点链接；现有网络来源也可导入文件。文件最大 4 MiB；无效或空文件不会覆盖原有缓存，不支持的协议会显示警告。手动来源不会自动联网；网络来源导入后仍会按原计划刷新，成功刷新可能覆盖导入的缓存。
+机场订阅支持创建不需要地址的手动来源，并从本地文件导入 Mihomo / Clash YAML、Base64 内容或纯文本节点链接。现有网络来源也可导入文件。文件最大 4 MiB，无效或空文件会保留原有缓存，不支持的协议会显示警告。服务端直连来源导入后仍按计划刷新，成功的网络刷新会更新缓存。
+
+### Windows 本地连接器
+
+如果机场只允许国内 IP 下载订阅，可让自己配对的 Windows 电脑按需下载。Panel 继续加密保存原订阅地址，接收下载结果后更新现有节点缓存。此方式适合需要手动开启临时更新窗口的机场。
+
+1. 从 [GitHub Releases](https://github.com/renaissance0721/vps-panel/releases/latest) 下载免安装的 `vps-panel-local-connector.exe`（Windows amd64，SHA-256 见 `SHA256SUMS`）。也可在 Windows PowerShell 中进入仓库的 `panel` 目录，按 [go.mod](panel/go.mod) 的版本要求自行构建。
+
+   ```powershell
+   go build -trimpath -ldflags="-s -w" -o vps-panel-local-connector.exe ./cmd/local-connector
+   ```
+
+2. 通过 HTTPS 打开 Panel，进入「订阅管理 → 机场订阅 → 本地连接器 → 配对连接器」。输入电脑名称并生成配对码。配对码仅显示一次，10 分钟内有效。
+3. 在 EXE 所在目录运行以下命令。将示例地址换成实际的 Panel HTTPS 根地址，按提示粘贴配对码。凭据通过 Windows DPAPI 保存在当前 Windows 用户的 `%LOCALAPPDATA%\VPSPanelLocalConnector\pairing.dpapi`。
+
+   ```powershell
+   .\vps-panel-local-connector.exe pair https://panel.example.com
+   .\vps-panel-local-connector.exe run
+   ```
+
+4. 保持窗口运行，等页面上的连接器显示「在线」。启动或重连只恢复连接。按 Ctrl+C 可断开并停止程序。
+5. 编辑已有机场订阅，选择「刷新方式 → 本地连接器」和刚配对的电脑，订阅地址留空，保存。该来源仅在你点击「立即刷新」或「测试并预览」时下载，测试使用已保存设置并独立显示结果。
+6. 在机场网站手动开启更新窗口，回到该来源点击「立即刷新」。页面自动显示进度，成功后更新节点数量。超时、网络错误或订阅格式错误都会保留上一次成功的缓存。
+7. 更换电脑或撤销凭据时，在「本地连接器」列表点击「撤销」。撤销会断开连接并取消订阅的连接器分配，保留刷新方式和缓存。重新配对后可为来源选择新连接器。
+
+Panel 地址需要可验证的 TLS 证书。原生同机 Caddy 部署可转发连接器的 WebSocket。自配反向代理时应由同机代理经回环地址转发，覆盖传入的 `X-Forwarded-Proto` 并支持 WebSocket 升级。来自其他地址的明文后端连接无法使用转发头作为 HTTPS 证明。
+
+连接器使用直连 HTTP 传输，忽略系统 HTTP 代理和 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。Clash Verge Rev 的 TUN 仍可能接管系统路由。可在 Clash 中检查机场域名与重定向域名是否走 `DIRECT`，以及 DNS 是否返回 `198.18.0.0/15` 一类的 Fake-IP。若返回 Fake-IP，可为对应域名配置真实 DNS 解析，或者临时关闭 TUN 后重试。连接器不会更改路由或防火墙。
+
+可运行 `.\vps-panel-local-connector.exe diagnose` 查看诊断站点看到的出口 IP 和地区。请求只访问固定的诊断站点，不携带订阅 URL 或配对凭据。按域名分流时，还需在 Clash 的连接记录里核对机场域名。 [Country.is 诊断接口](https://country.is/)
+
+如果连接器离线，先检查程序是否运行、Panel 的 HTTPS 地址与证书是否有效、反向代理是否允许 WebSocket。程序会重试临时网络故障。若显示凭据失效，生成新配对码后重新配对。如果刷新超时或供应商拒绝请求，检查机场的更新窗口、Windows 的实际出口和 DNS，间隔至少 60 秒再刷新。
 
 已停用的代理和中转不出现在个人订阅的添加候选中；已经选中的节点保留停用状态，重新启用来源后自动恢复。永久删除来源时，同时清理个人订阅中的对应节点及策略组绑定。
 

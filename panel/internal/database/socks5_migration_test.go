@@ -26,7 +26,7 @@ func TestSOCKS5MigrationPreservesReferencesAndSequence(t *testing.T) {
 		`CREATE INDEX idx_landing_nodes_owner_user_id ON landing_nodes(owner_user_id)`,
 		`CREATE INDEX idx_landing_nodes_visibility ON landing_nodes(visibility)`,
 		`UPDATE sqlite_sequence SET seq=100 WHERE name='landing_nodes'`,
-		`DELETE FROM schema_migrations WHERE version=42`,
+		`DELETE FROM schema_migrations WHERE version>=42`,
 		`PRAGMA foreign_keys=ON`,
 	}
 	for _, statement := range statements {
@@ -77,7 +77,7 @@ func TestSOCKS5MigrationPreservesEmptyTableSequence(t *testing.T) {
 		`INSERT INTO users (id,username,password_hash,role,created_at,updated_at) VALUES (1,'owner','hash','vip',1,1)`,
 		`INSERT INTO landing_nodes (id,owner_user_id,name,protocol,host,port,uri,created_at,updated_at) VALUES (100,1,'old','vless','example.com',443,'vless://fake@example.com:443',1,1)`,
 		`DELETE FROM landing_nodes`,
-		`DELETE FROM schema_migrations WHERE version=42`,
+		`DELETE FROM schema_migrations WHERE version>=42`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
+	"github.com/renaissance0721/vps-panel/panel/internal/localconnector"
 	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	"github.com/renaissance0721/vps-panel/panel/internal/notification"
@@ -150,6 +151,11 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/import", s.requireManager(s.importRemoteSubscription))
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/test", s.requireManager(s.testSavedRemoteSubscription))
 	mux.HandleFunc("GET /api/remote-subscriptions/{id}/nodes", s.requireManager(s.remoteSubscriptionNodes))
+	mux.HandleFunc("GET /api/local-connectors", s.requireManager(s.listLocalConnectors))
+	mux.HandleFunc("POST /api/local-connectors", s.requireManager(s.createLocalConnectorPairing))
+	mux.HandleFunc("DELETE /api/local-connectors/{id}", s.requireManager(s.revokeLocalConnector))
+	mux.HandleFunc("POST "+localconnector.PairPath, s.pairLocalConnector)
+	mux.HandleFunc("GET "+localconnector.SocketPath, s.connectLocalConnector)
 	mux.HandleFunc("GET /api/personal-subscriptions", s.requireManager(s.listPersonalSubscriptions))
 	mux.HandleFunc("POST /api/personal-subscriptions", s.requireManager(s.createPersonalSubscription))
 	mux.HandleFunc("GET /api/personal-subscriptions/sources", s.requireManager(s.listPersonalSubscriptionSources))

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 42
+const LatestSchemaVersion = 43
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -73,6 +73,41 @@ var migrations = []migration{
 	{version: 40, name: "china_inbound_whitelist", up: createChinaInboundWhitelist},
 	{version: 41, name: "personal_node_dialer_proxy", up: addPersonalNodeDialerProxy},
 	{version: 42, name: "socks5_external_nodes", up: migrateSOCKS5ExternalNodes, disableForeignKeys: true},
+	{version: 43, name: "remote_subscription_connectors", up: addRemoteSubscriptionConnectors},
+}
+
+func addRemoteSubscriptionConnectors(ctx context.Context, tx *sql.Tx) error {
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS remote_subscription_connectors (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			pair_expires_at INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_remote_subscription_connectors_owner ON remote_subscription_connectors(owner_user_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"refresh_method", `TEXT NOT NULL DEFAULT 'server'
+			CHECK(refresh_method IN ('server','local_connector') AND (source_mode='url' OR refresh_method='server'))`},
+		{"connector_id", `INTEGER REFERENCES remote_subscription_connectors(id) ON DELETE SET NULL
+			CHECK(connector_id IS NULL OR refresh_method='local_connector')`},
+	} {
+		exists, err := migrationColumnExists(ctx, tx, "remote_subscription_sources", column.name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE remote_subscription_sources ADD COLUMN `+column.name+" "+column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func migrateSOCKS5ExternalNodes(ctx context.Context, tx *sql.Tx) error {

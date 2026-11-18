@@ -47,7 +47,6 @@ import CarpoolPanelView from './views/CarpoolPanelView.vue'
 import SubscriptionManagementView from './views/SubscriptionManagementView.vue'
 import AuditLogView from './views/AuditLogView.vue'
 import MailSettingsView from './views/MailSettingsView.vue'
-import ReverseProxySettingsView from './views/ReverseProxySettingsView.vue'
 import MCPSettingsView from './views/MCPSettingsView.vue'
 import AccountMenu from './components/AccountMenu.vue'
 import { userRoleLabel } from './format'
@@ -615,7 +614,6 @@ onUnmounted(() => {
                 <AccountManagementView v-if="currentPage === 'accounts' && state.user?.role === 'admin'" />
                 <CarpoolPanelView v-if="currentPage === 'carpool' && state.user?.role === 'admin'" />
                 <div v-if="currentPage === 'settings' && state.user?.role === 'admin'" class="settings-page">
-                  <ReverseProxySettingsView />
                   <MailSettingsView />
                   <MCPSettingsView />
                 </div>

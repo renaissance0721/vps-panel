@@ -144,22 +144,7 @@ func (s *server) refreshRemoteSubscription(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	actor := personalActor(user)
-	source, err := s.remoteSubscriptions.Get(r.Context(), actor, id)
-	if err != nil {
-		writeRemoteSubscriptionError(w, err)
-		return
-	}
-	if source.RefreshMethod == subscriptionstore.RemoteRefreshLocal {
-		if err := s.remoteSubscriptions.StartLocalRefresh(r.Context(), actor, id); err != nil {
-			writeRemoteSubscriptionError(w, err)
-			return
-		}
-		s.recordAudit(r, user, "remote_subscription.refresh", "remote_subscription", id, "请求本地连接器刷新机场订阅")
-		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
-		return
-	}
-	value, err := s.remoteSubscriptions.Refresh(r.Context(), actor, id)
+	value, err := s.remoteSubscriptions.Refresh(r.Context(), personalActor(user), id)
 	if err != nil {
 		writeRemoteSubscriptionError(w, err)
 		return
@@ -204,12 +189,6 @@ func writeRemoteSubscriptionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, subscriptionstore.ErrRemoteNotFound):
 		writeError(w, http.StatusNotFound, "机场订阅不存在")
-	case errors.Is(err, subscriptionstore.ErrLocalConnectorNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, subscriptionstore.ErrLocalConnectorInvalid):
-		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, subscriptionstore.ErrLocalConnectorOffline):
-		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, subscriptionstore.ErrRemoteInvalid):
 		writeError(w, http.StatusBadRequest, "机场订阅设置无效")
 	case errors.Is(err, subscriptionstore.ErrRemoteImport), errors.Is(err, subscriptionstore.ErrRemoteManual):

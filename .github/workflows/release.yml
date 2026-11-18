@@ -94,19 +94,13 @@ jobs:
             -trimpath -ldflags="-s -w -X main.agentVersion=$GITHUB_REF_NAME" \
             -o "../release-assets/$AGENT_BINARY" ./cmd/agent
 
-      - name: Build Windows local connector
-        if: matrix.arch == 'amd64'
-        working-directory: panel
-        run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build \
-            -trimpath -ldflags="-s -w" \
-            -o ../release-assets/vps-panel-local-connector.exe ./cmd/local-connector
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: vps-panel-linux-${{ matrix.arch }}
-          path: release-assets/*
+          path: |
+            release-assets/vps-panel-linux-${{ matrix.arch }}.tar.gz
+            release-assets/vps-panel-agent-linux-${{ matrix.arch }}
           if-no-files-found: error
 
   release:
@@ -137,13 +131,12 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate executable checksums
+      - name: Generate Agent checksums
         working-directory: release-assets
         run: |
           sha256sum \
             vps-panel-agent-linux-amd64 \
             vps-panel-agent-linux-arm64 \
-            vps-panel-local-connector.exe \
             > SHA256SUMS
 
       - name: Create release and upload artifacts

@@ -34,8 +34,19 @@ func TestRemoteManualImportKeepsIdentityAndBindings(t *testing.T) {
 	if decrypted, err := s.secrets.Decrypt(cipher); err != nil || decrypted != "" {
 		t.Fatal("empty URL was not encrypted")
 	}
+	// A source converted to manual mode during upgrade can retain its encrypted URL.
+	cipher, err = s.secrets.Encrypt("https://saved.example/subscription")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE remote_subscription_sources SET url_ciphertext=? WHERE id=?`, cipher, source.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = s.Refresh(t.Context(), owner, source.ID); !errors.Is(err, ErrRemoteManual) {
 		t.Fatalf("manual refresh: %v", err)
+	}
+	if _, err = s.TestSaved(t.Context(), owner, source.ID, ""); !errors.Is(err, ErrRemoteManual) {
+		t.Fatalf("manual preview: %v", err)
 	}
 	if _, err = db.Exec(`UPDATE remote_subscription_sources SET refresh_claim='stale',refresh_lease_until=? WHERE id=?`, now.Unix()-1, source.ID); err != nil {
 		t.Fatal(err)
@@ -103,6 +114,9 @@ func TestRemoteManualImportKeepsIdentityAndBindings(t *testing.T) {
 	var stored string
 	if err = db.QueryRow(`SELECT payload_ciphertext FROM remote_subscription_nodes WHERE id=?`, nodes[0].ID).Scan(&stored); err != nil || strings.Contains(stored, "synthetic") {
 		t.Fatalf("plaintext stored: %v", err)
+	}
+	if err = db.QueryRow(`SELECT url_ciphertext FROM remote_subscription_sources WHERE id=?`, source.ID).Scan(&stored); err != nil || stored != cipher {
+		t.Fatalf("saved URL changed after import: %v", err)
 	}
 	if _, err = s.Update(t.Context(), owner, source.ID, RemoteInput{Name: "Manual", URL: "https://example.com/", Enabled: true, IntervalSeconds: 300}); !errors.Is(err, ErrRemoteInvalid) {
 		t.Fatalf("manual type changed: %v", err)

@@ -160,74 +160,9 @@ MCP 还支持代理客户端、外部节点、服务器访问权限与流量校�
 
 管理员和 VIP 可在「订阅管理 → 机场订阅」管理各自的远程来源，测试、手动或定时刷新并查看缓存节点。来源地址和节点内容加密保存，列表不展示原始地址或凭据；刷新失败保留上次成功的缓存。个人订阅可选择整个来源或单个缓存节点；整源会包含刷新后的当前节点，停用或删除的来源不会输出。共享订阅不使用机场节点。Mihomo 保留导入的 YAML 字段，URI 转换、Shadowrocket 和 Base64 仅支持可安全表示的参数，不兼容时返回错误；可在个人订阅编辑器中预览已保存的配置。
 
-机场订阅支持创建不需要地址的手动来源，并从本地文件导入 Mihomo / Clash YAML、Base64 内容或纯文本节点链接。现有网络来源也可导入文件。文件最大 4 MiB，无效或空文件会保留原有缓存，不支持的协议会显示警告。服务端直连来源导入后仍按计划刷新，成功的网络刷新会更新缓存。
+机场订阅支持创建不需要地址的手动来源，并从本地文件导入 Mihomo / Clash YAML、Base64 内容或纯文本节点链接；现有网络来源也可导入文件。文件最大 4 MiB；无效或空文件不会覆盖原有缓存，不支持的协议会显示警告。手动来源不会自动联网；网络来源导入后仍会按原计划刷新，成功刷新可能覆盖导入的缓存。
 
-### Windows 本地连接器
-
-如果机场只允许国内 IP 下载订阅，可让自己配对的 Windows 电脑按需下载。Panel 继续加密保存原订阅地址，接收下载结果后更新现有节点缓存。此方式适合需要手动开启临时更新窗口的机场。
-
-1. 从 [GitHub Releases](https://github.com/renaissance0721/vps-panel/releases/latest) 下载免安装的 `vps-panel-local-connector.exe`（Windows amd64，SHA-256 见 `SHA256SUMS`）。也可在 Windows PowerShell 中进入仓库的 `panel` 目录，按 [go.mod](panel/go.mod) 的版本要求自行构建。
-
-   ```powershell
-   go build -trimpath -ldflags="-s -w" -o vps-panel-local-connector.exe ./cmd/local-connector
-   ```
-
-2. 通过 HTTPS 打开 Panel，进入「订阅管理 → 机场订阅 → 本地连接器 → 配对连接器」。输入电脑名称并生成配对码。配对码仅显示一次，10 分钟内有效。
-3. 在 EXE 所在目录运行以下命令。将示例地址换成实际的 Panel HTTPS 根地址，按提示粘贴配对码。凭据通过 Windows DPAPI 保存在当前 Windows 用户的 `%LOCALAPPDATA%\VPSPanelLocalConnector\pairing.dpapi`。
-
-   ```powershell
-   .\vps-panel-local-connector.exe pair https://panel.example.com
-   .\vps-panel-local-connector.exe run
-   ```
-
-4. 保持窗口运行，等页面上的连接器显示「在线」。启动或重连只恢复连接。按 Ctrl+C 可断开并停止程序。
-5. 编辑已有机场订阅，选择「刷新方式 → 本地连接器」和刚配对的电脑，订阅地址留空，保存。该来源仅在你点击「立即刷新」或「测试并预览」时下载，测试使用已保存设置并独立显示结果。
-6. 在机场网站手动开启更新窗口，回到该来源点击「立即刷新」。页面自动显示进度，成功后更新节点数量。超时、网络错误或订阅格式错误都会保留上一次成功的缓存。
-7. 更换电脑或撤销凭据时，在「本地连接器」列表点击「撤销」。撤销会断开连接并取消订阅的连接器分配，保留刷新方式和缓存。重新配对后可为来源选择新连接器。
-
-Panel 地址需要可验证的 TLS 证书。原生同机 Caddy 可通过回环地址转发连接器的 WebSocket。Docker Nginx Proxy Manager 或其他非回环代理需要显式配置可信代理。 [Docker NPM 设置](#通过-docker-nginx-proxy-manager-连接)
-
-连接器使用直连 HTTP 传输，忽略系统 HTTP 代理和 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。Clash Verge Rev 的 TUN 仍可能接管系统路由。可在 Clash 中检查机场域名与重定向域名是否走 `DIRECT`，以及 DNS 是否返回 `198.18.0.0/15` 一类的 Fake-IP。若返回 Fake-IP，可为对应域名配置真实 DNS 解析，或者临时关闭 TUN 后重试。连接器不会更改路由或防火墙。
-
-可运行 `.\vps-panel-local-connector.exe diagnose` 查看诊断站点看到的出口 IP 和地区。请求只访问固定的诊断站点，不携带订阅 URL 或配对凭据。按域名分流时，还需在 Clash 的连接记录里核对机场域名。 [Country.is 诊断接口](https://country.is/)
-
-如果连接器离线，先检查程序是否运行、Panel 的 HTTPS 地址与证书是否有效、反向代理是否允许 WebSocket。程序会重试临时网络故障。若显示凭据失效，生成新配对码后重新配对。如果刷新超时或供应商拒绝请求，检查机场的更新窗口、Windows 的实际出口和 DNS，间隔至少 60 秒再刷新。
-
-#### 通过 Docker Nginx Proxy Manager 连接
-
-1. 管理员从 HTTPS 域名打开 Panel，进入「系统设置 → 网络与安全 → 反向代理」，点击「检测当前连接」。
-2. 核实页面显示的 **TCP 对端** 属于自己控制的 NPM 实例。点击「添加当前来源 IP」，确认该地址仅由受控代理使用，再点击「保存配置」。也可手动添加单个 IPv4 或 IPv6 地址，每次最多保存 32 个地址。
-3. 保存立即生效。确认重新检测显示「连接器 HTTPS 检查 · 通过」，或点击「测试 HTTPS 识别」再检查一次。然后在「机场订阅 → 本地连接器」生成配对码。页面的 HTTP 检测将 WebSocket 标为「未验证」。启动已配对的 Windows 程序并看到「在线」，才确认连接器已通过 WSS 连通。
-
-**NPM 与后端网络**
-
-- 配置 Proxy Host、有效 TLS 证书，开启 **Force SSL** 和 **Websockets Support**。原生 Panel 使用 `external` 模式，可监听 Docker 专用 bridge 的宿主机地址，只允许 NPM 访问该明文端口。两者都在 Docker 时可使用专用 bridge 与容器名访问，避免向公网发布 Panel 的 `8080`。 [NPM Docker 网络文档](https://nginxproxymanager.com/advanced-config/#best-practice-use-a-docker-network)
-- 以 Panel 显示的实际 TCP 对端为准。容器重新分配 IP 后应重新检测，删除旧地址，并核实新地址。多台代理分别确认具体地址。若 NAT、端口转发或 host-network 让其他客户端也能从同一地址进入 Panel，先隔离后端再添加。采用 Cloudflare 等上游代理时，保持到 NPM 的连接也使用 TLS 并验证其证书，使 NPM 能依据自己收到的协议覆盖头部。
-- Panel 通过代理识别 HTTPS 时要求单个 `X-Forwarded-Proto: https`。如转发 `X-Forwarded-Scheme`，该头也应为单个 `https`，同时清除客户端的 `Forwarded`。页面只显示实际对端及协议头是否符合格式与信任策略。代理是否正确覆盖客户端头、证书和网络隔离仍由部署方保证。
-
-**按 NPM 版本检查协议头**
-
-先核对该 Proxy Host 实际生成的代理配置。部分版本直接使用 `$scheme`，部分版本生成 `$x_forwarded_proto` 和 `$x_forwarded_scheme`，可能引用入站请求头。保持每个协议头在实际转发位置只有一条设置指令。 [使用 `$scheme` 的模板](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/v2.13.7/docker/rootfs/etc/nginx/conf.d/include/proxy.conf) · [使用变量的模板](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/v2.17.0/docker/rootfs/etc/nginx/conf.d/include/proxy.conf)
-
-若镜像已启用 Headers More，且生成模板使用上述两个变量，可在该 Proxy Host 的 **Advanced** 清理入站头并锁定协议变量。使用 `$scheme` 的模板只需下面的清理指令。保存后用容器内的 `nginx -t` 校验。 [Headers More 指令](https://github.com/openresty/headers-more-nginx-module#more_clear_input_headers)
-
-```nginx
-more_clear_input_headers "Forwarded" "X-Forwarded-Proto" "X-Forwarded-Scheme";
-set $x_forwarded_proto $scheme;
-set $x_forwarded_scheme $scheme;
-```
-
-若镜像缺少该模块，使用该版本支持的自定义代理配置，在实际执行 `proxy_pass` 的位置替换已有协议头定义，并保留 WebSocket 升级配置。 [Nginx 代理头指令](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header)
-
-```nginx
-proxy_set_header X-Forwarded-Proto $scheme;
-proxy_set_header X-Forwarded-Scheme $scheme;
-proxy_set_header Forwarded "";
-```
-
-可用不带凭据的请求验证。HTTPS 下 `POST /api/local-connector/pair` 应返回 `401`。HTTP 上即便附加 `X-Forwarded-Proto: https`，也应被重定向到 HTTPS 或拒绝。
-
-无界面部署可在原生安装的 `/etc/vps-panel/panel/environment` 或 Panel 容器环境中设置 `PANEL_CONNECTOR_TRUSTED_PROXY_IPS`。Panel 在启动时读取该变量中的逗号分隔地址。网页首次保存后以 SQLite 为准。保存空列表会取消全部非回环信任，旧环境值在重启后也不会恢复。
+升级时，原先仅通过 Windows 本地刷新的来源自动转为手动来源。原加密地址、缓存节点、流量和到期信息以及个人订阅引用均保留。可在「机场订阅 → 导入文件」更新缓存。
 
 已停用的代理和中转不出现在个人订阅的添加候选中；已经选中的节点保留停用状态，重新启用来源后自动恢复。永久删除来源时，同时清理个人订阅中的对应节点及策略组绑定。
 
@@ -284,7 +219,7 @@ vps-panel/
 | `sudo vp uninstall` | 卸载 Panel，交互选择是否删除数据 |
 | `vp help` | 查看命令帮助 |
 
-修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。`vp update` 会保留当前域名、监听地址、代理模式、旧环境变量和 SQLite 中的可信代理配置。
+修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。`vp update` 会保留当前 `PANEL_DOMAIN`、`PANEL_LISTEN_ADDR` 和 `PANEL_PROXY_MODE`。
 更新会保留业务数据；跨服务器迁移可使用管理员的备份导出 / 导入功能，并保持 Panel 访问域名一致。
 
 ## 🛠️ 本地开发

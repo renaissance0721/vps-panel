@@ -450,8 +450,6 @@ migrate_legacy_native_data() {
 }
 
 write_service_configuration() {
-  local connector_trusted_proxy_ips
-  connector_trusted_proxy_ips="$(current_setting PANEL_CONNECTOR_TRUSTED_PROXY_IPS)"
   [[ -d "$CONFIG_ROOT" ]] || install -d -m 0755 "$CONFIG_ROOT"
   install -d -m 0755 "$CONFIG_DIR"
   if [[ -f "$CONFIG_FILE" ]]; then
@@ -470,9 +468,6 @@ PANEL_PROXY_MODE=${requested_proxy_mode}
 PANEL_DATA_DIR=${DATA_DIR}
 PANEL_WEB_DIR=${INSTALL_DIR}/web
 EOF
-  if [[ -n "$connector_trusted_proxy_ips" ]]; then
-    printf 'PANEL_CONNECTOR_TRUSTED_PROXY_IPS=%s\n' "$connector_trusted_proxy_ips" >>"${temporary_dir}/environment"
-  fi
   install -m 0644 "${temporary_dir}/environment" "$CONFIG_FILE"
 
   cat >"${temporary_dir}/vps-panel.service" <<EOF
@@ -560,11 +555,7 @@ configure_domain_proxy() {
   cat >"${temporary_dir}/vps-panel.caddy" <<EOF
 ${requested_domain} {
 	encode zstd gzip
-	reverse_proxy $(listen_endpoint "$listen_address") {
-		header_up X-Forwarded-Proto {http.request.scheme}
-		header_up -X-Forwarded-Scheme
-		header_up -Forwarded
-	}
+	reverse_proxy $(listen_endpoint "$listen_address")
 
 	header {
 		X-Content-Type-Options nosniff

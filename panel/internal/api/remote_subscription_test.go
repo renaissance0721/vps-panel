@@ -4,9 +4,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestRetiredSubscriptionConnectorRoutes(t *testing.T) {
+	db, handler, admin, _ := setupAccountTest(t)
+	defer db.Close()
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/local-connectors"},
+		{http.MethodPost, "/api/local-connectors"},
+		{http.MethodDelete, "/api/local-connectors/1"},
+		{http.MethodPost, "/api/local-connector/pair"},
+		{http.MethodGet, "/api/local-connector/connect"},
+		{http.MethodGet, "/api/admin/settings/reverse-proxy"},
+		{http.MethodPut, "/api/admin/settings/reverse-proxy"},
+		{http.MethodGet, "/api/admin/settings/reverse-proxy/diagnostics"},
+	} {
+		req := httptest.NewRequest(route.method, route.path, nil)
+		req.AddCookie(admin)
+		req.Header.Set("Authorization", "Bearer synthetic-retired-token")
+		if route.path == "/api/local-connector/connect" {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404", route.method, route.path, response.Code)
+		}
+	}
+}
 
 func TestRemoteSubscriptionAPIRequiresManagerAndIsolatesOwners(t *testing.T) {
 	db, _, admin, _ := setupAccountTest(t)

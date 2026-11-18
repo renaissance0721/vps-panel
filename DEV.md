@@ -215,6 +215,8 @@ Landing 解析外部 VLESS / Shadowsocks 分享链接，保存协议、地址和
 
 机场订阅来源通过 `/api/remote-subscriptions` 管理，仅 admin / vip 可访问，且所有操作按 owner 隔离。`POST /test` 使用提交的地址预览，`POST /{id}/test` 使用已保存地址预览；`POST /{id}/refresh` 更新缓存，`GET /{id}/nodes` 只返回节点元数据。`PUT /{id}` 的 URL 留空表示保留已有地址，非空时显式替换。创建及更新使用 `name`、`url`、`user_agent`、`enabled` 和 `interval_seconds`，间隔范围为 300–604800 秒，按整分钟设置。创建时可传 `mode=manual` 且 URL 留空，默认 `mode=url`；手动来源不参与网络调度。`POST /{id}/import` 以 `multipart/form-data` 的 `file` 字段导入最多 4 MiB，复用现有解析器、加密缓存和刷新租约。格式错误或空内容不替换缓存；不支持的协议可跳过并返回警告。导入不携带流量元数据，因此清空旧上游流量与到期值；网络来源后续成功刷新会替换导入结果。
 
+升级后的历史手动来源可能仍保存加密 URL。刷新和预览根据来源模式决定是否联网，文件导入继续沿用稳定节点标识和现有引用。
+
 Panel 后台按到期时间调度，限制并发和每来源刷新频率；数据库租约阻止同一来源的跨实例并发刷新，并在进程中断后过期回收。抓取与解析成功后在事务内更新缓存，失败保留上次成功结果。缓存按来源和内容身份维持节点 ID，支持顺序变化；地址更新时不会立即删除旧缓存。来源 URL、节点原始名称、显示名称和完整 payload 使用独立 AEAD 用途标识加密；普通 API、审计和错误不返回 URL 或节点凭据。个人订阅可选择整个来源或单个缓存节点，生成时再次检查 owner 并只读取本地缓存；整源动态展开，停用、删除或移除的来源和节点跳过输出，原选择项及绑定保留。共享订阅不读取远程来源。
 
 个人订阅来源列表和节点保存 API 使用 `source_type=remote_source` 与来源 ID，或 `source_type=remote_node` 与缓存节点 ID；这两种来源不接受入口地址和端口覆盖。来源级路由绑定在渲染时展开为可用的当前节点，既有绑定 ID 保持不变。
@@ -252,14 +254,6 @@ RoutingPreset 是客户端无关的逻辑分流配置。Rule Provider 推荐使�
 公开输出路径见 [订阅地址](README.md#订阅与客户端模板)。Shadowrocket 使用 `text/plain; charset=utf-8` 与 `.conf` 文件名，沿用 Profile-Title、Profile-Update-Interval、Subscription-Userinfo 等头部。`/auto` 优先识别大小写不敏感的 Shadowrocket UA，其余识别保持原行为；根地址始终返回 Base64。
 
 管理 API 新增 `GET /api/admin/subscription/builtin-shadowrocket`（admin / vip，返回 name / conf）和 `GET /api/personal-subscriptions/{id}/shadowrocket-preview`（admin / vip 且属于当前 owner，返回 conf，禁止缓存）。模板管理写入仍仅 admin；预览和公开输出经过相同节点解析、权限及状态校验。无法转换时预览返回 422，公开输出返回 503 和不含凭据的中文错误。
-
-机场 URL 来源的 `refresh_method` 默认是 `server`，继续由原调度器刷新。`local_connector` 来源通过显式刷新或已保存来源的预览触发下载，绑定同一 owner 的已配对连接器。管理端 `/api/local-connectors` 与机场订阅使用相同的 admin / vip 门禁。连接器通过 `POST /api/local-connector/pair` 消费一次性配对码，再以独立 Bearer 凭据连接 `GET /api/local-connector/connect`。凭据仅存散列。
-
-连接器 HTTPS 门禁接受直接 TLS，或由可信 TCP 对端发送的单个、无冲突的 HTTPS 协议头。回环隐式受信任，额外地址来自 SQLite 单例 `connector_proxy_settings`。无记录时读取旧 `PANEL_CONNECTOR_TRUSTED_PROXY_IPS`，有记录时以数据库为准，包括显式空数组。新安装默认仅信任回环。安装器继续保留旧环境变量。
-
-管理员通过 `GET/PUT /api/admin/settings/reverse-proxy` 读写配置，PUT 沿用管理会话的来源检查和审计记录。名单以归一化实际 IPv4/IPv6 地址保存，单次 UPSERT 更新整份列表。持锁持久化成功后，再替换运行时只读快照。新请求使用新名单，已有 WebSocket 会话保持原连接生命周期。`GET /api/admin/settings/reverse-proxy/diagnostics` 与配对、换取凭据和 WSS 握手共用 HTTPS 判定，输出 TCP 对端、后端 TLS、协议头分类和策略结果，不返回原始头部或凭据。诊断仅检查当次 HTTP 请求。代理端配置与隔离见 [NPM 设置](README.md#通过-docker-nginx-proxy-manager-连接)。
-
-本地刷新复用来源 revision、刷新 claim、租约、限频和缓存替换事务。刷新 API 返回 202，状态通过来源读取 API 获取。每个在线连接至多处理一个下载，临时任务只保留在进程内。连接器的预览使用同一下载通道，并返回独立的预览响应。连接断开、撤销和来源编辑都受现有版本与租约校验保护，撤销后来源仍选择本地刷新。Windows 程序复用服务端订阅下载的网络限制，安装与路由排查见 [Windows 本地连接器](README.md#windows-本地连接器)。
 
 ## 12. Traffic
 
@@ -397,7 +391,7 @@ Panel 本地运行读取 `PANEL_LISTEN_ADDR`、`PANEL_DATA_DIR`、`PANEL_WEB_DIR
 只有 caddy 模式管理 `/etc/caddy/vps-panel.caddy` 及 Caddyfile 中对应的精确 import。缺少 `PANEL_PROXY_MODE` 的旧安装仅在两项所有权标记都存在时推断为 caddy，否则推断为 external。IP 模式和 Compose 的对外端口不同，以 README 的对应安装方式为准。
 
 Release workflow 对 `v*` tag 构建 Linux amd64 / arm64 的 Panel 和 Agent，版本由构建参数注入。
-Panel 压缩包带构建后的 Web。Release 也包含 Windows amd64 本地连接器，`SHA256SUMS` 覆盖 Agent 和连接器文件。手动 workflow dispatch 可构建，发布 Release 的步骤以 tag 为条件。
+Panel 压缩包带构建后的 Web；`SHA256SUMS` 当前覆盖 Agent 文件。手动 workflow dispatch 可构建，但发布 Release 的步骤以 tag 为条件。
 发布验证应对应 tag 的实际 commit 和上传产物，不能只看本地代码或工作流已启动。
 
 ## 18. Security

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"log"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -13,7 +12,6 @@ import (
 	"github.com/renaissance0721/vps-panel/panel/internal/auth"
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	"github.com/renaissance0721/vps-panel/panel/internal/listorder"
-	"github.com/renaissance0721/vps-panel/panel/internal/localconnector"
 	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
 	"github.com/renaissance0721/vps-panel/panel/internal/monitor"
 	"github.com/renaissance0721/vps-panel/panel/internal/notification"
@@ -32,8 +30,6 @@ type server struct {
 	relays               *relaystore.Service
 	subscriptions        *subscriptionstore.Service
 	remoteSubscriptions  *subscriptionstore.RemoteService
-	connectorProxyMu     sync.RWMutex
-	connectorProxy       connectorProxyConfig
 	orders               *listorder.Store
 	webRoot              string
 	panelVersion         string
@@ -61,11 +57,6 @@ type BackupConfig struct {
 	RestoreRequested chan<- struct{}
 }
 
-type HandlerConfig struct {
-	Backup                  BackupConfig
-	LegacyConnectorProxyIPs string
-}
-
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	return NewHandlerWithVersion(db, webRoot, "dev")
 }
@@ -87,23 +78,7 @@ func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig
 	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil, geoIPProviders...)
 }
 
-func NewHandlerWithConfig(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, geoIPProviders ...serverstore.GeoIPProvider) (*Handler, error) {
-	proxy, err := loadConnectorProxyConfig(db, config.LegacyConnectorProxyIPs)
-	if err != nil {
-		return nil, err
-	}
-	return newHandler(db, webRoot, panelVersion, config.Backup, proxy, nil, geoIPProviders...), nil
-}
-
 func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	proxy, err := loadConnectorProxyConfig(db, "")
-	if err != nil {
-		log.Printf("load connector proxy settings: %v", err)
-	}
-	return newHandler(db, webRoot, panelVersion, backupConfig, proxy, sender, geoIPProviders...)
-}
-
-func newHandler(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, proxy connectorProxyConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
 	relays := relaystore.NewService(db)
 	keyPath := ""
 	if backupConfig.DataDir != "" {
@@ -118,7 +93,6 @@ func newHandler(db *sql.DB, webRoot, panelVersion string, backupConfig BackupCon
 		relays:               relays,
 		subscriptions:        subscriptionstore.NewService(db, relays, keyPath),
 		remoteSubscriptions:  subscriptionstore.NewRemoteService(db, keyPath),
-		connectorProxy:       proxy,
 		orders:               listorder.NewStore(db),
 		webRoot:              webRoot,
 		panelVersion:         panelVersion,
@@ -154,9 +128,6 @@ func newHandler(db *sql.DB, webRoot, panelVersion string, backupConfig BackupCon
 	mux.HandleFunc("GET /api/admin/settings/mail", s.requireAdmin(s.getMailSettings))
 	mux.HandleFunc("PUT /api/admin/settings/mail", s.requireAdmin(s.saveMailSettings))
 	mux.HandleFunc("POST /api/admin/settings/mail/test", s.requireAdmin(s.testMailSettings))
-	mux.HandleFunc("GET /api/admin/settings/reverse-proxy", s.requireAdmin(s.getConnectorProxySettings))
-	mux.HandleFunc("PUT /api/admin/settings/reverse-proxy", s.requireAdmin(s.updateConnectorProxySettings))
-	mux.HandleFunc("GET /api/admin/settings/reverse-proxy/diagnostics", s.requireAdmin(s.inspectConnectorProxy))
 	mux.HandleFunc("GET /sub/{rest...}", s.getPublicSubscriptionPath)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)
@@ -179,11 +150,6 @@ func newHandler(db *sql.DB, webRoot, panelVersion string, backupConfig BackupCon
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/import", s.requireManager(s.importRemoteSubscription))
 	mux.HandleFunc("POST /api/remote-subscriptions/{id}/test", s.requireManager(s.testSavedRemoteSubscription))
 	mux.HandleFunc("GET /api/remote-subscriptions/{id}/nodes", s.requireManager(s.remoteSubscriptionNodes))
-	mux.HandleFunc("GET /api/local-connectors", s.requireManager(s.listLocalConnectors))
-	mux.HandleFunc("POST /api/local-connectors", s.requireManager(s.createLocalConnectorPairing))
-	mux.HandleFunc("DELETE /api/local-connectors/{id}", s.requireManager(s.revokeLocalConnector))
-	mux.HandleFunc("POST "+localconnector.PairPath, s.pairLocalConnector)
-	mux.HandleFunc("GET "+localconnector.SocketPath, s.connectLocalConnector)
 	mux.HandleFunc("GET /api/personal-subscriptions", s.requireManager(s.listPersonalSubscriptions))
 	mux.HandleFunc("POST /api/personal-subscriptions", s.requireManager(s.createPersonalSubscription))
 	mux.HandleFunc("GET /api/personal-subscriptions/sources", s.requireManager(s.listPersonalSubscriptionSources))

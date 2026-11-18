@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	mailservice "github.com/renaissance0721/vps-panel/panel/internal/mail"
-	"github.com/renaissance0721/vps-panel/panel/internal/subscriptionfetch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,15 +35,11 @@ const (
 	remoteRefreshTimeout = 2 * time.Minute
 	remoteRefreshLease   = 3 * time.Minute
 	MaxRemoteImportBytes = remoteSubscriptionMaxBytes
-	remoteRefreshServer  = "server"
-	RemoteRefreshLocal   = "local_connector"
 )
 
 type RemoteSource struct {
 	ID              int64      `json:"id"`
 	Mode            string     `json:"mode"`
-	RefreshMethod   string     `json:"refresh_method"`
-	ConnectorID     *int64     `json:"connector_id"`
 	Name            string     `json:"name"`
 	UserAgent       string     `json:"user_agent"`
 	Enabled         bool       `json:"enabled"`
@@ -71,8 +67,6 @@ type RemoteNode struct {
 
 type RemoteInput struct {
 	Mode            string `json:"mode"`
-	RefreshMethod   string `json:"refresh_method"`
-	ConnectorID     *int64 `json:"connector_id"`
 	Name            string `json:"name"`
 	URL             string `json:"url"`
 	UserAgent       string `json:"user_agent"`
@@ -95,27 +89,22 @@ type RemoteService struct {
 	db          *sql.DB
 	secrets     *mailservice.SecretStore
 	mailSecrets *mailservice.SecretStore
-	fetcher     *subscriptionfetch.Fetcher
+	fetcher     *remoteFetcher
 	now         func() time.Time
 	mu          sync.Mutex
 	activeMu    sync.Mutex
 	active      map[int64]bool
 	previewLast map[int64]time.Time
 	semaphore   chan struct{}
-	connectorMu sync.Mutex
-	connectors  map[int64]*remoteConnectorConnection
-	localJobs   sync.WaitGroup
-	stopping    bool
 }
 
 func NewRemoteService(db *sql.DB, keyPath string) *RemoteService {
 	return &RemoteService{db: db, secrets: mailservice.NewRemoteSubscriptionSecretStore(keyPath),
-		mailSecrets: mailservice.NewMailSecretStore(keyPath), fetcher: subscriptionfetch.New(), now: time.Now,
-		active: make(map[int64]bool), previewLast: make(map[int64]time.Time), semaphore: make(chan struct{}, 4),
-		connectors: make(map[int64]*remoteConnectorConnection)}
+		mailSecrets: mailservice.NewMailSecretStore(keyPath), fetcher: newRemoteFetcher(), now: time.Now,
+		active: make(map[int64]bool), previewLast: make(map[int64]time.Time), semaphore: make(chan struct{}, 4)}
 }
 
-const remoteSourceSelect = `SELECT s.id,s.source_mode,s.refresh_method,s.connector_id,s.name,s.user_agent,s.enabled,s.interval_seconds,
+const remoteSourceSelect = `SELECT s.id,s.source_mode,s.name,s.user_agent,s.enabled,s.interval_seconds,
 	s.last_attempt_at,s.last_success_at,s.last_error,s.warnings_json,
 	(SELECT COUNT(*) FROM remote_subscription_nodes n WHERE n.source_id=s.id),
 	s.upload,s.download,s.total,s.expire,s.refresh_lease_until FROM remote_subscription_sources s`
@@ -124,7 +113,7 @@ func scanRemoteSource(row rowScanner) (RemoteSource, error) {
 	var value RemoteSource
 	var attempt, success sql.NullInt64
 	var warnings string
-	err := row.Scan(&value.ID, &value.Mode, &value.RefreshMethod, &value.ConnectorID, &value.Name, &value.UserAgent, &value.Enabled, &value.IntervalSeconds,
+	err := row.Scan(&value.ID, &value.Mode, &value.Name, &value.UserAgent, &value.Enabled, &value.IntervalSeconds,
 		&attempt, &success, &value.LastError, &warnings, &value.NodeCount,
 		&value.Upload, &value.Download, &value.Total, &value.Expire, &value.leaseUntil)
 	if err != nil {
@@ -188,8 +177,6 @@ func (s *RemoteService) decorateStatus(value *RemoteSource) {
 	if !value.Refreshing && value.leaseUntil.Valid && value.LastError == "" {
 		if value.Mode == "manual" {
 			value.LastError = "上次导入中断，请重新导入"
-		} else if value.RefreshMethod == RemoteRefreshLocal {
-			value.LastError = "上次本地刷新中断，请重新点击立即刷新"
 		} else {
 			value.LastError = "上次刷新中断，等待重试"
 		}
@@ -215,7 +202,7 @@ func validRemoteInput(input RemoteInput, requireURL bool) bool {
 		return !requireURL
 	}
 	parsed, err := url.Parse(input.URL)
-	return err == nil && len(input.URL) <= 8192 && strings.TrimSpace(input.URL) == input.URL && subscriptionfetch.ValidateURL(parsed) == nil
+	return err == nil && len(input.URL) <= 8192 && strings.TrimSpace(input.URL) == input.URL && validateRemoteURL(parsed) == nil
 }
 
 // Verify the existing key before generating any ciphertext, including when the
@@ -253,9 +240,6 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 	if input.Mode == "" {
 		input.Mode = "url"
 	}
-	if input.RefreshMethod == "" {
-		input.RefreshMethod = remoteRefreshServer
-	}
 	if (input.Mode != "url" && input.Mode != "manual") || (input.Mode == "manual" && input.URL != "") || !validRemoteInput(input, input.Mode == "url") {
 		return RemoteSource{}, ErrRemoteInvalid
 	}
@@ -275,14 +259,9 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 		return RemoteSource{}, ErrRemoteKey
 	}
 	now := s.now().UTC().Unix()
-	s.connectorMu.Lock()
-	defer s.connectorMu.Unlock()
-	if err := s.validateConnectorAssignment(ctx, actor.UserID, input.Mode, input.RefreshMethod, input.ConnectorID); err != nil {
-		return RemoteSource{}, err
-	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO remote_subscription_sources
-		(owner_user_id,name,url_ciphertext,user_agent,enabled,interval_seconds,created_at,updated_at,source_mode,refresh_method,connector_id)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, actor.UserID, input.Name, secret, input.UserAgent, input.Enabled, input.IntervalSeconds, now, now, input.Mode, input.RefreshMethod, input.ConnectorID)
+		(owner_user_id,name,url_ciphertext,user_agent,enabled,interval_seconds,created_at,updated_at,source_mode)
+		VALUES(?,?,?,?,?,?,?,?,?)`, actor.UserID, input.Name, secret, input.UserAgent, input.Enabled, input.IntervalSeconds, now, now, input.Mode)
 	if err != nil {
 		return RemoteSource{}, err
 	}
@@ -294,8 +273,6 @@ func (s *RemoteService) Create(ctx context.Context, actor PersonalSubscriptionAc
 }
 
 func (s *RemoteService) Update(ctx context.Context, actor PersonalSubscriptionActor, id int64, input RemoteInput) (RemoteSource, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	current, err := s.Get(ctx, actor, id)
 	if err != nil {
 		return RemoteSource{}, err
@@ -306,6 +283,8 @@ func (s *RemoteService) Update(ctx context.Context, actor PersonalSubscriptionAc
 	if !validRemoteInput(input, false) {
 		return RemoteSource{}, ErrRemoteInvalid
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var secret string
 	if err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&secret); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -323,23 +302,10 @@ func (s *RemoteService) Update(ctx context.Context, actor PersonalSubscriptionAc
 		}
 		secret = values[0]
 	}
-	s.connectorMu.Lock()
-	defer s.connectorMu.Unlock()
-	changeMethod := input.RefreshMethod != ""
-	if changeMethod || input.ConnectorID != nil {
-		if err := s.validateConnectorAssignment(ctx, actor.UserID, current.Mode, input.RefreshMethod, input.ConnectorID); err != nil {
-			return RemoteSource{}, err
-		}
-	}
 	result, err := s.db.ExecContext(ctx, `UPDATE remote_subscription_sources SET name=?,url_ciphertext=?,user_agent=?,enabled=?,
-		interval_seconds=?,refresh_method=CASE WHEN ? THEN ? ELSE refresh_method END,
-		connector_id=CASE WHEN ? THEN ? ELSE connector_id END,
-		last_error=CASE WHEN ? AND cache_generation>0 THEN '订阅地址已更换，缓存仍来自上次成功刷新'
-			WHEN refresh_method='local_connector' AND refresh_claim<>'' THEN '机场订阅已修改，请重新刷新'
-			WHEN ? OR ? THEN '' ELSE last_error END,
+		interval_seconds=?,last_error=CASE WHEN ? AND cache_generation>0 THEN '订阅地址已更换，缓存仍来自上次成功刷新' WHEN ? THEN '' ELSE last_error END,
 		revision=revision+1,updated_at=? WHERE id=? AND owner_user_id=?`, input.Name, secret, input.UserAgent,
-		input.Enabled, input.IntervalSeconds, changeMethod, input.RefreshMethod, changeMethod, input.ConnectorID,
-		input.URL != "", input.URL != "", changeMethod && input.RefreshMethod != current.RefreshMethod, s.now().UTC().Unix(), id, actor.UserID)
+		input.Enabled, input.IntervalSeconds, input.URL != "", input.URL != "", s.now().UTC().Unix(), id, actor.UserID)
 	if err != nil {
 		return RemoteSource{}, err
 	}
@@ -578,6 +544,32 @@ func (s *RemoteService) Nodes(ctx context.Context, actor PersonalSubscriptionAct
 	return nodes, nil
 }
 
+func remoteMetadata(value string) (upload, download, total, expire *int64) {
+	for _, item := range strings.Split(value, ";") {
+		key, raw, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil || n < 0 {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "upload":
+			upload = &n
+		case "download":
+			download = &n
+		case "total":
+			total = &n
+		case "expire":
+			if n <= 253402300799 {
+				expire = &n
+			}
+		}
+	}
+	return
+}
+
 func remotePreview(parsed remoteParseResult, info, address string) RemotePreview {
 	result := RemotePreview{Nodes: make([]RemoteNode, 0, len(parsed.nodes)), Warnings: parsed.warnings, Usable: len(parsed.nodes) > 0}
 	if result.Warnings == nil {
@@ -587,7 +579,7 @@ func remotePreview(parsed remoteParseResult, info, address string) RemotePreview
 	for i, node := range parsed.nodes {
 		result.Nodes = append(result.Nodes, RemoteNode{Name: names[i], Protocol: node.protocol, Format: node.format, Position: i})
 	}
-	result.Upload, result.Download, result.Total, result.Expire = subscriptionfetch.Metadata(info)
+	result.Upload, result.Download, result.Total, result.Expire = remoteMetadata(info)
 	return result
 }
 
@@ -599,51 +591,36 @@ func (s *RemoteService) Test(ctx context.Context, actor PersonalSubscriptionActo
 	if !validRemoteInput(input, true) {
 		return RemotePreview{}, ErrRemoteInvalid
 	}
-	if err := s.beginRemotePreview(actor.UserID); err != nil {
-		return RemotePreview{}, err
-	}
-	defer func() { <-s.semaphore }()
-	fetched, err := s.fetcher.Fetch(ctx, rawURL, userAgent)
-	if err != nil {
-		return RemotePreview{}, err
-	}
-	return previewRemoteFetch(fetched, rawURL)
-}
-
-func (s *RemoteService) beginRemotePreview(ownerID int64) error {
 	s.mu.Lock()
-	if last := s.previewLast[ownerID]; !last.IsZero() && s.now().Sub(last) < remoteMinAttempt {
+	if last := s.previewLast[actor.UserID]; !last.IsZero() && s.now().Sub(last) < remoteMinAttempt {
 		s.mu.Unlock()
-		return ErrRemoteBusy
+		return RemotePreview{}, ErrRemoteBusy
 	}
-	s.previewLast[ownerID] = s.now()
+	s.previewLast[actor.UserID] = s.now()
 	s.mu.Unlock()
 	select {
 	case s.semaphore <- struct{}{}:
-		return nil
+		defer func() { <-s.semaphore }()
 	default:
-		return ErrRemoteBusy
+		return RemotePreview{}, ErrRemoteBusy
 	}
-}
-
-func previewRemoteFetch(fetched subscriptionfetch.Result, rawURL string) (RemotePreview, error) {
-	parsed, err := parseRemoteSubscription(fetched.Body)
+	fetched, err := s.fetcher.fetch(ctx, rawURL, userAgent)
+	if err != nil {
+		return RemotePreview{}, err
+	}
+	parsed, err := parseRemoteSubscription(fetched.body)
 	if err != nil && len(parsed.warnings) == 0 {
 		return RemotePreview{}, err
 	}
-	return remotePreview(parsed, fetched.SubscriptionInfo, rawURL), nil
+	return remotePreview(parsed, fetched.subscriptionInfo, rawURL), nil
 }
 
 func (s *RemoteService) TestSaved(ctx context.Context, actor PersonalSubscriptionActor, id int64, userAgent string) (RemotePreview, error) {
 	if validatePersonalActor(actor) != nil || id <= 0 {
 		return RemotePreview{}, ErrRemoteNotFound
 	}
-	var request remoteRefreshRequest
-	var mode, method string
-	var connectorID sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,source_mode,refresh_method,connector_id,revision,user_agent
-		FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).
-		Scan(&request.ciphertext, &mode, &method, &connectorID, &request.revision, &request.userAgent)
+	var ciphertext, mode string
+	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,source_mode FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&ciphertext, &mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RemotePreview{}, ErrRemoteNotFound
 	}
@@ -653,15 +630,11 @@ func (s *RemoteService) TestSaved(ctx context.Context, actor PersonalSubscriptio
 	if mode == "manual" {
 		return RemotePreview{}, ErrRemoteManual
 	}
-	request.address, err = s.secrets.Decrypt(request.ciphertext)
+	address, err := s.secrets.Decrypt(ciphertext)
 	if err != nil {
 		return RemotePreview{}, ErrRemoteKey
 	}
-	if method == RemoteRefreshLocal {
-		request.connectorID = connectorID.Int64
-		return s.testLocalConnector(ctx, actor, id, request)
-	}
-	return s.Test(ctx, actor, request.address, userAgent)
+	return s.Test(ctx, actor, address, userAgent)
 }
 
 func (s *RemoteService) Import(ctx context.Context, actor PersonalSubscriptionActor, id int64, body []byte) (RemoteSource, error) {
@@ -728,151 +701,109 @@ func (s *RemoteService) Import(ctx context.Context, actor PersonalSubscriptionAc
 		}
 		return RemoteSource{}, ErrRemoteBusy
 	}
-	defer s.clearRemoteClaim(actor.UserID, id, claim)
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_, _ = s.db.ExecContext(cleanup, `UPDATE remote_subscription_sources SET refresh_claim='',refresh_lease_until=NULL WHERE id=? AND owner_user_id=? AND refresh_claim=?`, id, actor.UserID, claim)
+	}()
 	return s.commitRemoteCache(ctx, actor, id, revision, claim, ciphertext, address, parsed, "")
 }
 
-type remoteRefreshRequest struct {
-	revision    int64
-	claim       string
-	ciphertext  string
-	address     string
-	userAgent   string
-	connectorID int64
-}
-
 func (s *RemoteService) Refresh(ctx context.Context, actor PersonalSubscriptionActor, id int64) (RemoteSource, error) {
-	ctx, cancel := context.WithTimeout(ctx, remoteRefreshTimeout)
-	defer cancel()
-	request, finish, err := s.beginRemoteRefresh(ctx, actor, id, remoteRefreshServer)
+	if validatePersonalActor(actor) != nil || id <= 0 {
+		return RemoteSource{}, ErrRemoteNotFound
+	}
+	value, err := s.Get(ctx, actor, id)
 	if err != nil {
 		return RemoteSource{}, err
 	}
-	defer finish()
-	fetched, err := s.fetcher.Fetch(ctx, request.address, request.userAgent)
-	return s.applyRemoteRefresh(ctx, actor, id, request, fetched, err)
-}
-
-func (s *RemoteService) beginRemoteRefresh(ctx context.Context, actor PersonalSubscriptionActor, id int64, method string) (remoteRefreshRequest, func(), error) {
-	var request remoteRefreshRequest
-	if validatePersonalActor(actor) != nil || id <= 0 {
-		return request, nil, ErrRemoteNotFound
+	if value.Mode == "manual" {
+		return RemoteSource{}, ErrRemoteManual
 	}
-	var savedMethod, mode string
-	var connectorID, lastAttempt sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT url_ciphertext,user_agent,revision,last_attempt_at,source_mode,refresh_method,connector_id
-		FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).
-		Scan(&request.ciphertext, &request.userAgent, &request.revision, &lastAttempt, &mode, &savedMethod, &connectorID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return request, nil, ErrRemoteNotFound
-	}
-	if err != nil {
-		return request, nil, err
-	}
-	if mode == "manual" {
-		return request, nil, ErrRemoteManual
-	}
-	if savedMethod != method {
-		return request, nil, ErrRemoteChanged
-	}
-	now := s.now().UTC().Unix()
-	if lastAttempt.Valid && now-lastAttempt.Int64 < int64(remoteMinAttempt.Seconds()) {
-		return request, nil, ErrRemoteBusy
-	}
-	if method == RemoteRefreshLocal {
-		request.connectorID = connectorID.Int64
-		if err := s.checkConnectorAvailable(request.connectorID); err != nil {
-			return request, nil, err
-		}
-	}
+	ctx, cancel := context.WithTimeout(ctx, remoteRefreshTimeout)
+	defer cancel()
 	s.activeMu.Lock()
 	if s.active[id] {
 		s.activeMu.Unlock()
-		return request, nil, ErrRemoteBusy
+		return RemoteSource{}, ErrRemoteBusy
 	}
 	select {
 	case s.semaphore <- struct{}{}:
 	default:
 		s.activeMu.Unlock()
-		return request, nil, ErrRemoteBusy
+		return RemoteSource{}, ErrRemoteBusy
 	}
 	s.active[id] = true
 	s.activeMu.Unlock()
-	release := func() {
+	defer func() {
 		s.activeMu.Lock()
 		delete(s.active, id)
 		s.activeMu.Unlock()
 		<-s.semaphore
-	}
-	var transferred bool
-	defer func() {
-		if !transferred {
-			release()
-		}
 	}()
 
+	var ciphertext, userAgent string
+	var revision int64
+	var lastAttempt sql.NullInt64
+	err = s.db.QueryRowContext(ctx, `SELECT url_ciphertext,user_agent,revision,last_attempt_at FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).
+		Scan(&ciphertext, &userAgent, &revision, &lastAttempt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RemoteSource{}, ErrRemoteNotFound
+	}
+	if err != nil {
+		return RemoteSource{}, err
+	}
+	now := s.now().UTC().Unix()
+	if lastAttempt.Valid && now-lastAttempt.Int64 < int64(remoteMinAttempt.Seconds()) {
+		return RemoteSource{}, ErrRemoteBusy
+	}
 	claimBytes := make([]byte, 16)
 	if _, err := rand.Read(claimBytes); err != nil {
-		return request, nil, errors.New("cannot create refresh claim")
+		return RemoteSource{}, errors.New("cannot create refresh claim")
 	}
-	request.claim = hex.EncodeToString(claimBytes)
+	claim := hex.EncodeToString(claimBytes)
 	result, err := s.db.ExecContext(ctx, `UPDATE remote_subscription_sources SET last_attempt_at=?,last_error='',refresh_claim=?,refresh_lease_until=?
 		WHERE id=? AND owner_user_id=? AND revision=? AND (last_attempt_at IS NULL OR last_attempt_at<=?)
-		AND (refresh_lease_until IS NULL OR refresh_lease_until<=?)`, now, request.claim, now+int64(remoteRefreshLease.Seconds()), id, actor.UserID, request.revision,
+		AND (refresh_lease_until IS NULL OR refresh_lease_until<=?)`, now, claim, now+int64(remoteRefreshLease.Seconds()), id, actor.UserID, revision,
 		now-int64(remoteMinAttempt.Seconds()), now)
 	if err != nil {
-		return request, nil, err
+		return RemoteSource{}, err
 	}
 	if n, _ := result.RowsAffected(); n != 1 {
 		var currentRevision int64
 		err := s.db.QueryRowContext(ctx, `SELECT revision FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&currentRevision)
 		if errors.Is(err, sql.ErrNoRows) {
-			return request, nil, ErrRemoteNotFound
+			return RemoteSource{}, ErrRemoteNotFound
 		}
 		if err != nil {
-			return request, nil, err
+			return RemoteSource{}, err
 		}
-		if currentRevision != request.revision {
-			return request, nil, ErrRemoteChanged
+		if currentRevision != revision {
+			return RemoteSource{}, ErrRemoteChanged
 		}
-		return request, nil, ErrRemoteBusy
+		return RemoteSource{}, ErrRemoteBusy
 	}
-	finish := func() {
-		defer release()
-		s.clearRemoteClaim(actor.UserID, id, request.claim)
-	}
-	request.address, err = s.secrets.Decrypt(request.ciphertext)
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_, _ = s.db.ExecContext(cleanup, `UPDATE remote_subscription_sources SET refresh_claim='',refresh_lease_until=NULL WHERE id=? AND owner_user_id=? AND refresh_claim=?`, id, actor.UserID, claim)
+	}()
+	address, err := s.secrets.Decrypt(ciphertext)
 	if err != nil {
-		err = s.refreshFailed(ctx, actor.UserID, id, request.revision, request.claim, ErrRemoteKey)
-		s.clearRemoteClaim(actor.UserID, id, request.claim)
-		return request, nil, err
+		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, revision, claim, ErrRemoteKey)
 	}
-	transferred = true
-	return request, finish, nil
-}
-
-func (s *RemoteService) clearRemoteClaim(ownerID, id int64, claim string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, _ = s.db.ExecContext(ctx, `UPDATE remote_subscription_sources SET refresh_claim='',refresh_lease_until=NULL WHERE id=? AND owner_user_id=? AND refresh_claim=?`, id, ownerID, claim)
-}
-
-func (s *RemoteService) applyRemoteRefresh(ctx context.Context, actor PersonalSubscriptionActor, id int64, request remoteRefreshRequest, fetched subscriptionfetch.Result, err error) (RemoteSource, error) {
+	fetched, err := s.fetcher.fetch(ctx, address, userAgent)
 	if err != nil {
-		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, request.revision, request.claim, err)
+		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, revision, claim, err)
 	}
-	parsed, err := parseRemoteSubscription(fetched.Body)
+	parsed, err := parseRemoteSubscription(fetched.body)
 	if err != nil {
-		return RemoteSource{}, s.refreshFailedWithWarnings(ctx, actor.UserID, id, request.revision, request.claim, err, parsed.warnings)
+		return RemoteSource{}, s.refreshFailedWithWarnings(ctx, actor.UserID, id, revision, claim, err, parsed.warnings)
 	}
 	if len(parsed.nodes) == 0 {
-		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, request.revision, request.claim, errRemoteContent)
+		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, revision, claim, errRemoteContent)
 	}
-	value, err := s.commitRemoteCache(ctx, actor, id, request.revision, request.claim, request.ciphertext, request.address, parsed, fetched.SubscriptionInfo)
-	if request.connectorID != 0 && err != nil && !errors.Is(err, ErrRemoteChanged) && !errors.Is(err, ErrRemoteKey) {
-		return RemoteSource{}, s.refreshFailed(ctx, actor.UserID, id, request.revision, request.claim, err)
-	}
-	return value, err
+	return s.commitRemoteCache(ctx, actor, id, revision, claim, ciphertext, address, parsed, fetched.subscriptionInfo)
 }
 
 // Reconcile old and new identities inside the cache replacement transaction.
@@ -1021,7 +952,7 @@ func (s *RemoteService) commitRemoteCache(ctx context.Context, actor PersonalSub
 	if err != nil {
 		return RemoteSource{}, err
 	}
-	upload, download, total, expire := subscriptionfetch.Metadata(info)
+	upload, download, total, expire := remoteMetadata(info)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RemoteSource{}, err
@@ -1078,15 +1009,25 @@ func (s *RemoteService) refreshFailed(ctx context.Context, ownerID, id, revision
 }
 
 func (s *RemoteService) refreshFailedWithWarnings(ctx context.Context, ownerID, id, revision int64, claim string, cause error, warnings []string) error {
-	safeCause := errors.New("远程订阅刷新失败")
-	for _, candidate := range []error{ErrRemoteKey, errRemoteURL, errRemoteFetch, errRemoteStatus, errRemoteTooLarge, errRemoteContent,
-		errRemoteTimeout, ErrLocalConnectorOffline, ErrLocalConnectorTimeout, errLocalFetch, errLocalStatus, ErrRemoteBusy, ErrRemoteChanged} {
-		if errors.Is(cause, candidate) {
-			safeCause = candidate
-			break
-		}
+	message := "远程订阅刷新失败"
+	safeCause := errors.New(message)
+	switch {
+	case errors.Is(cause, ErrRemoteKey):
+		safeCause = ErrRemoteKey
+	case errors.Is(cause, errRemoteURL):
+		safeCause = errRemoteURL
+	case errors.Is(cause, errRemoteFetch):
+		safeCause = errRemoteFetch
+	case errors.Is(cause, errRemoteTimeout):
+		safeCause = errRemoteTimeout
+	case errors.Is(cause, errRemoteStatus):
+		safeCause = errRemoteStatus
+	case errors.Is(cause, errRemoteTooLarge):
+		safeCause = errRemoteTooLarge
+	case errors.Is(cause, errRemoteContent):
+		safeCause = errRemoteContent
 	}
-	message := safeCause.Error()
+	message = safeCause.Error()
 	// A cancelled client request must not prevent recording a sanitized status.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -1112,7 +1053,7 @@ func (s *RemoteService) refreshFailedWithWarnings(ctx context.Context, ownerID, 
 
 // RemoteFailureMessage returns only fixed, non-sensitive upstream errors.
 func RemoteFailureMessage(err error) (string, bool) {
-	for _, candidate := range []error{errRemoteURL, errRemoteFetch, errRemoteStatus, errRemoteTooLarge, errRemoteContent, errRemoteTimeout, ErrLocalConnectorTimeout, errLocalFetch, errLocalStatus} {
+	for _, candidate := range []error{errRemoteURL, errRemoteFetch, errRemoteStatus, errRemoteTooLarge, errRemoteContent, errRemoteTimeout} {
 		if errors.Is(err, candidate) {
 			return candidate.Error(), true
 		}
@@ -1123,7 +1064,6 @@ func RemoteFailureMessage(err error) (string, bool) {
 // Run refreshes due sources with a bounded worker pool; ordinary public
 // subscription requests never perform remote network I/O.
 func (s *RemoteService) Run(ctx context.Context) {
-	defer s.stopLocalConnectors()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -1139,7 +1079,7 @@ func (s *RemoteService) Run(ctx context.Context) {
 func (s *RemoteService) refreshDue(ctx context.Context) {
 	now := s.now().UTC().Unix()
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id,s.owner_user_id,u.role FROM remote_subscription_sources s
-		JOIN users u ON u.id=s.owner_user_id WHERE s.enabled=1 AND s.source_mode='url' AND s.refresh_method='server' AND u.role IN ('admin','vip')
+		JOIN users u ON u.id=s.owner_user_id WHERE s.enabled=1 AND s.source_mode='url' AND u.role IN ('admin','vip')
 		AND ((s.refresh_lease_until IS NOT NULL AND s.refresh_lease_until<=?) OR
 		(s.refresh_lease_until IS NULL AND (s.last_attempt_at IS NULL OR s.last_attempt_at+s.interval_seconds<=?)))
 		ORDER BY COALESCE(s.last_attempt_at,0),s.id LIMIT 64`, now, now)
@@ -1174,7 +1114,7 @@ func (s *RemoteService) refreshDue(ctx context.Context) {
 		go func() {
 			defer workers.Done()
 			for item := range queue {
-				if _, err := s.Refresh(ctx, item.actor, item.id); err != nil && !errors.Is(err, ErrRemoteBusy) && !errors.Is(err, ErrRemoteChanged) && ctx.Err() == nil {
+				if _, err := s.Refresh(ctx, item.actor, item.id); err != nil && !errors.Is(err, ErrRemoteBusy) && ctx.Err() == nil {
 					log.Printf("remote subscription refresh failed source_id=%d", item.id)
 				}
 			}

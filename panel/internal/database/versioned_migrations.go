@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 44
+const LatestSchemaVersion = 45
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -75,6 +75,26 @@ var migrations = []migration{
 	{version: 42, name: "socks5_external_nodes", up: migrateSOCKS5ExternalNodes, disableForeignKeys: true},
 	{version: 43, name: "remote_subscription_connectors", up: addRemoteSubscriptionConnectors},
 	{version: 44, name: "connector_proxy_settings", up: createConnectorProxySettings},
+	{version: 45, name: "remove_subscription_connectors", up: removeSubscriptionConnectors},
+}
+
+func removeSubscriptionConnectors(ctx context.Context, tx *sql.Tx) error {
+	// Keep the existing source and node rows, including the encrypted URL.
+	// Manual mode keeps provider URLs outside the network refresh scheduler.
+	for _, statement := range []string{
+		`UPDATE remote_subscription_sources SET source_mode='manual', refresh_method='server',
+			connector_id=NULL, refresh_claim='', refresh_lease_until=NULL, last_error=''
+			WHERE refresh_method='local_connector'`,
+		`ALTER TABLE remote_subscription_sources DROP COLUMN connector_id`,
+		`ALTER TABLE remote_subscription_sources DROP COLUMN refresh_method`,
+		`DROP TABLE remote_subscription_connectors`,
+		`DROP TABLE connector_proxy_settings`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func createConnectorProxySettings(ctx context.Context, tx *sql.Tx) error {

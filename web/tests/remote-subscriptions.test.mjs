@@ -15,14 +15,13 @@ before(async () => {
 })
 after(async () => { globalThis.fetch = originalFetch; globalThis.window = originalWindow; await loader?.close() })
 
-async function render(populate = () => {}, props = {}) {
+async function render(populate = () => {}) {
   const setup = View.setup; let state
   View.setup = (props, context) => { state = setup(props, context); populate(state); return state }
-  try { return { html: await renderToString(createSSRApp(View, props)), state } } finally { View.setup = setup }
+  try { return { html: await renderToString(createSSRApp(View)), state } } finally { View.setup = setup }
 }
 
-const source = { id: 1, mode: 'url', refresh_method: 'server', connector_id: null, name: 'Airport', user_agent: 'UA', enabled: true, interval_seconds: 300, last_attempt_at: null, last_success_at: null, last_error: '刷新失败', warnings: ['不支持的节点'], node_count: 1, upload: 10, download: 20, total: 100, expire: null, refreshing: false }
-const connector = { id: 4, name: 'Windows-PC', status: 'online', last_heartbeat: '2026-11-18T01:00:00Z', pair_expires_at: null }
+const source = { id: 1, name: 'Airport', user_agent: 'UA', enabled: true, interval_seconds: 300, last_attempt_at: null, last_success_at: null, last_error: '刷新失败', warnings: ['不支持的节点'], node_count: 1, upload: 10, download: 20, total: 100, expire: null, refreshing: false }
 const json = value => new Response(JSON.stringify(value), { status: 200 })
 
 test('机场订阅展示状态、节点数量、错误及操作', async () => {
@@ -34,7 +33,6 @@ test('编辑保留已保存地址，替换地址和测试使用当前表单', as
   const calls = []
   globalThis.fetch = async (path, options = {}) => {
     calls.push([path, options.method, options.body && JSON.parse(options.body)])
-    if (path === '/api/local-connectors') return json({ connectors: [] })
     return json(path.endsWith('/test') ? { preview: { usable: true, nodes: [{ name: 'Node', protocol: 'trojan' }], warnings: [] } } : { sources: [source] })
   }
   const { state } = await render()
@@ -46,7 +44,7 @@ test('编辑保留已保存地址，替换地址和测试使用当前表单', as
   assert.equal(state.preview.value.nodes[0].protocol, 'trojan')
   state.url.value = 'https://example.com/?token=synthetic'
   await state.save()
-  assert.deepEqual(calls[1], ['/api/remote-subscriptions/1', 'PUT', { name: 'Airport', url: 'https://example.com/?token=synthetic', user_agent: 'New UA', enabled: true, interval_seconds: 300, refresh_method: 'server', connector_id: null }])
+  assert.deepEqual(calls[1], ['/api/remote-subscriptions/1', 'PUT', { name: 'Airport', url: 'https://example.com/?token=synthetic', user_agent: 'New UA', enabled: true, interval_seconds: 300 }])
   assert.equal(state.url.value, '')
 })
 
@@ -55,7 +53,6 @@ test('节点预览和删除使用对应来源接口', async () => {
   globalThis.window = { confirm: () => true }
   globalThis.fetch = async (path, options = {}) => {
     calls.push([path, options.method])
-    if (path === '/api/local-connectors') return json({ connectors: [] })
     return json(path.endsWith('/nodes') ? { nodes: [{ id: 9, name: 'Node', protocol: 'ss', format: 'uri', position: 0 }] } : { sources: [] })
   }
   const { state } = await render()
@@ -70,7 +67,6 @@ test('手动来源可无地址创建并导入文件，显示结果和解析警�
   const calls = []
   globalThis.fetch = async (path, options = {}) => {
     calls.push([path, options])
-    if (path === '/api/local-connectors') return json({ connectors: [] })
     if (path.endsWith('/import')) return json({ source: manual })
     if (options.method === 'POST') return json({ source: manual })
     return json({ sources: [manual] })
@@ -78,7 +74,7 @@ test('手动来源可无地址创建并导入文件，显示结果和解析警�
   const { state } = await render()
   state.openForm(); state.url.value = 'https://example.com/?token=synthetic'; state.userAgent.value = 'Previous'; state.mode.value = 'manual'; state.name.value = 'Manual'
   await state.save()
-  assert.deepEqual(JSON.parse(calls[0][1].body), { name: 'Manual', url: '', user_agent: '', enabled: true, interval_seconds: 3600, mode: 'manual', refresh_method: 'server', connector_id: null })
+  assert.deepEqual(JSON.parse(calls[0][1].body), { name: 'Manual', url: '', user_agent: '', enabled: true, interval_seconds: 3600, mode: 'manual' })
   const file = new File(['trojan://synthetic@example.com:443#Node'], 'manual.txt', { type: 'text/plain' })
   const input = { files: [file], value: 'selected' }
   await state.importFile(manual, { target: input })
@@ -106,83 +102,4 @@ test('文件导入拒绝空文件、超大文件并显示服务端错误', async
   await state.importFile(source, { target: { files: [new File(['bad'], 'bad.txt')], value: 'selected' } })
   assert.equal(calls, 1)
   assert.equal(state.error.value, '文件内容无效或没有可用节点')
-})
-
-test('切换本地刷新保留原地址，保存前不进行网络测试', async () => {
-  const calls = []
-  const local = { ...source, connector_id: connector.id, refresh_method: 'local_connector' }
-  globalThis.fetch = async (path, options = {}) => {
-    calls.push([path, options])
-    if (path === '/api/local-connectors') return json({ connectors: [connector] })
-    if (path.endsWith('/test')) return json({ preview: { usable: true, nodes: [], warnings: [] } })
-    return json({ sources: [local] })
-  }
-  const { state } = await render()
-  await state.load()
-  state.openForm(source)
-  state.refreshMethod.value = 'local_connector'
-  state.connectorID.value = connector.id
-  assert.equal(state.canTest.value, false)
-  await state.testSource()
-  assert.ok(calls.every(([path]) => !path.endsWith('/test')))
-  await state.save()
-  const [, put] = calls.find(([path, options]) => path === '/api/remote-subscriptions/1' && options.method === 'PUT')
-  assert.deepEqual(JSON.parse(put.body), { name: 'Airport', url: '', user_agent: 'UA', enabled: true, interval_seconds: 300, refresh_method: 'local_connector', connector_id: connector.id })
-  state.openForm(local)
-  await state.testSource()
-  assert.equal(calls.at(-1)[0], '/api/remote-subscriptions/1/test')
-  assert.ok(state.preview.value.usable)
-})
-
-test('离线时禁用立即刷新，在线时展示任务进度并自动轮询', async () => {
-  const local = { ...source, connector_id: connector.id, refresh_method: 'local_connector', refreshing: true, last_error: '' }
-  const populate = (state, status) => {
-    state.loading.value = false
-    state.sources.value = [local]
-    state.connectors.value = [{ ...connector, status }]
-    state.connectorStatusKnown.value = true
-  }
-  const { html: online } = await render(state => populate(state, 'online'))
-  assert.match(online, /Windows-PC/)
-  assert.match(online, /最近心跳/)
-  assert.match(online, /正在通过本地连接器更新/)
-  local.refreshing = false
-  const { html: offline } = await render(state => populate(state, 'offline'))
-  assert.match(offline, /<button[^>]+disabled[^>]*>立即刷新/)
-  assert.match(offline, /请在 Windows 上运行连接器/)
-  const timers = []
-  globalThis.window = { setTimeout: (callback, delay) => { timers.push({ callback, delay }); return 1 }, clearTimeout: () => {} }
-  let refreshed = false
-  globalThis.fetch = async (path) => {
-    if (path.endsWith('/refresh')) {
-      refreshed = true
-      return new Response('{"accepted":true}', { status: 202 })
-    }
-    if (path === '/api/local-connectors') return json({ connectors: [connector] })
-    return json({ sources: [{ ...local, refreshing: refreshed }] })
-  }
-  const { state } = await render()
-  await state.refresh(local)
-  assert.ok(refreshed)
-  assert.equal(state.sources.value[0].refreshing, true)
-  assert.equal(timers[0].delay, 1000)
-})
-
-test('仅 HTTPS 管理员遇到连接器 HTTPS 拒绝时提供设置入口', async () => {
-  for (const [role, protocol, code, expected] of [
-    ['admin', 'https:', 'connector_https_required', true],
-    ['vip', 'https:', 'connector_https_required', false],
-    ['admin', 'http:', 'connector_https_required', false],
-    ['admin', 'https:', '', false],
-  ]) {
-    globalThis.window = { location: { protocol } }
-    globalThis.fetch = async () => new Response(JSON.stringify({ error: '本地连接器需要通过 HTTPS 访问 Panel', code }), { status: 403 })
-    const { state } = await render(undefined, { role })
-    state.openPairing()
-    state.pairName.value = 'Desktop'
-    await state.createPairing()
-    assert.equal(state.pairProxyHelp.value, expected)
-    assert.equal(state.pairing.value, null)
-    assert.match(state.pairError.value, /HTTPS/)
-  }
 })

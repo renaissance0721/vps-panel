@@ -174,9 +174,6 @@ assert_config "$config" PANEL_LISTEN_ADDR 127.0.0.1:8080
 assert_exists "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
 grep -Fq 'reverse_proxy 127.0.0.1:8080' "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy" || \
   fail 'Caddy upstream was not the Panel listen endpoint'
-for directive in 'header_up X-Forwarded-Proto {http.request.scheme}' 'header_up -X-Forwarded-Scheme' 'header_up -Forwarded'; do
-  grep -Fq "$directive" "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy" || fail "missing Caddy directive: $directive"
-done
 printf 'ok: clean Caddy install uses the private listen default\n'
 
 new_fixture
@@ -187,7 +184,6 @@ config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
 assert_config "$config" PANEL_DOMAIN www.yurucamp.vip
 assert_config "$config" PANEL_PROXY_MODE external
 assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
-assert_log_absent "$config" PANEL_CONNECTOR_TRUSTED_PROXY_IPS
 assert_absent "${PANEL_TEST_ROOT}/etc/caddy/vps-panel.caddy"
 assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
 assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
@@ -198,8 +194,6 @@ new_fixture
 mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"
 printf 'user-owned-caddy\n' >"${PANEL_TEST_ROOT}/etc/caddy/Caddyfile"
 run_installer --domain www.yurucamp.vip --proxy-mode external --listen-addr 0.0.0.0:8080
-config="${PANEL_TEST_ROOT}/etc/vps-panel/panel/environment"
-printf '%s\n' 'PANEL_CONNECTOR_TRUSTED_PROXY_IPS="172.30.50.2, fd00::2"' >>"$config"
 printf 'old-db\n' >"${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db"
 make_archive version-two
 export PANEL_TEST_MUTATE_DB_ON_START=1
@@ -213,11 +207,10 @@ assert_content "${PANEL_TEST_ROOT}/var/lib/vps-panel/panel/panel.db" new-db
 assert_config "$config" PANEL_DOMAIN www.yurucamp.vip
 assert_config "$config" PANEL_PROXY_MODE external
 assert_config "$config" PANEL_LISTEN_ADDR 0.0.0.0:8080
-assert_config "$config" PANEL_CONNECTOR_TRUSTED_PROXY_IPS '"172.30.50.2, fd00::2"'
 assert_content "${PANEL_TEST_ROOT}/etc/caddy/Caddyfile" user-owned-caddy
 assert_log_absent "$PANEL_TEST_SYSTEMCTL_LOG" caddy.service
 [[ ! -s "$PANEL_TEST_CADDY_LOG" ]] || fail 'external update invoked Caddy'
-printf 'ok: external update preserves domain, listener, proxy mode, and trusted connector peers\n'
+printf 'ok: external update preserves domain, listen address, and proxy mode\n'
 
 new_fixture
 mkdir -p "${PANEL_TEST_ROOT}/etc/caddy"

@@ -2,9 +2,10 @@ package api
 
 import (
 	"errors"
-	"net"
+	"fmt"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/coder/websocket"
@@ -13,19 +14,51 @@ import (
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
-func requireConnectorHTTPS(w http.ResponseWriter, r *http.Request) bool {
+// ParseConnectorTrustedProxyIPs accepts exact peer addresses. A bad entry
+// invalidates the whole list so a mistyped configuration cannot be used.
+func ParseConnectorTrustedProxyIPs(value string) ([]netip.Addr, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var ips []netip.Addr
+	for index, entry := range strings.Split(value, ",") {
+		ip, err := netip.ParseAddr(strings.TrimSpace(entry))
+		ip = ip.Unmap()
+		if err != nil || ip.Zone() != "" || ip.IsUnspecified() || ip.IsMulticast() || ip == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return nil, fmt.Errorf("entry %d must be a single unicast IP address", index+1)
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+func (s *server) requireConnectorHTTPS(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.TLS != nil {
 		return true
 	}
-	// The native Caddy deployment terminates TLS on the same host.
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	ip, _ := netip.ParseAddr(host)
-	if ip.Unmap().IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	// Only the immediate TCP peer can attest to TLS termination.
+	peer := requestPeerIP(r.RemoteAddr).Unmap()
+	if peer.IsValid() && (peer.IsLoopback() || slices.Contains(s.connectorProxyIPs, peer)) && connectorForwardedHTTPS(r.Header) {
 		return true
 	}
 	writeError(w, http.StatusForbidden, "本地连接器需要通过 HTTPS 访问 Panel")
 	return false
+}
+
+func connectorForwardedHTTPS(header http.Header) bool {
+	isHTTPS := func(values []string) bool {
+		if len(values) != 1 {
+			return false
+		}
+		scheme := strings.Trim(values[0], " \t")
+		return len(scheme) == len("https") && strings.EqualFold(scheme, "https")
+	}
+	// Use a single scheme assertion. NPM also emits X-Forwarded-Scheme
+	// and it must agree whenever present.
+	scheme := header.Values("X-Forwarded-Scheme")
+	return isHTTPS(header.Values("X-Forwarded-Proto")) &&
+		(len(scheme) == 0 || isHTTPS(scheme)) && len(header.Values("Forwarded")) == 0
 }
 
 func (s *server) listLocalConnectors(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -39,7 +72,7 @@ func (s *server) listLocalConnectors(w http.ResponseWriter, r *http.Request, use
 }
 
 func (s *server) createLocalConnectorPairing(w http.ResponseWriter, r *http.Request, user auth.User) {
-	if !requireConnectorHTTPS(w, r) {
+	if !s.requireConnectorHTTPS(w, r) {
 		return
 	}
 	var input struct {
@@ -71,7 +104,7 @@ func (s *server) revokeLocalConnector(w http.ResponseWriter, r *http.Request, us
 }
 
 func (s *server) pairLocalConnector(w http.ResponseWriter, r *http.Request) {
-	if !requireConnectorHTTPS(w, r) {
+	if !s.requireConnectorHTTPS(w, r) {
 		return
 	}
 	code := connectorBearer(r)
@@ -88,7 +121,7 @@ func (s *server) pairLocalConnector(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) connectLocalConnector(w http.ResponseWriter, r *http.Request) {
-	if !requireConnectorHTTPS(w, r) {
+	if !s.requireConnectorHTTPS(w, r) {
 		return
 	}
 	credential := connectorBearer(r)

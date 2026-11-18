@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/netip"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +20,185 @@ import (
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 	"github.com/renaissance0721/vps-panel/panel/internal/token"
 )
+
+func TestParseConnectorTrustedProxyIPs(t *testing.T) {
+	got, err := ParseConnectorTrustedProxyIPs(" 172.30.50.2, fd00::2, ::ffff:192.0.2.2 ")
+	want := []netip.Addr{netip.MustParseAddr("172.30.50.2"), netip.MustParseAddr("fd00::2"), netip.MustParseAddr("192.0.2.2")}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("parsed %v, want %v, error %v", got, want, err)
+	}
+	if got, err := ParseConnectorTrustedProxyIPs(""); err != nil || len(got) != 0 {
+		t.Fatalf("empty config: %v, %v", got, err)
+	}
+	for _, entry := range []string{"", "*", "172.30.0.0/16", "npm", "172.30.50.2:8080", "fe80::1%eth0", "0.0.0.0", "::", "224.0.0.1", "255.255.255.255"} {
+		if got, err := ParseConnectorTrustedProxyIPs("172.30.50.2," + entry); err == nil || len(got) != 0 {
+			t.Errorf("invalid list entry %q returned %v, %v", entry, got, err)
+		}
+	}
+}
+
+func TestConnectorHTTPSForwardedHeaders(t *testing.T) {
+	trusted := []netip.Addr{netip.MustParseAddr("172.30.50.2"), netip.MustParseAddr("fd00::2")}
+	tests := []struct {
+		name, peer               string
+		directTLS, defaultConfig bool
+		proto, scheme, forwarded []string
+		want                     bool
+	}{
+		{name: "direct TLS uses transport", directTLS: true, peer: "198.51.100.1:9000", proto: []string{"http, https"}, want: true},
+		{name: "loopback IPv4", defaultConfig: true, peer: "127.0.0.1:9000", proto: []string{"https"}, want: true},
+		{name: "loopback IPv6", defaultConfig: true, peer: "[::1]:9000", proto: []string{"https"}, want: true},
+		{name: "trusted Docker", peer: "172.30.50.2:9000", proto: []string{"https"}, scheme: []string{"https"}, want: true},
+		{name: "trusted IPv6", peer: "[fd00::2]:9000", proto: []string{"HTTPS"}, want: true},
+		{name: "mapped IPv4", peer: "[::ffff:172.30.50.2]:9000", proto: []string{"https"}, want: true},
+		{name: "Docker disabled by default", defaultConfig: true, peer: "172.30.50.2:9000", proto: []string{"https"}},
+		{name: "unlisted Docker neighbor", peer: "172.30.50.3:9000", proto: []string{"https"}},
+		{name: "internet spoofing", peer: "198.51.100.1:9000", proto: []string{"https"}},
+		{name: "invalid peer", peer: "invalid-peer", proto: []string{"https"}},
+		{name: "trusted proxy used HTTP", peer: "172.30.50.2:9000", proto: []string{"http"}},
+		{name: "missing proto", peer: "172.30.50.2:9000", scheme: []string{"https"}},
+		{name: "empty proto", peer: "172.30.50.2:9000", proto: []string{""}},
+		{name: "invalid scheme token", peer: "172.30.50.2:9000", proto: []string{"https://"}},
+		{name: "non-ASCII scheme token", peer: "172.30.50.2:9000", proto: []string{"http\u017f"}},
+		{name: "comma separated proto", peer: "172.30.50.2:9000", proto: []string{"https, http"}},
+		{name: "duplicate proto", peer: "172.30.50.2:9000", proto: []string{"https", "https"}},
+		{name: "conflicting proto fields", peer: "172.30.50.2:9000", proto: []string{"https", "http"}},
+		{name: "conflicting forwarded scheme", peer: "172.30.50.2:9000", proto: []string{"https"}, scheme: []string{"http"}},
+		{name: "duplicate forwarded scheme", peer: "172.30.50.2:9000", proto: []string{"https"}, scheme: []string{"https", "https"}},
+		{name: "conflicting Forwarded", peer: "172.30.50.2:9000", proto: []string{"https"}, forwarded: []string{"proto=http"}},
+		{name: "malformed Forwarded on loopback", peer: "127.0.0.1:9000", proto: []string{"https"}, forwarded: []string{"proto="}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := &server{}
+			if !test.defaultConfig {
+				s.connectorProxyIPs = trusted
+			}
+			target := "http://panel.example"
+			if test.directTLS {
+				target = "https://panel.example"
+			}
+			req := httptest.NewRequest(http.MethodPost, target+localconnector.PairPath, nil)
+			req.RemoteAddr = test.peer
+			req.Header.Set("X-Forwarded-For", "172.30.50.2")
+			req.Header.Set("X-Real-IP", "127.0.0.1")
+			for name, values := range map[string][]string{
+				"X-Forwarded-Proto": test.proto, "X-Forwarded-Scheme": test.scheme, "Forwarded": test.forwarded,
+			} {
+				for _, value := range values {
+					req.Header.Add(name, value)
+				}
+			}
+			response := httptest.NewRecorder()
+			if got := s.requireConnectorHTTPS(response, req); got != test.want {
+				t.Fatalf("HTTPS allowed = %v, want %v", got, test.want)
+			}
+			if (!test.want && response.Code != http.StatusForbidden) || response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("response = %d, headers = %v", response.Code, response.Header())
+			}
+		})
+	}
+}
+
+func TestLocalConnectorBehindTrustedTLSProxy(t *testing.T) {
+	db, _, admin, _ := setupAccountTest(t)
+	defer db.Close()
+	ips, err := ParseConnectorTrustedProxyIPs("172.30.50.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithConfig(db, t.TempDir(), "dev", HandlerConfig{ConnectorTrustedProxyIPs: ips})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Model the Docker bridge peer using real HTTP and WebSocket traffic.
+		r.RemoteAddr = "172.30.50.2:9000"
+		handler.ServeHTTP(w, r)
+	}))
+	defer backend.Close()
+	upstream, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(req *httputil.ProxyRequest) {
+		req.SetURL(upstream)
+		req.Out.Host = req.In.Host
+		req.SetXForwarded()
+		req.Out.Header.Set("X-Forwarded-Scheme", req.Out.Header.Get("X-Forwarded-Proto"))
+	}}
+	secure := httptest.NewTLSServer(proxy)
+	defer secure.Close()
+	insecure := httptest.NewServer(proxy)
+	defer insecure.Close()
+
+	// Client-supplied headers are replaced by the proxy's own TLS state.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	post := func(front *httptest.Server, path, body, bearer string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, front.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Add("X-Forwarded-Proto", "http")
+		req.Header.Set("X-Forwarded-Scheme", "http")
+		req.Header.Set("Forwarded", "proto=http")
+		if bearer == "" {
+			req.AddCookie(admin)
+			req.Header.Set("Origin", front.URL)
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		response, err := front.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { response.Body.Close() })
+		return response
+	}
+	pairing := post(secure, "/api/local-connectors", `{"name":"Docker test"}`, "")
+	var pending struct {
+		Code string `json:"pairing_code"`
+	}
+	if pairing.StatusCode != 201 || json.NewDecoder(pairing.Body).Decode(&pending) != nil || !localconnector.ValidToken(pending.Code) {
+		t.Fatalf("proxied pairing creation: HTTP %d", pairing.StatusCode)
+	}
+	if response := post(insecure, localconnector.PairPath, "", pending.Code); response.StatusCode != 403 {
+		t.Fatalf("HTTP header spoofing: got %d", response.StatusCode)
+	}
+	redemption := post(secure, localconnector.PairPath, "", pending.Code)
+	var paired localconnector.PairResponse
+	if redemption.StatusCode != 200 || json.NewDecoder(redemption.Body).Decode(&paired) != nil || !localconnector.ValidToken(paired.Credential) {
+		t.Fatalf("proxied pairing redemption: HTTP %d", redemption.StatusCode)
+	}
+	wss := "wss" + strings.TrimPrefix(secure.URL, "https") + localconnector.SocketPath
+	ws := "ws" + strings.TrimPrefix(insecure.URL, "http") + localconnector.SocketPath
+	for _, test := range []struct {
+		name, endpoint, credential, origin string
+		want                               int
+	}{
+		{"plaintext spoof", ws, paired.Credential, "", 403},
+		{"pairing code", wss, pending.Code, "", 401},
+		{"browser origin", wss, paired.Credential, secure.URL, 403},
+		{"authenticated WSS", wss, paired.Credential, "", 101},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			headers := http.Header{"Authorization": {"Bearer " + test.credential}, "X-Forwarded-Proto": {"https"}}
+			if test.origin != "" {
+				headers.Set("Origin", test.origin)
+			}
+			socket, response, err := websocket.Dial(ctx, test.endpoint, &websocket.DialOptions{
+				HTTPClient: secure.Client(), HTTPHeader: headers,
+			})
+			if socket != nil {
+				defer socket.CloseNow()
+			}
+			if response == nil || response.StatusCode != test.want || (err == nil) != (test.want == 101) {
+				t.Fatalf("WebSocket status or authentication mismatch: %v", err)
+			}
+		})
+	}
+}
 
 func TestLocalConnectorHTTPSAuthenticationAndRefreshAPI(t *testing.T) {
 	db, _, admin, _ := setupAccountTest(t)

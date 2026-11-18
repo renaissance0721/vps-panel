@@ -253,7 +253,9 @@ RoutingPreset 是客户端无关的逻辑分流配置。Rule Provider 推荐使�
 
 管理 API 新增 `GET /api/admin/subscription/builtin-shadowrocket`（admin / vip，返回 name / conf）和 `GET /api/personal-subscriptions/{id}/shadowrocket-preview`（admin / vip 且属于当前 owner，返回 conf，禁止缓存）。模板管理写入仍仅 admin；预览和公开输出经过相同节点解析、权限及状态校验。无法转换时预览返回 422，公开输出返回 503 和不含凭据的中文错误。
 
-机场 URL 来源的 `refresh_method` 默认是 `server`，继续由原调度器刷新。`local_connector` 来源通过显式刷新或已保存来源的预览触发下载，绑定同一 owner 的已配对连接器。管理端 `/api/local-connectors` 与机场订阅使用相同的 admin / vip 门禁。连接器通过 `POST /api/local-connector/pair` 消费一次性配对码，再以独立 Bearer 凭据连接 `GET /api/local-connector/connect`。凭据仅存散列，Panel 连接要求 HTTPS 或可信的同机 TLS 终止代理。
+机场 URL 来源的 `refresh_method` 默认是 `server`，继续由原调度器刷新。`local_connector` 来源通过显式刷新或已保存来源的预览触发下载，绑定同一 owner 的已配对连接器。管理端 `/api/local-connectors` 与机场订阅使用相同的 admin / vip 门禁。连接器通过 `POST /api/local-connector/pair` 消费一次性配对码，再以独立 Bearer 凭据连接 `GET /api/local-connector/connect`。凭据仅存散列。
+
+连接器 HTTPS 门禁接受直接 TLS，或由回环地址及 `PANEL_CONNECTOR_TRUSTED_PROXY_IPS` 中的实际 TCP 对端发送的单个 HTTPS 协议头。名单默认为空，启动时校验每个 IPv4 / IPv6 字面地址，配置无效则启动失败。安装器会在升级时保留该设置。代理端头部覆盖及后端隔离见 [NPM 设置](README.md#通过-docker-nginx-proxy-manager-连接)。
 
 本地刷新复用来源 revision、刷新 claim、租约、限频和缓存替换事务。刷新 API 返回 202，状态通过来源读取 API 获取。每个在线连接至多处理一个下载，临时任务只保留在进程内。连接器的预览使用同一下载通道，并返回独立的预览响应。连接断开、撤销和来源编辑都受现有版本与租约校验保护，撤销后来源仍选择本地刷新。Windows 程序复用服务端订阅下载的网络限制，安装与路由排查见 [Windows 本地连接器](README.md#windows-本地连接器)。
 

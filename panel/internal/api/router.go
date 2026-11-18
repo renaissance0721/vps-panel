@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type server struct {
 	relays               *relaystore.Service
 	subscriptions        *subscriptionstore.Service
 	remoteSubscriptions  *subscriptionstore.RemoteService
+	connectorProxyIPs    []netip.Addr
 	orders               *listorder.Store
 	webRoot              string
 	panelVersion         string
@@ -58,6 +60,11 @@ type BackupConfig struct {
 	RestoreRequested chan<- struct{}
 }
 
+type HandlerConfig struct {
+	Backup                   BackupConfig
+	ConnectorTrustedProxyIPs []netip.Addr
+}
+
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
 	return NewHandlerWithVersion(db, webRoot, "dev")
 }
@@ -76,10 +83,19 @@ func (h *Handler) RunNotifications(ctx context.Context)       { h.notifications.
 func (h *Handler) RunRemoteSubscriptions(ctx context.Context) { h.remoteSubscriptions.Run(ctx) }
 
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil, geoIPProviders...)
+	return NewHandlerWithConfig(db, webRoot, panelVersion, HandlerConfig{Backup: backupConfig}, geoIPProviders...)
+}
+
+func NewHandlerWithConfig(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
+	return newHandler(db, webRoot, panelVersion, config, nil, geoIPProviders...)
 }
 
 func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
+	return newHandler(db, webRoot, panelVersion, HandlerConfig{Backup: backupConfig}, sender, geoIPProviders...)
+}
+
+func newHandler(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
+	backupConfig := config.Backup
 	relays := relaystore.NewService(db)
 	keyPath := ""
 	if backupConfig.DataDir != "" {
@@ -94,6 +110,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 		relays:               relays,
 		subscriptions:        subscriptionstore.NewService(db, relays, keyPath),
 		remoteSubscriptions:  subscriptionstore.NewRemoteService(db, keyPath),
+		connectorProxyIPs:    config.ConnectorTrustedProxyIPs,
 		orders:               listorder.NewStore(db),
 		webRoot:              webRoot,
 		panelVersion:         panelVersion,

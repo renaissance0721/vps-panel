@@ -72,7 +72,7 @@ func TestConnectorHTTPSForwardedHeaders(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			s := &server{}
 			if !test.defaultConfig {
-				s.connectorProxyIPs = trusted
+				s.connectorProxy.TrustedProxyIPs = trusted
 			}
 			target := "http://panel.example"
 			if test.directTLS {
@@ -103,11 +103,10 @@ func TestConnectorHTTPSForwardedHeaders(t *testing.T) {
 func TestLocalConnectorBehindTrustedTLSProxy(t *testing.T) {
 	db, _, admin, _ := setupAccountTest(t)
 	defer db.Close()
-	ips, err := ParseConnectorTrustedProxyIPs("172.30.50.2")
+	handler, err := NewHandlerWithConfig(db, t.TempDir(), "dev", HandlerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandlerWithConfig(db, t.TempDir(), "dev", HandlerConfig{ConnectorTrustedProxyIPs: ips})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Model the Docker bridge peer using real HTTP and WebSocket traffic.
 		r.RemoteAddr = "172.30.50.2:9000"
@@ -132,9 +131,9 @@ func TestLocalConnectorBehindTrustedTLSProxy(t *testing.T) {
 	// Client-supplied headers are replaced by the proxy's own TLS state.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	post := func(front *httptest.Server, path, body, bearer string) *http.Response {
+	request := func(front *httptest.Server, method, path, body, bearer string) *http.Response {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, front.URL+path, strings.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, method, front.URL+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,17 +155,45 @@ func TestLocalConnectorBehindTrustedTLSProxy(t *testing.T) {
 		t.Cleanup(func() { response.Body.Close() })
 		return response
 	}
-	pairing := post(secure, "/api/local-connectors", `{"name":"Docker test"}`, "")
+	const configPath = "/api/admin/settings/reverse-proxy"
+	const pairManagerPath = "/api/local-connectors"
+	const pairingBody = `{"name":"Docker test"}`
+	check := func(wantTrusted bool) {
+		t.Helper()
+		response := request(secure, http.MethodGet, configPath+"/diagnostics", "", "")
+		var diagnostic connectorProxyDiagnostics
+		if response.StatusCode != 200 || json.NewDecoder(response.Body).Decode(&diagnostic) != nil ||
+			diagnostic.PeerIP != "172.30.50.2" || diagnostic.BackendTLS || diagnostic.PeerLoopback ||
+			diagnostic.ForwardedStatus != "https" || diagnostic.PeerTrusted != wantTrusted || diagnostic.HTTPSAccepted != wantTrusted {
+			t.Fatalf("unexpected proxied diagnostics: %+v HTTP %d", diagnostic, response.StatusCode)
+		}
+	}
+	check(false)
+	if response := request(secure, http.MethodPost, pairManagerPath, pairingBody, ""); response.StatusCode != 403 {
+		t.Fatalf("untrusted peer generated a pairing code: %d", response.StatusCode)
+	} else {
+		var failure struct {
+			Code string `json:"code"`
+		}
+		if json.NewDecoder(response.Body).Decode(&failure) != nil || failure.Code != "connector_https_required" {
+			t.Fatal("pairing did not return the HTTPS error code")
+		}
+	}
+	if response := request(secure, http.MethodPut, configPath, `{"trusted_proxy_ips":["172.30.50.2"]}`, ""); response.StatusCode != 200 {
+		t.Fatalf("save trusted proxy: HTTP %d", response.StatusCode)
+	}
+	check(true)
+	pairing := request(secure, http.MethodPost, pairManagerPath, pairingBody, "")
 	var pending struct {
 		Code string `json:"pairing_code"`
 	}
 	if pairing.StatusCode != 201 || json.NewDecoder(pairing.Body).Decode(&pending) != nil || !localconnector.ValidToken(pending.Code) {
 		t.Fatalf("proxied pairing creation: HTTP %d", pairing.StatusCode)
 	}
-	if response := post(insecure, localconnector.PairPath, "", pending.Code); response.StatusCode != 403 {
+	if response := request(insecure, http.MethodPost, localconnector.PairPath, "", pending.Code); response.StatusCode != 403 {
 		t.Fatalf("HTTP header spoofing: got %d", response.StatusCode)
 	}
-	redemption := post(secure, localconnector.PairPath, "", pending.Code)
+	redemption := request(secure, http.MethodPost, localconnector.PairPath, "", pending.Code)
 	var paired localconnector.PairResponse
 	if redemption.StatusCode != 200 || json.NewDecoder(redemption.Body).Decode(&paired) != nil || !localconnector.ValidToken(paired.Credential) {
 		t.Fatalf("proxied pairing redemption: HTTP %d", redemption.StatusCode)
@@ -197,6 +224,22 @@ func TestLocalConnectorBehindTrustedTLSProxy(t *testing.T) {
 				t.Fatalf("WebSocket status or authentication mismatch: %v", err)
 			}
 		})
+	}
+	if response := request(secure, http.MethodPut, configPath, `{"trusted_proxy_ips":[]}`, ""); response.StatusCode != 200 {
+		t.Fatalf("remove trusted proxy: HTTP %d", response.StatusCode)
+	}
+	check(false)
+	socket, reply, err := websocket.Dial(ctx, wss, &websocket.DialOptions{
+		HTTPClient: secure.Client(), HTTPHeader: http.Header{"Authorization": {"Bearer " + paired.Credential}},
+	})
+	if socket != nil {
+		_ = socket.CloseNow()
+	}
+	if err == nil || reply == nil || reply.StatusCode != 403 {
+		t.Fatalf("WSS was not blocked after removing the trusted peer: %v", err)
+	}
+	if response := request(secure, http.MethodPost, pairManagerPath, pairingBody, ""); response.StatusCode != 403 {
+		t.Fatalf("deleted proxy still allowed pairing: %d", response.StatusCode)
 	}
 }
 

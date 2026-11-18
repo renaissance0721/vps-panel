@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NSpin, NSwitch, NTag } from 'naive-ui'
-import { api } from '../api/client'
+import { api, APIError } from '../api/client'
 import { formatTime } from '../format'
 import { formatClientTrafficBytes } from '../proxy'
 
@@ -21,6 +21,7 @@ type LocalConnector = {
 }
 type Preview = { nodes: RemoteNode[]; warnings: string[]; usable: boolean; upload: number | null; download: number | null; total: number | null; expire: number | null }
 
+const props = defineProps<{ role?: 'admin' | 'vip' }>()
 const sources = ref<RemoteSource[]>([])
 const connectors = ref<LocalConnector[]>([])
 const connectorStatusKnown = ref(false)
@@ -34,6 +35,7 @@ const importNotice = ref('')
 const pairOpen = ref(false)
 const pairName = ref('')
 const pairError = ref('')
+const pairProxyHelp = ref(false)
 const pairing = ref<{ connector: LocalConnector; pairing_code: string } | null>(null)
 const pairingCopied = ref(false)
 const formOpen = ref(false)
@@ -104,6 +106,7 @@ function schedulePoll() {
 function openPairing() {
   pairName.value = ''
   pairError.value = ''
+  pairProxyHelp.value = false
   pairing.value = null
   pairingCopied.value = false
   pairOpen.value = true
@@ -114,13 +117,19 @@ watch(pairOpen, (open) => { if (!open) pairing.value = null })
 async function createPairing() {
   if (busy.value || !pairName.value.trim()) return
   busy.value = true; pairError.value = ''
+  pairProxyHelp.value = false
   try {
     const response = await api<{ connector: LocalConnector; pairing_code: string }>('/api/local-connectors', {
       method: 'POST', signal: lifecycle.signal, body: JSON.stringify({ name: pairName.value.trim() }),
     })
     if (pairOpen.value) pairing.value = response
     await load()
-  } catch (reason) { pairError.value = reason instanceof Error ? reason.message : '无法生成配对码' }
+  } catch (reason) {
+    pairError.value = reason instanceof Error ? reason.message : '无法生成配对码'
+    pairProxyHelp.value = props.role === 'admin' && window.location.protocol === 'https:' &&
+      reason instanceof APIError && reason.code === 'connector_https_required'
+    if (pairProxyHelp.value) pairError.value = 'Panel 未识别到可信的 HTTPS 转发。请检查当前连接和代理协议头。'
+  }
   finally { busy.value = false }
 }
 
@@ -363,7 +372,10 @@ onUnmounted(() => {
     <n-modal v-model:show="pairOpen" :mask-closable="!busy">
       <n-card class="client-form-card subscription-form-card" title="配对 Windows 连接器" closable @close="pairOpen = false">
         <form class="auth-form" @submit.prevent="createPairing">
-          <n-alert v-if="pairError" type="error">{{ pairError }}</n-alert>
+          <n-alert v-if="pairError" type="error">
+            {{ pairError }}
+            <a v-if="pairProxyHelp" href="#/settings">系统设置 → 网络与安全 → 反向代理</a>
+          </n-alert>
           <template v-if="pairing">
             <p class="form-help pairing-command">在 Windows 终端运行 <code>vps-panel-local-connector.exe pair &lt;Panel 的 HTTPS 地址&gt;</code>，按提示粘贴配对码。配对码 10 分钟内有效，仅能使用一次。</p>
             <label><span>一次性配对码</span><n-input :value="pairing.pairing_code" readonly /></label>

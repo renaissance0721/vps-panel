@@ -195,22 +195,39 @@ Panel 地址需要可验证的 TLS 证书。原生同机 Caddy 可通过回环�
 
 #### 通过 Docker Nginx Proxy Manager 连接
 
-1. 在 Nginx Proxy Manager（NPM）为 Panel 公网域名配置 Proxy Host 和 TLS 证书，由 NPM 终止客户端 TLS，并开启 **Force SSL** 和 **Websockets Support**。后端可使用 HTTP。NPM 与 Panel 都在 Docker 中时，可接入同一个专用 bridge 网络，指向 Panel 的容器名及 `8080`，无需发布后端端口。原生 Panel 使用 `external` 模式，可将 `PANEL_LISTEN_ADDR` 绑定到专用 bridge 的宿主机地址和端口，并限制该端口只供 NPM 访问。 [NPM Docker 网络文档](https://nginxproxymanager.com/advanced-config/#best-practice-use-a-docker-network)
-2. 为 NPM 分配固定的 Docker 地址，将 **Panel 实际收到的 TCP 对端 IP** 加入白名单。多个 IPv4 或 IPv6 地址用逗号分隔。白名单默认为空，仅接受单个 IP。原生安装编辑 `/etc/vps-panel/panel/environment`，保存后执行 `sudo systemctl restart vps-panel.service`。Docker 部署将同名变量写入 Panel 容器的 `environment:`，然后重建 Panel 容器以加载配置。原生安装的 `vp update` 会保留该值。
+1. 管理员从 HTTPS 域名打开 Panel，进入「系统设置 → 网络与安全 → 反向代理」，点击「检测当前连接」。
+2. 核实页面显示的 **TCP 对端** 属于自己控制的 NPM 实例。点击「添加当前来源 IP」，确认该地址仅由受控代理使用，再点击「保存配置」。也可手动添加单个 IPv4 或 IPv6 地址，每次最多保存 32 个地址。
+3. 保存立即生效。确认重新检测显示「连接器 HTTPS 检查 · 通过」，或点击「测试 HTTPS 识别」再检查一次。然后在「机场订阅 → 本地连接器」生成配对码。页面的 HTTP 检测将 WebSocket 标为「未验证」。启动已配对的 Windows 程序并看到「在线」，才确认连接器已通过 WSS 连通。
 
-   ```dotenv
-   PANEL_CONNECTOR_TRUSTED_PROXY_IPS=172.30.50.2
-   ```
+**NPM 与后端网络**
 
-3. 在这个 Proxy Host 的 **Advanced** 中加入以下配置，让后端协议头只反映 NPM 自身收到的连接。有些 NPM 版本会用入站头计算协议变量，因此需要清除客户端提供的版本。NPM 生成的代理位置会用 `$scheme` 或下方设置的变量写出协议头。保存后可在容器内用 `nginx -t` 校验配置。 [NPM 协议变量](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/develop/docker/rootfs/etc/nginx/conf.d/include/proxy-variables.conf) · [OpenResty 请求头清理](https://github.com/openresty/headers-more-nginx-module#more_clear_input_headers)
+- 配置 Proxy Host、有效 TLS 证书，开启 **Force SSL** 和 **Websockets Support**。原生 Panel 使用 `external` 模式，可监听 Docker 专用 bridge 的宿主机地址，只允许 NPM 访问该明文端口。两者都在 Docker 时可使用专用 bridge 与容器名访问，避免向公网发布 Panel 的 `8080`。 [NPM Docker 网络文档](https://nginxproxymanager.com/advanced-config/#best-practice-use-a-docker-network)
+- 以 Panel 显示的实际 TCP 对端为准。容器重新分配 IP 后应重新检测，删除旧地址，并核实新地址。多台代理分别确认具体地址。若 NAT、端口转发或 host-network 让其他客户端也能从同一地址进入 Panel，先隔离后端再添加。采用 Cloudflare 等上游代理时，保持到 NPM 的连接也使用 TLS 并验证其证书，使 NPM 能依据自己收到的协议覆盖头部。
+- Panel 通过代理识别 HTTPS 时要求单个 `X-Forwarded-Proto: https`。如转发 `X-Forwarded-Scheme`，该头也应为单个 `https`，同时清除客户端的 `Forwarded`。页面只显示实际对端及协议头是否符合格式与信任策略。代理是否正确覆盖客户端头、证书和网络隔离仍由部署方保证。
 
-   ```nginx
-   more_clear_input_headers "Forwarded" "X-Forwarded-Proto" "X-Forwarded-Scheme";
-   set $x_forwarded_proto $scheme;
-   set $x_forwarded_scheme $scheme;
-   ```
+**按 NPM 版本检查协议头**
 
-保持 Panel 的明文后端端口与公网、其他容器隔离。若流量经 NAT 后从共享网关进入 Panel，先调整网络使 Panel 能区分 NPM 和其他客户端，再加入该代理地址。通过代理验证 HTTPS 时，Panel 要求单个 `X-Forwarded-Proto: https`。如同时发送 `X-Forwarded-Scheme`，其值也须为单个 `https`，并清除 `Forwarded`。可用不带凭据的请求检查：从 HTTPS 访问 `POST /api/local-connector/pair` 应返回 `401`；从 HTTP 发送相同请求并自行加上协议头，应被重定向到 HTTPS 或被 Panel 拒绝。
+先核对该 Proxy Host 实际生成的代理配置。部分版本直接使用 `$scheme`，部分版本生成 `$x_forwarded_proto` 和 `$x_forwarded_scheme`，可能引用入站请求头。保持每个协议头在实际转发位置只有一条设置指令。 [使用 `$scheme` 的模板](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/v2.13.7/docker/rootfs/etc/nginx/conf.d/include/proxy.conf) · [使用变量的模板](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/v2.17.0/docker/rootfs/etc/nginx/conf.d/include/proxy.conf)
+
+若镜像已启用 Headers More，且生成模板使用上述两个变量，可在该 Proxy Host 的 **Advanced** 清理入站头并锁定协议变量。使用 `$scheme` 的模板只需下面的清理指令。保存后用容器内的 `nginx -t` 校验。 [Headers More 指令](https://github.com/openresty/headers-more-nginx-module#more_clear_input_headers)
+
+```nginx
+more_clear_input_headers "Forwarded" "X-Forwarded-Proto" "X-Forwarded-Scheme";
+set $x_forwarded_proto $scheme;
+set $x_forwarded_scheme $scheme;
+```
+
+若镜像缺少该模块，使用该版本支持的自定义代理配置，在实际执行 `proxy_pass` 的位置替换已有协议头定义，并保留 WebSocket 升级配置。 [Nginx 代理头指令](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header)
+
+```nginx
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Scheme $scheme;
+proxy_set_header Forwarded "";
+```
+
+可用不带凭据的请求验证。HTTPS 下 `POST /api/local-connector/pair` 应返回 `401`。HTTP 上即便附加 `X-Forwarded-Proto: https`，也应被重定向到 HTTPS 或拒绝。
+
+无界面部署可在原生安装的 `/etc/vps-panel/panel/environment` 或 Panel 容器环境中设置 `PANEL_CONNECTOR_TRUSTED_PROXY_IPS`。Panel 在启动时读取该变量中的逗号分隔地址。网页首次保存后以 SQLite 为准。保存空列表会取消全部非回环信任，旧环境值在重启后也不会恢复。
 
 已停用的代理和中转不出现在个人订阅的添加候选中；已经选中的节点保留停用状态，重新启用来源后自动恢复。永久删除来源时，同时清理个人订阅中的对应节点及策略组绑定。
 
@@ -267,7 +284,7 @@ vps-panel/
 | `sudo vp uninstall` | 卸载 Panel，交互选择是否删除数据 |
 | `vp help` | 查看命令帮助 |
 
-修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。`vp update` 会保留当前域名、监听地址、代理模式和连接器可信代理配置。
+修改 Panel 地址后，已有 Agent 的连接地址需要同步处理。`vp update` 会保留当前域名、监听地址、代理模式、旧环境变量和 SQLite 中的可信代理配置。
 更新会保留业务数据；跨服务器迁移可使用管理员的备份导出 / 导入功能，并保持 Panel 访问域名一致。
 
 ## 🛠️ 本地开发

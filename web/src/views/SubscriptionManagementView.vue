@@ -1634,7 +1634,7 @@ onUnmounted(() => {
     </TransitionGroup>
   </section>
 
-  <RemoteSubscriptionsView v-else-if="currentTab === 'remote'" />
+  <RemoteSubscriptionsView v-else-if="currentTab === 'remote'" :role="role" />
   <section v-else class="subscription-section configuration-grid">
     <p class="form-help">通用分流方案负责策略组、规则源和 Rules；客户端模板只负责对应客户端的基础配置。个人订阅和共享订阅分别选择一套分流方案，以及独立的 Mihomo、Shadowrocket 模板。</p>
     <n-card title="通用分流方案" :bordered="true">

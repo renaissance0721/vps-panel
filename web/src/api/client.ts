@@ -1,5 +1,5 @@
 export class APIError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message)
   }
 }
@@ -15,8 +15,8 @@ export async function api<T>(url: string, options?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status)
+    const body = (await response.json().catch(() => null)) as { error?: string; code?: string } | null
+    throw new APIError(body?.error ?? `请求失败（${response.status}）`, response.status, body?.code)
   }
 
   if (response.status === 204) {

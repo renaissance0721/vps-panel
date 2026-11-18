@@ -2,10 +2,7 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"net/netip"
-	"slices"
 	"strings"
 
 	"github.com/coder/websocket"
@@ -14,51 +11,44 @@ import (
 	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 )
 
-// ParseConnectorTrustedProxyIPs accepts exact peer addresses. A bad entry
-// invalidates the whole list so a mistyped configuration cannot be used.
-func ParseConnectorTrustedProxyIPs(value string) ([]netip.Addr, error) {
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	var ips []netip.Addr
-	for index, entry := range strings.Split(value, ",") {
-		ip, err := netip.ParseAddr(strings.TrimSpace(entry))
-		ip = ip.Unmap()
-		if err != nil || ip.Zone() != "" || ip.IsUnspecified() || ip.IsMulticast() || ip == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
-			return nil, fmt.Errorf("entry %d must be a single unicast IP address", index+1)
-		}
-		ips = append(ips, ip)
-	}
-	return ips, nil
-}
-
 func (s *server) requireConnectorHTTPS(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
-	if r.TLS != nil {
+	if s.inspectConnectorHTTPS(r).HTTPSAccepted {
 		return true
 	}
-	// Only the immediate TCP peer can attest to TLS termination.
-	peer := requestPeerIP(r.RemoteAddr).Unmap()
-	if peer.IsValid() && (peer.IsLoopback() || slices.Contains(s.connectorProxyIPs, peer)) && connectorForwardedHTTPS(r.Header) {
-		return true
-	}
-	writeError(w, http.StatusForbidden, "本地连接器需要通过 HTTPS 访问 Panel")
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": "本地连接器需要通过 HTTPS 访问 Panel",
+		"code":  "connector_https_required",
+	})
 	return false
 }
 
-func connectorForwardedHTTPS(header http.Header) bool {
-	isHTTPS := func(values []string) bool {
+func connectorForwardedStatus(header http.Header) string {
+	parseScheme := func(values []string) string {
 		if len(values) != 1 {
-			return false
+			return ""
 		}
 		scheme := strings.Trim(values[0], " \t")
-		return len(scheme) == len("https") && strings.EqualFold(scheme, "https")
+		switch {
+		case len(scheme) == len("https") && strings.EqualFold(scheme, "https"):
+			return "https"
+		case strings.EqualFold(scheme, "http"):
+			return "http"
+		default:
+			return ""
+		}
 	}
-	// Use a single scheme assertion. NPM also emits X-Forwarded-Scheme
-	// and it must agree whenever present.
+	proto := header.Values("X-Forwarded-Proto")
 	scheme := header.Values("X-Forwarded-Scheme")
-	return isHTTPS(header.Values("X-Forwarded-Proto")) &&
-		(len(scheme) == 0 || isHTTPS(scheme)) && len(header.Values("Forwarded")) == 0
+	primary, alternate := parseScheme(proto), parseScheme(scheme)
+	if len(header.Values("Forwarded")) != 0 || (len(proto) != 0 && primary == "") ||
+		(len(scheme) != 0 && (alternate == "" || (primary != "" && primary != alternate))) {
+		return "invalid"
+	}
+	if primary == "" {
+		return "missing"
+	}
+	return primary
 }
 
 func (s *server) listLocalConnectors(w http.ResponseWriter, r *http.Request, user auth.User) {

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 43
+const LatestSchemaVersion = 44
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -74,6 +74,15 @@ var migrations = []migration{
 	{version: 41, name: "personal_node_dialer_proxy", up: addPersonalNodeDialerProxy},
 	{version: 42, name: "socks5_external_nodes", up: migrateSOCKS5ExternalNodes, disableForeignKeys: true},
 	{version: 43, name: "remote_subscription_connectors", up: addRemoteSubscriptionConnectors},
+	{version: 44, name: "connector_proxy_settings", up: createConnectorProxySettings},
+}
+
+func createConnectorProxySettings(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS connector_proxy_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		trusted_proxy_ips_json TEXT NOT NULL
+	)`)
+	return err
 }
 
 func addRemoteSubscriptionConnectors(ctx context.Context, tx *sql.Tx) error {

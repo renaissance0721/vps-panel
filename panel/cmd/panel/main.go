@@ -84,32 +84,29 @@ func run() error {
 	dataDir := envOrDefault("PANEL_DATA_DIR", "data")
 	webDir := envOrDefault("PANEL_WEB_DIR", "../web/dist")
 
-	trustedProxyIPs, err := api.ParseConnectorTrustedProxyIPs(os.Getenv("PANEL_CONNECTOR_TRUSTED_PROXY_IPS"))
-	if err != nil {
-		return fmt.Errorf("invalid PANEL_CONNECTOR_TRUSTED_PROXY_IPS: %w", err)
-	}
-
 	db, err := openDatabase(dataDir)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	restoreRequested := make(chan struct{}, 1)
+	handler, err := api.NewHandlerWithConfig(db, webDir, panelVersion, api.HandlerConfig{
+		Backup: api.BackupConfig{
+			DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
+			EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
+			RestoreRequested: restoreRequested,
+		},
+		LegacyConnectorProxyIPs: os.Getenv("PANEL_CONNECTOR_TRUSTED_PROXY_IPS"),
+	}, serverstore.NewCountryISProvider())
+	if err != nil {
+		return fmt.Errorf("prepare Panel settings: %w", err)
+	}
 	resetContext, cancelReset := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := agentcontrol.NewService(db, time.Now).ResetOnline(resetContext); err != nil {
 		cancelReset()
 		return fmt.Errorf("prepare server states: %w", err)
 	}
 	cancelReset()
-
-	restoreRequested := make(chan struct{}, 1)
-	handler := api.NewHandlerWithConfig(db, webDir, panelVersion, api.HandlerConfig{
-		Backup: api.BackupConfig{
-			DataDir: dataDir, Domain: os.Getenv("PANEL_DOMAIN"),
-			EnvironmentFile: "/etc/vps-panel/panel/environment", CaddyFile: "/etc/caddy/vps-panel.caddy",
-			RestoreRequested: restoreRequested,
-		},
-		ConnectorTrustedProxyIPs: trustedProxyIPs,
-	}, serverstore.NewCountryISProvider())
 	server := &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,

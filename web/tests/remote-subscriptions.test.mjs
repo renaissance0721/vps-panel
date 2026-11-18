@@ -15,10 +15,10 @@ before(async () => {
 })
 after(async () => { globalThis.fetch = originalFetch; globalThis.window = originalWindow; await loader?.close() })
 
-async function render(populate = () => {}) {
+async function render(populate = () => {}, props = {}) {
   const setup = View.setup; let state
   View.setup = (props, context) => { state = setup(props, context); populate(state); return state }
-  try { return { html: await renderToString(createSSRApp(View)), state } } finally { View.setup = setup }
+  try { return { html: await renderToString(createSSRApp(View, props)), state } } finally { View.setup = setup }
 }
 
 const source = { id: 1, mode: 'url', refresh_method: 'server', connector_id: null, name: 'Airport', user_agent: 'UA', enabled: true, interval_seconds: 300, last_attempt_at: null, last_success_at: null, last_error: '刷新失败', warnings: ['不支持的节点'], node_count: 1, upload: 10, download: 20, total: 100, expire: null, refreshing: false }
@@ -166,4 +166,23 @@ test('离线时禁用立即刷新，在线时展示任务进度并自动轮询',
   assert.ok(refreshed)
   assert.equal(state.sources.value[0].refreshing, true)
   assert.equal(timers[0].delay, 1000)
+})
+
+test('仅 HTTPS 管理员遇到连接器 HTTPS 拒绝时提供设置入口', async () => {
+  for (const [role, protocol, code, expected] of [
+    ['admin', 'https:', 'connector_https_required', true],
+    ['vip', 'https:', 'connector_https_required', false],
+    ['admin', 'http:', 'connector_https_required', false],
+    ['admin', 'https:', '', false],
+  ]) {
+    globalThis.window = { location: { protocol } }
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: '本地连接器需要通过 HTTPS 访问 Panel', code }), { status: 403 })
+    const { state } = await render(undefined, { role })
+    state.openPairing()
+    state.pairName.value = 'Desktop'
+    await state.createPairing()
+    assert.equal(state.pairProxyHelp.value, expected)
+    assert.equal(state.pairing.value, null)
+    assert.match(state.pairError.value, /HTTPS/)
+  }
 })

@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
-	"net/netip"
 	"path/filepath"
 	"sync"
 	"time"
@@ -32,7 +32,8 @@ type server struct {
 	relays               *relaystore.Service
 	subscriptions        *subscriptionstore.Service
 	remoteSubscriptions  *subscriptionstore.RemoteService
-	connectorProxyIPs    []netip.Addr
+	connectorProxyMu     sync.RWMutex
+	connectorProxy       connectorProxyConfig
 	orders               *listorder.Store
 	webRoot              string
 	panelVersion         string
@@ -61,8 +62,8 @@ type BackupConfig struct {
 }
 
 type HandlerConfig struct {
-	Backup                   BackupConfig
-	ConnectorTrustedProxyIPs []netip.Addr
+	Backup                  BackupConfig
+	LegacyConnectorProxyIPs string
 }
 
 func NewHandler(db *sql.DB, webRoot string) http.Handler {
@@ -83,19 +84,26 @@ func (h *Handler) RunNotifications(ctx context.Context)       { h.notifications.
 func (h *Handler) RunRemoteSubscriptions(ctx context.Context) { h.remoteSubscriptions.Run(ctx) }
 
 func NewHandlerWithBackup(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	return NewHandlerWithConfig(db, webRoot, panelVersion, HandlerConfig{Backup: backupConfig}, geoIPProviders...)
+	return newHandlerWithMailSender(db, webRoot, panelVersion, backupConfig, nil, geoIPProviders...)
 }
 
-func NewHandlerWithConfig(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	return newHandler(db, webRoot, panelVersion, config, nil, geoIPProviders...)
+func NewHandlerWithConfig(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, geoIPProviders ...serverstore.GeoIPProvider) (*Handler, error) {
+	proxy, err := loadConnectorProxyConfig(db, config.LegacyConnectorProxyIPs)
+	if err != nil {
+		return nil, err
+	}
+	return newHandler(db, webRoot, panelVersion, config.Backup, proxy, nil, geoIPProviders...), nil
 }
 
 func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	return newHandler(db, webRoot, panelVersion, HandlerConfig{Backup: backupConfig}, sender, geoIPProviders...)
+	proxy, err := loadConnectorProxyConfig(db, "")
+	if err != nil {
+		log.Printf("load connector proxy settings: %v", err)
+	}
+	return newHandler(db, webRoot, panelVersion, backupConfig, proxy, sender, geoIPProviders...)
 }
 
-func newHandler(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
-	backupConfig := config.Backup
+func newHandler(db *sql.DB, webRoot, panelVersion string, backupConfig BackupConfig, proxy connectorProxyConfig, sender mailservice.Sender, geoIPProviders ...serverstore.GeoIPProvider) *Handler {
 	relays := relaystore.NewService(db)
 	keyPath := ""
 	if backupConfig.DataDir != "" {
@@ -110,7 +118,7 @@ func newHandler(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, 
 		relays:               relays,
 		subscriptions:        subscriptionstore.NewService(db, relays, keyPath),
 		remoteSubscriptions:  subscriptionstore.NewRemoteService(db, keyPath),
-		connectorProxyIPs:    config.ConnectorTrustedProxyIPs,
+		connectorProxy:       proxy,
 		orders:               listorder.NewStore(db),
 		webRoot:              webRoot,
 		panelVersion:         panelVersion,
@@ -146,6 +154,9 @@ func newHandler(db *sql.DB, webRoot, panelVersion string, config HandlerConfig, 
 	mux.HandleFunc("GET /api/admin/settings/mail", s.requireAdmin(s.getMailSettings))
 	mux.HandleFunc("PUT /api/admin/settings/mail", s.requireAdmin(s.saveMailSettings))
 	mux.HandleFunc("POST /api/admin/settings/mail/test", s.requireAdmin(s.testMailSettings))
+	mux.HandleFunc("GET /api/admin/settings/reverse-proxy", s.requireAdmin(s.getConnectorProxySettings))
+	mux.HandleFunc("PUT /api/admin/settings/reverse-proxy", s.requireAdmin(s.updateConnectorProxySettings))
+	mux.HandleFunc("GET /api/admin/settings/reverse-proxy/diagnostics", s.requireAdmin(s.inspectConnectorProxy))
 	mux.HandleFunc("GET /sub/{rest...}", s.getPublicSubscriptionPath)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/auth/state", s.authState)

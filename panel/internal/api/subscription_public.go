@@ -183,12 +183,19 @@ func subscriptionRenderErrorMessage(err error) string {
 		return "Shadowrocket 模板格式无效"
 	case errors.Is(err, subscriptionstore.ErrTemplateTypeMismatch):
 		return "客户端模板类型不匹配"
-	case errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketProtocol), errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketRule):
+	case errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketProtocol),
+		errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketParams),
+		errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketChain),
+		errors.Is(err, subscriptionstore.ErrUnsupportedShadowrocketRule):
 		return err.Error()
 	case errors.Is(err, subscriptionstore.ErrRemoteUnsupported):
 		return err.Error()
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingBindings):
-		return "策略组节点绑定无效"
+		return "策略组节点绑定无效，请检查所绑定的节点是否仍可用"
+	case errors.Is(err, subscriptionstore.ErrRoutingGroupReferenceMissing), errors.Is(err, subscriptionstore.ErrRoutingRuleGroupMissing):
+		return "分流方案引用了不存在的策略组，请检查组成员及规则的目标策略"
+	case errors.Is(err, subscriptionstore.ErrRoutingGroupCycle):
+		return "分流方案的策略组存在循环引用，请调整组成员"
 	case errors.Is(err, subscriptionstore.ErrInvalidRoutingPreset):
 		return "分流方案无法转换为当前客户端配置"
 	case errors.Is(err, subscriptionstore.ErrSOCKS5Export):

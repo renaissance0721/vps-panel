@@ -430,15 +430,6 @@ func remoteYAMLURI(node ResolvedSubscriptionNode) (string, error) {
 }
 
 func renderRemoteShadowrocket(node ResolvedSubscriptionNode) (string, error) {
-	value, err := renderRemoteMihomo(node)
-	if err != nil {
-		return "", err
-	}
-	var m map[string]any
-	if value.Decode(&m) != nil {
-		return "", ErrRemoteUnsupported
-	}
-	allowed := map[string]bool{"name": true, "type": true, "server": true, "port": true, "udp": true}
 	protocolKeys := map[string][]string{
 		"vless":  {"uuid", "tls", "servername", "flow", "client-fingerprint", "reality-opts", "network"},
 		"ss":     {"cipher", "password"},
@@ -446,8 +437,20 @@ func renderRemoteShadowrocket(node ResolvedSubscriptionNode) (string, error) {
 	}
 	keys, supported := protocolKeys[node.Protocol]
 	if !supported {
+		return "", ErrUnsupportedShadowrocketProtocol
+	}
+	value, err := renderRemoteMihomo(node)
+	if err != nil {
+		return "", err
+	}
+	if mappingValue(value, "dialer-proxy") != nil {
+		return "", ErrUnsupportedShadowrocketChain
+	}
+	var m map[string]any
+	if value.Decode(&m) != nil {
 		return "", ErrRemoteUnsupported
 	}
+	allowed := map[string]bool{"name": true, "type": true, "server": true, "port": true, "udp": true}
 	for _, key := range keys {
 		allowed[key] = true
 	}

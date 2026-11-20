@@ -14,7 +14,7 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 邮件服务 | 可选的标准 SMTP 配置、管理员测试邮件与账号邮箱验证，支持 TLS、STARTTLS 和无 TLS |
 | 代理节点 | 直连 / 落地分类；受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
-| 外部节点 | 导入 VLESS / Shadowsocks / 认证 SOCKS5 分享链接，支持直连 / 落地用途分类；SOCKS5 用于 Mihomo 个人订阅，不支持服务端中转 |
+| 外部节点 | 导入 VLESS / Shadowsocks / 认证 SOCKS5 分享链接，支持直连 / 落地用途分类。SOCKS5 可用于 Mihomo 和 Shadowrocket 个人订阅 |
 | Client 与流量 | 独立凭据、流量配额、到期控制、分享链接与二维码；Server / Client 流量统计 |
 | 订阅 | 个人订阅、订阅套餐与专用用户入口、Mihomo / Shadowrocket 完整配置、路由配置与绑定 |
 | Agent | 一次性注册、自动重连、配置同步、诊断和官方 Agent 自升级 |
@@ -187,7 +187,9 @@ MCP 还支持代理客户端、外部节点、服务器访问权限与流量校�
 
 Shadowrocket 模板保留 `[General]`，可添加 `[Host]`、`[URL Rewrite]`；`[Proxy]`、`[Proxy Group]`、`[Rule]` 必须分别包含唯一的独立行 `{{PROXIES}}`、`{{PROXY_GROUPS}}`、`{{RULES}}`，不能放入旧节点或规则。策略组和规则统一来自分流方案与节点绑定。
 
-当前支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022 和 `select` 策略组；个人订阅的 Mihomo 输出还支持认证 SOCKS5 外部节点。通用分流方案由两个客户端共用；当末尾 `MATCH` 指向一个包含全部订阅节点的 `select` 策略组时，Mihomo 保留该组和 `MATCH`，Shadowrocket 将其按结构识别为 catch-all 并映射为 `FINAL,PROXY`，默认节点跟随首页当前选择，专项策略组仍可独立选择。Rule Provider 推荐使用 http / classical / text 列表；默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。具体转换和 API 见 [订阅架构](DEV.md#订阅)。
+Shadowrocket 支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022、兼容的机场 Trojan 节点、认证 SOCKS5 外部节点和 `select` 策略组。SOCKS5 以独立 TCP 节点导出。配置及预览会标出哪些链式节点会直接连接各自的服务器。需要保留机场前置链路时使用 Mihomo，或在 Shadowrocket 客户端为相应落地节点手动设置「代理通过」。[Mihomo 链式代理](docs/mihomo-chain.md)
+
+通用分流方案由两个客户端共用。Shadowrocket 将简单的全节点默认组映射为 `FINAL,PROXY`，默认节点跟随首页当前选择。包含嵌套组、手动绑定或正则选择的默认组继续按组名分流。Rule Provider 推荐使用 http / classical / text 列表，默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。[订阅架构](DEV.md#11-subscription--client--landing)
 
 ## 项目结构
 

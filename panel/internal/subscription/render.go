@@ -39,7 +39,7 @@ type mihomoProxy struct {
 }
 
 var ErrMihomoChain = errors.New("Mihomo 链式代理配置无效")
-var ErrSOCKS5Export = errors.New("SOCKS5 外部节点仅支持 Mihomo 配置或 Provider 输出；其他格式无法保证兼容或保留链式设置")
+var ErrSOCKS5Export = errors.New("Base64 / URI 订阅不支持 SOCKS5 外部节点，请使用 Mihomo、Mihomo Provider 或 Shadowrocket 配置")
 
 type mihomoRealityOpts struct {
 	PublicKey string `yaml:"public-key"`

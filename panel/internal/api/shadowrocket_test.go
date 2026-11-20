@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -92,11 +93,26 @@ func TestShadowrocketTemplateAPIAndIndependentSelections(t *testing.T) {
 }
 
 func TestShadowrocketRenderErrorsAreActionableAndDoNotExposeCredentials(t *testing.T) {
-	for _, err := range []error{subscriptionstore.ErrInvalidShadowrocketTemplate, subscriptionstore.ErrUnsupportedShadowrocketProtocol, subscriptionstore.ErrUnsupportedShadowrocketRule, subscriptionstore.ErrTemplateTypeMismatch} {
+	for _, check := range []struct {
+		err  error
+		want string
+	}{
+		{subscriptionstore.ErrInvalidShadowrocketTemplate, "模板格式无效"},
+		{subscriptionstore.ErrTemplateTypeMismatch, "模板类型不匹配"},
+		{subscriptionstore.ErrUnsupportedShadowrocketProtocol, "节点协议"},
+		{subscriptionstore.ErrUnsupportedShadowrocketParams, "节点参数"},
+		{subscriptionstore.ErrUnsupportedShadowrocketChain, "节点的代理链"},
+		{subscriptionstore.ErrUnsupportedShadowrocketRule, "规则"},
+		{subscriptionstore.ErrInvalidRoutingPreset, "分流方案无法转换"},
+		{fmt.Errorf("private-group-name: %w", subscriptionstore.ErrRoutingGroupReferenceMissing), "引用了不存在的策略组"},
+		{subscriptionstore.ErrRoutingGroupCycle, "循环引用"},
+		{subscriptionstore.ErrInvalidRoutingBindings, "策略组节点绑定无效"},
+	} {
 		response := httptest.NewRecorder()
-		writePublicSubscriptionRenderError(response, err)
-		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "模板") && !strings.Contains(response.Body.String(), "规则") && !strings.Contains(response.Body.String(), "节点") {
-			t.Fatal("render error is not actionable")
+		writePublicSubscriptionRenderError(response, check.err)
+		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), check.want) ||
+			strings.Contains(response.Body.String(), "private-group-name") {
+			t.Fatalf("render error should contain only a safe diagnostic for %q", check.want)
 		}
 	}
 }

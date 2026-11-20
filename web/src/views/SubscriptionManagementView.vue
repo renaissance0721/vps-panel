@@ -263,7 +263,9 @@ const personalFormError = ref('')
 const personalPreviewOpen = ref(false)
 const personalPreviewTitle = ref('')
 const personalPreviewContent = ref('')
-const personalPreviewLoading = ref(false)
+const personalPreviewLoading = ref<'mihomo' | 'shadowrocket' | null>(null)
+const personalPreviewError = ref('')
+const personalPreviewWarning = ref('')
 const subscriptionLinkModalOpen = ref(false)
 const subscriptionLinkTarget = ref<SubscriptionLinks | null>(null)
 const subscriptionLinkFormat = ref<SubscriptionLinkFormat>('auto')
@@ -530,6 +532,7 @@ function pruneRoutingBindingNode(bindings: RoutingBindings, nodeID: number) {
 }
 
 function resetPersonalEditorUI() {
+  personalPreviewError.value = ''
   personalSourceAdderExpanded.value = false
   personalSourceSearch.value = ''
   expandedPersonalNodeIDs.value = new Set()
@@ -847,17 +850,30 @@ function personalSourceLabel(value: string, candidate = false) {
 }
 
 async function previewPersonal(format: 'mihomo' | 'shadowrocket') {
-  if (!editingPersonal.value || personalPreviewLoading.value) return
-  personalFormError.value = ''
-  personalPreviewLoading.value = true
+  const subscription = editingPersonal.value
+  if (!subscription || personalPreviewLoading.value) return
+  const title = format === 'mihomo' ? 'Mihomo 预览' : 'Shadowrocket 预览'
+  personalPreviewError.value = ''
+  personalPreviewLoading.value = format
   try {
-    const result = await api<{ yaml?: string; conf?: string }>(`/api/personal-subscriptions/${editingPersonal.value.id}/${format}-preview`)
-    personalPreviewTitle.value = format === 'mihomo' ? 'Mihomo 预览' : 'Shadowrocket 预览'
-    personalPreviewContent.value = result.yaml ?? result.conf ?? ''
+    const result = await api<{ yaml?: string; conf?: string; chain_warning?: string }>(`/api/personal-subscriptions/${subscription.id}/${format}-preview`)
+    if (!personalModalOpen.value || editingPersonal.value !== subscription) return
+    const content = format === 'mihomo' ? result?.yaml : result?.conf
+    if (!content?.trim()) {
+      personalPreviewError.value = `${title}失败，服务器未返回配置内容。`
+      return
+    }
+    personalPreviewTitle.value = title
+    personalPreviewContent.value = content
+    personalPreviewWarning.value = result.chain_warning ?? ''
     personalPreviewOpen.value = true
   } catch (reason) {
-    personalFormError.value = reason instanceof Error ? reason.message : '预览失败'
-  } finally { personalPreviewLoading.value = false }
+    if (personalModalOpen.value && editingPersonal.value === subscription) {
+      personalPreviewError.value = reason instanceof Error ? reason.message : `${title}失败，请重试。`
+    }
+  } finally {
+    personalPreviewLoading.value = null
+  }
 }
 
 function personalStatusType(value: string) {
@@ -1732,7 +1748,7 @@ onUnmounted(() => {
             <template v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'">
               <div class="switch-row"><span>启用链式代理</span><n-switch v-model:value="node.chain_enabled" @update:value="value => { if (value && !node.dialer_proxy) node.dialer_proxy = '机场入口' }" /></div>
               <label v-if="node.chain_enabled"><span>前置代理策略组</span><n-input v-model:value="node.dialer_proxy" maxlength="100" placeholder="机场入口" /></label>
-              <p v-if="node.chain_enabled" class="form-help">使用 Mihomo dialer-proxy 建立链式连接；最终配置必须提供该策略组，且不能包含此落地节点。Base64 / URI 和 Shadowrocket 不支持此设置。</p>
+              <p v-if="node.chain_enabled" class="form-help">Mihomo dialer-proxy 使用此前置策略组，该组不能包含此落地节点。Shadowrocket 导出会将此节点作为独立节点，直接连接节点服务器。</p>
             </template>
             <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
             <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
@@ -1749,11 +1765,17 @@ onUnmounted(() => {
       :reset-key="personalBindingEditorKey"
     />
     <p class="form-help">预览使用已保存的订阅配置；更改后请先保存。转换不兼容时会显示错误，Base64 也可能因节点格式无法转换而失败。预览内容包含节点凭据，请妥善保管。</p>
-    <div class="modal-actions"><n-button attr-type="button" :disabled="!editingPersonal" :loading="personalPreviewLoading" @click="previewPersonal('mihomo')">预览 Mihomo</n-button><n-button attr-type="button" :disabled="!editingPersonal" :loading="personalPreviewLoading" @click="previewPersonal('shadowrocket')">预览 Shadowrocket</n-button></div>
+    <div class="modal-actions"><n-button attr-type="button" :disabled="!editingPersonal || !!personalPreviewLoading" :loading="personalPreviewLoading === 'mihomo'" @click="previewPersonal('mihomo')">预览 Mihomo</n-button><n-button attr-type="button" :disabled="!editingPersonal || !!personalPreviewLoading" :loading="personalPreviewLoading === 'shadowrocket'" @click="previewPersonal('shadowrocket')">预览 Shadowrocket</n-button></div>
+    <n-alert v-if="personalPreviewError" type="error" role="alert" closable @close="personalPreviewError = ''">{{ personalPreviewError }}</n-alert>
     <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
-  <n-modal v-model:show="personalPreviewOpen" @after-leave="personalPreviewContent = ''"><n-card class="client-form-card subscription-form-card" :title="personalPreviewTitle" closable @close="personalPreviewOpen = false"><n-alert type="warning">预览包含节点凭据，请勿分享给不可信的人。</n-alert><n-input :value="personalPreviewContent" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" /><div class="modal-actions"><n-button @click="personalPreviewOpen = false">关闭</n-button></div></n-card></n-modal>
+  <n-modal v-model:show="personalPreviewOpen" @after-leave="personalPreviewContent = ''"><n-card class="client-form-card subscription-form-card" :title="personalPreviewTitle" closable @close="personalPreviewOpen = false">
+    <n-alert v-if="personalPreviewWarning" type="warning">{{ personalPreviewWarning }}</n-alert>
+    <n-alert type="warning">预览包含节点凭据，请勿分享给不可信的人。</n-alert>
+    <n-input :value="personalPreviewContent" type="textarea" readonly :autosize="{ minRows: 18, maxRows: 28 }" />
+    <div class="modal-actions"><n-button @click="personalPreviewOpen = false">关闭</n-button></div>
+  </n-card></n-modal>
 
   <n-modal v-model:show="subscriptionLinkModalOpen"><n-card class="personal-link-modal-card" title="复制订阅链接" closable @close="subscriptionLinkModalOpen = false">
     <form class="auth-form" @submit.prevent="copySubscriptionLink">
@@ -1766,7 +1788,7 @@ onUnmounted(() => {
         <n-radio value="shadowrocket">Shadowrocket</n-radio>
         <n-radio value="base64">Base64</n-radio>
       </n-radio-group>
-      <p v-if="subscriptionLinkTarget?.nodes?.some(node => node.enabled && node.dialer_proxy) && ['auto', 'base64', 'shadowrocket'].includes(subscriptionLinkFormat)" class="form-help">Base64 / URI 和 Shadowrocket 格式不会包含链式代理设置；Auto 格式取决于客户端识别结果。请使用 Mihomo Provider，并在客户端定义前置策略组。</p>
+      <n-alert v-if="subscriptionLinkTarget?.nodes?.some(node => node.enabled && node.dialer_proxy) && ['auto', 'base64', 'shadowrocket'].includes(subscriptionLinkFormat)" type="warning">Shadowrocket 导出的链式节点会直接连接各自的服务器。Base64 / URI 也无法携带前置代理。Auto 按客户端类型选择格式。需要保留链路时请选择 Mihomo 或 Mihomo Provider。</n-alert>
       <p v-if="subscriptionLinkFormat === 'mihomo-provider'" class="form-help">仅包含所选本地节点；前置策略组须在客户端最终配置中提供。</p>
       <div class="modal-actions"><n-button attr-type="button" @click="subscriptionLinkModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit">{{ subscriptionLinkCopied ? '已复制' : '复制' }}</n-button></div>
     </form>

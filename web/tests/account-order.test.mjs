@@ -185,23 +185,52 @@ test('个人订阅可添加远程整源和单节点，并展示预览错误', as
     { source_type: 'remote_source', source_id: 1, name: '机场', detail: '全部缓存', default_name: '机场', status: 'ready', status_detail: '使用本地缓存', requires_client: false },
     { source_type: 'remote_node', source_id: 2, name: '东京', detail: '机场 · trojan', default_name: '东京', status: 'ready', status_detail: '使用本地缓存', requires_client: false },
   ]
+  let shadowrocket = { ok: false, status: 422, json: async () => ({ error: '远程节点参数不兼容' }) }
+  const editor = state => {
+    state.loading.value = false
+    state.personalModalOpen.value = true
+    state.personalClientName.value = 'owner'
+    state.editingPersonal.value = { id: 5 }
+  }
   globalThis.fetch = async url => url.includes('/sources?')
     ? { ok: true, status: 200, json: async () => ({ sources }) }
     : url.includes('/mihomo-preview')
       ? { ok: true, status: 200, json: async () => ({ yaml: 'proxies: []' }) }
-      : { ok: false, status: 422, json: async () => ({ error: '远程节点参数不兼容' }) }
-  const { state } = await render(Subscriptions, state => {
-    state.loading.value = false
-    state.personalClientName.value = 'owner'
-    state.editingPersonal.value = { id: 5 }
-  }, { role: 'vip' })
+      : shadowrocket
+  const { state } = await render(Subscriptions, editor, { role: 'vip' })
   await state.loadPersonalSources()
   for (const source of state.personalSources.value) state.addPersonalSource(source)
   assert.deepEqual(state.personalNodes.value.map(node => node.source_type), ['remote_source', 'remote_node'])
   await state.previewPersonal('mihomo')
   assert.equal(state.personalPreviewContent.value, 'proxies: []')
+  assert.equal(state.personalPreviewOpen.value, true)
+  state.personalPreviewOpen.value = false
+  state.personalFormError.value = '表单校验错误'
+  const attempt = state.previewPersonal('shadowrocket')
+  assert.equal(state.personalPreviewLoading.value, 'shadowrocket')
+  await attempt
+  assert.equal(state.personalPreviewError.value, '远程节点参数不兼容')
+  assert.equal(state.personalFormError.value, '表单校验错误')
+  assert.equal(state.personalPreviewLoading.value, null)
+  assert.equal(state.personalPreviewOpen.value, false)
+  const { html } = await render(Subscriptions, current => {
+    editor(current)
+    current.personalPreviewError.value = state.personalPreviewError.value
+  }, { role: 'vip' })
+  assert.match(html, /预览 Shadowrocket<\/button><\/div>\s*<section[^>]*role="alert"[^>]*>(?:<!--.*?-->)*远程节点参数不兼容/)
+
+  shadowrocket = { ok: true, status: 200, json: async () => ({ conf: '  ' }) }
   await state.previewPersonal('shadowrocket')
-  assert.equal(state.personalFormError.value, '远程节点参数不兼容')
+  assert.match(state.personalPreviewError.value, /服务器未返回配置内容/)
+  assert.equal(state.personalPreviewOpen.value, false)
+
+  shadowrocket = { ok: true, status: 200, json: async () => ({ conf: '[Proxy]', chain_warning: '落地节点会直接连接服务器' }) }
+  await state.previewPersonal('shadowrocket')
+  assert.equal(state.personalPreviewContent.value, '[Proxy]')
+  assert.equal(state.personalPreviewOpen.value, true)
+  assert.equal(state.personalPreviewWarning.value, '落地节点会直接连接服务器')
+  assert.equal(state.personalPreviewError.value, '')
+  assert.equal(state.personalPreviewLoading.value, null)
 })
 
 test('个人和共享模板选择按客户端类型隔离，停用模板仅保留当前引用', async () => {

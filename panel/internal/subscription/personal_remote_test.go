@@ -265,23 +265,20 @@ func TestRemoteRenderingPreservesFieldsAndRejectsLoss(t *testing.T) {
 func TestRemoteShadowrocketCompatibilityRejectsUnsupportedVariants(t *testing.T) {
 	for _, tc := range []struct {
 		protocol, payload string
-		supported         bool
+		wantErr           error
 	}{
-		{"vless", "vless://synthetic-uuid@v.example:443?type=tcp&security=tls&sni=tls.example#N", true},
-		{"ss", "ss://YWVzLTEyOC1nY206c3ludGhldGlj@ss.example:8388#N", true},
-		{"trojan", "trojan://synthetic@t.example:443?sni=tls.example#N", true},
-		{"vless", "vless://synthetic@v.example:443?type=ws&security=tls#N", false},
-		{"vless", "vless://synthetic@v.example:443?flow=xtls-rprx-vision-udp443#N", false},
-		{"hysteria2", "hysteria2://synthetic@h.example:443#N", false},
-		{"tuic", "tuic://synthetic:password@t.example:443#N", false},
+		{"vless", "vless://synthetic-uuid@v.example:443?type=tcp&security=tls&sni=tls.example#N", nil},
+		{"ss", "ss://YWVzLTEyOC1nY206c3ludGhldGlj@ss.example:8388#N", nil},
+		{"trojan", "trojan://synthetic@t.example:443?sni=tls.example#N", nil},
+		{"vless", "vless://synthetic@v.example:443?type=ws&security=tls#N", ErrRemoteUnsupported},
+		{"vless", "vless://synthetic@v.example:443?flow=xtls-rprx-vision-udp443#N", ErrRemoteUnsupported},
+		{"hysteria2", "hysteria2://synthetic@h.example:443#N", ErrUnsupportedShadowrocketProtocol},
+		{"tuic", "tuic://synthetic:password@t.example:443#N", ErrUnsupportedShadowrocketProtocol},
 	} {
 		n := ResolvedSubscriptionNode{Name: "N", Protocol: tc.protocol, RemoteFormat: "uri", RemotePayload: tc.payload}
 		line, err := renderRemoteShadowrocket(n)
-		if tc.supported && (err != nil || !strings.Contains(line, "N = ")) {
-			t.Fatalf("%s: %q %v", tc.protocol, line, err)
-		}
-		if !tc.supported && !errors.Is(err, ErrRemoteUnsupported) {
-			t.Fatalf("unsupported %s: %q %v", tc.protocol, line, err)
+		if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && !strings.HasPrefix(line, "N = "+tc.protocol+",")) {
+			t.Fatalf("%s: got %q and %v, want error %v", tc.protocol, line, err, tc.wantErr)
 		}
 	}
 	yamlNode := ResolvedSubscriptionNode{Name: "N", Protocol: "ss", RemoteFormat: "mihomo", RemotePayload: "name: N\ntype: ss\nserver: example.com\nport: 443\ncipher: aes-128-gcm\npassword: udp-relay=true\nudp: false\n"}
@@ -291,5 +288,9 @@ func TestRemoteShadowrocketCompatibilityRejectsUnsupportedVariants(t *testing.T)
 	}
 	if _, err := remoteURI(yamlNode); !errors.Is(err, ErrRemoteUnsupported) {
 		t.Fatalf("explicit UDP lost: %v", err)
+	}
+	yamlNode.RemotePayload += "dialer-proxy: private-group-name\n"
+	if _, err := renderRemoteShadowrocket(yamlNode); !errors.Is(err, ErrUnsupportedShadowrocketChain) || strings.Contains(err.Error(), "private-group-name") {
+		t.Fatalf("imported chain should have a distinct, redacted diagnostic: %v", err)
 	}
 }

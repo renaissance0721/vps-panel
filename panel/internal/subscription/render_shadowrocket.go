@@ -10,6 +10,7 @@ import (
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
 	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
+	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 )
 
 const shadowrocketNativeProxy = "PROXY"
@@ -25,6 +26,29 @@ func RenderShadowrocketSubscription(data SubscriptionData) ([]byte, error) {
 func RenderPersonalShadowrocketSubscription(data PersonalSubscriptionData) ([]byte, error) {
 	names, bindings := expandedPersonalBindings(data)
 	return renderShadowrocketResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.ShadowrocketTemplate)
+}
+
+// ShadowrocketChainWarning reports the configured front hops that this .conf
+// cannot represent. Use positions because a source name can contain secrets.
+func ShadowrocketChainWarning(nodes []ResolvedSubscriptionNode) string {
+	first, count := 0, 0
+	for index, node := range nodes {
+		if node.DialerProxy == "" {
+			continue
+		}
+		if count == 0 {
+			first = index + 1
+		}
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+	affected := fmt.Sprintf("第 %d 个节点", first)
+	if count > 1 {
+		affected += fmt.Sprintf("等 %d 个节点", count)
+	}
+	return affected + "的前置代理未写入 Shadowrocket 配置。这些节点会直接连接各自的服务器。需要保留链路时请使用 Mihomo。"
 }
 
 func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
@@ -55,7 +79,7 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
-	defaultProxyGroup := shadowrocketDefaultProxyGroup(routing)
+	defaultProxyGroup := shadowrocketDefaultProxyGroup(routing, bindings)
 	if defaultProxyGroup != "" {
 		for index, rule := range routing.Rules {
 			policy, _, _ := parseRoutingRule(rule)
@@ -86,11 +110,14 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	if err != nil {
 		return nil, err
 	}
-	proxyLines := make([]string, 0, len(nodes))
+	proxyLines := make([]string, 0, len(nodes)+1)
+	if warning := ShadowrocketChainWarning(nodes); warning != "" {
+		proxyLines = append(proxyLines, "# "+warning)
+	}
 	allNames := make([]string, 0, len(nodes))
 	for index, node := range nodes {
 		if names[node.Name] {
-			return nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketProtocol)
+			return nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketParams)
 		}
 		line, err := renderShadowrocketProxy(node)
 		if err != nil {
@@ -128,7 +155,7 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), nil
 }
 
-func shadowrocketDefaultProxyGroup(routing RoutingPreset) string {
+func shadowrocketDefaultProxyGroup(routing RoutingPreset, bindings RoutingBindings) string {
 	if len(routing.Rules) == 0 {
 		return ""
 	}
@@ -139,6 +166,16 @@ func shadowrocketDefaultProxyGroup(routing RoutingPreset) string {
 	policy := strings.TrimSpace(parts[1])
 	for _, group := range routing.Groups {
 		if group.Name == policy && group.Type == "select" && group.IncludeAll {
+			// PROXY tracks the app's home selection. It cannot preserve a
+			// preset's nested choices, explicit bindings, or regex priority.
+			if len(group.NodePatterns) > 0 || len(bindings[group.Key]) > 0 {
+				return ""
+			}
+			for _, member := range group.Proxies {
+				if member != "DIRECT" && member != "REJECT" {
+					return ""
+				}
+			}
 			return policy
 		}
 	}
@@ -158,11 +195,11 @@ func shadowrocketNodeNames(nodes []ResolvedSubscriptionNode, nodeNames map[int64
 	originals := make(map[string]bool, len(nodes))
 	unflagged := make(map[string]bool, len(nodes))
 	for index, node := range nodes {
-		if !safeShadowrocketValue(node.Name) {
-			return nil, nil, fmt.Errorf("第 %d 个节点: %w", index+1, ErrUnsupportedShadowrocketProtocol)
+		if strings.TrimSpace(node.Name) == "" || !safeShadowrocketValue(node.Name) {
+			return nil, nil, fmt.Errorf("第 %d 个节点的名称为空或包含无效字符: %w", index+1, ErrUnsupportedShadowrocketParams)
 		}
 		if reserved[node.Name] || originals[node.Name] {
-			return nil, nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketProtocol)
+			return nil, nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketParams)
 		}
 		originals[node.Name] = true
 		base, country := splitShadowrocketLeadingFlag(node.Name)
@@ -230,21 +267,21 @@ func splitShadowrocketLeadingFlag(name string) (string, string) {
 }
 
 func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
-	if node.Protocol == landingstore.ProtocolSOCKS5 && node.RemoteFormat == "" {
-		return "", ErrSOCKS5Export
-	}
 	if node.RemoteFormat != "" {
 		return renderRemoteShadowrocket(node)
+	}
+	if node.Protocol == landingstore.ProtocolSOCKS5 {
+		return renderShadowrocketSOCKS5(node)
 	}
 	// Do not put credentials or raw node data in errors.
 	for _, value := range []string{node.Name, node.Address, node.UUID, node.ServerName, node.Flow,
 		node.Fingerprint, node.RealityPublicKey, node.RealityShortID, node.Method, node.ShadowsocksPassword} {
 		if !safeShadowrocketValue(value) {
-			return "", ErrUnsupportedShadowrocketProtocol
+			return "", ErrUnsupportedShadowrocketParams
 		}
 	}
 	if strings.TrimSpace(node.Name) == "" || node.Address == "" || node.Port < 1 || node.Port > 65535 {
-		return "", ErrUnsupportedShadowrocketProtocol
+		return "", ErrUnsupportedShadowrocketParams
 	}
 	fields := []string{"", shadowrocketValue(node.Address), strconv.Itoa(node.Port)}
 	udpRelay := "udp-relay=true"
@@ -254,12 +291,12 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 	switch node.Protocol {
 	case proxystore.ProtocolVLESS:
 		if node.UUID == "" || (node.Network != "" && node.Network != proxystore.TransportTCP) {
-			return "", ErrUnsupportedShadowrocketProtocol
+			return "", ErrUnsupportedShadowrocketParams
 		}
 		fields[0] = "vless"
 		fields = append(fields, "encrypt-method=none", "password="+shadowrocketValue(node.UUID), "obfs=none", udpRelay)
 		if node.Security != "" && node.Security != "none" && node.Security != proxystore.SecurityTLS && node.Security != proxystore.SecurityReality {
-			return "", ErrUnsupportedShadowrocketProtocol
+			return "", ErrUnsupportedShadowrocketParams
 		}
 		if node.TLS || node.Security == proxystore.SecurityTLS || node.Security == proxystore.SecurityReality {
 			fields = append(fields, "tls=true")
@@ -269,7 +306,7 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 		}
 		if node.Security == proxystore.SecurityReality {
 			if node.RealityPublicKey == "" || node.ServerName == "" {
-				return "", ErrUnsupportedShadowrocketProtocol
+				return "", ErrUnsupportedShadowrocketParams
 			}
 			fields = append(fields, "reality=true", "pbk="+shadowrocketValue(node.RealityPublicKey), "sid="+shadowrocketValue(node.RealityShortID))
 		}
@@ -281,7 +318,7 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 		}
 	case proxystore.ProtocolShadowsocks:
 		if node.Method == "" || node.ShadowsocksPassword == "" {
-			return "", ErrUnsupportedShadowrocketProtocol
+			return "", ErrUnsupportedShadowrocketParams
 		}
 		fields[0] = "ss"
 		// SS2022's server:user key pair is already resolved by the source.
@@ -289,6 +326,32 @@ func renderShadowrocketProxy(node ResolvedSubscriptionNode) (string, error) {
 	default:
 		return "", ErrUnsupportedShadowrocketProtocol
 	}
+	return shadowrocketIdent(node.Name) + " = " + strings.Join(fields, ","), nil
+}
+
+func renderShadowrocketSOCKS5(node ResolvedSubscriptionNode) (string, error) {
+	if strings.TrimSpace(node.Name) == "" || !safeShadowrocketValue(node.Name) {
+		return "", fmt.Errorf("SOCKS5 节点名称无效: %w", ErrUnsupportedShadowrocketParams)
+	}
+	_, host, err := relaystore.NormalizeEntryHost(relaystore.EntryHostManual, node.Address)
+	if err != nil || !safeShadowrocketValue(node.Address) || node.Port < 1 || node.Port > 65535 {
+		return "", fmt.Errorf("SOCKS5 地址或端口无效: %w", ErrUnsupportedShadowrocketParams)
+	}
+	if strings.TrimSpace(node.SOCKSUsername) == "" || node.SOCKSPassword == "" ||
+		len(node.SOCKSUsername) > 255 || len(node.SOCKSPassword) > 255 ||
+		!safeShadowrocketValue(node.SOCKSUsername) || !safeShadowrocketValue(node.SOCKSPassword) {
+		return "", fmt.Errorf("SOCKS5 需要有效的用户名和密码（各 1–255 字节，且不得包含控制字符）: %w", ErrUnsupportedShadowrocketParams)
+	}
+	if (node.Network != "" && node.Network != proxystore.TransportTCP) || node.TLS || (node.Security != "" && node.Security != "none") {
+		return "", fmt.Errorf("SOCKS5 仅支持普通 TCP 传输: %w", ErrUnsupportedShadowrocketParams)
+	}
+	if node.RemoteUDP != nil && *node.RemoteUDP {
+		return "", fmt.Errorf("当前 Shadowrocket SOCKS5 导出仅支持 TCP，无法保留 UDP 转发: %w", ErrUnsupportedShadowrocketParams)
+	}
+	// In Shadowrocket's [Proxy] definition for SOCKS5, credentials are
+	// positional, and the host and port are separate even for IPv6.
+	fields := []string{"socks5", host, strconv.Itoa(node.Port),
+		shadowrocketValue(node.SOCKSUsername), shadowrocketValue(node.SOCKSPassword)}
 	return shadowrocketIdent(node.Name) + " = " + strings.Join(fields, ","), nil
 }
 
@@ -394,6 +457,9 @@ func shadowrocketProviderRuleType(provider RoutingRuleProvider) (string, error) 
 }
 
 func shadowrocketErrorContext(value string) string {
+	if strings.Contains(value, "://") {
+		return "（含 URL，已省略）"
+	}
 	runes := []rune(value)
 	if len(runes) > 256 {
 		return string(runes[:256]) + "…"

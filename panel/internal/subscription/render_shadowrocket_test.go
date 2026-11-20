@@ -361,7 +361,7 @@ func TestShadowrocketOriginalNameCollisionsStillFail(t *testing.T) {
 		}
 		_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{Nodes: nodes, RoutingPreset: &RoutingPreset{
 			Name: "Names", Groups: []RoutingGroup{{Key: "grp_proxy", Name: "Proxy", Type: "select", IncludeAll: true}}, Rules: []string{"MATCH,Proxy"}}})
-		if !errors.Is(err, ErrUnsupportedShadowrocketProtocol) {
+		if !errors.Is(err, ErrUnsupportedShadowrocketParams) {
 			t.Errorf("original collision %q: %v", check, err)
 		}
 	}
@@ -388,7 +388,7 @@ func TestShadowrocketFlagNormalizationKeepsNameValidation(t *testing.T) {
 			RoutingPreset: &RoutingPreset{Name: "Names", Groups: []RoutingGroup{
 				{Key: "grp_proxy", Name: "Proxy", Type: "select", IncludeAll: true}}, Rules: []string{"MATCH,Proxy"}},
 		})
-		if !errors.Is(err, ErrUnsupportedShadowrocketProtocol) || strings.Contains(err.Error(), name) {
+		if !errors.Is(err, ErrUnsupportedShadowrocketParams) || strings.Contains(err.Error(), name) {
 			t.Errorf("unsafe name accepted or exposed: %v", err)
 		}
 	}
@@ -442,7 +442,7 @@ func TestShadowrocketEscapingAndInjectionRejection(t *testing.T) {
 	}
 	for _, bad := range []string{"line\n[Rule]\nFINAL,DIRECT", "line\rbreak", "nul\x00", "line\u2028break"} {
 		node.ShadowsocksPassword = bad
-		if _, err := renderShadowrocketProxy(node); !errors.Is(err, ErrUnsupportedShadowrocketProtocol) || strings.Contains(err.Error(), bad) {
+		if _, err := renderShadowrocketProxy(node); !errors.Is(err, ErrUnsupportedShadowrocketParams) || strings.Contains(err.Error(), bad) {
 			t.Fatal("unsafe parameter or secret in error")
 		}
 	}
@@ -616,5 +616,10 @@ func TestShadowrocketProviderErrorsIncludeRuleAndReason(t *testing.T) {
 	_, err := RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: routing})
 	if !errors.Is(err, ErrUnsupportedShadowrocketRule) || len(err.Error()) > 1200 || strings.Contains(err.Error(), "\n") {
 		t.Fatal("unbounded or unsafe error context", err)
+	}
+	routing.Rules = []string{"RULE-SET,https://example.com/rules?token=private-test-token,DIRECT"}
+	_, err = RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{RoutingPreset: routing})
+	if !errors.Is(err, ErrUnsupportedShadowrocketRule) || strings.Contains(err.Error(), "private-test-token") {
+		t.Fatal("diagnostics exposed a rule URL")
 	}
 }

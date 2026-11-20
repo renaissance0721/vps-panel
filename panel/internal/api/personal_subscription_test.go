@@ -172,7 +172,9 @@ func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	if response := performRequest(t, handler, http.MethodGet, personalPath(payload.Personal.SubscriptionBase64URL), nil, nil); response.Code != http.StatusOK || response.Body.String() != base64Response.Body.String() || response.Header().Get("X-VPS-Panel-Chain-Warning") == "" {
 		t.Fatal("base64 compatibility or warning")
 	}
-	if response := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); response.Code != http.StatusOK || response.Body.String() != rocket.Body.String() || response.Header().Get("X-VPS-Panel-Chain-Warning") == "" {
+	if response := performRequest(t, handler, http.MethodGet, shadowrocketPath, nil, nil); response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "# 第 1 个节点的前置代理未写入 Shadowrocket 配置") ||
+		!strings.Contains(response.Body.String(), "英国 | 家宽 = vless,") || response.Header().Get("X-VPS-Panel-Chain-Warning") == "" {
 		t.Fatal("Shadowrocket compatibility or warning")
 	}
 	if response := performRequest(t, handler, http.MethodGet, "/sub/personal/not-a-token/mihomo-provider", nil, nil); response.Code != http.StatusNotFound {

@@ -17,7 +17,7 @@ test('个人订阅提供按节点启用链式代理和复制 Provider 地址', (
   assert.match(managementSource, /启用链式代理[\s\S]*前置代理策略组[\s\S]*Mihomo dialer-proxy/)
   assert.match(managementSource, /dialer_proxy: node\.chain_enabled \? node\.dialer_proxy\.trim\(\) : ''/)
   assert.match(managementSource, /case 'mihomo-provider': return value\.subscription_mihomo_provider_url/)
-  assert.match(managementSource, /Mihomo Provider[\s\S]*Base64 \/ URI 和 Shadowrocket 格式不会包含链式代理设置/)
+  assert.match(managementSource, /Shadowrocket 导出的链式节点会直接连接各自的服务器/)
 })
 
 test('Clash Verge 脚本保留原配置、避免循环并可重复应用', async () => {

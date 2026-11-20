@@ -322,7 +322,11 @@ func (s *server) previewPersonalSubscriptionShadowrocket(w http.ResponseWriter, 
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"conf": string(value)})
+	result := map[string]string{"conf": string(value)}
+	if warning := subscriptionstore.ShadowrocketChainWarning(data.Nodes); warning != "" {
+		result["chain_warning"] = warning
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *server) previewPersonalSubscriptionMihomo(w http.ResponseWriter, r *http.Request, user auth.User) {

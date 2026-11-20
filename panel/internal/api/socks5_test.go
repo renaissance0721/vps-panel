@@ -63,4 +63,18 @@ func TestSOCKS5ImportToPersonalProviderAPI(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "SOCKS5") || strings.Contains(response.Body.String(), "fictional") {
 		t.Fatal("unsupported export must return safe explicit error")
 	}
+	rocket := performRequest(t, handler, http.MethodGet, personalPath(personal.Personal.SubscriptionShadowrocketURL), nil, nil)
+	if rocket.Code != http.StatusOK || rocket.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		rocket.Header().Get("Cache-Control") != "no-store" || rocket.Header().Get("X-VPS-Panel-Chain-Warning") == "" ||
+		!strings.Contains(rocket.Body.String(), "Webshare-Japan = socks5,203.0.113.10,9492,test@user,fictional:password") {
+		t.Fatalf("Shadowrocket SOCKS5 public export failed, status %d", rocket.Code)
+	}
+	previewPath := "/api/personal-subscriptions/" + strconv.FormatInt(personal.Personal.ID, 10) + "/shadowrocket-preview"
+	preview := performRequest(t, handler, http.MethodGet, previewPath, nil, cookie)
+	var previewBody map[string]string
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &previewBody) != nil ||
+		previewBody["conf"] != rocket.Body.String() || !strings.Contains(previewBody["chain_warning"], "第 1 个节点") ||
+		strings.Contains(previewBody["chain_warning"], "fictional") || strings.Contains(previewBody["chain_warning"], "test@user") {
+		t.Fatalf("Shadowrocket preview lacks the public config or safe warning, status %d", preview.Code)
+	}
 }

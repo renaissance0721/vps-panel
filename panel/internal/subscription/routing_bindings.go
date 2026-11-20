@@ -43,7 +43,7 @@ func normalizeRoutingBindings(bindings RoutingBindings, groups []RoutingGroup,
 		}
 		seen := make(map[int64]struct{}, len(nodeIDs))
 		for _, nodeID := range nodeIDs {
-			if nodeID <= 0 {
+			if nodeID == 0 {
 				return nil, fmt.Errorf("策略组 %q 的 binding 节点 ID %d 无效: %w",
 					groupName, nodeID, ErrInvalidRoutingBindings)
 			}

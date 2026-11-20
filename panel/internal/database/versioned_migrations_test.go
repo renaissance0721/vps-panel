@@ -199,6 +199,69 @@ rules:
 	assertLatestMigrationHistory(t, db)
 }
 
+func TestPersonalShadowrocketDefaultsMigrateAndSurviveReopen(t *testing.T) {
+	dir := t.TempDir()
+	legacy, err := sql.Open("sqlite", filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	legacy.SetMaxOpenConns(1)
+	if err := configure(legacy); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:45] {
+		if err := applyMigration(t.Context(), legacy, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, query := range []string{
+		`INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES (1,'owner','stub','vip',1,1)`,
+		`INSERT INTO personal_subscription_groups(id,owner_user_id,name,token,client_name,routing_preset_id,routing_bindings_json,created_at,updated_at)
+		  SELECT 1,1,'Personal','unchanged','owner',id,'{"grp_ai":[7,6]}',1,1 FROM subscription_routing_presets WHERE is_default=1`,
+		`INSERT INTO personal_subscription_nodes(id,group_id,source_type,source_id,display_name,position,created_at,updated_at)
+		  VALUES (6,1,'landing',1,'Second',2,1,1), (7,1,'landing',2,'First',1,1,1)`,
+	} {
+		if _, err := legacy.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	read := func(db *sql.DB, expected string) {
+		t.Helper()
+		var token, bindings, order, defaults string
+		err := db.QueryRow(`SELECT g.token, g.routing_bindings_json,
+			(SELECT json_group_array(id ORDER BY position) FROM personal_subscription_nodes WHERE group_id=g.id),
+			g.shadowrocket_defaults_json FROM personal_subscription_groups g WHERE g.id=1`).Scan(&token, &bindings, &order, &defaults)
+		if err != nil || token != "unchanged" || bindings != `{"grp_ai":[7,6]}` || order != "[7,6]" || defaults != expected {
+			t.Fatalf("unexpected reopened subscription: %q %q %q %q %v", token, bindings, order, defaults, err)
+		}
+	}
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
+	read(db, "{}")
+	value := `{"grp_ai":{"type":"node","node_id":7}}`
+	if _, err := db.Exec("UPDATE personal_subscription_groups SET shadowrocket_defaults_json=? WHERE id=1", value); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	read(reopened, value)
+}
+
 func TestLatestMigrationCreatesPersonalSubscriptionSchema(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

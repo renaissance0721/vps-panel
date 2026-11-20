@@ -20,12 +20,15 @@ func RenderShadowrocketSubscription(data SubscriptionData) ([]byte, error) {
 	for _, node := range data.Nodes {
 		nodes = append(nodes, resolvedNodeFromClientShare(node))
 	}
-	return renderShadowrocketResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.ShadowrocketTemplate)
+	return RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{
+		Nodes: nodes, NodeNames: data.NodeNames, RoutingBindings: data.RoutingBindings,
+		RoutingPreset: data.RoutingPreset, ShadowrocketTemplate: data.ShadowrocketTemplate,
+	})
 }
 
 func RenderPersonalShadowrocketSubscription(data PersonalSubscriptionData) ([]byte, error) {
-	names, bindings := expandedPersonalBindings(data)
-	return renderShadowrocketResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.ShadowrocketTemplate)
+	body, _, err := RenderPersonalShadowrocketPreview(data)
+	return body, err
 }
 
 // ShadowrocketChainWarning reports the configured front hops that this .conf
@@ -51,17 +54,15 @@ func ShadowrocketChainWarning(nodes []ResolvedSubscriptionNode) string {
 	return affected + "的前置代理未写入 Shadowrocket 配置。这些节点会直接连接各自的服务器。需要保留链路时请使用 Mihomo。"
 }
 
-func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
-	bindings RoutingBindings, preset *RoutingPreset, template *SubscriptionTemplate,
-) ([]byte, error) {
-	source, err := BuildShadowrocketConfiguration(template)
+func RenderPersonalShadowrocketPreview(data PersonalSubscriptionData) ([]byte, string, error) {
+	source, err := BuildShadowrocketConfiguration(data.ShadowrocketTemplate)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if preset == nil {
-		return nil, ErrInvalidRoutingPreset
+	if data.RoutingPreset == nil {
+		return nil, "", ErrInvalidRoutingPreset
 	}
-	routing := *preset
+	routing := *data.RoutingPreset
 	// Resolve rules before generic preset validation so missing providers and
 	// incompatible attributes retain the rule's position and original text.
 	providers := make(map[string]RoutingRuleProvider, len(routing.RuleProviders))
@@ -72,14 +73,18 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 	for index, rule := range routing.Rules {
 		line, err := renderShadowrocketRule(rule, providers)
 		if err != nil {
-			return nil, fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
+			return nil, "", fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
 		}
 		ruleLines = append(ruleLines, line)
 	}
 	if err := normalizeRoutingPreset(&routing); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	defaultProxyGroup := shadowrocketDefaultProxyGroup(routing, bindings)
+	resolved, err := resolveShadowrocketPolicies(data, routing, false)
+	if err != nil {
+		return nil, "", err
+	}
+	defaultProxyGroup := resolved.projected
 	if defaultProxyGroup != "" {
 		for index, rule := range routing.Rules {
 			policy, _, _ := parseRoutingRule(rule)
@@ -88,71 +93,39 @@ func renderShadowrocketResolvedSubscription(nodes []ResolvedSubscriptionNode, no
 			}
 			line, err := renderShadowrocketRuleWithDefaultProxy(rule, providers, defaultProxyGroup)
 			if err != nil {
-				return nil, fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
+				return nil, "", fmt.Errorf("第 %d 条规则 %q：%w", index+1, shadowrocketErrorContext(rule), err)
 			}
 			ruleLines[index] = line
 		}
 	}
-	// A single namespace is used for declarations and references. Reject
-	// collisions instead of silently binding a group to a different node.
-	names := map[string]bool{"DIRECT": true, "REJECT": true, shadowrocketNativeProxy: true}
-	for _, group := range routing.Groups {
-		if group.Name == shadowrocketNativeProxy && group.Name != defaultProxyGroup {
-			return nil, ErrInvalidRoutingPreset
-		}
-		names[group.Name] = true
-	}
-	matchNames := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		matchNames = append(matchNames, node.Name)
-	}
-	nodes, nodeNames, err = shadowrocketNodeNames(nodes, nodeNames, names)
-	if err != nil {
-		return nil, err
-	}
+	nodes := resolved.nodes
 	proxyLines := make([]string, 0, len(nodes)+1)
 	if warning := ShadowrocketChainWarning(nodes); warning != "" {
 		proxyLines = append(proxyLines, "# "+warning)
 	}
-	allNames := make([]string, 0, len(nodes))
 	for index, node := range nodes {
-		if names[node.Name] {
-			return nil, fmt.Errorf("第 %d 个节点名称与节点或策略组重复: %w", index+1, ErrUnsupportedShadowrocketParams)
-		}
 		line, err := renderShadowrocketProxy(node)
 		if err != nil {
-			return nil, fmt.Errorf("第 %d 个节点: %w", index+1, err)
+			return nil, "", fmt.Errorf("第 %d 个节点: %w", index+1, err)
 		}
-		names[node.Name] = true
-		allNames = append(allNames, node.Name)
 		proxyLines = append(proxyLines, line)
 	}
-	groups, err := resolveRoutingGroups(routing.Groups, bindings, nodeNames, allNames, matchNames)
-	if err != nil {
-		return nil, err
-	}
-	groupLines := make([]string, 0, len(groups))
-	for _, group := range groups {
+	groupLines := make([]string, 0, len(resolved.groups))
+	for index, group := range resolved.groups {
 		if group.Name == defaultProxyGroup {
 			continue
 		}
-		for index, member := range group.Proxies {
-			if member == defaultProxyGroup {
-				group.Proxies[index] = shadowrocketNativeProxy
-			}
-		}
-		for _, member := range group.Proxies {
-			if !names[member] {
-				return nil, ErrInvalidRoutingBindings
-			}
-		}
-		line, err := renderShadowrocketProxyGroup(group)
+		line, err := renderShadowrocketProxyGroup(group, resolved.selected[routing.Groups[index].Key])
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		groupLines = append(groupLines, line)
 	}
-	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), nil
+	warning := ""
+	if skipped := len(data.ShadowrocketDefaults) - len(resolved.selected); skipped > 0 {
+		warning = fmt.Sprintf("有 %d 项 Shadowrocket 默认策略当前不可用，相关策略组使用客户端默认行为。", skipped)
+	}
+	return []byte(injectShadowrocketSections(source, proxyLines, groupLines, ruleLines)), warning, nil
 }
 
 func shadowrocketDefaultProxyGroup(routing RoutingPreset, bindings RoutingBindings) string {
@@ -355,7 +328,7 @@ func renderShadowrocketSOCKS5(node ResolvedSubscriptionNode) (string, error) {
 	return shadowrocketIdent(node.Name) + " = " + strings.Join(fields, ","), nil
 }
 
-func renderShadowrocketProxyGroup(group resolvedRoutingGroup) (string, error) {
+func renderShadowrocketProxyGroup(group resolvedRoutingGroup, selected string) (string, error) {
 	// RoutingPreset currently permits only select; never guess a mapping for
 	// future Mihomo group types that require additional client settings.
 	if group.Type != "select" || !safeShadowrocketValue(group.Name) {
@@ -367,6 +340,9 @@ func renderShadowrocketProxyGroup(group resolvedRoutingGroup) (string, error) {
 			return "", ErrInvalidRoutingBindings
 		}
 		fields = append(fields, shadowrocketIdent(member))
+	}
+	if selected != "" {
+		fields = append(fields, "policy-select-name="+shadowrocketIdent(selected))
 	}
 	return shadowrocketIdent(group.Name) + " = " + strings.Join(fields, ","), nil
 }

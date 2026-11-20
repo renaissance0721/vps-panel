@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onUnmounted, computed, onMounted, ref, useId } from 'vue'
+import { onUnmounted, computed, onMounted, ref, useId, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
-import RoutingBindingEditor, { type RoutingBindings } from '../components/subscription/RoutingBindingEditor.vue'
+import RoutingBindingEditor, { type RoutingBindings, type ShadowrocketDefaults, type ShadowrocketPolicyOptions, type ShadowrocketPolicyTarget } from '../components/subscription/RoutingBindingEditor.vue'
 import RoutingGroupEditor, { type RoutingGroup } from '../components/subscription/RoutingGroupEditor.vue'
 import QRCodeModal from '../components/share/QRCodeModal.vue'
 import { beginDragPreview, endDragPreview } from '../drag'
@@ -131,6 +131,7 @@ type PersonalSubscription = {
   shadowrocket_template_name: string
   nodes: PersonalNode[]
   routing_bindings: RoutingBindings
+  shadowrocket_defaults?: ShadowrocketDefaults
   subscription_base64_url: string
   subscription_mihomo_url: string
   subscription_mihomo_provider_url: string
@@ -257,6 +258,10 @@ const personalMihomoTemplateID = ref(0)
 const personalShadowrocketTemplateID = ref(0)
 const personalNodes = ref<PersonalNode[]>([])
 const personalRoutingBindings = ref<RoutingBindings>({})
+const personalRoutingEditorExpanded = ref(false)
+const personalShadowrocketChanges = ref<Record<string, ShadowrocketPolicyTarget | null>>({})
+const personalShadowrocketOptions = ref<ShadowrocketPolicyOptions | null>(null)
+const personalShadowrocketOptionsError = ref('')
 const personalSources = ref<PersonalSource[]>([])
 const personalSourcesLoading = ref(false)
 const personalFormError = ref('')
@@ -323,6 +328,55 @@ const selectablePlanShadowrocketTemplates = computed(() => templates.value.filte
 ))
 const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
 const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
+const savedPersonalShadowrocketDefaults = computed(() => editingPersonal.value?.routing_preset_id === personalRoutingPresetID.value
+  ? editingPersonal.value.shadowrocket_defaults : undefined)
+const personalShadowrocketDefaults = computed(() => {
+  const values = { ...savedPersonalShadowrocketDefaults.value }
+  for (const [key, target] of Object.entries(personalShadowrocketChanges.value)) {
+    if (target) values[key] = target
+    else delete values[key]
+  }
+  return values
+})
+const personalShadowrocketDirty = computed(() => Object.keys(personalShadowrocketChanges.value).length > 0)
+const personalShadowrocketDraft = computed(() => {
+  if (!personalModalOpen.value || !personalRoutingEditorExpanded.value || busy.value) return null
+  const nodes = personalNodes.value.map(node => personalNodeRequest(node, node.id))
+  return {
+    subscription_id: editingPersonal.value?.id ?? 0,
+    client_name: personalClientName.value.trim(),
+    routing_preset_id: personalRoutingPresetID.value,
+    nodes,
+    routing_bindings: normalizeRoutingBindings(selectedPersonalRoutingGroups.value, personalRoutingBindings.value, personalNodes.value.map(node => node.id)),
+    shadowrocket_defaults: personalShadowrocketDefaults.value,
+  }
+})
+watch(personalShadowrocketDraft, (draft, _, onCleanup) => {
+  personalShadowrocketOptions.value = null
+  personalShadowrocketOptionsError.value = ''
+  if (!draft) return
+  if (!draft.client_name || !draft.routing_preset_id) {
+    personalShadowrocketOptionsError.value = '请先填写同名 Client 并选择分流方案。'
+    return
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(async () => {
+    try {
+      const result = await api<{ options: ShadowrocketPolicyOptions }>('/api/personal-subscriptions/shadowrocket-policy-options', {
+        method: 'POST', body: JSON.stringify(draft), signal: controller.signal,
+      })
+      if (!controller.signal.aborted) personalShadowrocketOptions.value = result.options
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        personalShadowrocketOptionsError.value = reason instanceof Error ? reason.message : '加载 Shadowrocket 可选策略失败'
+      }
+    }
+  }, 180)
+  onCleanup(() => {
+    clearTimeout(timer)
+    controller.abort()
+  })
+})
 const personalSourceQuery = computed(() => personalSourceSearch.value.trim().toLocaleLowerCase())
 const personalSourceGroups = computed(() => {
   const groups = personalSourceTypes.map((type) => ({ type, sources: [] as PersonalSource[] }))
@@ -542,11 +596,45 @@ function pruneRoutingBindingNode(bindings: RoutingBindings, nodeID: number) {
 
 function resetPersonalEditorUI() {
   personalPreviewError.value = ''
+  personalRoutingEditorExpanded.value = false
+  personalShadowrocketChanges.value = {}
   personalSourceAdderExpanded.value = false
   personalSourceSearch.value = ''
   expandedPersonalSourceTypes.value.clear()
   expandedPersonalNodeIDs.value = new Set()
   personalBindingEditorKey.value++
+}
+
+function changePersonalShadowrocketDefault(key: string, target: ShadowrocketPolicyTarget | null) {
+  if (busy.value) return
+  const saved = savedPersonalShadowrocketDefaults.value?.[key] ?? null
+  if (JSON.stringify(saved) === JSON.stringify(target)) delete personalShadowrocketChanges.value[key]
+  else personalShadowrocketChanges.value[key] = target
+}
+
+function closePersonalEditor() {
+  if (busy.value) return
+  if (personalShadowrocketDirty.value && !window.confirm('放弃尚未保存的 Shadowrocket 默认策略？')) return
+  personalModalOpen.value = false
+}
+
+function changePersonalRoutingPreset(event: Event) {
+  const select = event.target as HTMLSelectElement
+  if (personalShadowrocketDirty.value && !window.confirm('切换分流方案会放弃尚未保存的 Shadowrocket 默认策略，是否继续？')) {
+    select.value = String(personalRoutingPresetID.value)
+    return
+  }
+  personalRoutingPresetID.value = Number(select.value)
+  personalShadowrocketChanges.value = {}
+}
+
+function personalNodeRequest(node: PersonalNode, id: number | null) {
+  return {
+    id, source_type: node.source_type, source_id: node.source_id,
+    display_name: node.display_name.trim(), enabled: node.enabled,
+    entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
+    dialer_proxy: node.chain_enabled ? node.dialer_proxy.trim() : '',
+  }
 }
 
 function openCreatePersonal() {
@@ -736,30 +824,33 @@ async function savePersonal() {
       shadowrocket_template_id: personalShadowrocketTemplateID.value || null,
     }
     if (id !== undefined) {
-      await api(`/api/personal-subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      const response = await api<{ personal_subscription: PersonalSubscription }>(`/api/personal-subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+      if (response.personal_subscription) editingPersonal.value = response.personal_subscription
     } else {
       const response = await api<{ personal_subscription: PersonalSubscription }>('/api/personal-subscriptions', {
         method: 'POST', body: JSON.stringify(body),
       })
       id = response.personal_subscription.id
+      editingPersonal.value = response.personal_subscription
     }
     groupSaved = true
     const submittedNodes = [...personalNodes.value]
     const savedNodes = await api<{ personal_subscription: PersonalSubscription }>(`/api/personal-subscriptions/${id}/nodes`, {
       method: 'PUT',
       body: JSON.stringify({
-        nodes: submittedNodes.map((node) => ({
-          id: node.id > 0 ? node.id : null,
-          source_type: node.source_type, source_id: node.source_id,
-          display_name: node.display_name.trim(), enabled: node.enabled,
-          entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
-          dialer_proxy: node.chain_enabled ? node.dialer_proxy.trim() : '',
-        })),
+        nodes: submittedNodes.map((node) => personalNodeRequest(node, node.id > 0 ? node.id : null)),
       }),
     })
     nodesSaved = true
     const savedIDs = savedNodes.personal_subscription.nodes.map((node) => node.id)
-    const idMap = new Map(submittedNodes.map((node, index) => [node.id, savedIDs[index]]))
+    const savedByName = new Map(savedNodes.personal_subscription.nodes.map(node => [node.display_name, node]))
+    const idMap = new Map<number, number>()
+    for (const node of submittedNodes) {
+      const saved = savedByName.get(node.display_name.trim())
+      if (saved && saved.source_type === node.source_type && saved.source_id === node.source_id && (node.id < 0 || node.id === saved.id)) {
+        idMap.set(node.id, saved.id)
+      }
+    }
     const translatedBindings = Object.fromEntries(Object.entries(personalRoutingBindings.value).map(([key, ids]) => [
       key,
       ids.flatMap((nodeID) => {
@@ -769,13 +860,27 @@ async function savePersonal() {
     ]))
     personalNodes.value = clonePersonalNodes(savedNodes.personal_subscription.nodes)
     personalRoutingBindings.value = translatedBindings
-    await api(`/api/personal-subscriptions/${id}/routing-bindings`, {
+    const selectedKeys = new Set(selectedPersonalRoutingGroups.value.map(group => group.key))
+    const defaults = Object.fromEntries(Object.entries(personalShadowrocketChanges.value).map(([key, target]) => {
+      if (target?.type !== 'node' || target.node_id > 0) return [key, target]
+      const savedID = idMap.get(target.node_id)
+      return [key, savedID ? { ...target, node_id: savedID } : target]
+    }))
+    personalShadowrocketChanges.value = defaults
+    const changes = Object.fromEntries(Object.entries(defaults).filter(([key, target]) => selectedKeys.has(key) || target === null))
+    if (Object.values(changes).some(target => target?.type === 'node' && target.node_id <= 0)) {
+      throw new Error('无法确认默认策略对应的节点，请重新选择该策略后保存。')
+    }
+    const settings = await api<{ personal_subscription: PersonalSubscription }>(`/api/personal-subscriptions/${id}/routing-bindings`, {
       method: 'PUT',
       body: JSON.stringify({
         routing_bindings: normalizeRoutingBindings(selectedPersonalRoutingGroups.value, translatedBindings, savedIDs),
+        ...(Object.keys(changes).length && { shadowrocket_defaults: changes }),
       }),
     })
     bindingsSaved = true
+    if (settings.personal_subscription) editingPersonal.value = settings.personal_subscription
+    personalShadowrocketChanges.value = {}
     await loadAll()
     personalModalOpen.value = false
   } catch (reason) {
@@ -792,7 +897,7 @@ async function savePersonal() {
         personalFormError.value += `；刷新服务端状态失败：${refreshMessage}`
       }
     } else if (nodesSaved && !bindingsSaved) {
-      personalFormError.value = `个人订阅和节点列表已保存，但策略组节点绑定保存失败：${message}`
+      personalFormError.value = `个人订阅和节点列表已保存，但分流绑定或默认策略保存失败：${message}`
     } else if (groupSaved) {
       personalFormError.value = `个人订阅已保存，但刷新列表失败：${message}`
     } else {
@@ -872,7 +977,7 @@ async function previewPersonal(format: 'mihomo' | 'shadowrocket') {
   personalPreviewError.value = ''
   personalPreviewLoading.value = format
   try {
-    const result = await api<{ yaml?: string; conf?: string; chain_warning?: string }>(`/api/personal-subscriptions/${subscription.id}/${format}-preview`)
+    const result = await api<{ yaml?: string; conf?: string; chain_warning?: string; policy_warning?: string }>(`/api/personal-subscriptions/${subscription.id}/${format}-preview`)
     if (!personalModalOpen.value || editingPersonal.value !== subscription) return
     const content = format === 'mihomo' ? result?.yaml : result?.conf
     if (!content?.trim()) {
@@ -881,7 +986,7 @@ async function previewPersonal(format: 'mihomo' | 'shadowrocket') {
     }
     personalPreviewTitle.value = title
     personalPreviewContent.value = content
-    personalPreviewWarning.value = result.chain_warning ?? ''
+    personalPreviewWarning.value = [result.chain_warning, result.policy_warning].filter(Boolean).join(' ')
     personalPreviewOpen.value = true
   } catch (reason) {
     if (personalModalOpen.value && editingPersonal.value === subscription) {
@@ -1701,14 +1806,15 @@ onUnmounted(() => {
     </n-card>
   </section>
 
-  <n-modal v-model:show="personalModalOpen"><n-card class="client-form-card subscription-form-card personal-subscription-form-card" :title="editingPersonal ? '编辑个人订阅' : '新增个人订阅'" closable @close="personalModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePersonal">
+  <n-modal v-model:show="personalModalOpen" :mask-closable="!personalShadowrocketDirty && !busy" :close-on-esc="!personalShadowrocketDirty && !busy"><n-card class="client-form-card subscription-form-card personal-subscription-form-card" :title="editingPersonal ? '编辑个人订阅' : '新增个人订阅'" closable @close="closePersonalEditor"><form class="auth-form" novalidate @submit.prevent="savePersonal">
     <n-alert v-if="personalFormError" type="error" closable @close="personalFormError = ''">{{ personalFormError }}</n-alert>
     <h3>基本信息</h3>
     <label><span>名称</span><n-input v-model:value="personalName" maxlength="100" /></label>
     <label><span>订阅标题</span><n-input v-model:value="personalTitle" maxlength="100" /><small class="form-help">留空时使用个人订阅名称。</small></label>
     <label><span>同名 Client</span><n-input v-model:value="personalClientName" maxlength="100" placeholder="admin" /><small class="form-help">在每个本地 Proxy 上实时精确匹配同名、当前用户可用且非订阅托管的 Client。</small></label>
     <div class="switch-row"><span>启用个人订阅</span><n-switch v-model:value="personalEnabled" /></div>
-    <label><span>分流方案</span><select v-model.number="personalRoutingPresetID" class="settings-input"><option v-for="value in selectablePersonalRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select></label>
+    <label><span>分流方案</span><select :value="personalRoutingPresetID" class="settings-input" @change="changePersonalRoutingPreset"><option v-for="value in selectablePersonalRoutingPresets" :key="value.id" :value="value.id">{{ value.name }}{{ value.is_default ? '（默认）' : '' }}</option></select></label>
+    <p v-if="editingPersonal && personalRoutingPresetID !== editingPersonal.routing_preset_id && Object.keys(editingPersonal.shadowrocket_defaults ?? {}).length" class="form-help">保存新分流方案时会清除原方案的 Shadowrocket 默认策略。</p>
     <h3>客户端模板</h3>
     <label><span>Mihomo 模板</span><select v-model.number="personalMihomoTemplateID" class="settings-input"><option :value="0">内置默认 Mihomo 模板</option><option v-for="value in selectablePersonalTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
     <label><span>Shadowrocket 模板</span><select v-model.number="personalShadowrocketTemplateID" class="settings-input"><option :value="0">内置默认 Shadowrocket 模板</option><option v-for="value in selectablePersonalShadowrocketTemplates" :key="value.id" :value="value.id">{{ value.name }}</option></select></label>
@@ -1792,11 +1898,16 @@ onUnmounted(() => {
       :nodes="personalNodes.map((node) => ({ id: node.id, name: node.display_name }))"
       default-collapsed
       :reset-key="personalBindingEditorKey"
+      :shadowrocket-defaults="personalShadowrocketDefaults"
+      :shadowrocket-options="personalShadowrocketOptions"
+      :shadowrocket-options-error="personalShadowrocketOptionsError"
+      @expanded-change="personalRoutingEditorExpanded = $event"
+      @shadowrocket-default-change="changePersonalShadowrocketDefault"
     />
     <p class="form-help">预览使用已保存的订阅配置；更改后请先保存。转换不兼容时会显示错误，Base64 也可能因节点格式无法转换而失败。预览内容包含节点凭据，请妥善保管。</p>
     <div class="modal-actions"><n-button attr-type="button" :disabled="!editingPersonal || !!personalPreviewLoading" :loading="personalPreviewLoading === 'mihomo'" @click="previewPersonal('mihomo')">预览 Mihomo</n-button><n-button attr-type="button" :disabled="!editingPersonal || !!personalPreviewLoading" :loading="personalPreviewLoading === 'shadowrocket'" @click="previewPersonal('shadowrocket')">预览 Shadowrocket</n-button></div>
     <n-alert v-if="personalPreviewError" type="error" role="alert" closable @close="personalPreviewError = ''">{{ personalPreviewError }}</n-alert>
-    <div class="modal-actions"><n-button @click="personalModalOpen = false">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
+    <div class="modal-actions"><n-button @click="closePersonalEditor">取消</n-button><n-button type="primary" attr-type="submit" :loading="busy" :disabled="busy">保存</n-button></div>
   </form></n-card></n-modal>
 
   <n-modal v-model:show="personalPreviewOpen" @after-leave="personalPreviewContent = ''"><n-card class="client-form-card subscription-form-card" :title="personalPreviewTitle" closable @close="personalPreviewOpen = false">

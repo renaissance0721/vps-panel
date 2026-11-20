@@ -11,8 +11,129 @@ import (
 	"testing"
 
 	landingstore "github.com/renaissance0721/vps-panel/panel/internal/landing"
+	subscriptionstore "github.com/renaissance0721/vps-panel/panel/internal/subscription"
 	"gopkg.in/yaml.v3"
 )
+
+func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
+	db, handler, admin, owner := setupAccountTest(t)
+	defer db.Close()
+	other, _ := registerAccount(t, db, handler, admin, "vip", "other")
+	node, err := landingstore.NewService(db).Create(t.Context(), owner, landingstore.CreateInput{
+		URI: "vless://fake-secret@example.com:443?type=tcp&security=tls&sni=example.com#Example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type payload struct {
+		Personal personalSubscriptionResponse `json:"personal_subscription"`
+	}
+	endpoint := "/api/personal-subscriptions"
+	makeGroup := func(name string) payload {
+		t.Helper()
+		created := performRequest(t, handler, http.MethodPost, endpoint, map[string]any{
+			"name": name, "client_name": "admin", "enabled": true,
+		}, admin)
+		var data payload
+		if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &data) != nil {
+			t.Fatalf("create subscription: %d %s", created.Code, created.Body)
+		}
+		return data
+	}
+	first, second := makeGroup("iPhone"), makeGroup("iPad")
+	path := func(data payload) string { return endpoint + "/" + strconv.FormatInt(data.Personal.ID, 10) }
+	preset, err := subscriptionstore.NewService(db, nil).GetRoutingPreset(t.Context(), first.Personal.RoutingPresetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := preset.Groups[0].Key
+	draft := map[string]any{
+		"subscription_id": first.Personal.ID, "client_name": "admin", "routing_preset_id": preset.ID,
+		"nodes": []map[string]any{{"id": -1, "source_type": "landing", "source_id": node.ID, "display_name": "🇯🇵 Tokyo", "enabled": true}},
+	}
+	optionsPath := endpoint + "/shadowrocket-policy-options"
+	options := performRequest(t, handler, http.MethodPost, optionsPath, draft, admin)
+	var result struct {
+		Options map[string][]subscriptionstore.ShadowrocketPolicyOption `json:"options"`
+	}
+	if options.Code != http.StatusOK || json.Unmarshal(options.Body.Bytes(), &result) != nil ||
+		len(result.Options[key]) < 2 || result.Options[key][1].Target.NodeID != -1 || result.Options[key][1].Name != "Tokyo" ||
+		strings.Contains(options.Body.String(), "fake-secret") {
+		t.Fatalf("draft options: %d %s", options.Code, options.Body)
+	}
+	if denied := performRequest(t, handler, http.MethodPost, optionsPath, draft, other); denied.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner draft: %d", denied.Code)
+	}
+	delete(draft, "subscription_id")
+	if denied := performRequest(t, handler, http.MethodPost, optionsPath, draft, other); denied.Code != http.StatusBadRequest {
+		t.Fatalf("private node accepted into another owner's draft: %d", denied.Code)
+	}
+	for _, item := range []*payload{&first, &second} {
+		saved := performRequest(t, handler, http.MethodPut, path(*item)+"/nodes", map[string]any{"nodes": []map[string]any{
+			{"source_type": "landing", "source_id": node.ID, "display_name": "🇯🇵 Tokyo", "enabled": true},
+			{"source_type": "landing", "source_id": node.ID, "display_name": "Backup", "enabled": true},
+		}}, admin)
+		if saved.Code != http.StatusOK || json.Unmarshal(saved.Body.Bytes(), item) != nil {
+			t.Fatalf("save nodes: %d %s", saved.Code, saved.Body)
+		}
+	}
+	settings := func(target subscriptionstore.ShadowrocketPolicyTarget) map[string]any {
+		return map[string]any{"routing_bindings": map[string]any{}, "shadowrocket_defaults": subscriptionstore.ShadowrocketDefaults{key: target}}
+	}
+	target := subscriptionstore.ShadowrocketPolicyTarget{Type: "node", NodeID: first.Personal.Nodes[0].ID}
+	bindingsPath := path(first) + "/routing-bindings"
+	if denied := performRequest(t, handler, http.MethodPut, bindingsPath, settings(target), other); denied.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner write: %d", denied.Code)
+	}
+	for _, invalidID := range []int64{-1, second.Personal.Nodes[0].ID} {
+		if invalid := performRequest(t, handler, http.MethodPut, bindingsPath, settings(subscriptionstore.ShadowrocketPolicyTarget{Type: "node", NodeID: invalidID}), admin); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid default %d: %d %s", invalidID, invalid.Code, invalid.Body)
+		}
+	}
+	for _, item := range []struct {
+		subscription payload
+		target       subscriptionstore.ShadowrocketPolicyTarget
+		want         string
+	}{{first, target, "Tokyo"}, {second, subscriptionstore.ShadowrocketPolicyTarget{Type: "builtin", Policy: "DIRECT"}, "DIRECT"}} {
+		save := performRequest(t, handler, http.MethodPut, path(item.subscription)+"/routing-bindings", settings(item.target), admin)
+		if save.Code != http.StatusOK {
+			t.Fatalf("set default: %d %s", save.Code, save.Body)
+		}
+		public := performRequest(t, handler, http.MethodGet, personalPath(item.subscription.Personal.SubscriptionShadowrocketURL), nil, nil)
+		preview := performRequest(t, handler, http.MethodGet, path(item.subscription)+"/shadowrocket-preview", nil, admin)
+		var conf map[string]string
+		if public.Code != http.StatusOK || preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &conf) != nil ||
+			conf["conf"] != public.Body.String() || !strings.Contains(conf["conf"], "policy-select-name="+item.want+"\n") {
+			t.Fatalf("preview/public output mismatch: %d %d", preview.Code, public.Code)
+		}
+	}
+	var reopened payload
+	backup := first.Personal.Nodes[1]
+	legacy := performRequest(t, handler, http.MethodPut, bindingsPath, map[string]any{"routing_bindings": subscriptionstore.RoutingBindings{key: {backup.ID}}}, admin)
+	if legacy.Code != http.StatusOK || json.Unmarshal(legacy.Body.Bytes(), &reopened) != nil || reopened.Personal.ShadowrocketDefaults[key] != target {
+		t.Fatal("legacy client lost the stored default")
+	}
+	remove := performRequest(t, handler, http.MethodPut, path(first)+"/nodes", map[string]any{"nodes": []map[string]any{
+		{"id": backup.ID, "source_type": "landing", "source_id": node.ID, "display_name": "Backup", "enabled": true},
+	}}, admin)
+	if remove.Code != http.StatusOK || json.Unmarshal(remove.Body.Bytes(), &reopened) != nil || reopened.Personal.ShadowrocketDefaults[key] != target {
+		t.Fatal("node deletion altered the optional default")
+	}
+	preview := performRequest(t, handler, http.MethodGet, path(first)+"/shadowrocket-preview", nil, admin)
+	var conf map[string]string
+	if preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &conf) != nil ||
+		conf["policy_warning"] == "" || strings.Contains(conf["conf"], "policy-select-name") {
+		t.Fatal("preview did not report the missing default")
+	}
+	clear := performRequest(t, handler, http.MethodPut, bindingsPath, map[string]any{
+		"shadowrocket_defaults": map[string]any{key: nil},
+	}, admin)
+	reopened = payload{}
+	if clear.Code != http.StatusOK || json.Unmarshal(clear.Body.Bytes(), &reopened) != nil || len(reopened.Personal.ShadowrocketDefaults) != 0 ||
+		len(reopened.Personal.RoutingBindings[key]) != 1 || reopened.Personal.RoutingBindings[key][0] != backup.ID {
+		t.Fatalf("explicit default clear: %d %s", clear.Code, clear.Body)
+	}
+}
 
 func TestPersonalSubscriptionAPIAdminVIPOwnerAndPublicLinks(t *testing.T) {
 	db, handler, adminCookie, adminID := setupAccountTest(t)

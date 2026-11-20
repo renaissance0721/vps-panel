@@ -370,6 +370,7 @@ type PersonalSubscription struct {
 	RoutingPresetID          int64
 	RoutingPresetName        string
 	RoutingBindings          RoutingBindings
+	ShadowrocketDefaults     ShadowrocketDefaults
 	MihomoTemplateID         *int64
 	ShadowrocketTemplateID   *int64
 	MihomoTemplateName       string
@@ -474,6 +475,7 @@ type PersonalSubscriptionData struct {
 	NodeNames            map[int64]string
 	NodeGroupNames       map[int64][]string
 	RoutingBindings      RoutingBindings
+	ShadowrocketDefaults ShadowrocketDefaults
 	RoutingPreset        *RoutingPreset
 	MihomoTemplate       *SubscriptionTemplate
 	ShadowrocketTemplate *SubscriptionTemplate

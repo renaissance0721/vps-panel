@@ -243,6 +243,10 @@ Shadowrocket 的 SOCKS5 行按地址、端口、用户名、密码的顺序写�
 
 Shadowrocket renderer 直接生成原生节点。VLESS 的 UUID 写入 `password`，SNI 写入 `peer`，REALITY 写入 `reality=true`、`pbk`、`sid`、`fp`，flow 与 Mihomo 共用处理。SS / SS2022 使用 resolved password。名称和参数按配置值转义，拒绝控制字符，错误不回显凭据。现有组类型仅支持 `select`。规则支持 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、GEOIP、RULE-SET。MATCH 转为 FINAL，IP / GEOIP / RULE-SET 保留可用的 no-resolve。末尾 MATCH 指向简单的 `include_all=true` 的 `select` 组时，Shadowrocket 将该组及其引用映射为原生 `PROXY`，使 `FINAL,PROXY` 跟随首页当前选择。含组间引用、手动绑定或正则筛选的默认组继续按原名输出。识别依据分流结构，Mihomo 始终保留原组和 MATCH。Shadowrocket 单独保留大写 `PROXY` 名称，避免节点或自定义组与原生策略冲突。不兼容的规则返回错误。
 
+个人订阅的 `shadowrocket_defaults_json` 按当前方案的策略组 Key 保存可选默认策略。目标类型为 `node`（个人节点实例 ID）、`group`（方案内策略组 Key）或 `builtin`（`DIRECT` / `REJECT`）。`PUT /api/personal-subscriptions/{id}/routing-bindings` 可附带 `shadowrocket_defaults` 按组更新。省略默认策略字段或某个 Key 保留原值，单个 Key 值为 null 时清除。仅提交默认策略改动时保留节点绑定。更换分流方案时清除原方案的默认策略。节点删除、停用或离开组时保留已保存的选择，新请求提交的无效目标返回错误。
+
+`POST /api/personal-subscriptions/shadowrocket-policy-options` 只解析编辑草稿，复用来源授权、名字规范化及策略组解析，仅返回可选成员名称和稳定目标。负节点 ID 只用于草稿，网页在保存节点后将其转换为实际 ID。整源动态展开的成员没有个人节点实例 ID，因此需单独加入订阅才能选为默认项。正式输出确认目标仍是本组成员后添加 `policy-select-name`，失效时省略该参数，管理端预览返回 `policy_warning`。原本映射为 `PROXY` 的组获得有效默认值时保留原组和引用。组名本身是保留名 `PROXY` 时沿用原生策略。
+
 RoutingPreset 是客户端无关的逻辑分流配置。Rule Provider 推荐使用 http / classical / text：Mihomo 的 rule-providers 使用原 URL，RULE-SET 保留 provider 名称；Shadowrocket 直接将同一 URL 写入 RULE-SET，仅验证类型、行为、格式及安全的 http/https URL，不按名称、域名或后缀猜测和改写。YAML、mrs、非 classical 源及不兼容规则明确拒绝，错误包含规则序号、原文、provider 名和具体原因，上下文限制长度。renderer 不下载远程规则，text 源的实际内容兼容性由配置者确认。
 
 新数据库默认十个规则源使用 Blackmatrix7 Surge classical text `.list`。升级仅修改 is_default=1 方案中仍使用旧内置 Clash YAML URL 的 provider URL / format，保留默认 ID、分组、规则、绑定及引用；自定义方案和自定义 URL 不变。

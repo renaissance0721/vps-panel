@@ -51,7 +51,9 @@ func TestRemoteLegacyIdentityUpgradePreservesSelectionAndBindings(t *testing.T) 
 		t.Fatal(err)
 	}
 	key := preset.Groups[0].Key
-	group, err = personal.SetPersonalSubscriptionRoutingBindings(t.Context(), actor, group.ID, RoutingBindings{key: {group.Nodes[0].ID}})
+	nodeID := group.Nodes[0].ID
+	group, err = personal.SetPersonalSubscriptionRouting(t.Context(), actor, group.ID, RoutingBindings{key: {nodeID}},
+		ShadowrocketDefaultUpdates{key: {Type: "node", NodeID: nodeID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +75,10 @@ func TestRemoteLegacyIdentityUpgradePreservesSelectionAndBindings(t *testing.T) 
 		data, err := personal.GeneratePersonalSubscriptionData(t.Context(), group.Token)
 		if err != nil || len(data.Nodes) != 1 || data.Nodes[0].Name != "Selected" || len(data.RoutingBindings[key]) != 1 || !strings.Contains(data.Nodes[0].RemotePayload, "fictional") {
 			t.Fatalf("reference or routing binding lost: %v", err)
+		}
+		output, warning, err := RenderPersonalShadowrocketPreview(data)
+		if err != nil || warning != "" || !strings.Contains(string(output), "policy-select-name=Selected") {
+			t.Fatalf("remote default after refresh: %v %s", err, warning)
 		}
 	}
 }

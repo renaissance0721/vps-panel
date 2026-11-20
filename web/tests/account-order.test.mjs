@@ -354,6 +354,60 @@ test('个人订阅可添加远程整源和单节点，并展示预览错误', as
   assert.equal(state.personalPreviewLoading.value, null)
 })
 
+test('保存 Shadowrocket 默认策略时按节点身份转换临时 ID，绑定失败后可以重试', async t => {
+  t.after(() => { globalThis.fetch = originalFetch })
+  const nodes = [
+    { id: -1, source_type: 'landing', source_id: 4, display_name: 'HK' },
+    { id: -2, source_type: 'landing', source_id: 4, display_name: 'Tokyo' },
+  ]
+  const persisted = [{ ...nodes[1], id: 51 }, { ...nodes[0], id: 52 }]
+  const group = {
+    id: 5, client_name: 'owner', routing_preset_id: 1, nodes: persisted,
+    shadowrocket_defaults: { grp_removed: { type: 'builtin', policy: 'REJECT' } },
+  }
+  const preset = { id: 1, enabled: true, groups: [{ key: 'grp_ai', name: 'AI' }, { key: 'grp_video', name: 'YouTube' }] }
+  const { state } = await render(Subscriptions, current => {
+    current.loading.value = false
+    current.personalModalOpen.value = true
+    current.editingPersonal.value = group
+    current.personalClientName.value = 'owner'
+    current.personalName.value = 'iPhone'
+    current.personalRoutingPresetID.value = 1
+    current.routingPresets.value = [preset]
+    current.personalNodes.value = nodes
+    current.personalRoutingBindings.value = { grp_ai: [-1, -2] }
+  }, { role: 'vip' })
+  const requests = []
+  globalThis.fetch = async (url, options) => {
+    if (url.endsWith('/nodes')) return Response.json({ personal_subscription: group })
+    if (url.endsWith('/routing-bindings')) {
+      const body = JSON.parse(options.body)
+      requests.push(body)
+      if (requests.length === 1) return Response.json({ error: '临时保存失败' }, { status: 503 })
+      const defaults = Object.fromEntries(Object.entries(body.shadowrocket_defaults).filter(([, target]) => target !== null))
+      return Response.json({ personal_subscription: { ...group, shadowrocket_defaults: defaults } })
+    }
+    if (options.method === 'PATCH') return Response.json({ personal_subscription: group })
+    if (url.endsWith('/routing-presets')) return Response.json({ routing_presets: [preset] })
+    if (url.endsWith('/templates')) return Response.json({ templates: [] })
+    return Response.json({ personal_subscriptions: [group] })
+  }
+  state.changePersonalShadowrocketDefault('grp_ai', { type: 'node', node_id: -1 })
+  state.changePersonalShadowrocketDefault('grp_video', { type: 'builtin', policy: 'DIRECT' })
+  state.changePersonalShadowrocketDefault('grp_removed', null)
+  await state.savePersonal()
+  assert.equal(state.personalModalOpen.value, true)
+  assert.match(state.personalFormError.value, /临时保存失败/)
+  assert.equal(state.personalShadowrocketDefaults.value.grp_ai.node_id, 52)
+  await state.savePersonal()
+  assert.deepEqual(requests, Array.from({ length: 2 }, () => ({
+    routing_bindings: { grp_ai: [52, 51], grp_video: [] },
+    shadowrocket_defaults: { grp_ai: { type: 'node', node_id: 52 }, grp_video: { type: 'builtin', policy: 'DIRECT' }, grp_removed: null },
+  })))
+  assert.equal(state.personalModalOpen.value, false)
+  assert.deepEqual(state.personalShadowrocketChanges.value, {})
+})
+
 test('个人和共享模板选择按客户端类型隔离，停用模板仅保留当前引用', async () => {
   const { state } = await render(Subscriptions, state => {
     state.templates.value = [

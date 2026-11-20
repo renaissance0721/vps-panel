@@ -189,6 +189,8 @@ Shadowrocket 模板保留 `[General]`，可添加 `[Host]`、`[URL Rewrite]`；`
 
 Shadowrocket 支持 VLESS（TCP，含 REALITY）、Shadowsocks / SS2022、兼容的机场 Trojan 节点、认证 SOCKS5 外部节点和 `select` 策略组。SOCKS5 以独立 TCP 节点导出。配置及预览会标出哪些链式节点会直接连接各自的服务器。需要保留机场前置链路时使用 Mihomo，或在 Shadowrocket 客户端为相应落地节点手动设置「代理通过」。[Mihomo 链式代理](docs/mihomo-chain.md)
 
+在「订阅管理 → 个人订阅 → 编辑 → 指定策略组节点」中，可为 AI、YouTube、Google 等分组分别选择「Shadowrocket 默认策略」。候选项来自该组实际成员。整条机场订阅展开的节点可先作为单节点加入订阅，再选择为默认策略。保存后预览 Shadowrocket 配置，确认对应组出现 `policy-select-name`，然后在客户端更新原配置链接。客户端会自行决定是否沿用上次手动选择。默认策略失效时，预览会提醒并保留已保存的设置，便于恢复或替换。
+
 通用分流方案由两个客户端共用。Shadowrocket 将简单的全节点默认组映射为 `FINAL,PROXY`，默认节点跟随首页当前选择。包含嵌套组、手动绑定或正则选择的默认组继续按组名分流。Rule Provider 推荐使用 http / classical / text 列表，默认规则源使用 Blackmatrix7 Surge `.list`。Mihomo 保留 provider 名称引用，Shadowrocket 将同一个 URL 直接写入 `RULE-SET`，不要求 URL 有 `.list` 后缀。自定义 YAML 源保留原数据供 Mihomo 使用，在 Shadowrocket 中会与 GEOSITE 等不兼容规则一样返回明确错误。Script、MITM、Module 不在支持范围内。[订阅架构](DEV.md#11-subscription--client--landing)
 
 ## 项目结构

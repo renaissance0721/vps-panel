@@ -153,6 +153,7 @@ func newHandlerWithMailSender(db *sql.DB, webRoot, panelVersion string, backupCo
 	mux.HandleFunc("GET /api/personal-subscriptions", s.requireManager(s.listPersonalSubscriptions))
 	mux.HandleFunc("POST /api/personal-subscriptions", s.requireManager(s.createPersonalSubscription))
 	mux.HandleFunc("GET /api/personal-subscriptions/sources", s.requireManager(s.listPersonalSubscriptionSources))
+	mux.HandleFunc("POST /api/personal-subscriptions/shadowrocket-policy-options", s.requireManager(s.personalShadowrocketPolicyOptions))
 	mux.HandleFunc("GET /api/personal-subscriptions/{id}", s.requireManager(s.getPersonalSubscription))
 	mux.HandleFunc("PATCH /api/personal-subscriptions/{id}", s.requireManager(s.updatePersonalSubscription))
 	mux.HandleFunc("DELETE /api/personal-subscriptions/{id}", s.requireManager(s.deletePersonalSubscription))

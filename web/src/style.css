@@ -1993,6 +1993,18 @@ td.server-actions {
   gap: 8px;
 }
 
+.auth-form .routing-binding-default-policy {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+@media (max-width: 480px) {
+  .auth-form .routing-binding-default-policy {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}
+
 .routing-binding-group-name {
   display: flex;
   min-width: 0;

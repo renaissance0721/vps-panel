@@ -436,7 +436,7 @@ func TestShadowrocketEscapingAndInjectionRejection(t *testing.T) {
 	if !strings.HasPrefix(line, quotedName+" = ss,2001:db8::1,8388,") || !strings.Contains(line, `password="test,\"quoted\"\\password"`) {
 		t.Fatal("unsafe quoting")
 	}
-	group, err := renderShadowrocketProxyGroup(resolvedRoutingGroup{Name: "AI", Type: "select", Proxies: []string{name}})
+	group, err := renderShadowrocketProxyGroup(resolvedRoutingGroup{Name: "AI", Type: "select", Proxies: []string{name}}, "")
 	if err != nil || group != "AI = select,"+quotedName {
 		t.Fatal("declaration and reference escaping differ")
 	}

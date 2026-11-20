@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 45
+const LatestSchemaVersion = 46
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -76,6 +76,17 @@ var migrations = []migration{
 	{version: 43, name: "remote_subscription_connectors", up: addRemoteSubscriptionConnectors},
 	{version: 44, name: "connector_proxy_settings", up: createConnectorProxySettings},
 	{version: 45, name: "remove_subscription_connectors", up: removeSubscriptionConnectors},
+	{version: 46, name: "personal_shadowrocket_defaults", up: addPersonalShadowrocketDefaults},
+}
+
+func addPersonalShadowrocketDefaults(ctx context.Context, tx *sql.Tx) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('personal_subscription_groups') WHERE name='shadowrocket_defaults_json'`).Scan(&exists); err != nil || exists != 0 {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `ALTER TABLE personal_subscription_groups ADD COLUMN shadowrocket_defaults_json TEXT NOT NULL DEFAULT '{}'
+		CHECK (json_valid(shadowrocket_defaults_json) AND json_type(shadowrocket_defaults_json) = 'object')`)
+	return err
 }
 
 func removeSubscriptionConnectors(ctx context.Context, tx *sql.Tx) error {

@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { onUnmounted, computed, ref, watch } from 'vue'
-import { NButton, NTag } from 'naive-ui'
+import { NButton, NSelect, NTag } from 'naive-ui'
 import type { RoutingGroup } from './RoutingGroupEditor.vue'
 import { beginDragPreview, endDragPreview } from '../../drag'
 
 export type RoutingBindings = Record<string, number[]>
 export type RoutingBindingNode = { id: number; name: string }
+export type ShadowrocketPolicyTarget =
+  | { type: 'node'; node_id: number }
+  | { type: 'group'; group_key: string }
+  | { type: 'builtin'; policy: 'DIRECT' | 'REJECT' }
+export type ShadowrocketDefaults = Record<string, ShadowrocketPolicyTarget>
+export type ShadowrocketPolicyOptions = Record<string, { target: ShadowrocketPolicyTarget; name: string }[]>
 
 const props = withDefaults(defineProps<{
   modelValue: RoutingBindings
@@ -13,17 +19,72 @@ const props = withDefaults(defineProps<{
   nodes: RoutingBindingNode[]
   defaultCollapsed?: boolean
   resetKey?: number
+  shadowrocketDefaults?: ShadowrocketDefaults
+  shadowrocketOptions?: ShadowrocketPolicyOptions | null
+  shadowrocketOptionsError?: string
 }>(), {
   defaultCollapsed: false,
   resetKey: 0,
 })
-const emit = defineEmits<{ 'update:modelValue': [value: RoutingBindings] }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: RoutingBindings]
+  'expanded-change': [expanded: boolean]
+  'shadowrocket-default-change': [key: string, target: ShadowrocketPolicyTarget | null]
+}>()
 
 const editorExpanded = ref(!props.defaultCollapsed)
 const expandedGroupKeys = ref<Set<string>>(new Set())
 const dragged = ref<{ groupKey: string; nodeID: number } | null>(null)
 const dropTarget = ref<{ groupKey: string; nodeID: number } | null>(null)
 const nodeByID = computed(() => new Map(props.nodes.map((node) => [node.id, node])))
+const removedDefaultKeys = computed(() => {
+  const groupKeys = new Set(props.groups.map(group => group.key))
+  return Object.keys(props.shadowrocketDefaults ?? {}).filter(key => !groupKeys.has(key))
+})
+const policyChoices = computed(() => Object.fromEntries(props.groups.map(group => {
+  const available = (props.shadowrocketOptions?.[group.key] ?? []).map(({ target, name }) => ({
+    value: policyKey(target), label: policyLabel(name), target,
+  }))
+  const saved = props.shadowrocketDefaults?.[group.key]
+  const unavailable = Boolean(saved && props.shadowrocketOptions && !available.some(option => option.value === policyKey(saved)))
+  const options = [{ value: '', label: '不指定（使用客户端默认行为）' }, ...available]
+  if (saved && !available.some(option => option.value === policyKey(saved))) {
+    options.push({ value: policyKey(saved), label: unavailable ? `${savedPolicyLabel(saved)}（暂不可用）` : savedPolicyLabel(saved) })
+  }
+  return [group.key, { options, available, unavailable, value: saved ? policyKey(saved) : '' }]
+})))
+
+function policyKey(target: ShadowrocketPolicyTarget) {
+  switch (target.type) {
+    case 'node': return `node:${target.node_id}`
+    case 'group': return `group:${target.group_key}`
+    case 'builtin': return `builtin:${target.policy}`
+  }
+}
+
+function policyLabel(name: string) {
+  if (name === 'DIRECT') return 'DIRECT（直连）'
+  if (name === 'REJECT') return 'REJECT（拒绝连接）'
+  if (name === 'PROXY') return 'PROXY（首页当前节点）'
+  return name
+}
+
+function savedPolicyLabel(target: ShadowrocketPolicyTarget) {
+  switch (target.type) {
+    case 'node': return nodeByID.value.get(target.node_id)?.name ?? `节点 #${target.node_id}`
+    case 'group': return props.groups.find(group => group.key === target.group_key)?.name ?? '已保存的策略组'
+    case 'builtin': return policyLabel(target.policy)
+  }
+}
+
+function updateShadowrocketDefault(groupKey: string, value: string) {
+  if (!value) {
+    emit('shadowrocket-default-change', groupKey, null)
+    return
+  }
+  const choice = policyChoices.value[groupKey]?.available.find(option => option.value === value)
+  if (choice) emit('shadowrocket-default-change', groupKey, choice.target)
+}
 
 watch(() => props.resetKey, () => {
   editorExpanded.value = !props.defaultCollapsed
@@ -95,13 +156,22 @@ onUnmounted(() => { if (dragged.value !== null) endDrag() })
   <section class="subscription-node-picker routing-binding-editor">
     <div class="collapsible-section-header">
       <strong>指定策略组节点（可选）</strong>
-      <n-button size="tiny" secondary attr-type="button" :aria-expanded="editorExpanded" @click="editorExpanded = !editorExpanded">
+      <n-button size="tiny" secondary attr-type="button" :aria-expanded="editorExpanded" @click="editorExpanded = !editorExpanded; emit('expanded-change', editorExpanded)">
         {{ editorExpanded ? '收起' : '展开' }}
       </n-button>
     </div>
     <div v-if="editorExpanded" class="routing-binding-editor-body">
       <p class="form-help">用于为某些策略组额外指定当前订阅中的节点。开启“包含订阅全部节点”的策略组通常无需在这里选择。</p>
       <p class="form-help">如果策略组开启“包含订阅全部节点”，这里指定的节点会优先排在前面，其余节点随后补入。</p>
+      <template v-if="shadowrocketDefaults">
+        <p class="form-help">Shadowrocket 默认策略独立于绑定顺序。客户端是否沿用上次手动选择，由客户端决定。机场整源展开的节点需单独添加后才能指定。</p>
+        <div v-if="removedDefaultKeys.length" class="collapsible-section-header">
+          <span class="form-help">{{ removedDefaultKeys.length }} 项默认策略所属的策略组已移除。</span>
+          <n-button size="tiny" secondary attr-type="button" @click="removedDefaultKeys.forEach(key => emit('shadowrocket-default-change', key, null))">清除</n-button>
+        </div>
+        <p v-if="shadowrocketOptionsError" class="form-help" role="alert">{{ shadowrocketOptionsError }}</p>
+        <p v-else-if="!shadowrocketOptions" class="form-help" role="status">正在解析可选策略…</p>
+      </template>
       <div v-for="group in groups" :key="group.key" class="routing-binding-group">
         <div class="routing-binding-group-summary">
           <div class="routing-binding-group-name">
@@ -113,6 +183,18 @@ onUnmounted(() => { if (dragged.value !== null) endDrag() })
             {{ expandedGroupKeys.has(group.key) ? '收起' : '展开' }}
           </n-button>
         </div>
+        <label v-if="shadowrocketDefaults" class="routing-binding-default-policy">
+          <span>Shadowrocket 默认策略</span>
+          <n-select
+            size="small"
+            :aria-label="`${group.name} 的 Shadowrocket 默认策略`"
+            :options="policyChoices[group.key].options"
+            :value="policyChoices[group.key].value"
+            :status="policyChoices[group.key].unavailable ? 'warning' : undefined"
+            @update:value="updateShadowrocketDefault(group.key, $event)"
+          />
+        </label>
+        <p v-if="shadowrocketDefaults && group.name === 'PROXY'" class="form-help">原生 PROXY 跟随客户端首页选择。</p>
         <div v-if="expandedGroupKeys.has(group.key)" class="routing-binding-group-content">
           <span v-if="nodes.length === 0" class="form-help">当前订阅没有可绑定节点</span>
           <label v-for="node in nodes" :key="node.id" class="subscription-node-option">

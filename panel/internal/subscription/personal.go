@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,8 +169,9 @@ func (s *Service) UpdatePersonalSubscription(ctx context.Context, actor Personal
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE personal_subscription_groups
 		SET name = ?, subscription_title = ?, enabled = ?, client_name = ?, routing_preset_id = ?,
+		shadowrocket_defaults_json = CASE WHEN routing_preset_id = ? THEN shadowrocket_defaults_json ELSE '{}' END,
 		mihomo_template_id = ?, shadowrocket_template_id = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
-		name, title, enabled, clientName, routingID, nullableID(templateID), nullableID(shadowrocketTemplateID),
+		name, title, enabled, clientName, routingID, routingID, nullableID(templateID), nullableID(shadowrocketTemplateID),
 		s.now().UTC().Truncate(time.Second).Unix(), id, actor.UserID); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("update personal subscription: %w", err)
 	}
@@ -193,13 +195,9 @@ func (s *Service) DeletePersonalSubscription(ctx context.Context, actor Personal
 	return nil
 }
 
-func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor, id int64,
-	inputs []SetPersonalSubscriptionNodeInput,
-) (PersonalSubscription, error) {
-	group, err := s.GetPersonalSubscription(ctx, actor, id)
-	if err != nil {
-		return PersonalSubscription{}, err
-	}
+func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor, group PersonalSubscription,
+	inputs []SetPersonalSubscriptionNodeInput, preview bool,
+) ([]SetPersonalSubscriptionNodeInput, error) {
 	existing := make(map[int64]PersonalSubscriptionNode, len(group.Nodes))
 	for _, node := range group.Nodes {
 		existing[node.ID] = node
@@ -208,15 +206,18 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	seenNames := make(map[string]struct{}, len(inputs))
 	seenIDs := make(map[int64]struct{}, len(inputs))
 	for _, input := range inputs {
+		if preview && input.ID == nil {
+			return nil, ErrInvalidPersonalNodes
+		}
 		if input.ID != nil {
-			if *input.ID <= 0 {
-				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			if *input.ID == 0 || (*input.ID < 0 && !preview) {
+				return nil, ErrInvalidPersonalNodes
 			}
-			if _, exists := existing[*input.ID]; !exists {
-				return PersonalSubscription{}, ErrInvalidPersonalNodes
+			if _, exists := existing[*input.ID]; *input.ID > 0 && !exists {
+				return nil, ErrInvalidPersonalNodes
 			}
 			if _, duplicate := seenIDs[*input.ID]; duplicate {
-				return PersonalSubscription{}, ErrInvalidPersonalNodes
+				return nil, ErrInvalidPersonalNodes
 			}
 			seenIDs[*input.ID] = struct{}{}
 		}
@@ -232,31 +233,32 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		upstream := strings.TrimSpace(*input.DialerProxy)
 		if !utf8.ValidString(upstream) || utf8.RuneCountInString(upstream) > maxNameRunes || strings.IndexFunc(upstream, unicode.IsControl) >= 0 || upstream == "DIRECT" || upstream == "REJECT" ||
 			(upstream != "" && (input.SourceType == PersonalSourceRemoteSource || input.SourceType == PersonalSourceRemoteNode)) {
-			return PersonalSubscription{}, ErrInvalidPersonalNodes
+			return nil, ErrInvalidPersonalNodes
 		}
 		input.DialerProxy = &upstream
 		if !validPersonalSourceType(input.SourceType) || input.SourceID <= 0 || input.DisplayName == "" ||
 			utf8.RuneCountInString(input.DisplayName) > maxNameRunes {
-			return PersonalSubscription{}, ErrInvalidPersonalNodes
+			return nil, ErrInvalidPersonalNodes
 		}
 		if _, duplicate := seenNames[input.DisplayName]; duplicate {
-			return PersonalSubscription{}, ErrInvalidPersonalNodes
+			return nil, ErrInvalidPersonalNodes
 		}
-		input.EntryHost, input.EntryPort, err = normalizePersonalNodeEndpoint(input.EntryHost, input.EntryPort)
+		host, port, err := normalizePersonalNodeEndpoint(input.EntryHost, input.EntryPort)
 		if err != nil {
-			return PersonalSubscription{}, err
+			return nil, err
 		}
+		input.EntryHost, input.EntryPort = host, port
 		if (input.SourceType == PersonalSourceRemoteSource || input.SourceType == PersonalSourceRemoteNode) && (input.EntryHost != nil || input.EntryPort != nil) {
-			return PersonalSubscription{}, ErrInvalidPersonalNodes
+			return nil, ErrInvalidPersonalNodes
 		}
 		state, err := s.inspectPersonalSource(ctx, actor, input.SourceType, input.SourceID, group.ClientName,
 			input.DisplayName, input.EntryHost, input.EntryPort, false)
 		if err != nil {
-			return PersonalSubscription{}, err
+			return nil, err
 		}
 		if !state.accessible || !state.selectable {
 			if input.ID == nil || existing[*input.ID].SourceType != input.SourceType || existing[*input.ID].SourceID != input.SourceID {
-				return PersonalSubscription{}, ErrPersonalSourceNotFound
+				return nil, ErrPersonalSourceNotFound
 			}
 		}
 		seenNames[input.DisplayName] = struct{}{}
@@ -266,9 +268,23 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	for _, input := range normalized {
 		if *input.DialerProxy != "" {
 			if _, exists := seenNames[*input.DialerProxy]; exists {
-				return PersonalSubscription{}, ErrInvalidPersonalNodes
+				return nil, ErrInvalidPersonalNodes
 			}
 		}
+	}
+	return normalized, nil
+}
+
+func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor, id int64,
+	inputs []SetPersonalSubscriptionNodeInput,
+) (PersonalSubscription, error) {
+	group, err := s.GetPersonalSubscription(ctx, actor, id)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	normalized, err := s.normalizePersonalSubscriptionNodes(ctx, actor, group, inputs, false)
+	if err != nil {
+		return PersonalSubscription{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -313,7 +329,8 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 		}
 		keptIDs[createdID] = struct{}{}
 	}
-	for existingID := range existing {
+	for _, node := range group.Nodes {
+		existingID := node.ID
 		if _, keep := keptIDs[existingID]; keep {
 			continue
 		}
@@ -342,6 +359,12 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 func (s *Service) SetPersonalSubscriptionRoutingBindings(ctx context.Context, actor PersonalSubscriptionActor,
 	id int64, bindings RoutingBindings,
 ) (PersonalSubscription, error) {
+	return s.SetPersonalSubscriptionRouting(ctx, actor, id, bindings, nil)
+}
+
+func (s *Service) SetPersonalSubscriptionRouting(ctx context.Context, actor PersonalSubscriptionActor,
+	id int64, bindings RoutingBindings, updates ShadowrocketDefaultUpdates,
+) (PersonalSubscription, error) {
 	group, err := s.GetPersonalSubscription(ctx, actor, id)
 	if err != nil {
 		return PersonalSubscription{}, err
@@ -354,6 +377,10 @@ func (s *Service) SetPersonalSubscriptionRoutingBindings(ctx context.Context, ac
 	for _, node := range group.Nodes {
 		allowed[node.ID] = struct{}{}
 	}
+	defaultsOnly := bindings == nil && len(updates) > 0
+	if defaultsOnly {
+		bindings = group.RoutingBindings
+	}
 	normalized, err := normalizeRoutingBindings(bindings, preset.Groups, allowed)
 	if err != nil {
 		return PersonalSubscription{}, err
@@ -362,14 +389,44 @@ func (s *Service) SetPersonalSubscriptionRoutingBindings(ctx context.Context, ac
 	if err != nil {
 		return PersonalSubscription{}, err
 	}
+	var nextBindings any = encoded
+	var previousBindings any
+	if defaultsOnly {
+		nextBindings, previousBindings = nil, string(encoded)
+	}
+	var previous, next any
+	if len(updates) > 0 {
+		group.RoutingBindings = normalized
+		defaults, err := s.applyShadowrocketDefaultUpdates(ctx, actor, group, preset, updates)
+		if err != nil {
+			return PersonalSubscription{}, err
+		}
+		oldJSON, err := json.Marshal(group.ShadowrocketDefaults)
+		if err != nil {
+			return PersonalSubscription{}, err
+		}
+		newJSON, err := json.Marshal(defaults)
+		if err != nil {
+			return PersonalSubscription{}, err
+		}
+		previous, next = string(oldJSON), string(newJSON)
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE personal_subscription_groups
-		SET routing_bindings_json = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
-		encoded, s.now().UTC().Truncate(time.Second).Unix(), id, actor.UserID)
+		SET routing_bindings_json = COALESCE(?, routing_bindings_json), shadowrocket_defaults_json = COALESCE(?, shadowrocket_defaults_json), updated_at = ?
+		WHERE id = ? AND owner_user_id = ? AND routing_preset_id = ?
+		  AND (? IS NULL OR shadowrocket_defaults_json = ?)
+		  AND (? IS NULL OR CAST(routing_bindings_json AS TEXT) = ?)`,
+		nextBindings, next, s.now().UTC().Truncate(time.Second).Unix(), id, actor.UserID, preset.ID, previous, previous, previousBindings, previousBindings)
 	if err != nil {
 		return PersonalSubscription{}, fmt.Errorf("update personal subscription routing bindings: %w", err)
 	}
-	if count, err := result.RowsAffected(); err != nil || count != 1 {
-		return PersonalSubscription{}, ErrPersonalSubscriptionNotFound
+	if count, err := result.RowsAffected(); err != nil {
+		return PersonalSubscription{}, err
+	} else if count != 1 {
+		if _, err := s.GetPersonalSubscription(ctx, actor, id); err != nil {
+			return PersonalSubscription{}, err
+		}
+		return PersonalSubscription{}, ErrShadowrocketDefaultsChanged
 	}
 	return s.GetPersonalSubscription(ctx, actor, id)
 }
@@ -498,12 +555,12 @@ func (s *Service) generatePersonalSubscriptionDataForOwner(ctx context.Context, 
 	if err != nil {
 		return PersonalSubscriptionData{}, err
 	}
-	result := PersonalSubscriptionData{
-		Title: group.SubscriptionTitle, NodeNames: make(map[int64]string), NodeGroupNames: make(map[int64][]string),
-		RoutingBindings: group.RoutingBindings, RoutingPreset: &routing,
+	result, err := s.resolvePersonalSubscriptionNodes(ctx, actor, group, routing, localOnly)
+	if err != nil {
+		return PersonalSubscriptionData{}, err
 	}
-	if result.Title == "" {
-		result.Title = group.Name
+	if len(result.Nodes) == 0 {
+		return PersonalSubscriptionData{}, ErrPersonalSubscriptionEmpty
 	}
 	if group.MihomoTemplateID != nil {
 		template, err := s.GetTemplate(ctx, *group.MihomoTemplateID)
@@ -522,6 +579,19 @@ func (s *Service) generatePersonalSubscriptionDataForOwner(ctx context.Context, 
 		if template.Enabled {
 			result.ShadowrocketTemplate = &template
 		}
+	}
+	return result, nil
+}
+
+func (s *Service) resolvePersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor,
+	group PersonalSubscription, routing RoutingPreset, localOnly bool,
+) (PersonalSubscriptionData, error) {
+	result := PersonalSubscriptionData{
+		Title: group.SubscriptionTitle, NodeNames: make(map[int64]string), NodeGroupNames: make(map[int64][]string),
+		RoutingBindings: group.RoutingBindings, RoutingPreset: &routing, ShadowrocketDefaults: group.ShadowrocketDefaults,
+	}
+	if result.Title == "" {
+		result.Title = group.Name
 	}
 	usedNames := map[string]bool{"DIRECT": true, "REJECT": true}
 	for _, group := range routing.Groups {
@@ -583,9 +653,6 @@ func (s *Service) generatePersonalSubscriptionDataForOwner(ctx context.Context, 
 		state.resolved.DialerProxy = node.DialerProxy
 		result.Nodes = append(result.Nodes, *state.resolved)
 		result.NodeNames[node.ID] = state.resolved.Name
-	}
-	if len(result.Nodes) == 0 {
-		return PersonalSubscriptionData{}, ErrPersonalSubscriptionEmpty
 	}
 	return result, nil
 }
@@ -1064,7 +1131,7 @@ func personalSourceKey(sourceType string, sourceID int64) string {
 
 const personalSubscriptionSelect = `SELECT groups.id, groups.owner_user_id, groups.name,
 	groups.subscription_title, groups.token, groups.enabled, groups.client_name,
-	groups.routing_preset_id, routing.name, groups.routing_bindings_json,
+	groups.routing_preset_id, routing.name, groups.routing_bindings_json, groups.shadowrocket_defaults_json,
 	groups.mihomo_template_id, COALESCE(templates.name, ''),
 	groups.shadowrocket_template_id, COALESCE(shadowrocket_templates.name, ''),
 	groups.created_at, groups.updated_at
@@ -1077,11 +1144,11 @@ func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 	var value PersonalSubscription
 	var enabled int
 	var templateID, shadowrocketTemplateID sql.NullInt64
-	var routingBindingsJSON string
+	var routingBindingsJSON, defaultsJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.SubscriptionTitle, &value.Token,
 		&enabled, &value.ClientName, &value.RoutingPresetID, &value.RoutingPresetName,
-		&routingBindingsJSON, &templateID, &value.MihomoTemplateName, &shadowrocketTemplateID, &value.ShadowrocketTemplateName, &createdAt, &updatedAt); err != nil {
+		&routingBindingsJSON, &defaultsJSON, &templateID, &value.MihomoTemplateName, &shadowrocketTemplateID, &value.ShadowrocketTemplateName, &createdAt, &updatedAt); err != nil {
 		return PersonalSubscription{}, err
 	}
 	bindings, err := decodeRoutingBindings(routingBindingsJSON)
@@ -1089,6 +1156,10 @@ func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 		return PersonalSubscription{}, err
 	}
 	value.RoutingBindings = bindings
+	value.ShadowrocketDefaults = make(ShadowrocketDefaults)
+	if err := json.Unmarshal([]byte(defaultsJSON), &value.ShadowrocketDefaults); err != nil {
+		return PersonalSubscription{}, fmt.Errorf("decode Shadowrocket defaults: %w", err)
+	}
 	if templateID.Valid {
 		id := templateID.Int64
 		value.MihomoTemplateID = &id

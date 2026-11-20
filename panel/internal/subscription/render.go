@@ -296,6 +296,12 @@ func encodeYAMLValue(value any) (*yaml.Node, error) {
 func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
 	allNames, matchNames []string,
 ) ([]resolvedRoutingGroup, error) {
+	return resolveRoutingGroupMembers(groups, bindings, names, allNames, matchNames, false)
+}
+
+func resolveRoutingGroupMembers(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
+	allNames, matchNames []string, allowEmpty bool,
+) ([]resolvedRoutingGroup, error) {
 	values := make([]resolvedRoutingGroup, 0, len(groups))
 	for _, group := range groups {
 		members := make([]string, 0, len(group.Proxies)+len(bindings[group.Key])+len(allNames))
@@ -328,7 +334,7 @@ func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names
 			members = append(members, allNames...)
 		}
 		members = uniqueStrings(members)
-		if len(members) == 0 {
+		if len(members) == 0 && !allowEmpty {
 			return nil, fmt.Errorf("策略组 %q 没有任何可用成员: %w", group.Name, ErrRoutingGroupEmpty)
 		}
 		values = append(values, resolvedRoutingGroup{Name: group.Name, Type: group.Type, Proxies: members})

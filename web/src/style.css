@@ -1565,6 +1565,11 @@ td.server-actions {
   overflow: auto;
 }
 
+.personal-subscription-form-card {
+  width: min(780px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+}
+
 .monitor-page {
   min-width: 0;
   container-type: inline-size;
@@ -2024,7 +2029,6 @@ td.server-actions {
   padding: 12px;
 }
 
-.personal-source-group,
 .personal-node-editor {
   display: grid;
   gap: 10px;
@@ -2032,10 +2036,6 @@ td.server-actions {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
-}
-
-.personal-source-group .invitation-row {
-  background: #ffffff;
 }
 
 .personal-source-adder {
@@ -2048,21 +2048,75 @@ td.server-actions {
   gap: 8px;
 }
 
-.personal-source-scroll {
-  display: grid;
-  gap: 10px;
-  max-height: min(45vh, 420px);
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.personal-source-scroll .invitation-row > div {
+.personal-source-group {
   min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
 }
 
-.personal-source-scroll .invitation-row span,
-.personal-source-scroll .invitation-row small {
+.personal-source-group-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+}
+
+.personal-source-group-toggle:not(:disabled) {
+  cursor: pointer;
+}
+
+.personal-source-group-toggle:not(:disabled):hover {
+  background: var(--color-primary-soft);
+}
+
+.personal-source-group-toggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.personal-source-group-chevron {
+  width: 7px;
+  height: 7px;
+  margin: 0 3px;
+  border: solid var(--color-text-secondary);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+
+.personal-source-group-toggle[aria-expanded="true"] .personal-source-group-chevron {
+  transform: rotate(45deg);
+}
+
+.personal-source-group-count {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.personal-source-group-content {
+  padding-inline: 10px;
+}
+
+.personal-source-group-content .invitation-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.personal-source-group-content .invitation-row > div {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 

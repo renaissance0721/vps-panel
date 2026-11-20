@@ -179,6 +179,127 @@ test('个人订阅卡片保留四个主要操作，编辑器提供配置预览',
   assert.doesNotMatch(source, /regeneratePersonalToken|regenerateUserToken/)
 })
 
+test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并沿用原有保存流程', async t => {
+  t.after(() => { globalThis.fetch = originalFetch })
+  const sources = [
+    ['proxy', 1, 'Proxy 测试', '🇯🇵'],
+    ['relay', 1, '本地中转测试', 'via Proxy'],
+    ['landing', 1, '住宅落地测试', 'NYC edge'],
+    ['remote_source', 1, '机场订阅测试', '全部缓存'],
+    ['remote_node', 1, '纽约机场节点', 'NYC edge'],
+    ['remote_node', 2, '东京机场节点', 'Tokyo edge'],
+  ].map(([source_type, source_id, name, detail]) => ({
+    source_type, source_id, name, detail, default_name: name,
+    status: 'ready', status_detail: '可用', requires_client: false,
+  }))
+  const existing = {
+    id: 11, source_type: 'relay', source_id: 1, source_name: '本地中转测试', source_detail: 'via Proxy',
+    display_name: '已选中转', enabled: true, position: 1, entry_host: 'relay.example.test', entry_port: 443,
+    dialer_proxy: '', status: 'ready', status_detail: '可用', requires_client: false,
+  }
+  const subscription = {
+    ...personalSubscriptions()[0], subscription_title: '手机', routing_preset_id: 1,
+    nodes: [existing], routing_bindings: { grp_main: [11] },
+  }
+  const preset = { id: 1, name: '默认分流', enabled: true, groups: [{ key: 'grp_main', name: '默认组' }] }
+  const lists = {
+    '/api/personal-subscriptions': { personal_subscriptions: [subscription] },
+    '/api/admin/subscription/routing-presets': { routing_presets: [preset] },
+    '/api/admin/subscription/templates': { templates: [] },
+  }
+  let candidates = sources
+  const writes = []
+  globalThis.fetch = async (url, options) => {
+    if (options.method) {
+      writes.push({ url, method: options.method, body: JSON.parse(options.body) })
+      if (url.endsWith('/nodes')) {
+        const added = { ...existing, id: 12, source_type: 'proxy', source_id: 1, display_name: sources[0].name }
+        return Response.json({ personal_subscription: { ...subscription, nodes: [existing, added] } })
+      }
+      return Response.json({})
+    }
+    if (url.includes('/sources?')) return Response.json({ sources: candidates })
+    if (url === '/api/personal-subscriptions/1') return Response.json({ personal_subscription: subscription })
+    if (url === '/api/personal-subscriptions/2') return Response.json({ personal_subscription: { ...subscription, id: 2, nodes: [] } })
+    assert.ok(lists[url], `unexpected request: ${url}`)
+    return Response.json(lists[url])
+  }
+  const { state } = await render(Subscriptions, current => {
+    current.loading.value = false
+    current.routingPresets.value = [preset]
+  }, { role: 'vip' })
+  const pickerHTML = async () => {
+    const { html } = await render(Subscriptions, current => {
+      current.loading.value = false
+      for (const key of ['personalModalOpen', 'editingPersonal', 'personalSourceAdderExpanded', 'personalSourceSearch',
+        'personalSources', 'expandedPersonalSourceTypes', 'personalNodes']) current[key].value = state[key].value
+    }, { role: 'vip' })
+    return html.match(/<section[^>]+class="subscription-node-picker personal-source-adder"[^>]*>[\s\S]+?<\/section>/)?.[0] ?? ''
+  }
+  function assertGroups(html, expected) {
+    const headers = [...html.matchAll(/aria-expanded="(true|false)" aria-controls="([^"]+)"[^>]*>[\s\S]*?<strong[^>]*>([^<]+)<\/strong>\s*<span class="personal-source-group-count"[^>]*>(\d+) 个<\/span>/g)]
+    assert.deepEqual(headers.map(([, expanded, , name, count]) => [name, Number(count), expanded === 'true']), expected)
+    for (const [, , id] of headers) assert.ok(html.includes(`id="${id}"`))
+  }
+
+  await state.openEditPersonal(subscription)
+  assert.equal(await pickerHTML(), '')
+  await state.togglePersonalSourceAdder()
+  const initial = [
+    ['受管 Proxy 节点', 1, false], ['本地中转', 1, false], ['外部 Landing 节点', 1, false],
+    ['机场订阅（全部节点）', 1, false], ['机场订阅节点', 2, false],
+  ]
+  let html = await pickerHTML()
+  assertGroups(html, initial)
+  assert.doesNotMatch(html, /Proxy 测试|本地中转测试|纽约机场节点/)
+
+  state.togglePersonalSourceGroup('proxy')
+  state.togglePersonalSourceGroup('relay')
+  html = await pickerHTML()
+  assertGroups(html, initial.map(([name, count], index) => [name, count, index < 2]))
+  assert.match(html, /Proxy 测试/)
+  assert.match(html, /本地中转测试/)
+  state.togglePersonalSourceGroup('relay')
+  assert.doesNotMatch(await pickerHTML(), /本地中转测试/)
+
+  state.personalSourceSearch.value = '  nyc EDGE '
+  html = await pickerHTML()
+  assertGroups(html, [['外部 Landing 节点', 1, true], ['机场订阅节点', 1, true]])
+  assert.match(html, /纽约机场节点/)
+  assert.doesNotMatch(html, /东京机场节点/)
+  state.personalSourceSearch.value = 'missing'
+  html = await pickerHTML()
+  assert.equal([...html.matchAll(/没有匹配的节点来源/g)].length, 1)
+  assertGroups(html, [])
+
+  state.personalSourceSearch.value = ''
+  const restored = initial.map(([name, count], index) => [name, count, index === 0])
+  assertGroups(await pickerHTML(), restored)
+  assert.deepEqual(state.personalNodes.value.map(node => node.id), [11])
+  state.addPersonalSource(sources[0])
+  candidates = sources.filter(source => source.name !== '东京机场节点')
+  await state.loadPersonalSources()
+  assertGroups(await pickerHTML(), restored.map(([name, count, expanded], index) => [name, index === 4 ? 1 : count, expanded]))
+  assert.equal(state.personalNodes.value[0].entry_host, existing.entry_host)
+  assert.equal(state.personalTitle.value, subscription.subscription_title)
+
+  await state.savePersonal()
+  assert.deepEqual(writes.map(({ url, method }) => [url, method]), [
+    ['/api/personal-subscriptions/1', 'PATCH'],
+    ['/api/personal-subscriptions/1/nodes', 'PUT'],
+    ['/api/personal-subscriptions/1/routing-bindings', 'PUT'],
+  ])
+  assert.deepEqual(writes[1].body.nodes.map(node => [node.id, node.source_type, node.source_id]), [[11, 'relay', 1], [null, 'proxy', 1]])
+  assert.deepEqual(writes[2].body, { routing_bindings: { grp_main: [11] } })
+  assert.equal(state.personalModalOpen.value, false)
+  assert.equal(state.personalFormError.value, '')
+
+  await state.openEditPersonal({ ...subscription, id: 2 })
+  assert.equal(await pickerHTML(), '')
+  await state.togglePersonalSourceAdder()
+  assertGroups(await pickerHTML(), initial.map(([name]) => [name, 1, false]))
+})
+
 test('个人订阅可添加远程整源和单节点，并展示预览错误', async t => {
   t.after(() => { globalThis.fetch = originalFetch })
   const sources = [

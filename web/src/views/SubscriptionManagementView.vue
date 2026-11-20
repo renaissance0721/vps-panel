@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, computed, onMounted, ref } from 'vue'
+import { onUnmounted, computed, onMounted, ref, useId } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NInputNumber, NModal, NRadio, NRadioGroup, NSpin, NSwitch, NTag } from 'naive-ui'
 import { api } from '../api/client'
 import RoutingBindingEditor, { type RoutingBindings } from '../components/subscription/RoutingBindingEditor.vue'
@@ -275,6 +275,8 @@ const subscriptionQR = ref<SubscriptionLinks | null>(null)
 const subscriptionQROpen = ref(false)
 const personalSourceTypes: PersonalSource['source_type'][] = ['proxy', 'relay', 'landing', 'remote_source', 'remote_node']
 const personalSourceAdderExpanded = ref(false)
+const expandedPersonalSourceTypes = ref(new Set<PersonalSource['source_type']>())
+const personalSourceGroupID = useId()
 const personalSourceSearch = ref('')
 const personalBindingEditorKey = ref(0)
 const planBindingEditorKey = ref(0)
@@ -321,10 +323,17 @@ const selectablePlanShadowrocketTemplates = computed(() => templates.value.filte
 ))
 const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
 const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
-const filteredPersonalSources = computed(() => {
-  const query = personalSourceSearch.value.trim().toLocaleLowerCase()
-  if (!query) return personalSources.value
-  return personalSources.value.filter((source) => `${source.name}\n${source.detail}`.toLocaleLowerCase().includes(query))
+const personalSourceQuery = computed(() => personalSourceSearch.value.trim().toLocaleLowerCase())
+const personalSourceGroups = computed(() => {
+  const groups = personalSourceTypes.map((type) => ({ type, sources: [] as PersonalSource[] }))
+  const groupsByType = new Map(groups.map((group) => [group.type, group.sources]))
+  const query = personalSourceQuery.value
+  for (const source of personalSources.value) {
+    if (!query || `${source.name}\n${source.detail}`.toLocaleLowerCase().includes(query)) {
+      groupsByType.get(source.source_type)?.push(source)
+    }
+  }
+  return query ? groups.filter((group) => group.sources.length > 0) : groups
 })
 const routingRuleLines = computed({
   get: () => routingLines(routingRulesText.value),
@@ -535,6 +544,7 @@ function resetPersonalEditorUI() {
   personalPreviewError.value = ''
   personalSourceAdderExpanded.value = false
   personalSourceSearch.value = ''
+  expandedPersonalSourceTypes.value.clear()
   expandedPersonalNodeIDs.value = new Set()
   personalBindingEditorKey.value++
 }
@@ -582,6 +592,12 @@ async function togglePersonalSourceAdder() {
   if (personalSourceAdderExpanded.value && personalSources.value.length === 0 && personalClientName.value.trim()) {
     await loadPersonalSources()
   }
+}
+
+function togglePersonalSourceGroup(type: PersonalSource['source_type']) {
+  const expanded = expandedPersonalSourceTypes.value
+  if (expanded.has(type)) expanded.delete(type)
+  else expanded.add(type)
 }
 
 async function loadPersonalSources() {
@@ -1685,7 +1701,7 @@ onUnmounted(() => {
     </n-card>
   </section>
 
-  <n-modal v-model:show="personalModalOpen"><n-card class="client-form-card subscription-form-card" :title="editingPersonal ? '编辑个人订阅' : '新增个人订阅'" closable @close="personalModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePersonal">
+  <n-modal v-model:show="personalModalOpen"><n-card class="client-form-card subscription-form-card personal-subscription-form-card" :title="editingPersonal ? '编辑个人订阅' : '新增个人订阅'" closable @close="personalModalOpen = false"><form class="auth-form" novalidate @submit.prevent="savePersonal">
     <n-alert v-if="personalFormError" type="error" closable @close="personalFormError = ''">{{ personalFormError }}</n-alert>
     <h3>基本信息</h3>
     <label><span>名称</span><n-input v-model:value="personalName" maxlength="100" /></label>
@@ -1705,17 +1721,30 @@ onUnmounted(() => {
       <p class="form-help">可添加受管 Proxy、外部 Landing、本地中转和机场订阅；直连或落地用途均可选择。已有的不可用来源会保留，生成订阅时跳过。</p>
       <div class="collapsible-section-header"><strong>添加节点</strong><n-button size="tiny" secondary attr-type="button" @click="personalSourceAdderExpanded = false">收起</n-button></div>
       <div class="personal-source-toolbar">
-        <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" />
+        <n-input v-model:value="personalSourceSearch" clearable placeholder="搜索节点名称或详情" :input-props="{ 'aria-label': '搜索节点名称或详情' }" />
         <n-button secondary attr-type="button" :loading="personalSourcesLoading" @click="loadPersonalSources">刷新</n-button>
       </div>
-      <div class="personal-source-scroll">
-        <div v-for="sourceType in personalSourceTypes" :key="sourceType" class="personal-source-group">
-          <strong>{{ personalSourceLabel(sourceType, true) }}</strong>
-          <span v-if="filteredPersonalSources.every((source) => source.source_type !== sourceType)" class="form-help">暂无匹配的可访问来源</span>
-          <div v-for="source in filteredPersonalSources.filter((item) => item.source_type === sourceType)" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
-            <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
-            <n-button secondary size="small" attr-type="button" @click="addPersonalSource(source)">添加</n-button>
-          </div>
+      <p v-if="!personalSourcesLoading && !personalSourceGroups.length" class="form-help" role="status">没有匹配的节点来源</p>
+      <div v-for="group in personalSourceGroups" :key="group.type" class="personal-source-group">
+        <button
+          type="button"
+          class="personal-source-group-toggle"
+          :aria-expanded="group.sources.length > 0 && (!!personalSourceQuery || expandedPersonalSourceTypes.has(group.type))"
+          :aria-controls="`${personalSourceGroupID}-${group.type}`"
+          :disabled="!!personalSourceQuery || !group.sources.length"
+          @click="togglePersonalSourceGroup(group.type)"
+        >
+          <span class="personal-source-group-chevron" aria-hidden="true"></span>
+          <strong>{{ personalSourceLabel(group.type, true) }}</strong>
+          <span class="personal-source-group-count">{{ group.sources.length }} 个</span>
+        </button>
+        <div :id="`${personalSourceGroupID}-${group.type}`" class="personal-source-group-content">
+          <template v-if="personalSourceQuery || expandedPersonalSourceTypes.has(group.type)">
+            <div v-for="source in group.sources" :key="`${source.source_type}:${source.source_id}`" class="invitation-row">
+              <div><strong>{{ source.name }}</strong><span>{{ source.detail }}</span><small>{{ source.status_detail }}</small></div>
+              <n-button secondary size="small" attr-type="button" @click="addPersonalSource(source)">添加</n-button>
+            </div>
+          </template>
         </div>
       </div>
     </section>

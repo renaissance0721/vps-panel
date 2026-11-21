@@ -52,6 +52,13 @@ type resolvedRoutingGroup struct {
 	Proxies []string `yaml:"proxies"`
 }
 
+type routingBindingOrder bool
+
+const (
+	presetMembersFirst routingBindingOrder = false
+	boundNodesFirst    routingBindingOrder = true
+)
+
 func RenderBase64Subscription(data SubscriptionData) string {
 	nodes := make([]ResolvedSubscriptionNode, 0, len(data.Nodes))
 	for _, node := range data.Nodes {
@@ -95,12 +102,12 @@ func RenderMihomoSubscription(data SubscriptionData) ([]byte, error) {
 	for _, node := range data.Nodes {
 		nodes = append(nodes, resolvedNodeFromClientShare(node))
 	}
-	return renderMihomoResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.MihomoTemplate)
+	return renderMihomoResolvedSubscription(nodes, data.NodeNames, data.RoutingBindings, data.RoutingPreset, data.MihomoTemplate, presetMembersFirst)
 }
 
 func RenderPersonalMihomoSubscription(data PersonalSubscriptionData) ([]byte, error) {
 	names, bindings := expandedPersonalBindings(data)
-	return renderMihomoResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.MihomoTemplate)
+	return renderMihomoResolvedSubscription(data.Nodes, names, bindings, data.RoutingPreset, data.MihomoTemplate, boundNodesFirst)
 }
 
 // Provider output intentionally contains only selected local nodes; airport
@@ -155,7 +162,7 @@ func renderMihomoNodes(nodes []ResolvedSubscriptionNode) (*yaml.Node, []string, 
 }
 
 func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeNames map[int64]string,
-	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate,
+	routingBindings RoutingBindings, routingPreset *RoutingPreset, template *SubscriptionTemplate, bindingOrder routingBindingOrder,
 ) ([]byte, error) {
 	proxies, proxyNames, err := renderMihomoNodes(nodes)
 	if err != nil {
@@ -174,7 +181,7 @@ func renderMihomoResolvedSubscription(nodes []ResolvedSubscriptionNode, nodeName
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, err
 	}
-	resolvedGroups, err := resolveRoutingGroups(routing.Groups, routingBindings, nodeNames, proxyNames, proxyNames)
+	resolvedGroups, err := resolveRoutingGroupMembers(routing.Groups, routingBindings, nodeNames, proxyNames, proxyNames, bindingOrder, false)
 	if err != nil {
 		return nil, err
 	}
@@ -293,18 +300,21 @@ func encodeYAMLValue(value any) (*yaml.Node, error) {
 	return document.Content[0], nil
 }
 
-func resolveRoutingGroups(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
-	allNames, matchNames []string,
-) ([]resolvedRoutingGroup, error) {
-	return resolveRoutingGroupMembers(groups, bindings, names, allNames, matchNames, false)
-}
-
 func resolveRoutingGroupMembers(groups []RoutingGroup, bindings RoutingBindings, names map[int64]string,
-	allNames, matchNames []string, allowEmpty bool,
+	allNames, matchNames []string, bindingOrder routingBindingOrder, allowEmpty bool,
 ) ([]resolvedRoutingGroup, error) {
 	values := make([]resolvedRoutingGroup, 0, len(groups))
 	for _, group := range groups {
-		members := make([]string, 0, len(group.Proxies)+len(bindings[group.Key])+len(allNames))
+		boundNames := make([]string, 0, len(bindings[group.Key]))
+		for _, nodeID := range bindings[group.Key] {
+			if name, exists := names[nodeID]; exists {
+				boundNames = append(boundNames, name)
+			}
+		}
+		members := make([]string, 0, len(group.Proxies)+len(boundNames)+len(allNames))
+		if bindingOrder == boundNodesFirst {
+			members = append(members, boundNames...)
+		}
 		members = append(members, group.Proxies...)
 		patterns := make([]*regexp.Regexp, 0, len(group.NodePatterns))
 		for _, pattern := range group.NodePatterns {
@@ -325,10 +335,8 @@ func resolveRoutingGroupMembers(groups []RoutingGroup, bindings RoutingBindings,
 				}
 			}
 		}
-		for _, nodeID := range bindings[group.Key] {
-			if name, exists := names[nodeID]; exists {
-				members = append(members, name)
-			}
+		if bindingOrder == presetMembersFirst {
+			members = append(members, boundNames...)
 		}
 		if group.IncludeAll {
 			members = append(members, allNames...)

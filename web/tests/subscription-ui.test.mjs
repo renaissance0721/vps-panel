@@ -417,8 +417,8 @@ test('Routing Binding 使用默认折叠的高级区和独立策略组摘要', (
   assert.match(bindingEditorSource, /if \(count === 0\) return '未指定'/)
   assert.match(bindingEditorSource, /group\.include_all \? `\$\{count\} 个优先节点` : `\$\{count\} 个节点`/)
   assert.match(bindingEditorSource, /v-if="group\.include_all"[^>]*>包含全部节点</)
-  assert.match(bindingEditorSource, /用于为某些策略组额外指定当前订阅中的节点。开启“包含订阅全部节点”的策略组通常无需在这里选择。/)
-  assert.match(bindingEditorSource, /如果策略组开启“包含订阅全部节点”，这里指定的节点会优先排在前面，其余节点随后补入。/)
+  assert.match(bindingEditorSource, /指定的节点会排在策略组最前，拖动已选节点可调整顺序。/)
+  assert.match(bindingEditorSource, /已选节点顺序[\s\S]*v-for="nodeID in selectedIDs\(group\.key\)"[\s\S]*v-for="node in nodes"/)
   assert.match(styleSource, /\.routing-binding-editor-body\s*\{[^}]*max-height:[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
 })
 

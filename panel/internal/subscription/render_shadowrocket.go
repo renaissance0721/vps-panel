@@ -20,10 +20,11 @@ func RenderShadowrocketSubscription(data SubscriptionData) ([]byte, error) {
 	for _, node := range data.Nodes {
 		nodes = append(nodes, resolvedNodeFromClientShare(node))
 	}
-	return RenderPersonalShadowrocketSubscription(PersonalSubscriptionData{
+	body, _, err := renderShadowrocketConfig(PersonalSubscriptionData{
 		Nodes: nodes, NodeNames: data.NodeNames, RoutingBindings: data.RoutingBindings,
 		RoutingPreset: data.RoutingPreset, ShadowrocketTemplate: data.ShadowrocketTemplate,
-	})
+	}, presetMembersFirst)
+	return body, err
 }
 
 func RenderPersonalShadowrocketSubscription(data PersonalSubscriptionData) ([]byte, error) {
@@ -55,6 +56,10 @@ func ShadowrocketChainWarning(nodes []ResolvedSubscriptionNode) string {
 }
 
 func RenderPersonalShadowrocketPreview(data PersonalSubscriptionData) ([]byte, string, error) {
+	return renderShadowrocketConfig(data, boundNodesFirst)
+}
+
+func renderShadowrocketConfig(data PersonalSubscriptionData, bindingOrder routingBindingOrder) ([]byte, string, error) {
 	source, err := BuildShadowrocketConfiguration(data.ShadowrocketTemplate)
 	if err != nil {
 		return nil, "", err
@@ -80,7 +85,7 @@ func RenderPersonalShadowrocketPreview(data PersonalSubscriptionData) ([]byte, s
 	if err := normalizeRoutingPreset(&routing); err != nil {
 		return nil, "", err
 	}
-	resolved, err := resolveShadowrocketPolicies(data, routing, false)
+	resolved, err := resolveShadowrocketPolicies(data, routing, bindingOrder, false)
 	if err != nil {
 		return nil, "", err
 	}

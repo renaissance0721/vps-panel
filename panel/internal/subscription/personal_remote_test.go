@@ -109,7 +109,7 @@ func TestPersonalRemoteAggregationOwnershipAndRefresh(t *testing.T) {
 	for _, node := range data.Nodes {
 		all = append(all, node.Name)
 	}
-	groups, err := resolveRoutingGroups([]RoutingGroup{{Key: "regex", Name: "Matched", Type: "select", NodePatterns: []string{"^Two$"}}}, nil, nil, all, all)
+	groups, err := resolveRoutingGroupMembers([]RoutingGroup{{Key: "regex", Name: "Matched", Type: "select", NodePatterns: []string{"^Two$"}}}, nil, nil, all, all, boundNodesFirst, false)
 	if err != nil || len(groups) != 1 || len(groups[0].Proxies) != 1 || groups[0].Proxies[0] != "Two" {
 		t.Fatalf("remote regex: %+v %v", groups, err)
 	}

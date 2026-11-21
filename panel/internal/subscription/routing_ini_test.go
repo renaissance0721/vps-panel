@@ -87,7 +87,7 @@ func TestRoutingINIRegexSelectionAndRendering(t *testing.T) {
 	if err := yaml.Unmarshal(body, &rendered); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"DIRECT", "JP Tokyo", "Japan Osaka", "jp lowercase"}
+	want := []string{"JP Tokyo", "jp lowercase", "DIRECT", "Japan Osaka"}
 	if !reflect.DeepEqual(rendered.ProxyGroups[0].Proxies, want) {
 		t.Fatalf("matched members: %+v", rendered.ProxyGroups[0].Proxies)
 	}
@@ -95,7 +95,7 @@ func TestRoutingINIRegexSelectionAndRendering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(rocket), "入口 = select,DIRECT,JP Tokyo,Japan Osaka,jp lowercase") {
+	if !strings.Contains(string(rocket), "\n入口 = select,"+strings.Join(want, ",")+"\n") {
 		t.Fatal("Shadowrocket members differ")
 	}
 	// Removing or renaming a node changes automatic selection without rewriting bindings.
@@ -154,16 +154,16 @@ func TestRoutingINIPatternPersistenceAndEmptyGroup(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(loaded.Groups[0].NodePatterns, []string{"(?i)(jp|us)"}) {
 		t.Fatalf("stored patterns: %+v %v", loaded.Groups, err)
 	}
-	groups, err := resolveRoutingGroups(loaded.Groups, nil, nil, []string{"jp north", "US west", "other"}, []string{"jp north", "US west", "other"})
+	groups, err := resolveRoutingGroupMembers(loaded.Groups, nil, nil, []string{"jp north", "US west", "other"}, []string{"jp north", "US west", "other"}, boundNodesFirst, false)
 	if err != nil || !reflect.DeepEqual(groups[0].Proxies, []string{"jp north", "US west"}) {
 		t.Fatalf("case insensitive matching: %+v %v", groups, err)
 	}
 	ordered := []RoutingGroup{{Name: "Regions", Type: "select", NodePatterns: []string{"US", "jp"}}}
-	groups, err = resolveRoutingGroups(ordered, nil, nil, []string{"jp north", "US west"}, []string{"jp north", "US west"})
+	groups, err = resolveRoutingGroupMembers(ordered, nil, nil, []string{"jp north", "US west"}, []string{"jp north", "US west"}, boundNodesFirst, false)
 	if err != nil || !reflect.DeepEqual(groups[0].Proxies, []string{"jp north", "US west"}) {
 		t.Fatal("patterns changed subscription order")
 	}
-	_, err = resolveRoutingGroups(loaded.Groups, nil, nil, []string{"other"}, []string{"other"})
+	_, err = resolveRoutingGroupMembers(loaded.Groups, nil, nil, []string{"other"}, []string{"other"}, boundNodesFirst, false)
 	if !errors.Is(err, ErrRoutingGroupEmpty) {
 		t.Fatalf("empty group was accepted: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestRoutingINIManualOnlyGroupRoundTrip(t *testing.T) {
 	if err := db.QueryRow(`SELECT routing_bindings_json FROM subscription_plans WHERE id=?`, plan.ID).Scan(&after); err != nil || after != string(bindings) {
 		t.Fatal("manual binding changed")
 	}
-	groups, err := resolveRoutingGroups(updated.Groups, RoutingBindings{updated.Groups[0].Key: []int64{77}}, map[int64]string{77: "Bound node"}, []string{"Bound node"}, []string{"Bound node"})
+	groups, err := resolveRoutingGroupMembers(updated.Groups, RoutingBindings{updated.Groups[0].Key: []int64{77}}, map[int64]string{77: "Bound node"}, []string{"Bound node"}, []string{"Bound node"}, boundNodesFirst, false)
 	if err != nil || len(groups) != 1 || !reflect.DeepEqual(groups[0].Proxies, []string{"Bound node"}) {
 		t.Fatalf("manual binding no longer renders: %+v, %v", groups, err)
 	}

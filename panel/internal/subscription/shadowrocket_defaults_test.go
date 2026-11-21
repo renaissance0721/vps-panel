@@ -30,7 +30,7 @@ func TestShadowrocketPolicyDefaultsUseResolvedNamesAndKeepOtherFormats(t *testin
 		strings.Contains(string(baseline), "Outbound =") || strings.Contains(string(baseline), "policy-select-name") {
 		t.Fatalf("native PROXY baseline: %v", err)
 	}
-	policies, err := resolveShadowrocketPolicies(data, *data.RoutingPreset, true)
+	policies, err := resolveShadowrocketPolicies(data, *data.RoutingPreset, boundNodesFirst, true)
 	wantVideoOptions := []ShadowrocketPolicyOption{
 		{Target: ShadowrocketPolicyTarget{Type: "group", GroupKey: "grp_ai1"}, Name: "AI"},
 		{Target: ShadowrocketPolicyTarget{Type: "builtin", Policy: "REJECT"}, Name: "REJECT"},
@@ -61,7 +61,7 @@ func TestShadowrocketPolicyDefaultsUseResolvedNamesAndKeepOtherFormats(t *testin
 	for _, want := range []string{
 		"Outbound = select,DIRECT,City [JP],City,Whole source,policy-select-name=City",
 		"AI = select,Outbound,DIRECT,City [JP],City,Whole source,policy-select-name=City [JP]",
-		"YouTube = select,AI,REJECT,City [JP],Whole source,policy-select-name=REJECT",
+		"YouTube = select,Whole source,AI,REJECT,City [JP],policy-select-name=REJECT",
 		"Google = select,YouTube,policy-select-name=YouTube", "Apple = select,DIRECT,policy-select-name=DIRECT", "FINAL,Outbound",
 	} {
 		if !strings.Contains(string(body), want) {

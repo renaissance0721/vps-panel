@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,6 +73,7 @@ func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
 		saved := performRequest(t, handler, http.MethodPut, path(*item)+"/nodes", map[string]any{"nodes": []map[string]any{
 			{"source_type": "landing", "source_id": node.ID, "display_name": "🇯🇵 Tokyo", "enabled": true},
 			{"source_type": "landing", "source_id": node.ID, "display_name": "Backup", "enabled": true},
+			{"source_type": "landing", "source_id": node.ID, "display_name": "Spare", "enabled": true},
 		}}, admin)
 		if saved.Code != http.StatusOK || json.Unmarshal(saved.Body.Bytes(), item) != nil {
 			t.Fatalf("save nodes: %d %s", saved.Code, saved.Body)
@@ -90,25 +92,54 @@ func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
 			t.Fatalf("invalid default %d: %d %s", invalidID, invalid.Code, invalid.Body)
 		}
 	}
+	tokyo, backup := first.Personal.Nodes[0], first.Personal.Nodes[1]
 	for _, item := range []struct {
 		subscription payload
 		target       subscriptionstore.ShadowrocketPolicyTarget
-		want         string
-	}{{first, target, "Tokyo"}, {second, subscriptionstore.ShadowrocketPolicyTarget{Type: "builtin", Policy: "DIRECT"}, "DIRECT"}} {
-		save := performRequest(t, handler, http.MethodPut, path(item.subscription)+"/routing-bindings", settings(item.target), admin)
+		bindings     []int64
+		members      []string
+		wantDefault  string
+	}{
+		{first, target, []int64{backup.ID, tokyo.ID}, []string{"Backup", "🇯🇵 Tokyo", "DIRECT", "Spare"}, "Tokyo"},
+		{first, target, []int64{tokyo.ID, backup.ID}, []string{"🇯🇵 Tokyo", "Backup", "DIRECT", "Spare"}, "Tokyo"},
+		{second, subscriptionstore.ShadowrocketPolicyTarget{Type: "builtin", Policy: "DIRECT"}, nil, []string{"DIRECT", "🇯🇵 Tokyo", "Backup", "Spare"}, "DIRECT"},
+	} {
+		body := settings(item.target)
+		if len(item.bindings) > 0 {
+			body["routing_bindings"] = subscriptionstore.RoutingBindings{key: item.bindings}
+		}
+		save := performRequest(t, handler, http.MethodPut, path(item.subscription)+"/routing-bindings", body, admin)
 		if save.Code != http.StatusOK {
-			t.Fatalf("set default: %d %s", save.Code, save.Body)
+			t.Fatalf("save routing settings: %d %s", save.Code, save.Body)
+		}
+		get := performRequest(t, handler, http.MethodGet, path(item.subscription), nil, admin)
+		var stored payload
+		if get.Code != http.StatusOK || json.Unmarshal(get.Body.Bytes(), &stored) != nil ||
+			!slices.Equal(stored.Personal.RoutingBindings[key], item.bindings) || stored.Personal.ShadowrocketDefaults[key] != item.target {
+			t.Fatalf("reopened routing settings = %d, bindings %v, default %+v", get.Code, stored.Personal.RoutingBindings[key], stored.Personal.ShadowrocketDefaults[key])
+		}
+		mihomo := performRequest(t, handler, http.MethodGet, personalPath(item.subscription.Personal.SubscriptionMihomoURL), nil, nil)
+		var config struct {
+			Groups []subscriptionstore.RoutingGroup `yaml:"proxy-groups"`
+		}
+		if mihomo.Code != http.StatusOK || yaml.Unmarshal(mihomo.Body.Bytes(), &config) != nil ||
+			len(config.Groups) == 0 || !slices.Equal(config.Groups[0].Proxies, item.members) {
+			t.Fatalf("Mihomo groups = %d, %+v, want first group members %v", mihomo.Code, config.Groups, item.members)
 		}
 		public := performRequest(t, handler, http.MethodGet, personalPath(item.subscription.Personal.SubscriptionShadowrocketURL), nil, nil)
 		preview := performRequest(t, handler, http.MethodGet, path(item.subscription)+"/shadowrocket-preview", nil, admin)
 		var conf map[string]string
 		if public.Code != http.StatusOK || preview.Code != http.StatusOK || json.Unmarshal(preview.Body.Bytes(), &conf) != nil ||
-			conf["conf"] != public.Body.String() || !strings.Contains(conf["conf"], "policy-select-name="+item.want+"\n") {
+			conf["conf"] != public.Body.String() {
 			t.Fatalf("preview/public output mismatch: %d %d", preview.Code, public.Code)
+		}
+		rocketMembers := strings.ReplaceAll(strings.Join(item.members, ","), "🇯🇵 ", "")
+		wantGroup := preset.Groups[0].Name + " = select," + rocketMembers + ",policy-select-name=" + item.wantDefault
+		if !strings.Contains(conf["conf"], "\n"+wantGroup+"\n") {
+			t.Fatalf("missing Shadowrocket group %q", wantGroup)
 		}
 	}
 	var reopened payload
-	backup := first.Personal.Nodes[1]
 	legacy := performRequest(t, handler, http.MethodPut, bindingsPath, map[string]any{"routing_bindings": subscriptionstore.RoutingBindings{key: {backup.ID}}}, admin)
 	if legacy.Code != http.StatusOK || json.Unmarshal(legacy.Body.Bytes(), &reopened) != nil || reopened.Personal.ShadowrocketDefaults[key] != target {
 		t.Fatal("legacy client lost the stored default")

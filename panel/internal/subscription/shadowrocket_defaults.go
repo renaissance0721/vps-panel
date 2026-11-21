@@ -37,7 +37,7 @@ type shadowrocketPolicies struct {
 	options   map[string][]ShadowrocketPolicyOption
 }
 
-func resolveShadowrocketPolicies(data PersonalSubscriptionData, routing RoutingPreset, preview bool) (shadowrocketPolicies, error) {
+func resolveShadowrocketPolicies(data PersonalSubscriptionData, routing RoutingPreset, bindingOrder routingBindingOrder, preview bool) (shadowrocketPolicies, error) {
 	result := shadowrocketPolicies{}
 	names, bindings := expandedPersonalBindings(data)
 	result.projected = shadowrocketDefaultProxyGroup(routing, bindings)
@@ -63,7 +63,7 @@ func resolveShadowrocketPolicies(data PersonalSubscriptionData, routing RoutingP
 		allNames = append(allNames, node.Name)
 		nodesByName[node.Name] = node
 	}
-	result.groups, err = resolveRoutingGroupMembers(routing.Groups, bindings, names, allNames, matchNames, preview)
+	result.groups, err = resolveRoutingGroupMembers(routing.Groups, bindings, names, allNames, matchNames, bindingOrder, preview)
 	if err != nil {
 		return result, err
 	}
@@ -230,7 +230,7 @@ func (s *Service) PreviewPersonalShadowrocketPolicies(ctx context.Context, actor
 	if err != nil {
 		return nil, err
 	}
-	policies, err := resolveShadowrocketPolicies(data, routing, true)
+	policies, err := resolveShadowrocketPolicies(data, routing, boundNodesFirst, true)
 	return policies.options, err
 }
 
@@ -258,7 +258,7 @@ func (s *Service) applyShadowrocketDefaultUpdates(ctx context.Context, actor Per
 	if err != nil {
 		return nil, err
 	}
-	policies, err := resolveShadowrocketPolicies(data, routing, true)
+	policies, err := resolveShadowrocketPolicies(data, routing, boundNodesFirst, true)
 	if err != nil {
 		return nil, err
 	}

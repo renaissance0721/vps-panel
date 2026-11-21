@@ -382,10 +382,11 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 		},
 		Rules: []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"},
 	}
-	body, err := RenderMihomoSubscription(SubscriptionData{
+	data := SubscriptionData{
 		Nodes: []proxystore.ClientShare{node}, NodeNames: map[int64]string{7: "Node A"},
 		RoutingBindings: RoutingBindings{"grp_plan": {7, 999}}, MihomoTemplate: custom, RoutingPreset: routing,
-	})
+	}
+	body, err := RenderMihomoSubscription(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,6 +398,10 @@ func TestRenderMihomoCombinesTemplateProxiesAndRoutingPreset(t *testing.T) {
 		!slices.Equal(parsed.ProxyGroups[1].Proxies, []string{"Other", "DIRECT", "Node A"}) ||
 		!slices.Equal(parsed.Rules, []string{"DOMAIN-SUFFIX,example.com,Plan", "MATCH,Plan"}) {
 		t.Fatalf("plan routing override = %+v\n%s", parsed, body)
+	}
+	rocket, err := RenderShadowrocketSubscription(data)
+	if err != nil || !strings.Contains(string(rocket), "\nPlan = select,Other,DIRECT,Node A\n") {
+		t.Fatalf("Shadowrocket plan routing order: %v\n%s", err, rocket)
 	}
 }
 

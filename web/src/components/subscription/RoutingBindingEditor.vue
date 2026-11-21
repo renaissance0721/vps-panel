@@ -161,8 +161,7 @@ onUnmounted(() => { if (dragged.value !== null) endDrag() })
       </n-button>
     </div>
     <div v-if="editorExpanded" class="routing-binding-editor-body">
-      <p class="form-help">用于为某些策略组额外指定当前订阅中的节点。开启“包含订阅全部节点”的策略组通常无需在这里选择。</p>
-      <p class="form-help">如果策略组开启“包含订阅全部节点”，这里指定的节点会优先排在前面，其余节点随后补入。</p>
+      <p class="form-help">指定的节点会排在策略组最前，拖动已选节点可调整顺序。</p>
       <template v-if="shadowrocketDefaults">
         <p class="form-help">Shadowrocket 默认策略独立于绑定顺序。客户端是否沿用上次手动选择，由客户端决定。机场整源展开的节点需单独添加后才能指定。</p>
         <div v-if="removedDefaultKeys.length" class="collapsible-section-header">
@@ -197,10 +196,6 @@ onUnmounted(() => { if (dragged.value !== null) endDrag() })
         <p v-if="shadowrocketDefaults && group.name === 'PROXY'" class="form-help">原生 PROXY 跟随客户端首页选择。</p>
         <div v-if="expandedGroupKeys.has(group.key)" class="routing-binding-group-content">
           <span v-if="nodes.length === 0" class="form-help">当前订阅没有可绑定节点</span>
-          <label v-for="node in nodes" :key="node.id" class="subscription-node-option">
-            <input type="checkbox" :checked="selectedIDs(group.key).includes(node.id)" @change="toggleNode(group.key, node.id, ($event.target as HTMLInputElement).checked)" />
-            <span>{{ node.name }}</span>
-          </label>
           <div v-if="selectedIDs(group.key).length" class="routing-binding-selected-list">
             <strong class="routing-binding-order-title">已选节点顺序</strong>
             <div
@@ -216,6 +211,10 @@ onUnmounted(() => { if (dragged.value !== null) endDrag() })
               <span>{{ nodeByID.get(nodeID)?.name }}</span>
             </div>
           </div>
+          <label v-for="node in nodes" :key="node.id" class="subscription-node-option">
+            <input type="checkbox" :checked="selectedIDs(group.key).includes(node.id)" @change="toggleNode(group.key, node.id, ($event.target as HTMLInputElement).checked)" />
+            <span>{{ node.name }}</span>
+          </label>
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@ import vue from '@vitejs/plugin-vue'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-let loader, Accounts, Subscriptions, drag
+let loader, Accounts, Subscriptions, BindingEditor, drag
 const originalFetch = globalThis.fetch
 before(async () => {
   loader = await createServer({
@@ -26,6 +26,7 @@ before(async () => {
   })
   ;({ default: Accounts } = await loader.ssrLoadModule('/src/views/AccountManagementView.vue'))
   ;({ default: Subscriptions } = await loader.ssrLoadModule('/src/views/SubscriptionManagementView.vue'))
+  ;({ default: BindingEditor } = await loader.ssrLoadModule('/src/components/subscription/RoutingBindingEditor.vue'))
   drag = await loader.ssrLoadModule('/src/drag.ts')
 })
 after(async () => { globalThis.fetch = originalFetch; await loader?.close() })
@@ -177,6 +178,28 @@ test('个人订阅卡片保留四个主要操作，编辑器提供配置预览',
   assert.match(source, /previewPersonal\('mihomo'\)/)
   assert.match(source, /previewPersonal\('shadowrocket'\)/)
   assert.doesNotMatch(source, /regeneratePersonalToken|regenerateUserToken/)
+})
+
+test('策略组节点按勾选和拖动的顺序更新，重新打开时回填顺序', async () => {
+  const bindings = {}
+  const props = {
+    groups: [{ key: 'main', name: '默认组', include_all: true }],
+    nodes: [{ id: 1, name: 'HK-03' }, { id: 2, name: 'JP-01' }, { id: 3, name: 'US-02' }],
+    modelValue: bindings,
+    'onUpdate:modelValue': value => Object.assign(bindings, value),
+  }
+  const { state } = await render(BindingEditor, state => state.toggleGroup('main'), props)
+  state.toggleNode('main', 3, true)
+  state.toggleNode('main', 2, true)
+  state.toggleNode('main', 1, true)
+  assert.deepEqual(bindings.main, [3, 2, 1])
+  state.startDrag({ currentTarget: { closest: () => ({}) } }, 'main', 1)
+  state.drop('main', 3)
+  assert.deepEqual(bindings.main, [1, 3, 2])
+  state.toggleNode('main', 2, false)
+  assert.deepEqual(bindings.main, [1, 3])
+  const { html } = await render(BindingEditor, state => state.toggleGroup('main'), { ...props, modelValue: structuredClone(bindings) })
+  assert.match(html.slice(0, html.indexOf('type="checkbox"')), /已选节点顺序[\s\S]*>HK-03<[\s\S]*>US-02</)
 })
 
 test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并沿用原有保存流程', async t => {

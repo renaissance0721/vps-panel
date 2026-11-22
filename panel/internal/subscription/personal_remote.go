@@ -79,13 +79,13 @@ func (s *Service) personalRemoteNodes(ctx context.Context, ownerID, sourceID, no
 }
 
 func (s *Service) inspectPersonalRemote(ctx context.Context, actor PersonalSubscriptionActor, sourceType string, id int64) (personalSourceState, error) {
-	var name, protocol string
+	var name, protocol, encryptedName string
 	var enabled int
 	var err error
 	if sourceType == PersonalSourceRemoteSource {
 		err = s.db.QueryRowContext(ctx, `SELECT name,enabled FROM remote_subscription_sources WHERE id=? AND owner_user_id=?`, id, actor.UserID).Scan(&name, &enabled)
 	} else {
-		err = s.db.QueryRowContext(ctx, `SELECT s.name,s.enabled,n.protocol FROM remote_subscription_nodes n JOIN remote_subscription_sources s ON s.id=n.source_id WHERE n.id=? AND s.owner_user_id=?`, id, actor.UserID).Scan(&name, &enabled, &protocol)
+		err = s.db.QueryRowContext(ctx, `SELECT s.name,s.enabled,n.protocol,n.display_name FROM remote_subscription_nodes n JOIN remote_subscription_sources s ON s.id=n.source_id WHERE n.id=? AND s.owner_user_id=?`, id, actor.UserID).Scan(&name, &enabled, &protocol, &encryptedName)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return unavailablePersonalSource("机场订阅", PersonalNodeUnavailable, "来源不存在或不可访问"), nil
@@ -94,7 +94,13 @@ func (s *Service) inspectPersonalRemote(ctx context.Context, actor PersonalSubsc
 		return personalSourceState{}, err
 	}
 	state := personalSourceState{name: name, detail: name, accessible: true, selectable: enabled != 0, status: PersonalNodeReady, statusDetail: "使用本地缓存"}
-	if protocol != "" {
+	if sourceType == PersonalSourceRemoteNode {
+		state.name = "机场节点"
+		if s.remoteSecrets != nil {
+			if decrypted, err := s.remoteSecrets.DecryptMany([]string{encryptedName}); err == nil {
+				state.name = safeRemoteName(decrypted[0])
+			}
+		}
 		state.detail = fmt.Sprintf("%s · %s", name, protocol)
 	}
 	if enabled == 0 {

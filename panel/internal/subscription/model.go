@@ -85,6 +85,7 @@ var (
 	ErrPersonalSubscriptionNotFound    = errors.New("personal subscription not found")
 	ErrInvalidPersonalSubscription     = errors.New("personal subscription is invalid")
 	ErrInvalidPersonalNodes            = errors.New("personal subscription nodes are invalid")
+	ErrPersonalNodesChanged            = errors.New("个人订阅节点已被更新，请重新打开编辑器")
 	ErrPersonalSubscriptionEmpty       = errors.New("personal subscription has no usable nodes")
 	ErrPersonalSourceNotFound          = errors.New("personal subscription source not found")
 )
@@ -376,6 +377,7 @@ type PersonalSubscription struct {
 	MihomoTemplateName       string
 	ShadowrocketTemplateName string
 	Nodes                    []PersonalSubscriptionNode
+	routingGroups            []RoutingGroup
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 }
@@ -387,6 +389,7 @@ type PersonalSubscriptionNode struct {
 	SourceID       int64
 	SourceName     string
 	SourceDetail   string
+	CustomName     string
 	DisplayName    string
 	Enabled        bool
 	Position       int
@@ -437,11 +440,12 @@ type SetPersonalSubscriptionNodeInput struct {
 	ID          *int64
 	SourceType  string
 	SourceID    int64
-	DisplayName string
+	DisplayName string // Saved custom name. An empty value follows the source name.
 	Enabled     bool
 	EntryHost   *string
 	EntryPort   *int
 	DialerProxy *string
+	sourceName  string
 }
 
 type ResolvedSubscriptionNode struct {

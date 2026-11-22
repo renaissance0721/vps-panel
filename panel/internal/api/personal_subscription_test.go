@@ -21,7 +21,8 @@ func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
 	defer db.Close()
 	other, _ := registerAccount(t, db, handler, admin, "vip", "other")
 	node, err := landingstore.NewService(db).Create(t.Context(), owner, landingstore.CreateInput{
-		URI: "vless://fake-secret@example.com:443?type=tcp&security=tls&sni=example.com#Example",
+		Name: "🇯🇵 Tokyo",
+		URI:  "vless://fake-secret@example.com:443?type=tcp&security=tls&sni=example.com#Example",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +51,7 @@ func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
 	key := preset.Groups[0].Key
 	draft := map[string]any{
 		"subscription_id": first.Personal.ID, "client_name": "admin", "routing_preset_id": preset.ID,
-		"nodes": []map[string]any{{"id": -1, "source_type": "landing", "source_id": node.ID, "display_name": "🇯🇵 Tokyo", "enabled": true}},
+		"nodes": []map[string]any{{"id": -1, "source_type": "landing", "source_id": node.ID, "custom_name": "", "enabled": true}},
 	}
 	optionsPath := endpoint + "/shadowrocket-policy-options"
 	options := performRequest(t, handler, http.MethodPost, optionsPath, draft, admin)
@@ -71,12 +72,16 @@ func TestPersonalShadowrocketDefaultOptionsAndPersistence(t *testing.T) {
 	}
 	for _, item := range []*payload{&first, &second} {
 		saved := performRequest(t, handler, http.MethodPut, path(*item)+"/nodes", map[string]any{"nodes": []map[string]any{
-			{"source_type": "landing", "source_id": node.ID, "display_name": "🇯🇵 Tokyo", "enabled": true},
+			{"source_type": "landing", "source_id": node.ID, "custom_name": "", "display_name": "Legacy name", "enabled": true},
 			{"source_type": "landing", "source_id": node.ID, "display_name": "Backup", "enabled": true},
 			{"source_type": "landing", "source_id": node.ID, "display_name": "Spare", "enabled": true},
 		}}, admin)
 		if saved.Code != http.StatusOK || json.Unmarshal(saved.Body.Bytes(), item) != nil {
 			t.Fatalf("save nodes: %d %s", saved.Code, saved.Body)
+		}
+		if automatic, custom := item.Personal.Nodes[0], item.Personal.Nodes[1]; automatic.CustomName != "" ||
+			automatic.SourceName != "🇯🇵 Tokyo" || automatic.DisplayName != "🇯🇵 Tokyo" || custom.CustomName != "Backup" || custom.DisplayName != "Backup" {
+			t.Fatalf("save name modes = %+v, %+v", automatic, custom)
 		}
 	}
 	settings := func(target subscriptionstore.ShadowrocketPolicyTarget) map[string]any {

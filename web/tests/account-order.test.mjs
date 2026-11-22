@@ -217,7 +217,7 @@ test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并�
   }))
   const existing = {
     id: 11, source_type: 'relay', source_id: 1, source_name: '本地中转测试', source_detail: 'via Proxy',
-    display_name: '已选中转', enabled: true, position: 1, entry_host: 'relay.example.test', entry_port: 443,
+    custom_name: '已选中转', display_name: '已选中转', enabled: true, position: 1, entry_host: 'relay.example.test', entry_port: 443,
     dialer_proxy: '', status: 'ready', status_detail: '可用', requires_client: false,
   }
   const subscription = {
@@ -236,7 +236,7 @@ test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并�
     if (options.method) {
       writes.push({ url, method: options.method, body: JSON.parse(options.body) })
       if (url.endsWith('/nodes')) {
-        const added = { ...existing, id: 12, source_type: 'proxy', source_id: 1, display_name: sources[0].name }
+        const added = { ...existing, id: 12, position: 2, source_type: 'proxy', source_id: 1, custom_name: '', display_name: sources[0].name }
         return Response.json({ personal_subscription: { ...subscription, nodes: [existing, added] } })
       }
       return Response.json({})
@@ -313,6 +313,7 @@ test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并�
     ['/api/personal-subscriptions/1/routing-bindings', 'PUT'],
   ])
   assert.deepEqual(writes[1].body.nodes.map(node => [node.id, node.source_type, node.source_id]), [[11, 'relay', 1], [null, 'proxy', 1]])
+  assert.deepEqual(writes[1].body.nodes.map(node => node.custom_name), ['已选中转', ''])
   assert.deepEqual(writes[2].body, { routing_bindings: { grp_main: [11] } })
   assert.equal(state.personalModalOpen.value, false)
   assert.equal(state.personalFormError.value, '')
@@ -321,6 +322,37 @@ test('个人订阅来源可独立折叠，搜索清除后恢复展开状态并�
   assert.equal(await pickerHTML(), '')
   await state.togglePersonalSourceAdder()
   assertGroups(await pickerHTML(), initial.map(([name]) => [name, 1, false]))
+})
+
+test('批量添加留空覆盖名，编辑和重开分别显示有效名称与覆盖值', async t => {
+  t.after(() => { globalThis.fetch = originalFetch })
+  const sources = [3, 4].map(source_id => ({ source_type: 'landing', source_id, name: 'Japan', default_name: 'Japan' }))
+  const group = { id: 1, client_name: 'owner', routing_preset_id: 1, routing_bindings: {}, nodes: [
+    { id: 31, source_type: 'landing', source_id: 3, source_name: 'Japan', custom_name: '', display_name: 'Japan' },
+    { id: 32, source_type: 'landing', source_id: 4, source_name: 'Japan', custom_name: 'Custom', display_name: 'Custom' },
+  ] }
+  globalThis.fetch = async url => Response.json(url.includes('/sources?') ? { sources } : { personal_subscription: group })
+  const { state } = await render(Subscriptions, current => {
+    current.loading.value = false
+    current.personalClientName.value = 'owner'
+  }, { role: 'vip' })
+  await state.addAllPersonalSources()
+  assert.deepEqual(state.personalNodes.value.map(node => node.custom_name), ['', ''])
+  assert.deepEqual([...state.personalEffectiveNames.value.values()], ['Japan', 'Japan [2]'])
+  await state.openEditPersonal(group)
+  assert.deepEqual(state.personalNodes.value.map(node => node.custom_name), ['', 'Custom'])
+  assert.equal(state.personalEffectiveNames.value.get(32), 'Custom')
+  state.personalNodes.value[1].custom_name = ''
+  assert.equal(state.personalEffectiveNames.value.get(32), 'Japan [2]')
+  const { html } = await render(Subscriptions, current => {
+    current.loading.value = false
+    current.personalModalOpen.value = true
+    current.personalNodes.value = state.personalNodes.value
+    current.expandedPersonalNodeIDs.value = new Set([32])
+  }, { role: 'vip' })
+  assert.match(html, /<strong[^>]*>Japan \[2\]<\/strong>/)
+  assert.match(html.match(/<input[^>]*placeholder="留空使用原节点名称"[^>]*>/)?.[0] ?? '', /\bvalue(?:=""|(?=[\s>]))/)
+  assert.match(html, /当前生效名称：Japan \[2\]/)
 })
 
 test('个人订阅可添加远程整源和单节点，并展示预览错误', async t => {
@@ -379,11 +411,12 @@ test('个人订阅可添加远程整源和单节点，并展示预览错误', as
 
 test('保存 Shadowrocket 默认策略时按节点身份转换临时 ID，绑定失败后可以重试', async t => {
   t.after(() => { globalThis.fetch = originalFetch })
-  const nodes = [
-    { id: -1, source_type: 'landing', source_id: 4, display_name: 'HK' },
-    { id: -2, source_type: 'landing', source_id: 4, display_name: 'Tokyo' },
+  const source = { source_type: 'landing', source_id: 4, source_name: 'Tokyo', custom_name: '', enabled: true }
+  const nodes = [{ ...source, id: -2 }, { ...source, id: -1 }]
+  const persisted = [
+    { ...nodes[0], id: 51, position: 1, display_name: 'Tokyo' },
+    { ...nodes[1], id: 52, position: 2, display_name: 'Tokyo [2]' },
   ]
-  const persisted = [{ ...nodes[1], id: 51 }, { ...nodes[0], id: 52 }]
   const group = {
     id: 5, client_name: 'owner', routing_preset_id: 1, nodes: persisted,
     shadowrocket_defaults: { grp_removed: { type: 'builtin', policy: 'REJECT' } },
@@ -402,7 +435,10 @@ test('保存 Shadowrocket 默认策略时按节点身份转换临时 ID，绑定
   }, { role: 'vip' })
   const requests = []
   globalThis.fetch = async (url, options) => {
-    if (url.endsWith('/nodes')) return Response.json({ personal_subscription: group })
+    if (url.endsWith('/nodes')) {
+      assert.deepEqual(JSON.parse(options.body).nodes.map(node => node.custom_name), ['', ''])
+      return Response.json({ personal_subscription: group })
+    }
     if (url.endsWith('/routing-bindings')) {
       const body = JSON.parse(options.body)
       requests.push(body)

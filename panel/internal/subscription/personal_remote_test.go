@@ -73,11 +73,14 @@ func TestPersonalRemoteAggregationOwnershipAndRefresh(t *testing.T) {
 	}
 	group, err = service.SetPersonalSubscriptionNodes(t.Context(), owner, group.ID, []SetPersonalSubscriptionNodeInput{
 		{SourceType: PersonalSourceLanding, SourceID: local.ID, DisplayName: "Same", Enabled: true},
-		{SourceType: PersonalSourceRemoteSource, SourceID: source.ID, DisplayName: "Airport", Enabled: true},
+		{SourceType: PersonalSourceRemoteSource, SourceID: source.ID, Enabled: true},
 		{SourceType: PersonalSourceRemoteNode, SourceID: cached[1].ID, DisplayName: "Individually renamed", Enabled: true},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if group.Nodes[1].DisplayName != "Airport" || group.Nodes[1].CustomName != "" || group.Nodes[2].SourceName != "Two" {
+		t.Fatal("airport source and cached node name were not distinguished")
 	}
 	preset, err := service.GetRoutingPreset(t.Context(), group.RoutingPresetID)
 	if err != nil {
@@ -159,6 +162,21 @@ func TestPersonalRemoteAggregationOwnershipAndRefresh(t *testing.T) {
 	data, err = service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
 	if err != nil || len(data.Nodes) != 4 || data.Nodes[1].Name != "Renamed" || data.Nodes[2].Name != "New" || data.Nodes[3].Name != "Individually renamed" {
 		t.Fatalf("dynamic refresh: %+v %v", data.Nodes, err)
+	}
+	var selections []SetPersonalSubscriptionNodeInput
+	for _, node := range group.Nodes {
+		selections = append(selections, SetPersonalSubscriptionNodeInput{
+			ID: &node.ID, SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: node.CustomName, Enabled: node.Enabled,
+		})
+	}
+	selections[2].DisplayName = ""
+	updated, err := service.SetPersonalSubscriptionNodes(t.Context(), owner, group.ID, selections)
+	if err != nil || updated.Nodes[2].DisplayName != "Renamed" || updated.Nodes[2].ID != group.Nodes[2].ID {
+		t.Fatalf("automatic cached node name did not follow refresh: %v", err)
+	}
+	data, err = service.GeneratePersonalSubscriptionData(t.Context(), group.Token)
+	if err != nil || len(data.Nodes) != 4 || data.Nodes[1].Name == "Renamed" || data.Nodes[2].Name != "New" || data.Nodes[3].Name != "Renamed" {
+		t.Fatalf("whole-source collision with selected cached node: %v", err)
 	}
 	mu.Lock()
 	body = "trojan://synthetic-three@three.example:443#New\n"

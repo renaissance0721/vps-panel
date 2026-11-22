@@ -106,6 +106,7 @@ type PersonalNode = {
   source_id: number
   source_name: string
   source_detail: string
+  custom_name: string
   display_name: string
   enabled: boolean
   position: number
@@ -328,6 +329,42 @@ const selectablePlanShadowrocketTemplates = computed(() => templates.value.filte
 ))
 const selectedPlanRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === planRoutingPresetID.value)?.groups ?? [])
 const selectedPersonalRoutingGroups = computed(() => routingPresets.value.find((value) => value.id === personalRoutingPresetID.value)?.groups ?? [])
+const personalEffectiveNames = computed(() => {
+  // Match the server's name allocation while the editor contains unsaved changes.
+  const used = new Set(['DIRECT', 'REJECT', 'PROXY', 'REJECT-DROP', 'PASS', 'PASS-RULE', 'COMPATIBLE', 'GLOBAL',
+    ...selectedPersonalRoutingGroups.value.map(group => group.name)])
+  const names = new Map<number, string>()
+  const automatic: { id: number; name: string }[] = []
+  for (const node of personalNodes.value) {
+    const custom = node.custom_name.trim()
+    const name = (custom || node.source_name).replace(/[\p{Cc}\u2028\u2029]/gu, '').trim() || '节点'
+    if (node.source_type === 'remote_source') {
+      names.set(node.id, custom || name)
+    } else if (custom && custom === name && !used.has(name)) {
+      names.set(node.id, name)
+      used.add(name)
+    } else {
+      automatic.push({ id: node.id, name })
+    }
+  }
+  const rank = (id: number) => id > 0 ? id : Number.MAX_SAFE_INTEGER
+  const collisions = automatic.sort((a, b) => rank(a.id) - rank(b.id)).filter(({ id, name }) => {
+    if (used.has(name)) return true
+    names.set(id, name)
+    used.add(name)
+    return false
+  })
+  const lastSuffix = new Map<string, number>()
+  for (const { id, name } of collisions) {
+    let suffix = (lastSuffix.get(name) ?? 1) + 1
+    while (used.has(`${name} [${suffix}]`)) suffix++
+    lastSuffix.set(name, suffix)
+    const unique = `${name} [${suffix}]`
+    names.set(id, unique)
+    used.add(unique)
+  }
+  return names
+})
 const savedPersonalShadowrocketDefaults = computed(() => editingPersonal.value?.routing_preset_id === personalRoutingPresetID.value
   ? editingPersonal.value.shadowrocket_defaults : undefined)
 const personalShadowrocketDefaults = computed(() => {
@@ -575,7 +612,7 @@ async function dropPublishedNode(id: number) {
 }
 
 function clonePersonalNodes(values: PersonalNode[]) {
-  return values.map((value) => ({ ...value, dialer_proxy: value.dialer_proxy ?? '', chain_enabled: !!value.dialer_proxy }))
+  return values.map((value) => ({ ...value, custom_name: value.custom_name ?? value.display_name, dialer_proxy: value.dialer_proxy ?? '', chain_enabled: !!value.dialer_proxy }))
 }
 
 function cloneRoutingBindings(value: RoutingBindings) {
@@ -631,7 +668,7 @@ function changePersonalRoutingPreset(event: Event) {
 function personalNodeRequest(node: PersonalNode, id: number | null) {
   return {
     id, source_type: node.source_type, source_id: node.source_id,
-    display_name: node.display_name.trim(), enabled: node.enabled,
+    custom_name: node.custom_name.trim(), enabled: node.enabled,
     entry_host: node.entry_host?.trim() || null, entry_port: node.entry_port,
     dialer_proxy: node.chain_enabled ? node.dialer_proxy.trim() : '',
   }
@@ -717,12 +754,9 @@ async function loadPersonalSources() {
 
 function addPersonalSource(source: PersonalSource) {
   const id = nextPersonalNodeID--
-  const usedNames = new Set(personalNodes.value.map((node) => node.display_name.trim()))
-  let displayName = source.default_name
-  for (let copy = 2; usedNames.has(displayName); copy++) displayName = `${source.default_name} ${copy}`
   personalNodes.value.push({
     id, source_type: source.source_type, source_id: source.source_id,
-    source_name: source.name, source_detail: source.detail, display_name: displayName,
+    source_name: source.name, source_detail: source.detail, custom_name: '', display_name: source.name,
     enabled: true, position: personalNodes.value.length + 1,
     entry_host: null, entry_port: null, dialer_proxy: '', chain_enabled: false, requires_client: source.requires_client,
     status: source.status, status_detail: source.status_detail,
@@ -800,9 +834,9 @@ async function savePersonal() {
     personalFormError.value = '请选择分流方案'
     return
   }
-  const names = personalNodes.value.map((node) => node.display_name.trim())
-  if (names.some((name) => !name) || new Set(names).size !== names.length) {
-    personalFormError.value = '节点显示名称不能为空且不能重复'
+  const names = personalNodes.value.map((node) => node.custom_name.trim()).filter(Boolean)
+  if (new Set(names).size !== names.length) {
+    personalFormError.value = '自定义显示名称不能重复'
     return
   }
   if (personalNodes.value.some(node => node.chain_enabled && (!node.dialer_proxy.trim() || names.includes(node.dialer_proxy.trim())))) {
@@ -842,14 +876,19 @@ async function savePersonal() {
       }),
     })
     nodesSaved = true
-    const savedIDs = savedNodes.personal_subscription.nodes.map((node) => node.id)
-    const savedByName = new Map(savedNodes.personal_subscription.nodes.map(node => [node.display_name, node]))
+    const saved = savedNodes.personal_subscription.nodes
+    const savedIDs = saved.map(node => node.id)
+    if (saved.length !== submittedNodes.length || new Set(savedIDs).size !== saved.length) {
+      throw new Error('无法确认保存后的节点顺序，请重新打开编辑器。')
+    }
     const idMap = new Map<number, number>()
-    for (const node of submittedNodes) {
-      const saved = savedByName.get(node.display_name.trim())
-      if (saved && saved.source_type === node.source_type && saved.source_id === node.source_id && (node.id < 0 || node.id === saved.id)) {
-        idMap.set(node.id, saved.id)
+    for (const [index, node] of submittedNodes.entries()) {
+      const persisted = saved[index]
+      if (persisted.position !== index + 1 || persisted.id <= 0 || persisted.source_type !== node.source_type ||
+        persisted.source_id !== node.source_id || (node.id > 0 && node.id !== persisted.id)) {
+        throw new Error('无法确认保存后的节点顺序，请重新打开编辑器。')
       }
+      idMap.set(node.id, persisted.id)
     }
     const translatedBindings = Object.fromEntries(Object.entries(personalRoutingBindings.value).map(([key, ids]) => [
       key,
@@ -858,7 +897,7 @@ async function savePersonal() {
         return savedID === undefined ? [] : [savedID]
       }),
     ]))
-    personalNodes.value = clonePersonalNodes(savedNodes.personal_subscription.nodes)
+    personalNodes.value = clonePersonalNodes(saved)
     personalRoutingBindings.value = translatedBindings
     const selectedKeys = new Set(selectedPersonalRoutingGroups.value.map(group => group.key))
     const defaults = Object.fromEntries(Object.entries(personalShadowrocketChanges.value).map(([key, target]) => {
@@ -1868,7 +1907,7 @@ onUnmounted(() => {
         >
           <div class="personal-node-summary">
             <span class="drag-handle" draggable="true" aria-label="拖动个人订阅节点排序" title="拖动排序" @dragstart="startPersonalNodeDrag($event, node.id)" @dragend="endPersonalNodeDrag"><span></span><span></span><span></span></span>
-            <div class="personal-node-heading"><strong>{{ node.display_name || '未命名节点' }}</strong><small>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</small></div>
+            <div class="personal-node-heading"><strong>{{ personalEffectiveNames.get(node.id) }}</strong><small>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</small></div>
             <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag>
             <n-button class="personal-node-details-button" size="small" secondary attr-type="button" @click="togglePersonalNodeDetails(node.id)">{{ expandedPersonalNodeIDs.has(node.id) ? '收起详情' : '详情' }}</n-button>
             <n-button class="personal-node-delete-button" size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除</n-button>
@@ -1876,7 +1915,7 @@ onUnmounted(() => {
           <div v-if="expandedPersonalNodeIDs.has(node.id)" class="personal-node-details">
             <dl><div><dt>来源类型</dt><dd>{{ personalSourceLabel(node.source_type) }}</dd></div><div><dt>实际来源</dt><dd>{{ node.source_name }}</dd></div></dl>
             <p class="form-help">{{ node.source_detail }}</p>
-            <label><span>自定义显示名称</span><n-input v-model:value="node.display_name" maxlength="100" /></label>
+            <label><span>自定义显示名称（可选）</span><n-input v-model:value="node.custom_name" placeholder="留空使用原节点名称" maxlength="100" /><span class="form-help">当前生效名称：{{ personalEffectiveNames.get(node.id) }}</span></label>
             <p v-if="node.source_type === 'remote_source'" class="form-help">来源启用时自动包含最新缓存中的全部节点；此名称用于标识选择项。</p>
             <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口地址</span><n-input :value="node.entry_host ?? ''" placeholder="留空使用来源默认入口" @update:value="setPersonalEntryHost(node, $event)" /></label>
             <label v-if="node.source_type !== 'remote_source' && node.source_type !== 'remote_node'"><span>入口端口</span><n-input-number v-model:value="node.entry_port" :min="1" :max="65535" :precision="0" placeholder="留空使用来源默认端口" /></label>
@@ -1895,7 +1934,7 @@ onUnmounted(() => {
     <RoutingBindingEditor
       v-model="personalRoutingBindings"
       :groups="selectedPersonalRoutingGroups"
-      :nodes="personalNodes.map((node) => ({ id: node.id, name: node.display_name }))"
+      :nodes="personalNodes.map((node) => ({ id: node.id, name: personalEffectiveNames.get(node.id) ?? node.source_name }))"
       default-collapsed
       :reset-key="personalBindingEditorKey"
       :shadowrocket-defaults="personalShadowrocketDefaults"

@@ -207,7 +207,7 @@ func (s *Service) PreviewPersonalShadowrocketPolicies(ctx context.Context, actor
 		return nil, err
 	}
 	group.ClientName = clientName
-	inputs, err := s.normalizePersonalSubscriptionNodes(ctx, actor, group, draft.Nodes, true)
+	inputs, err := s.normalizePersonalSubscriptionNodes(ctx, actor, group, routing.Groups, draft.Nodes, true)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +216,7 @@ func (s *Service) PreviewPersonalShadowrocketPolicies(ctx context.Context, actor
 	for _, input := range inputs {
 		group.Nodes = append(group.Nodes, PersonalSubscriptionNode{
 			ID: *input.ID, SourceType: input.SourceType, SourceID: input.SourceID,
-			DisplayName: input.DisplayName, Enabled: input.Enabled, EntryHost: input.EntryHost,
+			CustomName: input.DisplayName, SourceName: input.sourceName, Enabled: input.Enabled, EntryHost: input.EntryHost,
 			EntryPort: input.EntryPort, DialerProxy: *input.DialerProxy,
 		})
 		allowed[*input.ID] = struct{}{}

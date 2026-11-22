@@ -25,6 +25,7 @@ type mcpPersonalNode struct {
 	SourceType  string  `json:"source_type"`
 	SourceID    int64   `json:"source_id"`
 	DisplayName string  `json:"display_name,omitempty"`
+	CustomName  *string `json:"custom_name,omitempty"`
 	Enabled     bool    `json:"enabled"`
 	EntryHost   *string `json:"entry_host,omitempty"`
 	EntryPort   *int    `json:"entry_port,omitempty"`

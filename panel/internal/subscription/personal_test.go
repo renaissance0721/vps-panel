@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,109 @@ import (
 	relaystore "github.com/renaissance0721/vps-panel/panel/internal/relay"
 	"gopkg.in/yaml.v3"
 )
+
+func TestPersonalAutomaticNamesFollowSourcesAndStayUnique(t *testing.T) {
+	db, service := newSubscriptionTestService(t)
+	ctx := t.Context()
+	actor := PersonalSubscriptionActor{UserID: 100, Role: "vip"}
+	insertPersonalTestUser(t, db, actor.UserID, "owner", "vip")
+	group, err := service.CreatePersonalSubscription(ctx, actor, CreatePersonalSubscriptionInput{Name: "Personal", ClientName: "owner", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs []SetPersonalSubscriptionNodeInput
+	for _, origin := range []string{"Japan", "Japan", "Japan [2]", "DIRECT", "Japan"} {
+		node, err := service.landings.Create(ctx, actor.UserID, landingstore.CreateInput{
+			Name: origin, URI: "ss://aes-256-gcm:fixture@example.test:443#Original",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs = append(inputs, SetPersonalSubscriptionNodeInput{SourceType: PersonalSourceLanding, SourceID: node.ID, Enabled: true})
+	}
+	inputs[4].DisplayName = "Custom"
+	save := func() PersonalSubscription {
+		t.Helper()
+		stored, err := service.SetPersonalSubscriptionNodes(ctx, actor, group.ID, inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	stored := save()
+	for i := range inputs {
+		id := stored.Nodes[i].ID
+		inputs[i].ID = &id
+	}
+	check := func(want []string) PersonalSubscriptionData {
+		t.Helper()
+		data, err := service.GeneratePersonalSubscriptionData(ctx, group.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, node := range data.Nodes {
+			names = append(names, node.Name)
+		}
+		if !slices.Equal(names, want) {
+			t.Fatalf("export names = %q, want %q", names, want)
+		}
+		return data
+	}
+	want := []string{"Japan", "Japan [3]", "Japan [2]", "DIRECT [2]", "Custom"}
+	check(want)
+	data := check(want)
+	for _, render := range []func(PersonalSubscriptionData) ([]byte, error){RenderPersonalMihomoSubscription, RenderPersonalMihomoProvider} {
+		body, err := render(data)
+		var config mihomoConfig
+		if err != nil || yaml.Unmarshal(body, &config) != nil || !slices.EqualFunc(config.Proxies, want, func(node mihomoProxy, name string) bool { return node.Name == name }) {
+			t.Fatalf("YAML export lost names: %v", err)
+		}
+	}
+	rocket, err := RenderPersonalShadowrocketSubscription(data)
+	if err != nil || !strings.Contains(string(rocket), "\nJapan = ss,") || !strings.Contains(string(rocket), "\nDIRECT [2] = ss,") {
+		t.Fatalf("Shadowrocket export lost names: %v", err)
+	}
+	encoded, err := RenderPersonalBase64Subscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, raw := range strings.Split(string(decoded), "\n") {
+		link, err := url.Parse(raw)
+		if err != nil || link.Fragment != want[i] {
+			t.Fatalf("URI %d lost its effective name", i)
+		}
+	}
+	inputs[0], inputs[1] = inputs[1], inputs[0]
+	save()
+	check([]string{"Japan [3]", "Japan", "Japan [2]", "DIRECT [2]", "Custom"})
+	for i, name := range map[int]string{0: "Second", 4: "New original"} {
+		if _, _, err := service.landings.Update(ctx, inputs[i].SourceID, actor.UserID, landingstore.UpdateInput{Name: &name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check([]string{"Second", "Japan", "Japan [2]", "DIRECT [2]", "Custom"})
+	inputs[4].DisplayName = ""
+	stored = save()
+	if stored.Nodes[4].ID != *inputs[4].ID || stored.Nodes[4].CustomName != "" || stored.Nodes[4].DisplayName != "New original" {
+		t.Fatalf("cleared override was not saved: %+v", stored.Nodes[4])
+	}
+	check([]string{"Second", "Japan", "Japan [2]", "DIRECT [2]", "New original"})
+	for _, name := range []string{"DIRECT", "PROXY", group.routingGroups[0].Name} {
+		inputs[0].DisplayName = name
+		if _, err := service.SetPersonalSubscriptionNodes(ctx, actor, group.ID, inputs); !errors.Is(err, ErrInvalidPersonalNodes) {
+			t.Fatalf("reserved override %q accepted: %v", name, err)
+		}
+	}
+	inputs[0].DisplayName, inputs[1].DisplayName = "Duplicate", "Duplicate"
+	if _, err := service.SetPersonalSubscriptionNodes(ctx, actor, group.ID, inputs); !errors.Is(err, ErrInvalidPersonalNodes) {
+		t.Fatalf("duplicate overrides accepted: %v", err)
+	}
+}
 
 func TestPersonalEndpointOverrideRemainsReadyWhenPublicIPv4IsMissing(t *testing.T) {
 	db, service := newSubscriptionTestService(t)

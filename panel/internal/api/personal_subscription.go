@@ -43,6 +43,7 @@ type personalSubscriptionNodeRequest struct {
 	SourceType  string  `json:"source_type"`
 	SourceID    int64   `json:"source_id"`
 	DisplayName string  `json:"display_name"`
+	CustomName  *string `json:"custom_name"`
 	Enabled     bool    `json:"enabled"`
 	EntryHost   *string `json:"entry_host"`
 	EntryPort   *int    `json:"entry_port"`
@@ -68,6 +69,7 @@ type personalSubscriptionNodeResponse struct {
 	SourceID       int64     `json:"source_id"`
 	SourceName     string    `json:"source_name"`
 	SourceDetail   string    `json:"source_detail"`
+	CustomName     string    `json:"custom_name"`
 	DisplayName    string    `json:"display_name"`
 	Enabled        bool      `json:"enabled"`
 	Position       int       `json:"position"`
@@ -267,8 +269,12 @@ func (s *server) setPersonalSubscriptionNodes(w http.ResponseWriter, r *http.Req
 func personalNodeInputs(nodes []personalSubscriptionNodeRequest) []subscriptionstore.SetPersonalSubscriptionNodeInput {
 	inputs := make([]subscriptionstore.SetPersonalSubscriptionNodeInput, 0, len(nodes))
 	for _, node := range nodes {
+		name := node.DisplayName
+		if node.CustomName != nil {
+			name = *node.CustomName
+		}
 		inputs = append(inputs, subscriptionstore.SetPersonalSubscriptionNodeInput{
-			ID: node.ID, SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: node.DisplayName, Enabled: node.Enabled,
+			ID: node.ID, SourceType: node.SourceType, SourceID: node.SourceID, DisplayName: name, Enabled: node.Enabled,
 			EntryHost: node.EntryHost, EntryPort: node.EntryPort, DialerProxy: node.DialerProxy,
 		})
 	}
@@ -420,7 +426,7 @@ func toPersonalSubscriptionResponse(value subscriptionstore.PersonalSubscription
 	for _, node := range value.Nodes {
 		nodes = append(nodes, personalSubscriptionNodeResponse{
 			ID: node.ID, SourceType: node.SourceType, SourceID: node.SourceID,
-			SourceName: node.SourceName, SourceDetail: node.SourceDetail, DisplayName: node.DisplayName,
+			SourceName: node.SourceName, SourceDetail: node.SourceDetail, CustomName: node.CustomName, DisplayName: node.DisplayName,
 			Enabled: node.Enabled, Position: node.Position, EntryHost: node.EntryHost, EntryPort: node.EntryPort, DialerProxy: node.DialerProxy,
 			RequiresClient: node.RequiresClient, Status: node.Status, StatusDetail: node.StatusDetail,
 			CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
@@ -454,7 +460,9 @@ func writePersonalSubscriptionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, subscriptionstore.ErrInvalidPersonalSubscription):
 		writeError(w, http.StatusBadRequest, "个人订阅名称、订阅标题或 Client 名称无效")
 	case errors.Is(err, subscriptionstore.ErrInvalidPersonalNodes):
-		writeError(w, http.StatusBadRequest, "个人订阅节点列表无效：检查节点名称、入口地址、端口及前置策略组（不能与节点同名）")
+		writeError(w, http.StatusBadRequest, "个人订阅节点列表无效：检查自定义名称是否与其他自定义名或策略名冲突，以及入口地址、端口和前置策略组")
+	case errors.Is(err, subscriptionstore.ErrPersonalNodesChanged):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, subscriptionstore.ErrMihomoChain):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, subscriptionstore.ErrPersonalSourceNotFound):

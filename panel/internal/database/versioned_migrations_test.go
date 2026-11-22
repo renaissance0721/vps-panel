@@ -262,6 +262,65 @@ func TestPersonalShadowrocketDefaultsMigrateAndSurviveReopen(t *testing.T) {
 	read(reopened, value)
 }
 
+func TestOptionalPersonalNodeNamesMigration(t *testing.T) {
+	dir := t.TempDir()
+	legacy, err := sql.Open("sqlite", filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	legacy.SetMaxOpenConns(1)
+	if err := configure(legacy); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:46] {
+		if err := applyMigration(t.Context(), legacy, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, query := range []string{
+		`INSERT INTO users(id,username,password_hash,role,created_at,updated_at) VALUES(1,'owner','stub','vip',1,1)`,
+		`INSERT INTO personal_subscription_groups(id,owner_user_id,name,token,client_name,routing_preset_id,routing_bindings_json,shadowrocket_defaults_json,created_at,updated_at)
+		 SELECT 1,1,'Personal','same-token','owner',id,'{"grp_ai":[7]}','{"grp_ai":{"type":"node","node_id":7}}',1,1 FROM subscription_routing_presets WHERE is_default=1`,
+		`INSERT INTO personal_subscription_nodes(id,group_id,source_type,source_id,display_name,enabled,position,entry_host,entry_port,created_at,updated_at,dialer_proxy)
+		 VALUES(7,1,'landing',9,'Custom',0,1,'entry.example.test',443,10,11,'Chain'),(90,1,'remote_node',10,'Removed',1,2,NULL,NULL,1,1,'')`,
+		`DELETE FROM personal_subscription_nodes WHERE id=90`,
+	} {
+		if _, err := legacy.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	assertLatestMigrationHistory(t, db)
+	assertForeignKeysValid(t, db)
+	var preserved int
+	err = db.QueryRow(`SELECT COUNT(*) FROM personal_subscription_nodes n JOIN personal_subscription_groups g ON g.id=n.group_id
+		WHERE n.id=7 AND n.display_name='Custom' AND n.source_type='landing' AND n.source_id=9 AND n.enabled=0 AND n.position=1
+		AND n.entry_host='entry.example.test' AND n.entry_port=443 AND n.created_at=10 AND n.updated_at=11 AND n.dialer_proxy='Chain'
+		AND g.token='same-token' AND g.routing_bindings_json='{"grp_ai":[7]}' AND g.shadowrocket_defaults_json='{"grp_ai":{"type":"node","node_id":7}}'`).Scan(&preserved)
+	if err != nil || preserved != 1 {
+		t.Fatalf("migration lost saved node or references: %d %v", preserved, err)
+	}
+	result, err := db.Exec(`INSERT INTO personal_subscription_nodes(group_id,source_type,source_id,position,created_at,updated_at)
+		VALUES(1,'landing',9,2,1,1),(1,'landing',9,3,1,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last, err := result.LastInsertId(); err != nil || last != 92 {
+		t.Fatalf("node sequence = %d, %v", last, err)
+	}
+	if _, err := db.Exec(`UPDATE personal_subscription_nodes SET display_name='Custom' WHERE id=91`); err == nil {
+		t.Fatal("duplicate explicit override accepted")
+	}
+}
+
 func TestLatestMigrationCreatesPersonalSubscriptionSchema(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 46
+const LatestSchemaVersion = 47
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -77,6 +77,44 @@ var migrations = []migration{
 	{version: 44, name: "connector_proxy_settings", up: createConnectorProxySettings},
 	{version: 45, name: "remove_subscription_connectors", up: removeSubscriptionConnectors},
 	{version: 46, name: "personal_shadowrocket_defaults", up: addPersonalShadowrocketDefaults},
+	{version: 47, name: "optional_personal_node_names", up: allowAutomaticPersonalNodeNames},
+}
+
+func allowAutomaticPersonalNodeNames(ctx context.Context, tx *sql.Tx) error {
+	var sequence sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM sqlite_sequence WHERE name='personal_subscription_nodes'`).Scan(&sequence); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TABLE personal_subscription_nodes_v47 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			group_id INTEGER NOT NULL REFERENCES personal_subscription_groups(id) ON DELETE CASCADE,
+			source_type TEXT NOT NULL CHECK (source_type IN ('proxy', 'relay', 'landing', 'remote_source', 'remote_node')),
+			source_id INTEGER NOT NULL CHECK (source_id > 0), display_name TEXT CHECK (display_name IS NULL OR display_name != ''),
+			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)), position INTEGER NOT NULL CHECK (position > 0),
+			entry_host TEXT CHECK (entry_host IS NULL OR entry_host != ''),
+			entry_port INTEGER CHECK (entry_port IS NULL OR entry_port BETWEEN 1 AND 65535),
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, dialer_proxy TEXT NOT NULL DEFAULT '',
+			UNIQUE (group_id, display_name), UNIQUE (group_id, position))`,
+		`INSERT INTO personal_subscription_nodes_v47 (id,group_id,source_type,source_id,display_name,enabled,position,entry_host,entry_port,created_at,updated_at,dialer_proxy)
+		 SELECT id,group_id,source_type,source_id,NULLIF(display_name,''),enabled,position,entry_host,entry_port,created_at,updated_at,dialer_proxy
+		 FROM personal_subscription_nodes`,
+		`DROP TABLE personal_subscription_nodes`,
+		`ALTER TABLE personal_subscription_nodes_v47 RENAME TO personal_subscription_nodes`,
+		`CREATE INDEX idx_personal_subscription_nodes_source ON personal_subscription_nodes(source_type, source_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	if sequence.Valid {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sqlite_sequence(name,seq) SELECT 'personal_subscription_nodes',? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='personal_subscription_nodes')`, sequence.Int64); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='personal_subscription_nodes'`, sequence.Int64)
+		return err
+	}
+	return nil
 }
 
 func addPersonalShadowrocketDefaults(ctx context.Context, tx *sql.Tx) error {

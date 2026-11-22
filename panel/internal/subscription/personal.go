@@ -195,7 +195,7 @@ func (s *Service) DeletePersonalSubscription(ctx context.Context, actor Personal
 	return nil
 }
 
-func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor, group PersonalSubscription,
+func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor, group PersonalSubscription, groups []RoutingGroup,
 	inputs []SetPersonalSubscriptionNodeInput, preview bool,
 ) ([]SetPersonalSubscriptionNodeInput, error) {
 	existing := make(map[int64]PersonalSubscriptionNode, len(group.Nodes))
@@ -205,7 +205,9 @@ func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor 
 	normalized := make([]SetPersonalSubscriptionNodeInput, 0, len(inputs))
 	seenNames := make(map[string]struct{}, len(inputs))
 	seenIDs := make(map[int64]struct{}, len(inputs))
+	reserved := personalReservedNodeNames(groups)
 	for _, input := range inputs {
+		var previousNode PersonalSubscriptionNode
 		if preview && input.ID == nil {
 			return nil, ErrInvalidPersonalNodes
 		}
@@ -220,13 +222,14 @@ func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor 
 				return nil, ErrInvalidPersonalNodes
 			}
 			seenIDs[*input.ID] = struct{}{}
+			previousNode = existing[*input.ID]
 		}
 		input.SourceType = strings.ToLower(strings.TrimSpace(input.SourceType))
 		input.DisplayName = strings.TrimSpace(input.DisplayName)
 		if input.DialerProxy == nil {
 			previous := ""
-			if input.ID != nil && existing[*input.ID].SourceType == input.SourceType && existing[*input.ID].SourceID == input.SourceID {
-				previous = existing[*input.ID].DialerProxy
+			if previousNode.SourceType == input.SourceType && previousNode.SourceID == input.SourceID {
+				previous = previousNode.DialerProxy
 			}
 			input.DialerProxy = &previous
 		}
@@ -236,12 +239,18 @@ func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor 
 			return nil, ErrInvalidPersonalNodes
 		}
 		input.DialerProxy = &upstream
-		if !validPersonalSourceType(input.SourceType) || input.SourceID <= 0 || input.DisplayName == "" ||
-			utf8.RuneCountInString(input.DisplayName) > maxNameRunes {
+		if !validPersonalSourceType(input.SourceType) || input.SourceID <= 0 {
 			return nil, ErrInvalidPersonalNodes
 		}
-		if _, duplicate := seenNames[input.DisplayName]; duplicate {
-			return nil, ErrInvalidPersonalNodes
+		if input.DisplayName != "" {
+			if _, duplicate := seenNames[input.DisplayName]; duplicate {
+				return nil, ErrInvalidPersonalNodes
+			}
+			if previousNode.CustomName != input.DisplayName && (!validPersonalCustomName(input.DisplayName) ||
+				(input.SourceType != PersonalSourceRemoteSource && reserved[input.DisplayName])) {
+				return nil, ErrInvalidPersonalNodes
+			}
+			seenNames[input.DisplayName] = struct{}{}
 		}
 		host, port, err := normalizePersonalNodeEndpoint(input.EntryHost, input.EntryPort)
 		if err != nil {
@@ -257,11 +266,11 @@ func (s *Service) normalizePersonalSubscriptionNodes(ctx context.Context, actor 
 			return nil, err
 		}
 		if !state.accessible || !state.selectable {
-			if input.ID == nil || existing[*input.ID].SourceType != input.SourceType || existing[*input.ID].SourceID != input.SourceID {
+			if previousNode.SourceType != input.SourceType || previousNode.SourceID != input.SourceID {
 				return nil, ErrPersonalSourceNotFound
 			}
 		}
-		seenNames[input.DisplayName] = struct{}{}
+		input.sourceName = state.name
 		normalized = append(normalized, input)
 	}
 	// Upstreams are policy groups, never one of this subscription's nodes.
@@ -282,7 +291,7 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	if err != nil {
 		return PersonalSubscription{}, err
 	}
-	normalized, err := s.normalizePersonalSubscriptionNodes(ctx, actor, group, inputs, false)
+	normalized, err := s.normalizePersonalSubscriptionNodes(ctx, actor, group, group.routingGroups, inputs, false)
 	if err != nil {
 		return PersonalSubscription{}, err
 	}
@@ -294,16 +303,17 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	defer tx.Rollback()
 	positionOffset := len(group.Nodes) + len(normalized) + 1000
 	if _, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes
-		SET position = position + ?, display_name = '__vps_panel_tmp_' || id WHERE group_id = ?`,
+		SET position = position + ?, display_name = NULL WHERE group_id = ?`,
 		positionOffset, id); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("prepare personal subscription node update: %w", err)
 	}
 	now := s.now().UTC().Truncate(time.Second).Unix()
 	keptIDs := make(map[int64]struct{}, len(normalized))
+	savedIDs := make([]int64, 0, len(normalized))
 	for index, input := range normalized {
 		if input.ID != nil {
 			result, err := tx.ExecContext(ctx, `UPDATE personal_subscription_nodes SET
-				source_type = ?, source_id = ?, display_name = ?, enabled = ?, position = ?,
+				source_type = ?, source_id = ?, display_name = NULLIF(?, ''), enabled = ?, position = ?,
 				entry_host = ?, entry_port = ?, dialer_proxy = ?, updated_at = ? WHERE id = ? AND group_id = ?`,
 				input.SourceType, input.SourceID, input.DisplayName, input.Enabled, index+1,
 				nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), *input.DialerProxy, now, *input.ID, id)
@@ -314,11 +324,12 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 				return PersonalSubscription{}, ErrInvalidPersonalNodes
 			}
 			keptIDs[*input.ID] = struct{}{}
+			savedIDs = append(savedIDs, *input.ID)
 			continue
 		}
 		result, err := tx.ExecContext(ctx, `INSERT INTO personal_subscription_nodes
 			(group_id, source_type, source_id, display_name, enabled, position, entry_host, entry_port, dialer_proxy, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
+			VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, id, input.SourceType, input.SourceID,
 			input.DisplayName, input.Enabled, index+1, nullablePersonalString(input.EntryHost), nullableInt(input.EntryPort), *input.DialerProxy, now, now)
 		if err != nil {
 			return PersonalSubscription{}, fmt.Errorf("create personal subscription node: %w", err)
@@ -328,6 +339,7 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 			return PersonalSubscription{}, fmt.Errorf("read personal subscription node id: %w", err)
 		}
 		keptIDs[createdID] = struct{}{}
+		savedIDs = append(savedIDs, createdID)
 	}
 	for _, node := range group.Nodes {
 		existingID := node.ID
@@ -353,7 +365,20 @@ func (s *Service) SetPersonalSubscriptionNodes(ctx context.Context, actor Person
 	if err := tx.Commit(); err != nil {
 		return PersonalSubscription{}, fmt.Errorf("commit personal subscription node update: %w", err)
 	}
-	return s.GetPersonalSubscription(ctx, actor, id)
+	saved, err := s.GetPersonalSubscription(ctx, actor, id)
+	if err != nil {
+		return PersonalSubscription{}, err
+	}
+	// The editor maps new instance IDs using the order of this write.
+	if len(saved.Nodes) != len(savedIDs) {
+		return PersonalSubscription{}, ErrPersonalNodesChanged
+	}
+	for i, node := range saved.Nodes {
+		if node.ID != savedIDs[i] {
+			return PersonalSubscription{}, ErrPersonalNodesChanged
+		}
+	}
+	return saved, nil
 }
 
 func (s *Service) SetPersonalSubscriptionRoutingBindings(ctx context.Context, actor PersonalSubscriptionActor,
@@ -593,10 +618,8 @@ func (s *Service) resolvePersonalSubscriptionNodes(ctx context.Context, actor Pe
 	if result.Title == "" {
 		result.Title = group.Name
 	}
-	usedNames := map[string]bool{"DIRECT": true, "REJECT": true}
-	for _, group := range routing.Groups {
-		usedNames[group.Name] = true
-	}
+	resolvePersonalDisplayNames(group.Nodes, routing.Groups)
+	usedNames := personalReservedNodeNames(routing.Groups)
 	for _, node := range group.Nodes {
 		if node.Enabled && node.SourceType != PersonalSourceRemoteSource {
 			usedNames[node.DisplayName] = true
@@ -624,12 +647,13 @@ func (s *Service) resolvePersonalSubscriptionNodes(ctx context.Context, actor Pe
 			for _, remote := range remoteNodes {
 				name := node.DisplayName
 				if sourceID > 0 {
-					name = remote.name
+					base := personalSourceNodeName(remote.name)
+					name = base
 					if usedNames[name] {
 						name = fmt.Sprintf("%s [%d]", name, remote.id)
 					}
 					for suffix := 2; usedNames[name]; suffix++ {
-						name = fmt.Sprintf("%s [%d-%d]", remote.name, remote.id, suffix)
+						name = fmt.Sprintf("%s [%d-%d]", base, remote.id, suffix)
 					}
 					usedNames[name] = true
 				}
@@ -660,7 +684,7 @@ func (s *Service) resolvePersonalSubscriptionNodes(ctx context.Context, actor Pe
 func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor PersonalSubscriptionActor,
 	group PersonalSubscription,
 ) ([]PersonalSubscriptionNode, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, group_id, source_type, source_id, display_name,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, group_id, source_type, source_id, COALESCE(display_name, ''),
 		enabled, position, entry_host, entry_port, dialer_proxy, created_at, updated_at FROM personal_subscription_nodes
 		WHERE group_id = ? ORDER BY position, id`, group.ID)
 	if err != nil {
@@ -674,7 +698,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 		var entryPort sql.NullInt64
 		var createdAt, updatedAt int64
 		if err := rows.Scan(&value.ID, &value.GroupID, &value.SourceType, &value.SourceID,
-			&value.DisplayName, &enabled, &value.Position, &entryHost, &entryPort, &value.DialerProxy, &createdAt, &updatedAt); err != nil {
+			&value.CustomName, &enabled, &value.Position, &entryHost, &entryPort, &value.DialerProxy, &createdAt, &updatedAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan personal subscription node: %w", err)
 		}
@@ -700,7 +724,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 	}
 	for index := range values {
 		state, err := s.inspectPersonalSource(ctx, actor, values[index].SourceType, values[index].SourceID,
-			group.ClientName, values[index].DisplayName, values[index].EntryHost, values[index].EntryPort, false)
+			group.ClientName, values[index].CustomName, values[index].EntryHost, values[index].EntryPort, false)
 		if err != nil {
 			return nil, err
 		}
@@ -710,6 +734,7 @@ func (s *Service) listPersonalSubscriptionNodes(ctx context.Context, actor Perso
 		values[index].StatusDetail = state.statusDetail
 		values[index].RequiresClient = state.requiresClient
 	}
+	resolvePersonalDisplayNames(values, group.routingGroups)
 	return values, nil
 }
 
@@ -736,6 +761,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		}
 		state := personalSourceState{name: value.Name, detail: value.ServerName + " · " + value.Name + " · " + personalNodeRoleLabel(value.NodeRole),
 			accessible: true, selectable: value.Enabled, requiresClient: true}
+		if displayName == "" {
+			displayName = personalSourceNodeName(value.Name)
+		}
 		if !value.Enabled {
 			state.status, state.statusDetail = PersonalNodeProxyDisabled, "Proxy 已停用"
 			return state, nil
@@ -791,6 +819,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		state := personalSourceState{
 			name: value.Name, detail: value.ServerName + " · " + value.Name,
 			accessible: true, selectable: value.Enabled, requiresClient: value.TargetType == relaystore.TargetProxy,
+		}
+		if displayName == "" {
+			displayName = personalSourceNodeName(value.Name)
 		}
 		endpoint := &proxystore.ShareEndpoint{Address: value.EntryAddress, Port: value.ListenPort}
 		if !value.Enabled {
@@ -901,6 +932,9 @@ func (s *Service) inspectPersonalSource(ctx context.Context, actor PersonalSubsc
 		state := personalSourceState{
 			name: value.Name, detail: fmt.Sprintf("%s · %s:%d · %s", value.Protocol, value.Host, value.Port, personalNodeRoleLabel(value.NodeRole)),
 			status: PersonalNodeReady, statusDetail: "节点自带凭据", accessible: true, selectable: true,
+		}
+		if displayName == "" {
+			displayName = personalSourceNodeName(value.Name)
 		}
 		raw, err := s.landings.GetURI(ctx, sourceID, actor.UserID)
 		if err != nil {
@@ -1131,7 +1165,7 @@ func personalSourceKey(sourceType string, sourceID int64) string {
 
 const personalSubscriptionSelect = `SELECT groups.id, groups.owner_user_id, groups.name,
 	groups.subscription_title, groups.token, groups.enabled, groups.client_name,
-	groups.routing_preset_id, routing.name, groups.routing_bindings_json, groups.shadowrocket_defaults_json,
+	groups.routing_preset_id, routing.name, routing.groups_json, groups.routing_bindings_json, groups.shadowrocket_defaults_json,
 	groups.mihomo_template_id, COALESCE(templates.name, ''),
 	groups.shadowrocket_template_id, COALESCE(shadowrocket_templates.name, ''),
 	groups.created_at, groups.updated_at
@@ -1144,12 +1178,15 @@ func scanPersonalSubscription(row rowScanner) (PersonalSubscription, error) {
 	var value PersonalSubscription
 	var enabled int
 	var templateID, shadowrocketTemplateID sql.NullInt64
-	var routingBindingsJSON, defaultsJSON string
+	var routingGroupsJSON, routingBindingsJSON, defaultsJSON string
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.OwnerUserID, &value.Name, &value.SubscriptionTitle, &value.Token,
 		&enabled, &value.ClientName, &value.RoutingPresetID, &value.RoutingPresetName,
-		&routingBindingsJSON, &defaultsJSON, &templateID, &value.MihomoTemplateName, &shadowrocketTemplateID, &value.ShadowrocketTemplateName, &createdAt, &updatedAt); err != nil {
+		&routingGroupsJSON, &routingBindingsJSON, &defaultsJSON, &templateID, &value.MihomoTemplateName, &shadowrocketTemplateID, &value.ShadowrocketTemplateName, &createdAt, &updatedAt); err != nil {
 		return PersonalSubscription{}, err
+	}
+	if err := json.Unmarshal([]byte(routingGroupsJSON), &value.routingGroups); err != nil {
+		return PersonalSubscription{}, fmt.Errorf("decode personal subscription routing groups: %w", err)
 	}
 	bindings, err := decodeRoutingBindings(routingBindingsJSON)
 	if err != nil {

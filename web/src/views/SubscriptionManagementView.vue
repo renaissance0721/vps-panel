@@ -1908,7 +1908,7 @@ onUnmounted(() => {
           <div class="personal-node-summary">
             <span class="drag-handle" draggable="true" aria-label="拖动个人订阅节点排序" title="拖动排序" @dragstart="startPersonalNodeDrag($event, node.id)" @dragend="endPersonalNodeDrag"><span></span><span></span><span></span></span>
             <div class="personal-node-heading"><strong>{{ personalEffectiveNames.get(node.id) }}</strong><small>{{ personalSourceLabel(node.source_type) }} · {{ node.source_name }}</small></div>
-            <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag>
+            <n-tag :type="node.enabled ? personalStatusType(node.status) : 'default'" size="small">{{ node.enabled ? node.status_detail : '已停用' }}</n-tag>
             <n-button class="personal-node-details-button" size="small" secondary attr-type="button" @click="togglePersonalNodeDetails(node.id)">{{ expandedPersonalNodeIDs.has(node.id) ? '收起详情' : '详情' }}</n-button>
             <n-button class="personal-node-delete-button" size="small" type="error" secondary attr-type="button" @click="removePersonalNode(index)">删除</n-button>
           </div>
@@ -1924,8 +1924,10 @@ onUnmounted(() => {
               <label v-if="node.chain_enabled"><span>前置代理策略组</span><n-input v-model:value="node.dialer_proxy" maxlength="100" placeholder="机场入口" /></label>
               <p v-if="node.chain_enabled" class="form-help">Mihomo dialer-proxy 使用此前置策略组，该组不能包含此落地节点。Shadowrocket 导出会将此节点作为独立节点，直接连接节点服务器。</p>
             </template>
-            <div v-if="node.requires_client" class="personal-node-client-status"><span>Client：{{ personalClientName }}</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
-            <div v-else class="personal-node-client-status"><span>凭据：节点自带</span><n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag></div>
+            <div class="personal-node-client-status">
+              <span>来源状态（{{ node.requires_client ? `Client：${personalClientName}` : '节点自带凭据' }}）</span>
+              <n-tag :type="personalStatusType(node.status)" size="small">{{ node.status_detail }}</n-tag>
+            </div>
             <div class="switch-row"><span>启用节点</span><n-switch v-model:value="node.enabled" /></div>
           </div>
         </div>

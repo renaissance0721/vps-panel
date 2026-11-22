@@ -355,6 +355,70 @@ test('批量添加留空覆盖名，编辑和重开分别显示有效名称与�
   assert.match(html, /当前生效名称：Japan \[2\]/)
 })
 
+test('个人订阅节点停用立即改变摘要，保存重开后保留开关和独立来源状态', async t => {
+  t.after(() => { globalThis.fetch = originalFetch })
+  const sourceTypes = ['proxy', 'relay', 'landing', 'remote_source', 'remote_node']
+  const nodes = sourceTypes.map((source_type, index) => ({
+    id: index + 1, source_type, source_id: index + 1, position: index + 1, enabled: true,
+    source_name: source_type, display_name: source_type, custom_name: '', dialer_proxy: '',
+    requires_client: source_type === 'proxy',
+    status: source_type === 'relay' ? 'endpoint_unavailable' : 'ready',
+    status_detail: source_type === 'relay' ? '入口不可用' : '可用',
+  }))
+  const group = { ...personalSubscriptions()[0], subscription_title: '', routing_preset_id: 1, routing_bindings: {}, nodes }
+  const preset = { id: 1, enabled: true, groups: [] }
+  const savedToggles = []
+  globalThis.fetch = async (url, options) => {
+    if (url.includes('/sources?')) return Response.json({ sources: [] })
+    if (url.endsWith('/routing-presets')) return Response.json({ routing_presets: [preset] })
+    if (url.endsWith('/templates')) return Response.json({ templates: [] })
+    if (url.endsWith('/nodes')) {
+      const submitted = JSON.parse(options.body).nodes
+      assert.ok(submitted.every(node => !Object.hasOwn(node, 'status') && !Object.hasOwn(node, 'status_detail')))
+      savedToggles.push(submitted.map(node => node.enabled))
+      group.nodes = group.nodes.map((node, index) => ({ ...node, enabled: submitted[index].enabled }))
+    }
+    return Response.json({ personal_subscription: group, personal_subscriptions: [group] })
+  }
+  const { state } = await render(Subscriptions, current => {
+    current.loading.value = false
+    current.routingPresets.value = [preset]
+  }, { role: 'vip' })
+  const originalBadges = nodes.map(node => [node.status === 'ready' ? 'success' : 'warning', node.status_detail])
+  const disabledBadges = nodes.map(() => ['default', '已停用'])
+  async function assertBadges(expectedHeaders) {
+    const { html } = await render(Subscriptions, current => {
+      current.loading.value = false
+      current.personalModalOpen.value = state.personalModalOpen.value
+      current.personalNodes.value = state.personalNodes.value
+      current.personalClientName.value = state.personalClientName.value
+      current.expandedPersonalNodeIDs.value = new Set(nodes.map(node => node.id))
+    }, { role: 'vip' })
+    const markup = html.replace(/<!--[\s\S]*?-->/g, '')
+    const headers = [...markup.matchAll(/class="personal-node-summary"[^>]*>[\s\S]*?<section[^>]*\btype="([^"]+)"[^>]*>([^<]+)<\/section>/g)]
+    const sources = [...markup.matchAll(/class="personal-node-client-status"[^>]*>\s*<span[^>]*>来源状态[^<]+<\/span>\s*<section[^>]*\btype="([^"]+)"[^>]*>([^<]+)<\/section>/g)]
+    assert.deepEqual(headers.map(match => match.slice(1)), expectedHeaders)
+    assert.deepEqual(sources.map(match => match.slice(1)), originalBadges)
+  }
+
+  await state.openEditPersonal(group)
+  await assertBadges(originalBadges)
+  state.personalNodes.value.forEach(node => { node.enabled = false })
+  await assertBadges(disabledBadges)
+  assert.deepEqual(savedToggles, [])
+
+  await state.savePersonal()
+  assert.equal(state.personalModalOpen.value, false, state.personalFormError.value)
+  await state.openEditPersonal(group)
+  await assertBadges(disabledBadges)
+  state.personalNodes.value.forEach(node => { node.enabled = true })
+  await assertBadges(originalBadges)
+  await state.savePersonal()
+  assert.deepEqual(savedToggles, [nodes.map(() => false), nodes.map(() => true)])
+  await state.openEditPersonal(group)
+  await assertBadges(originalBadges)
+})
+
 test('个人订阅可添加远程整源和单节点，并展示预览错误', async t => {
   t.after(() => { globalThis.fetch = originalFetch })
   const sources = [

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 47
+const LatestSchemaVersion = 48
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -78,6 +78,16 @@ var migrations = []migration{
 	{version: 45, name: "remove_subscription_connectors", up: removeSubscriptionConnectors},
 	{version: 46, name: "personal_shadowrocket_defaults", up: addPersonalShadowrocketDefaults},
 	{version: 47, name: "optional_personal_node_names", up: allowAutomaticPersonalNodeNames},
+	{version: 48, name: "agent_component_results", up: addAgentComponentResults},
+}
+
+func addAgentComponentResults(ctx context.Context, tx *sql.Tx) error {
+	exists, err := migrationColumnExists(ctx, tx, "agents", "config_components_json")
+	if err != nil || exists {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE agents ADD COLUMN config_components_json TEXT NOT NULL DEFAULT '{}'`)
+	return err
 }
 
 func allowAutomaticPersonalNodeNames(ctx context.Context, tx *sql.Tx) error {

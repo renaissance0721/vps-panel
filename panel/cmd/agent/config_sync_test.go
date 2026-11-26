@@ -102,6 +102,109 @@ func TestConfigSynchronizerReportsSuccessOnceAndRetriesFailure(t *testing.T) {
 	}
 }
 
+func TestConfigSynchronizerBacksOffFirewallPermissionErrors(t *testing.T) {
+	state := desiredState{Version: 1, BlockChinaInbound: true}
+	var attempts, reports int
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(state)
+			return
+		}
+		reports++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer panel.Close()
+	s := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "fixture"}, panel.Client())
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	s.applyState = func(context.Context, desiredState) error { attempts++; return errChinaNFTPrivileges }
+	if err := s.sync(t.Context()); !errors.Is(err, errChinaNFTPrivileges) {
+		t.Fatalf("first attempt: %v", err)
+	}
+	if err := s.sync(t.Context()); err != nil || attempts != 1 || reports != 1 {
+		t.Fatalf("backoff: %v, attempts %d, reports %d", err, attempts, reports)
+	}
+	state.Version = 2
+	if err := s.sync(t.Context()); !errors.Is(err, errChinaNFTPrivileges) || attempts != 2 {
+		t.Fatalf("new version: %v, attempts %d", err, attempts)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := s.sync(t.Context()); !errors.Is(err, errChinaNFTPrivileges) || attempts != 3 {
+		t.Fatalf("retry: %v, attempts %d", err, attempts)
+	}
+}
+
+func TestRestrictedContainerFreshEmptyConfiguration(t *testing.T) {
+	xray, _ := newTestXrayManager(t)
+	realm, _ := newTestRealmManager(t)
+	china, _ := newTestChinaInboundFirewall(t)
+	china.hasNetAdmin = func() (bool, error) { return false, nil }
+	china.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		t.Fatal("restricted container attempted nftables access")
+		return nil, nil
+	}
+	xray.purgeFirewall = func(context.Context) error { t.Fatal("markerless Xray firewall purge"); return nil }
+	realm.purgeFirewall = func(context.Context) error { t.Fatal("markerless Realm firewall purge"); return nil }
+	state := desiredState{Version: 1, Xray: desiredXrayState{Purge: true}, Realm: desiredRealmState{Purge: true}}
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(state)
+			return
+		}
+		var result configResult
+		if err := json.NewDecoder(r.Body).Decode(&result); err != nil || result.Status != "success" {
+			t.Errorf("result = %+v, error = %v", result, err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer panel.Close()
+	s := newConfigSynchronizer(config{PanelURL: panel.URL, AgentToken: "fixture"}, panel.Client())
+	s.applyState = func(ctx context.Context, state desiredState) error {
+		return errors.Join(xray.apply(ctx, state), realm.apply(ctx, state.Realm), china.apply(ctx, state))
+	}
+	if err := s.sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedComponentsRemainIndependentWithoutFirewallPrivileges(t *testing.T) {
+	china, _ := newTestChinaInboundFirewall(t)
+	china.hasNetAdmin = func() (bool, error) { return false, nil }
+	china.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		t.Fatal("nft should not run without CAP_NET_ADMIN")
+		return nil, nil
+	}
+	var xray, realm int
+	applyXray := func(context.Context, desiredState) error { xray++; return nil }
+	applyRealm := func(context.Context, desiredRealmState) error { realm++; return nil }
+	statuses, err := applyManagedComponents(t.Context(), desiredState{}, applyXray, applyRealm, china)
+	if err != nil || xray != 1 || realm != 1 || statuses["china_firewall"] != "unknown" {
+		t.Fatalf("disabled: %v, statuses=%v, xray=%d, realm=%d", err, statuses, xray, realm)
+	}
+	statuses, err = applyManagedComponents(t.Context(), desiredState{BlockChinaInbound: true}, applyXray, applyRealm, china)
+	if !errors.Is(err, errChinaNFTPrivileges) || xray != 2 || realm != 2 || statuses["xray"] != "success" || statuses["realm"] != "success" || statuses["china_firewall"] != "unsupported" {
+		t.Fatalf("enabled: %v, statuses=%v, xray=%d, realm=%d", err, statuses, xray, realm)
+	}
+	if err := china.writeJournal("active"); err != nil {
+		t.Fatal(err)
+	}
+	china.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("operation not permitted"), errors.New("denied")
+	}
+	statuses, err = applyManagedComponents(t.Context(), desiredState{}, applyXray, applyRealm, china)
+	if !errors.Is(err, errChinaNFTPrivileges) || statuses["china_firewall"] != "failed" || statuses["xray"] != "success" || statuses["realm"] != "success" {
+		t.Fatalf("incomplete cleanup: %v, statuses=%v", err, statuses)
+	}
+}
+
+func TestCapabilityChangeClearsFirewallBackoff(t *testing.T) {
+	s := &configSynchronizer{lastSuccessfulVersion: 2, firewallRetryVersion: 3, firewallRetryAt: time.Now().Add(time.Hour), firewallRetryDelay: time.Hour}
+	s.capabilitiesChanged()
+	if s.lastSuccessfulVersion != 0 || s.firewallRetryVersion != 0 || !s.firewallRetryAt.IsZero() || s.firewallRetryDelay != 0 {
+		t.Fatalf("capability change did not invalidate sync state: %+v", s)
+	}
+}
+
 func TestDecommissionReportsSuccessBeforeStartingSelfUninstall(t *testing.T) {
 	var events []string
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

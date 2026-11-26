@@ -345,7 +345,7 @@ func (s *Service) listFiltered(ctx context.Context, archived bool, userID int64,
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
-		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
+		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at, agent.config_components_json,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,
@@ -394,7 +394,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Server, error) {
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
-		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
+		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at, agent.config_components_json,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,
@@ -437,6 +437,7 @@ func scanServer(row rowScanner) (Server, error) {
 	var upgradeTarget, upgradeStatus, upgradeError sql.NullString
 	var appliedConfigVersion, configSyncedAt sql.NullInt64
 	var configSyncStatus, configSyncError sql.NullString
+	var configComponentsJSON sql.NullString
 	var hostname, osName, osVersion, kernel, arch sql.NullString
 	var ipv4JSON, ipv6JSON, publicIPv4, publicIPv6, countryCode, agentVersion sql.NullString
 	var reportedAt sql.NullInt64
@@ -453,7 +454,7 @@ func scanServer(row rowScanner) (Server, error) {
 		&monthlyTrafficLimit, &value.TrafficCountMode, &value.TrafficResetDay, &value.TrafficResetTime,
 		&lastSeenAt, &implementation, &storedAgentVersion, &apiVersion, &capabilitiesJSON,
 		&upgradeTarget, &upgradeStatus, &upgradeError,
-		&appliedConfigVersion, &configSyncStatus, &configSyncError, &configSyncedAt,
+		&appliedConfigVersion, &configSyncStatus, &configSyncError, &configSyncedAt, &configComponentsJSON,
 		&hostname, &osName, &osVersion, &kernel, &arch, &ipv4JSON, &ipv6JSON, &publicIPv4, &publicIPv6, &countryCode, &agentVersion, &reportedAt,
 		&cpuPercent, &memoryUsed, &memoryTotal, &diskUsed, &diskTotal, &uptime,
 		&nicRX, &nicTX, &cycleRX, &cycleTX, &trafficAdjustment, &cycleStartedAt, &metricsUpdatedAt,
@@ -510,6 +511,11 @@ func scanServer(row rowScanner) (Server, error) {
 	value.AgentAppliedConfigVersion = appliedConfigVersion.Int64
 	value.AgentConfigSyncStatus = configSyncStatus.String
 	value.AgentConfigSyncError = configSyncError.String
+	if configComponentsJSON.Valid {
+		if err := json.Unmarshal([]byte(configComponentsJSON.String), &value.AgentConfigComponents); err != nil {
+			return Server{}, fmt.Errorf("decode Agent component results: %w", err)
+		}
+	}
 	if configSyncedAt.Valid {
 		syncedAt := time.Unix(configSyncedAt.Int64, 0).UTC()
 		value.AgentConfigSyncedAt = &syncedAt

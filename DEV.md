@@ -380,7 +380,7 @@ Monitor 继续共享 Server 数据源，探测任务和通知配置使用各自 
 原生安装与 `vp` 操作见 [README](README.md)，不在此重复安装命令。
 Panel 安装器需要 systemd；Agent 安装器根据 systemd / OpenRC 选择服务配置。
 
-Agent 安装及升级脚本在有权限的安装上下文检查 `nft`；缺失时仅在 Alpine 使用 apk、Debian / Ubuntu 及兼容发行版使用 apt 安装 nftables。未知发行版提示手动准备，不假设使用 apt。脚本不启动系统 nftables 服务，也不清空规则；Agent 自升级由独立 helper 完成，不运行这两个脚本。已有 Agent 缺少依赖时可运行升级脚本或手动安装，正常 desired-state 协调不会调用包管理器。
+Agent 安装及升级脚本检查 `nft`，缺失时提示中国入站过滤需要手动安装 nftables。Agent 自升级由独立 helper 完成，正常 desired-state 协调不会调用包管理器。
 
 同机运行时的核心隔离：
 

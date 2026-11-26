@@ -55,6 +55,7 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
 		Version:               state.Version,
+		ComponentResults:      true,
 		Decommission:          state.Decommission,
 		BlockChinaInbound:     state.BlockChinaInbound,
 		ChinaInboundWhitelist: state.ChinaInboundWhitelist,
@@ -90,9 +91,10 @@ func (s *server) recordAgentConfigResult(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.agents.RecordConfigResult(r.Context(), agent.ID, agent.ServerID, agentcontrol.ConfigResult{
-		Version: request.Version,
-		Status:  request.Status,
-		Message: request.Message,
+		Version:    request.Version,
+		Status:     request.Status,
+		Message:    request.Message,
+		Components: request.Components,
 	}); err != nil {
 		writeServerError(w, err)
 		return

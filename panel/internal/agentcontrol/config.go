@@ -105,7 +105,8 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		if err != nil {
 			return DesiredState{}, err
 		}
-		if !DeclaresCapability(Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityFirewallCNWhitelist) {
+		metadata := Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}
+		if !DeclaresCapability(metadata, CapabilityFirewallCNWhitelist) && !DeclaresCapability(metadata, CapabilityComponentResults) {
 			return DesiredState{}, ErrChinaWhitelistUnsupported
 		}
 	}

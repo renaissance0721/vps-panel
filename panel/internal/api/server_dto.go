@@ -59,55 +59,56 @@ type updateTrafficAdjustmentRequest struct {
 }
 
 type serverResponse struct {
-	ID                              int64               `json:"id"`
-	Name                            string              `json:"name"`
-	BandwidthMbps                   *int64              `json:"bandwidth_mbps"`
-	NetworkStack                    *string             `json:"network_stack"`
-	CountryOverrideCode             *string             `json:"country_override_code"`
-	BoundDomainIPv4                 string              `json:"bound_domain_ipv4"`
-	BoundDomainIPv6                 string              `json:"bound_domain_ipv6"`
-	OwnerUserID                     *int64              `json:"owner_user_id"`
-	OwnerUsername                   string              `json:"owner_username"`
-	CreatedByUserID                 *int64              `json:"created_by_user_id"`
-	CreatedByUsername               string              `json:"created_by_username"`
-	CreatedByRole                   string              `json:"created_by_role"`
-	Status                          string              `json:"status"`
-	Visibility                      string              `json:"visibility"`
-	OutboundPreference              string              `json:"outbound_preference"`
-	BlockChinaInbound               bool                `json:"block_china_inbound"`
-	ChinaInboundWhitelistConfigured bool                `json:"china_inbound_whitelist_configured"`
-	DesiredStateVersion             int64               `json:"desired_state_version"`
-	DecommissioningAt               *time.Time          `json:"decommissioning_at"`
-	DecommissionStatus              string              `json:"decommission_status"`
-	DecommissionError               string              `json:"decommission_error"`
-	AccessUserIDs                   []int64             `json:"access_user_ids"`
-	ArchivedAt                      *time.Time          `json:"archived_at,omitempty"`
-	ExpiresAt                       *time.Time          `json:"expires_at"`
-	RenewalPeriodMonths             *int                `json:"renewal_period_months"`
-	AutoRenew                       bool                `json:"auto_renew"`
-	MonthlyTrafficLimitBytes        *int64              `json:"monthly_traffic_limit_bytes"`
-	TrafficCountMode                string              `json:"traffic_count_mode"`
-	TrafficResetDay                 int                 `json:"traffic_reset_day"`
-	TrafficResetTime                string              `json:"traffic_reset_time"`
-	TrafficUsedBytes                int64               `json:"traffic_used_bytes"`
-	LastSeenAt                      *time.Time          `json:"last_seen_at"`
-	SystemInfo                      *systemInfoResponse `json:"system_info"`
-	Metrics                         *metricsResponse    `json:"metrics"`
-	CreatedAt                       time.Time           `json:"created_at"`
-	UpdatedAt                       time.Time           `json:"updated_at"`
-	AgentImplementation             string              `json:"agent_implementation"`
-	AgentVersion                    string              `json:"agent_version"`
-	AgentAPIVersion                 int                 `json:"agent_api_version"`
-	AgentCapabilities               []string            `json:"agent_capabilities"`
-	AgentCanSelfUpgrade             bool                `json:"agent_can_self_upgrade"`
-	AgentVersionStatus              string              `json:"agent_version_status"`
-	AgentUpgradeTarget              string              `json:"agent_upgrade_target,omitempty"`
-	AgentUpgradeStatus              string              `json:"agent_upgrade_status,omitempty"`
-	AgentUpgradeError               string              `json:"agent_upgrade_error,omitempty"`
-	AgentAppliedConfigVersion       int64               `json:"agent_applied_config_version"`
-	AgentConfigSyncStatus           string              `json:"agent_config_sync_status"`
-	AgentConfigSyncError            string              `json:"agent_config_sync_error"`
-	AgentConfigSyncedAt             *time.Time          `json:"agent_config_synced_at"`
+	ID                              int64                          `json:"id"`
+	Name                            string                         `json:"name"`
+	BandwidthMbps                   *int64                         `json:"bandwidth_mbps"`
+	NetworkStack                    *string                        `json:"network_stack"`
+	CountryOverrideCode             *string                        `json:"country_override_code"`
+	BoundDomainIPv4                 string                         `json:"bound_domain_ipv4"`
+	BoundDomainIPv6                 string                         `json:"bound_domain_ipv6"`
+	OwnerUserID                     *int64                         `json:"owner_user_id"`
+	OwnerUsername                   string                         `json:"owner_username"`
+	CreatedByUserID                 *int64                         `json:"created_by_user_id"`
+	CreatedByUsername               string                         `json:"created_by_username"`
+	CreatedByRole                   string                         `json:"created_by_role"`
+	Status                          string                         `json:"status"`
+	Visibility                      string                         `json:"visibility"`
+	OutboundPreference              string                         `json:"outbound_preference"`
+	BlockChinaInbound               bool                           `json:"block_china_inbound"`
+	ChinaInboundWhitelistConfigured bool                           `json:"china_inbound_whitelist_configured"`
+	DesiredStateVersion             int64                          `json:"desired_state_version"`
+	DecommissioningAt               *time.Time                     `json:"decommissioning_at"`
+	DecommissionStatus              string                         `json:"decommission_status"`
+	DecommissionError               string                         `json:"decommission_error"`
+	AccessUserIDs                   []int64                        `json:"access_user_ids"`
+	ArchivedAt                      *time.Time                     `json:"archived_at,omitempty"`
+	ExpiresAt                       *time.Time                     `json:"expires_at"`
+	RenewalPeriodMonths             *int                           `json:"renewal_period_months"`
+	AutoRenew                       bool                           `json:"auto_renew"`
+	MonthlyTrafficLimitBytes        *int64                         `json:"monthly_traffic_limit_bytes"`
+	TrafficCountMode                string                         `json:"traffic_count_mode"`
+	TrafficResetDay                 int                            `json:"traffic_reset_day"`
+	TrafficResetTime                string                         `json:"traffic_reset_time"`
+	TrafficUsedBytes                int64                          `json:"traffic_used_bytes"`
+	LastSeenAt                      *time.Time                     `json:"last_seen_at"`
+	SystemInfo                      *systemInfoResponse            `json:"system_info"`
+	Metrics                         *metricsResponse               `json:"metrics"`
+	CreatedAt                       time.Time                      `json:"created_at"`
+	UpdatedAt                       time.Time                      `json:"updated_at"`
+	AgentImplementation             string                         `json:"agent_implementation"`
+	AgentVersion                    string                         `json:"agent_version"`
+	AgentAPIVersion                 int                            `json:"agent_api_version"`
+	AgentCapabilities               []string                       `json:"agent_capabilities"`
+	AgentCanSelfUpgrade             bool                           `json:"agent_can_self_upgrade"`
+	AgentVersionStatus              string                         `json:"agent_version_status"`
+	AgentUpgradeTarget              string                         `json:"agent_upgrade_target,omitempty"`
+	AgentUpgradeStatus              string                         `json:"agent_upgrade_status,omitempty"`
+	AgentUpgradeError               string                         `json:"agent_upgrade_error,omitempty"`
+	AgentAppliedConfigVersion       int64                          `json:"agent_applied_config_version"`
+	AgentConfigSyncStatus           string                         `json:"agent_config_sync_status"`
+	AgentConfigSyncError            string                         `json:"agent_config_sync_error"`
+	AgentConfigComponents           *agentcontrol.ComponentResults `json:"agent_config_components,omitempty"`
+	AgentConfigSyncedAt             *time.Time                     `json:"agent_config_synced_at"`
 }
 
 type systemInfoResponse struct {
@@ -200,6 +201,7 @@ func toServerResponse(value serverstore.Server, panelVersion string) serverRespo
 		AgentAppliedConfigVersion: value.AgentAppliedConfigVersion,
 		AgentConfigSyncStatus:     value.AgentConfigSyncStatus,
 		AgentConfigSyncError:      value.AgentConfigSyncError,
+		AgentConfigComponents:     value.AgentConfigComponents,
 		AgentConfigSyncedAt:       value.AgentConfigSyncedAt,
 	}
 	if value.SystemInfo != nil {

@@ -49,6 +49,7 @@ export type ServerRecord = {
   agent_applied_config_version: number
   agent_config_sync_status: '' | 'pending' | 'success' | 'failed'
   agent_config_sync_error: string
+  agent_config_components?: { version: number; statuses: Record<string, 'success' | 'failed' | 'supported' | 'unsupported' | 'unknown' | 'temporarily_unavailable'> } | null
   agent_config_synced_at: string | null
 }
 

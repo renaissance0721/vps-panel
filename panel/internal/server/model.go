@@ -3,6 +3,8 @@ package server
 import (
 	"errors"
 	"time"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 )
 
 const (
@@ -93,6 +95,7 @@ type Server struct {
 	AgentAppliedConfigVersion       int64
 	AgentConfigSyncStatus           string
 	AgentConfigSyncError            string
+	AgentConfigComponents           *agentcontrol.ComponentResults
 	AgentConfigSyncedAt             *time.Time
 	SystemInfo                      *SystemInfo
 	Metrics                         *Metrics

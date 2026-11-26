@@ -345,6 +345,13 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
                   </dd>
                 </div>
               </dl>
+              <p v-if="selectedServer.agent_config_components?.version === selectedServer.desired_state_version" class="secondary-text">
+                Xray：{{ selectedServer.agent_config_components.statuses.xray === 'success' ? '已应用' : '应用失败' }}；
+                Realm：{{ selectedServer.agent_config_components.statuses.realm === 'success' ? '已应用' : '应用失败' }}。
+                <span v-if="selectedServer.agent_config_components.statuses.firewall_environment">
+                  防火墙环境：{{ ({ supported: '支持', unsupported: '不支持', unknown: '未知', temporarily_unavailable: '暂时不可用' } as Record<string, string>)[selectedServer.agent_config_components.statuses.firewall_environment] }}。
+                </span>
+              </p>
               <n-alert v-if="chinaInboundState?.key === 'unsupported_enabled'" type="warning" class="form-alert">
                 {{ chinaInboundState.detail }}
               </n-alert>
@@ -355,6 +362,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               </n-alert>
               <small class="secondary-text">
                 仅限制中国大陆 IP 访问 VPS Panel 管理的 Proxy 和 Relay 入站端口。支持 IPv4 和 IPv6。数据来源：APNIC。SSH 和其他服务不受影响。
+                检测和规则仅覆盖 Agent 当前网络命名空间，不能保证宿主机或上游 NAT 已过滤流量。
               </small>
               <ChinaInboundWhitelist v-if="state?.user?.role === 'admin'" :server="selectedServer" :readonly="serverReadOnly" @saved="chinaWhitelistSaved" />
               </div>

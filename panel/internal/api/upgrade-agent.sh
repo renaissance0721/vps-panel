@@ -46,31 +46,9 @@ prepare_alpine_dependencies() {
 }
 
 prepare_nftables_dependency() {
-  if command -v nft >/dev/null 2>&1; then
-    return 0
+  if ! command -v nft >/dev/null 2>&1; then
+    log "nftables is unavailable; install it before enabling the optional China inbound firewall."
   fi
-  os_family=$(unset ID ID_LIKE; if [ -r /etc/os-release ]; then . /etc/os-release; fi; printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
-  if [ -f /etc/alpine-release ]; then
-    os_family="alpine ${os_family}"
-  fi
-  case " ${os_family} " in
-    *" alpine "*)
-      command -v apk >/dev/null 2>&1 || fail "nftables is missing and Alpine package manager apk was not found"
-      log "Installing nftables for the optional China inbound firewall..."
-      apk add --no-cache nftables || fail "failed to install nftables with apk"
-      ;;
-    *" debian "* | *" ubuntu "*)
-      command -v apt-get >/dev/null 2>&1 || fail "nftables is missing and apt-get was not found"
-      log "Installing nftables for the optional China inbound firewall..."
-      apt-get update || fail "failed to update apt package indexes for nftables"
-      apt-get install -y nftables || fail "failed to install nftables with apt-get"
-      ;;
-    *)
-      log "nftables is missing; install it manually before enabling China inbound firewall (unsupported distribution)."
-      return 0
-      ;;
-  esac
-  command -v nft >/dev/null 2>&1 || fail "nftables installation completed but nft was not found in PATH"
 }
 
 detect_init_system() {

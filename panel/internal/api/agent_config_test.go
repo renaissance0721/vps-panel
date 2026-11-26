@@ -483,12 +483,24 @@ func TestAgentConfigResultAPIValidationAndPersistence(t *testing.T) {
 	if appliedVersion != 1 || status != agentcontrol.ConfigSyncSuccess || message != "" {
 		t.Fatalf("successful config state = (%d, %q, %q)", appliedVersion, status, message)
 	}
+	componentResult := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", map[string]any{
+		"version": 1, "status": "success", "components": map[string]string{"xray": "success", "realm": "success", "china_firewall": "unknown"},
+	}, registered.Token)
+	if componentResult.Code != http.StatusNoContent {
+		t.Fatalf("component result = %d, %s", componentResult.Code, componentResult.Body.String())
+	}
+	value, err := service.Get(t.Context(), created.ID)
+	if err != nil || value.AgentConfigComponents == nil || value.AgentConfigComponents.Version != 1 || value.AgentConfigComponents.Statuses["china_firewall"] != "unknown" {
+		t.Fatalf("stored component result = %+v, %v", value.AgentConfigComponents, err)
+	}
 
 	for name, body := range map[string]map[string]any{
-		"future version": {"version": 2, "status": "success", "message": ""},
-		"invalid status": {"version": 1, "status": "other", "message": ""},
-		"long message":   {"version": 1, "status": "failed", "message": strings.Repeat("x", 4097)},
-		"token message":  {"version": 1, "status": "failed", "message": "secret " + registered.Token},
+		"future version":          {"version": 2, "status": "success", "message": ""},
+		"invalid status":          {"version": 1, "status": "other", "message": ""},
+		"long message":            {"version": 1, "status": "failed", "message": strings.Repeat("x", 4097)},
+		"token message":           {"version": 1, "status": "failed", "message": "secret " + registered.Token},
+		"incomplete components":   {"version": 1, "status": "success", "components": map[string]string{"xray": "success"}},
+		"inconsistent components": {"version": 1, "status": "success", "components": map[string]string{"xray": "success", "realm": "success", "china_firewall": "failed"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := performAgentRequest(t, handler, http.MethodPost, "/api/agent/config/result", body, registered.Token)

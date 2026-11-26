@@ -14,6 +14,37 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestAgentComponentResultsMigrationPreservesExistingRecords(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE agents (id INTEGER PRIMARY KEY, version TEXT NOT NULL); INSERT INTO agents VALUES (1, 'legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := addAgentComponentResults(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := addAgentComponentResults(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var version, components string
+	if err := db.QueryRow(`SELECT version, config_components_json FROM agents WHERE id = 1`).Scan(&version, &components); err != nil {
+		t.Fatal(err)
+	}
+	if version != "legacy" || components != "{}" {
+		t.Fatalf("legacy record = %q, %q", version, components)
+	}
+}
+
 func TestPersonalChainMigrationPreservesExistingNode(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "panel.db"))
 	if err != nil {

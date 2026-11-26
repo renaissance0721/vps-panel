@@ -32,6 +32,7 @@ const (
 
 type desiredState struct {
 	Version               int64             `json:"version"`
+	ComponentResults      bool              `json:"component_results"`
 	Decommission          bool              `json:"decommission"`
 	BlockChinaInbound     bool              `json:"block_china_inbound"`
 	ChinaInboundWhitelist []string          `json:"china_inbound_whitelist"`
@@ -102,9 +103,10 @@ type desiredRelay struct {
 }
 
 type configResult struct {
-	Version int64  `json:"version"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Version    int64             `json:"version"`
+	Status     string            `json:"status"`
+	Message    string            `json:"message"`
+	Components map[string]string `json:"components,omitempty"`
 }
 
 type configSynchronizer struct {
@@ -121,6 +123,10 @@ type configSynchronizer struct {
 	lastSuccessfulVersion int64
 	lastSuccessfulState   desiredState
 	hasSuccessfulState    bool
+	firewallRetryVersion  int64
+	firewallRetryAt       time.Time
+	firewallRetryDelay    time.Duration
+	components            map[string]string
 }
 
 func newConfigSynchronizer(value config, client *http.Client) *configSynchronizer {
@@ -129,11 +135,11 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 	chinaFirewall := newChinaInboundFirewall()
 	acme := xray.acme
 	runner := newAgentDiagnosticRunner(xray, realm)
-	return &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
-		xrayErr := xray.apply(ctx, state)
-		realmErr := realm.apply(ctx, state.Realm)
-		chinaFirewallErr := chinaFirewall.apply(ctx, state)
-		return errors.Join(xrayErr, realmErr, chinaFirewallErr)
+	var synchronizer *configSynchronizer
+	synchronizer = &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
+		var err error
+		synchronizer.components, err = applyManagedComponents(ctx, state, xray.apply, realm.apply, chinaFirewall)
+		return err
 	}, applyDecommission: func(ctx context.Context, state desiredState) error {
 		if state.BlockChinaInbound || state.Xray.Enabled || !state.Xray.Purge || len(state.Xray.Proxies) != 0 ||
 			state.Realm.Enabled || !state.Realm.Purge || len(state.Realm.Relays) != 0 {
@@ -156,6 +162,28 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 		log.Print("Managed firewall cleanup complete")
 		return nil
 	}}
+	return synchronizer
+}
+
+func applyManagedComponents(ctx context.Context, state desiredState, applyXray func(context.Context, desiredState) error, applyRealm func(context.Context, desiredRealmState) error, firewall *chinaInboundFirewall) (map[string]string, error) {
+	xrayErr := applyXray(ctx, state)
+	realmErr := applyRealm(ctx, state.Realm)
+	firewallErr := firewall.apply(ctx, state)
+	status := func(err error) string {
+		if err == nil {
+			return "success"
+		}
+		return "failed"
+	}
+	chinaStatus := status(firewallErr)
+	if firewall.legacyUnverified {
+		chinaStatus = "unknown"
+	}
+	if state.BlockChinaInbound && (errors.Is(firewallErr, errChinaNFTPrivileges) || errors.Is(firewallErr, errChinaNFTKernel) || errors.Is(firewallErr, errManagedChinaInboundRequiresNFT)) {
+		chinaStatus = "unsupported"
+	}
+	environment := probeChinaFirewall(ctx, firewall)
+	return map[string]string{"xray": status(xrayErr), "realm": status(realmErr), "china_firewall": chinaStatus, "firewall_environment": environment}, errors.Join(xrayErr, realmErr, firewallErr)
 }
 
 func (s *configSynchronizer) diagnose(ctx context.Context, requestID string) diagnostic.Result {
@@ -191,6 +219,9 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	if state.Version == s.lastSuccessfulVersion {
 		return nil
 	}
+	if state.Version == s.firewallRetryVersion && s.now().Before(s.firewallRetryAt) {
+		return nil
+	}
 
 	applyContext, cancelApply := context.WithTimeout(ctx, configApplyTimeout)
 	var applyErr error
@@ -204,10 +235,14 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 			}
 		}
 	} else {
+		s.components = nil
 		applyErr = s.applyState(applyContext, state)
 	}
 	cancelApply()
 	result := configResult{Version: state.Version, Status: "success"}
+	if state.ComponentResults && !state.Decommission {
+		result.Components = s.components
+	}
 	if applyErr != nil {
 		result.Status = "failed"
 		result.Message = desiredStateErrorMessage(applyErr)
@@ -225,8 +260,25 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 		return err
 	}
 	if applyErr != nil {
+		joined, multiple := applyErr.(interface{ Unwrap() []error })
+		firewallOnly := !multiple || len(joined.Unwrap()) == 1
+		if firewallOnly && (errors.Is(applyErr, errManagedChinaInboundFirewall) || errors.Is(applyErr, errManagedChinaInboundRequiresNFT) || errors.Is(applyErr, errChinaNFTPrivileges) || errors.Is(applyErr, errChinaNFTKernel)) {
+			if state.Version != s.firewallRetryVersion {
+				s.firewallRetryDelay = 0
+			}
+			minimum := 30 * time.Second
+			if errors.Is(applyErr, errChinaNFTPrivileges) || errors.Is(applyErr, errChinaNFTKernel) || errors.Is(applyErr, errManagedChinaInboundRequiresNFT) {
+				minimum = 5 * time.Minute
+			}
+			s.firewallRetryDelay = min(max(minimum, s.firewallRetryDelay*2), 30*time.Minute)
+			s.firewallRetryVersion = state.Version
+			s.firewallRetryAt = s.now().Add(s.firewallRetryDelay)
+		}
 		return applyErr
 	}
+	s.firewallRetryVersion = 0
+	s.firewallRetryAt = time.Time{}
+	s.firewallRetryDelay = 0
 	if prepared != nil {
 		if err := prepared.activate(); err != nil {
 			prepared.cleanup()
@@ -236,6 +288,15 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 	}
 	s.lastSuccessfulVersion = state.Version
 	return nil
+}
+
+func (s *configSynchronizer) capabilitiesChanged() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastSuccessfulVersion = 0
+	s.firewallRetryVersion = 0
+	s.firewallRetryAt = time.Time{}
+	s.firewallRetryDelay = 0
 }
 
 func (s *configSynchronizer) renew(ctx context.Context) error {

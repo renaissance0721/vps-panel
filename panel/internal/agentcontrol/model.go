@@ -76,7 +76,13 @@ type DesiredState struct {
 }
 
 type ConfigResult struct {
-	Version int64
-	Status  string
-	Message string
+	Version    int64
+	Status     string
+	Message    string
+	Components map[string]string
+}
+
+type ComponentResults struct {
+	Version  int64             `json:"version"`
+	Statuses map[string]string `json:"statuses"`
 }

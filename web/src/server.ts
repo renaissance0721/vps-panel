@@ -126,7 +126,7 @@ export function chinaInboundSupported(server: AgentMetadata): boolean {
 export function chinaInboundUnsupportedReason(server: ServerRecord): string {
   if (server.agent_version_status === 'unregistered') return '服务器尚未注册支持该功能的 Agent。'
   if (server.agent_api_version === 0) return '当前 Agent 不支持中国 IP 入站限制，请先升级 Agent。'
-  return '当前 Agent 不支持中国 IP 入站限制。'
+  return '当前 Agent 未提供中国 IP 入站过滤能力。请检查 nftables、CAP_NET_ADMIN 和容器权限。'
 }
 
 export function chinaInboundApplyState(server: ServerRecord): ChinaInboundApplyState {
@@ -137,6 +137,21 @@ export function chinaInboundApplyState(server: ServerRecord): ChinaInboundApplyS
     return server.block_china_inbound
       ? { key: 'waiting_enable', label: '等待 Agent', type: 'warning', detail: '已配置开启，但服务器尚未注册 Agent，尚未应用。' }
       : { key: 'not_enabled', label: '未启用', type: 'default', detail: '服务器尚未注册支持该功能的 Agent。' }
+  }
+  const components = server.agent_config_components
+  if (components?.version === server.desired_state_version && components.statuses.china_firewall === 'unknown') {
+    return { key: 'unsupported_enabled', label: '无法确认', type: 'warning', detail: '无法检查当前网络命名空间中的历史防火墙规则。' }
+  }
+  if (components?.version === server.desired_state_version && components.statuses.china_firewall === 'unsupported') {
+    return { key: 'unsupported_enabled', label: '当前环境不支持', type: 'warning', detail: '请检查 nftables、CAP_NET_ADMIN 和容器权限。' }
+  }
+  if (components?.version === server.desired_state_version && components.statuses.china_firewall === 'failed') {
+    return { key: 'failed', label: '配置应用失败', type: 'error', detail: '无法确认当前网络命名空间中的防火墙规则已正确应用或清理。' }
+  }
+  if (components?.version === server.desired_state_version && components.statuses.china_firewall === 'success') {
+    return server.block_china_inbound
+      ? { key: 'applied_enabled', label: '已生效', type: 'success', detail: '规则已应用于 Agent 当前网络命名空间。' }
+      : { key: 'applied_disabled', label: '已关闭', type: 'default', detail: '当前网络命名空间中的受管规则已清理。' }
   }
   if (!chinaInboundSupported(server)) {
     return server.block_china_inbound

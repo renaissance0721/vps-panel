@@ -42,8 +42,7 @@ func TestRegisterAgentSavesLongTermCredentials(t *testing.T) {
 		if request.EnrollmentToken != "one-time-token" || request.AgentVersion != agentVersion || request.ExistingConfig ||
 			request.AgentImplementation != agentcontrol.OfficialImplementation ||
 			request.AgentAPIVersion != agentcontrol.CurrentAPIVersion ||
-			len(request.AgentCapabilities) != len(agentCapabilities) ||
-			!slices.Contains(request.AgentCapabilities, agentcontrol.CapabilityFirewallCNBlock) {
+			!slices.Contains(request.AgentCapabilities, agentcontrol.CapabilityRelayRealm) {
 			t.Fatalf("registration request = %+v", request)
 		}
 		w.Header().Set("Content-Type", "application/json")

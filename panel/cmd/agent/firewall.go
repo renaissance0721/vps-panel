@@ -27,17 +27,18 @@ type firewallRule struct {
 }
 
 type proxyFirewall struct {
-	owner      string
-	lookPath   func(string) (string, error)
-	runCommand func(context.Context, string, ...string) ([]byte, error)
+	owner       string
+	lookPath    func(string) (string, error)
+	runCommand  func(context.Context, string, ...string) ([]byte, error)
+	hasNetAdmin func() (bool, error)
 }
 
 func newProxyFirewall() *proxyFirewall {
-	return &proxyFirewall{owner: "proxy", lookPath: exec.LookPath, runCommand: runFirewallCommand}
+	return &proxyFirewall{owner: "proxy", lookPath: exec.LookPath, runCommand: runFirewallCommand, hasNetAdmin: hasEffectiveNetAdmin}
 }
 
 func newRealmFirewall() *proxyFirewall {
-	return &proxyFirewall{owner: "realm", lookPath: exec.LookPath, runCommand: runFirewallCommand}
+	return &proxyFirewall{owner: "realm", lookPath: exec.LookPath, runCommand: runFirewallCommand, hasNetAdmin: hasEffectiveNetAdmin}
 }
 
 func runFirewallCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
@@ -122,6 +123,11 @@ func (f *proxyFirewall) purge(ctx context.Context) error {
 }
 
 func (f *proxyFirewall) activeNFT(ctx context.Context) (string, bool) {
+	if f.hasNetAdmin != nil {
+		if capable, err := f.hasNetAdmin(); err == nil && !capable {
+			return "", false
+		}
+	}
 	command, err := f.lookPath("nft")
 	if err != nil {
 		return "", false

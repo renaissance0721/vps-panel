@@ -24,6 +24,7 @@ const (
 	CapabilitySelfUpgrade         = "self_upgrade"
 	CapabilityFirewallCNBlock     = "firewall.cn_block"
 	CapabilityFirewallCNWhitelist = "firewall.cn_whitelist"
+	CapabilityComponentResults    = "config.components.v1"
 	CapabilityManagedRuntimePurge = "managed_runtime_purge"
 	CapabilitySelfDecommission    = "self_decommission"
 

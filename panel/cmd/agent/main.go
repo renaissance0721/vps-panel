@@ -65,8 +65,26 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilitySelfUpgrade,
 	agentcontrol.CapabilityFirewallCNBlock,
 	agentcontrol.CapabilityFirewallCNWhitelist,
+	agentcontrol.CapabilityComponentResults,
 	agentcontrol.CapabilityManagedRuntimePurge,
 	agentcontrol.CapabilitySelfDecommission,
+}
+
+func detectedAgentCapabilities(ctx context.Context) []string {
+	return agentCapabilitiesForFirewallEnvironment(probeChinaFirewall(ctx, newChinaInboundFirewall()))
+}
+
+func agentCapabilitiesForFirewallEnvironment(environment string) []string {
+	if environment == "supported" {
+		return append([]string(nil), agentCapabilities...)
+	}
+	capabilities := make([]string, 0, len(agentCapabilities))
+	for _, capability := range agentCapabilities {
+		if capability != agentcontrol.CapabilityFirewallCNBlock && capability != agentcontrol.CapabilityFirewallCNWhitelist {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	return capabilities
 }
 
 type registrationRequest struct {
@@ -232,7 +250,7 @@ func registerAgent(
 		ExistingConfig:      existingConfig,
 		AgentImplementation: agentcontrol.OfficialImplementation,
 		AgentAPIVersion:     agentcontrol.CurrentAPIVersion,
-		AgentCapabilities:   agentCapabilities,
+		AgentCapabilities:   detectedAgentCapabilities(ctx),
 	})
 	if err != nil {
 		return config{}, fmt.Errorf("encode registration request: %w", err)
@@ -418,7 +436,9 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	header.Set("X-VPS-Panel-Agent-Version", agentVersion)
 	header.Set("X-VPS-Panel-Agent-Implementation", agentcontrol.OfficialImplementation)
 	header.Set("X-VPS-Panel-Agent-API", fmt.Sprintf("%d", agentcontrol.CurrentAPIVersion))
-	header.Set("X-VPS-Panel-Agent-Capabilities", strings.Join(agentCapabilities, ","))
+	firewallEnvironment := probeChinaFirewall(ctx, newChinaInboundFirewall())
+	capabilities := strings.Join(agentCapabilitiesForFirewallEnvironment(firewallEnvironment), ",")
+	header.Set("X-VPS-Panel-Agent-Capabilities", capabilities)
 	connection, response, err := dialAgentWebSocket(
 		ctx,
 		value.PanelURL+"/api/agent/ws",
@@ -491,6 +511,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	defer metricsTicker.Stop()
 	configTicker := time.NewTicker(agentConfigPollInterval)
 	defer configTicker.Stop()
+	capabilityTicker := time.NewTicker(5 * time.Minute)
+	defer capabilityTicker.Stop()
 	certificateTicker := time.NewTicker(12 * time.Hour)
 	defer certificateTicker.Stop()
 	chinaPrefixesTicker := time.NewTicker(12 * time.Hour)
@@ -506,6 +528,12 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 			return true, false
 		case <-disconnected:
 			return true, false
+		case <-capabilityTicker.C:
+			if probeChinaFirewall(connectionContext, newChinaInboundFirewall()) != firewallEnvironment {
+				configSync.capabilitiesChanged()
+				log.Print("Firewall capability changed; reconnecting to report the current environment")
+				return true, false
+			}
 		case tasks := <-probeTasks:
 			if err := probes.apply(tasks); err != nil {
 				log.Printf("reject probe task list: %v", err)

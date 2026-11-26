@@ -22,6 +22,7 @@ type agentRegistrationResponse struct {
 
 type agentDesiredStateResponse struct {
 	Version               int64                  `json:"version"`
+	ComponentResults      bool                   `json:"component_results"`
 	Decommission          bool                   `json:"decommission"`
 	BlockChinaInbound     bool                   `json:"block_china_inbound"`
 	ChinaInboundWhitelist []string               `json:"china_inbound_whitelist"`
@@ -43,9 +44,10 @@ type agentDesiredRealmState struct {
 }
 
 type agentConfigResultRequest struct {
-	Version int64  `json:"version"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Version    int64             `json:"version"`
+	Status     string            `json:"status"`
+	Message    string            `json:"message"`
+	Components map[string]string `json:"components,omitempty"`
 }
 
 type agentUpgradeResultRequest struct {

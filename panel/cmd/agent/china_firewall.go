@@ -39,7 +39,7 @@ const (
 
 var (
 	errManagedChinaInboundFirewall    = errors.New("managed China inbound firewall synchronization failed")
-	errManagedChinaInboundRequiresNFT = errors.New("managed China inbound firewall requires nftables; install nftables (Alpine: apk add --no-cache nftables; Debian/Ubuntu: apt-get update && apt-get install -y nftables) or run the Agent upgrade installer")
+	errManagedChinaInboundRequiresNFT = errors.New("managed China inbound firewall requires nftables; install nftables (Alpine: apk add --no-cache nftables; Debian/Ubuntu: apt-get update && apt-get install -y nftables)")
 	errChinaNFTPrivileges             = errors.New("managed China inbound firewall: insufficient firewall privileges; check CAP_NET_ADMIN and container permissions")
 	errChinaNFTKernel                 = errors.New("managed China inbound firewall: nftables kernel or container support is unavailable")
 	errChinaNFTInspect                = errors.New("managed China inbound firewall: nftables inspection failed; check kernel, container and rule compatibility")
@@ -58,22 +58,33 @@ type chinaPrefixes struct {
 }
 
 type chinaInboundFirewall struct {
-	cachePath      string
-	now            func() time.Time
-	download       func(context.Context) ([]byte, error)
-	lookPath       func(string) (string, error)
-	runCommand     func(context.Context, string, ...string) ([]byte, error)
-	refreshPending bool
+	cachePath           string
+	now                 func() time.Time
+	download            func(context.Context) ([]byte, error)
+	lookPath            func(string) (string, error)
+	runCommand          func(context.Context, string, ...string) ([]byte, error)
+	refreshPending      bool
+	networkNamespace    func() (string, error)
+	bootID              func() (string, error)
+	hasNetAdmin         func() (bool, error)
+	legacyWarningLogged bool
+	legacyUnverified    bool
 }
 
 func newChinaInboundFirewall() *chinaInboundFirewall {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	client := newChinaPrefixesHTTPClient(dialer.DialContext)
 	manager := &chinaInboundFirewall{
-		cachePath:  chinaPrefixesCachePath,
-		now:        time.Now,
-		lookPath:   exec.LookPath,
-		runCommand: runFirewallCommand,
+		cachePath:        chinaPrefixesCachePath,
+		now:              time.Now,
+		lookPath:         exec.LookPath,
+		runCommand:       runFirewallCommand,
+		networkNamespace: func() (string, error) { return os.Readlink("/proc/self/ns/net") },
+		bootID: func() (string, error) {
+			data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+			return strings.TrimSpace(string(data)), err
+		},
+		hasNetAdmin: hasEffectiveNetAdmin,
 	}
 	manager.download = func(ctx context.Context) ([]byte, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, chinaDelegatedURL, nil)
@@ -118,9 +129,130 @@ func newChinaPrefixesHTTPClient(dialContext func(context.Context, string, string
 	}
 }
 
+func hasEffectiveNetAdmin() (bool, error) {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false, err
+	}
+	return parseEffectiveNetAdmin(string(data))
+}
+
+func parseEffectiveNetAdmin(status string) (bool, error) {
+	for _, line := range strings.Split(status, "\n") {
+		if strings.HasPrefix(line, "CapEff:") {
+			value, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "CapEff:")), 16, 64)
+			return value&(1<<12) != 0, err
+		}
+	}
+	return false, errors.New("CapEff unavailable")
+}
+
+// The create/delete batch is a single nftables transaction with no packet hook.
+func probeChinaFirewall(ctx context.Context, f *chinaInboundFirewall) string {
+	capable, err := f.hasNetAdmin()
+	if err != nil {
+		return "unknown"
+	}
+	if !capable {
+		return "unsupported"
+	}
+	command, err := f.lookPath("nft")
+	if err != nil {
+		return "unsupported"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := f.runCommand(probeCtx, command, "list", "tables")
+	if err != nil {
+		err = chinaNFTCommandError("list nftables tables", output, err)
+		if errors.Is(err, errChinaNFTPrivileges) || errors.Is(err, errChinaNFTKernel) {
+			return "unsupported"
+		}
+		return "temporarily_unavailable"
+	}
+	if len(output) >= managedProxyFirewallOutputMax {
+		return "unknown"
+	}
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "unknown"
+	}
+	name := fmt.Sprintf("vps_panel_probe_%x", random)
+	batch := fmt.Sprintf("create table inet %s\ndelete table inet %s\n", name, name)
+	if err := f.runBatch(probeCtx, command, []byte(batch)); err != nil {
+		if errors.Is(err, errChinaNFTPrivileges) || errors.Is(err, errChinaNFTKernel) {
+			return "unsupported"
+		}
+		return "temporarily_unavailable"
+	}
+	return "supported"
+}
+
+type chinaFirewallJournal struct {
+	Namespace string `json:"namespace"`
+	State     string `json:"state"`
+	BootID    string `json:"boot_id,omitempty"`
+}
+
+func (f *chinaInboundFirewall) journalPath() string {
+	return filepath.Join(filepath.Dir(f.cachePath), "cn-firewall-state.json")
+}
+
+func (f *chinaInboundFirewall) readJournal() (*chinaFirewallJournal, error) {
+	data, err := os.ReadFile(f.journalPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var journal chinaFirewallJournal
+	if err := json.Unmarshal(data, &journal); err != nil {
+		return nil, err
+	}
+	if journal.Namespace == "" || (journal.State != "pending" && journal.State != "active") {
+		return nil, errors.New("invalid China firewall journal")
+	}
+	return &journal, nil
+}
+
+func (f *chinaInboundFirewall) writeJournal(state string) error {
+	namespace, err := f.networkNamespace()
+	if err != nil {
+		return err
+	}
+	bootID, _ := f.bootID()
+	data, err := json.Marshal(chinaFirewallJournal{Namespace: namespace, State: state, BootID: bootID})
+	if err != nil {
+		return err
+	}
+	return writeFileAtomically(f.journalPath(), data, 0o600)
+}
+
+// A different namespace in the same boot may still contain managed rules.
+// After a reboot that namespace has been destroyed, so inspect the new one.
+func (f *chinaInboundFirewall) verifyJournalNamespace(journal *chinaFirewallJournal) error {
+	namespace, err := f.networkNamespace()
+	if err != nil {
+		return chinaInboundFirewallError("network namespace is unavailable", err)
+	}
+	if namespace == journal.Namespace {
+		return nil
+	}
+	bootID, err := f.bootID()
+	if err == nil && bootID != "" && journal.BootID != "" && bootID != journal.BootID {
+		return nil
+	}
+	return chinaInboundFirewallError("network namespace changed; firewall ownership is unverified", nil)
+}
+
 func (f *chinaInboundFirewall) apply(ctx context.Context, state desiredState) error {
+	f.legacyUnverified = false
 	if !state.BlockChinaInbound {
 		return f.disable(ctx)
+	}
+	if capable, err := f.hasNetAdmin(); err == nil && !capable {
+		return chinaInboundFirewallError("check firewall privileges", errChinaNFTPrivileges)
 	}
 	command, err := f.lookPath("nft")
 	if err != nil {
@@ -134,7 +266,7 @@ func (f *chinaInboundFirewall) apply(ctx context.Context, state desiredState) er
 	if err != nil {
 		return chinaInboundFirewallError("load China prefixes", err)
 	}
-	return f.install(ctx, command, exists, prefixes, state)
+	return f.installWithJournal(ctx, command, exists, prefixes, state)
 }
 
 func (f *chinaInboundFirewall) refresh(ctx context.Context, state desiredState) error {
@@ -157,27 +289,101 @@ func (f *chinaInboundFirewall) refresh(ctx context.Context, state desiredState) 
 	if err != nil {
 		return err
 	}
-	err = f.install(ctx, command, exists, prefixes, state)
+	err = f.installWithJournal(ctx, command, exists, prefixes, state)
 	if err == nil {
 		f.refreshPending = false
 	}
 	return err
 }
 
+func (f *chinaInboundFirewall) installWithJournal(ctx context.Context, command string, exists bool, prefixes chinaPrefixes, state desiredState) error {
+	journal, err := f.readJournal()
+	if err != nil {
+		return chinaInboundFirewallError("read ownership journal", err)
+	}
+	if journal != nil {
+		if err := f.verifyJournalNamespace(journal); err != nil {
+			return err
+		}
+	}
+	if err := f.writeJournal("pending"); err != nil {
+		return chinaInboundFirewallError("write firewall intent", err)
+	}
+	if err := f.install(ctx, command, exists, prefixes, state); err != nil {
+		return err
+	}
+	return f.writeJournal("active")
+}
+
 func (f *chinaInboundFirewall) disable(ctx context.Context) error {
+	return f.cleanup(ctx, false)
+}
+
+func (f *chinaInboundFirewall) cleanup(ctx context.Context, strict bool) error {
+	f.legacyUnverified = false
+	journal, err := f.readJournal()
+	if err != nil {
+		return chinaInboundFirewallError("read ownership journal", err)
+	}
+	if journal != nil {
+		if err := f.verifyJournalNamespace(journal); err != nil {
+			return err
+		}
+	}
+	if journal == nil {
+		if capable, err := f.hasNetAdmin(); err != nil || !capable {
+			f.legacyUnverified = true
+			if strict {
+				return chinaInboundFirewallError("legacy firewall state cannot be verified", errChinaNFTPrivileges)
+			}
+			if !f.legacyWarningLogged {
+				log.Print("China firewall disabled; legacy firewall state cannot be verified without confirmed CAP_NET_ADMIN")
+				f.legacyWarningLogged = true
+			}
+			return nil
+		}
+	}
 	command, err := f.lookPath("nft")
 	if err != nil {
+		if journal != nil || strict {
+			return chinaInboundFirewallError("firewall cleanup could not be verified", errManagedChinaInboundRequiresNFT)
+		}
+		f.legacyUnverified = true
 		return nil
 	}
 	exists, err := f.inspectOwnedTable(ctx, command)
-	if err != nil || !exists {
+	if err != nil {
+		if journal == nil && !strict {
+			f.legacyUnverified = true
+			if !f.legacyWarningLogged {
+				log.Print("China firewall disabled; legacy firewall state could not be verified")
+				f.legacyWarningLogged = true
+			}
+			return nil
+		}
 		return err
 	}
-	return f.runBatch(ctx, command, []byte("delete table inet "+chinaFirewallTable+"\n"))
+	if exists {
+		if err := f.runBatch(ctx, command, []byte("delete table inet "+chinaFirewallTable+"\n")); err != nil {
+			return err
+		}
+		if exists, err = f.inspectOwnedTable(ctx, command); err != nil {
+			return err
+		}
+		if exists {
+			return chinaInboundFirewallError("managed firewall table remains after cleanup", nil)
+		}
+	}
+	if journal != nil {
+		if err := os.Remove(f.journalPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *chinaInboundFirewall) purge(ctx context.Context) error {
-	return f.disable(ctx)
+	return f.cleanup(ctx, true)
 }
 
 func (f *chinaInboundFirewall) inspectOwnedTable(ctx context.Context, command string) (bool, error) {
@@ -662,7 +868,7 @@ func chinaInboundFirewallError(action string, err error) error {
 	if err == nil {
 		return fmt.Errorf("%w: %s", errManagedChinaInboundFirewall, action)
 	}
-	return fmt.Errorf("%w: %s: %v", errManagedChinaInboundFirewall, action, err)
+	return fmt.Errorf("%w: %s: %w", errManagedChinaInboundFirewall, action, err)
 }
 
 // Do not return nft's raw output: failed commands may echo configuration.

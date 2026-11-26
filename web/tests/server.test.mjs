@@ -256,6 +256,11 @@ test('中国 IP 入站限制按 desired/apply 状态和 capability 准确展示'
   assert.equal(chinaInboundApplyState(server({ status: 'offline' })).label, '等待 Agent 上线')
   assert.equal(chinaInboundApplyState(server({ status: 'offline', block_china_inbound: false })).label, '等待 Agent 上线关闭')
   assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'failed' })).label, '配置应用失败')
+  assert.equal(chinaInboundApplyState(server({ block_china_inbound: false, agent_config_sync_status: 'success', agent_applied_config_version: 21, agent_config_components: { version: 21, statuses: { china_firewall: 'unknown' } } })).label, '无法确认')
+  assert.equal(chinaInboundApplyState(server({ agent_config_components: { version: 21, statuses: { china_firewall: 'unsupported' } } })).label, '当前环境不支持')
+  assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'success', agent_applied_config_version: 21, agent_config_components: { version: 21, statuses: { china_firewall: 'failed' } } })).label, '配置应用失败')
+  assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'failed', agent_config_components: { version: 21, statuses: { china_firewall: 'success' } } })).label, '已生效')
+  assert.equal(chinaInboundApplyState(server({ agent_config_sync_status: 'success', agent_applied_config_version: 21, agent_config_components: { version: 20, statuses: { china_firewall: 'failed' } } })).label, '已生效')
   assert.equal(chinaInboundApplyState(server({ china_inbound_whitelist_configured: true, agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '无法确认')
   assert.equal(chinaInboundApplyState(server({ china_inbound_whitelist_configured: true, agent_capabilities: ['firewall.cn_block', 'firewall.cn_whitelist'], agent_applied_config_version: 21, agent_config_sync_status: 'success' })).label, '已生效')
 

@@ -572,8 +572,8 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 	if err := manager.apply(t.Context(), desiredState{BlockChinaInbound: true}); !errors.Is(err, errManagedChinaInboundFirewall) {
 		t.Fatalf("unmanaged table apply error = %v", err)
 	}
-	if err := manager.disable(t.Context()); !errors.Is(err, errManagedChinaInboundFirewall) {
-		t.Fatalf("unmanaged table disable error = %v", err)
+	if err := manager.disable(t.Context()); err != nil || !manager.legacyUnverified {
+		t.Fatalf("unmanaged table disable = %v, unverified = %v", err, manager.legacyUnverified)
 	}
 
 	manager.lookPath = func(string) (string, error) { return "", errors.New("not found") }
@@ -596,8 +596,12 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 		t.Fatalf("disabled absent table error = %v", err)
 	}
 
+	deleted := false
 	manager.runCommand = func(_ context.Context, _ string, arguments ...string) ([]byte, error) {
 		if reflect.DeepEqual(arguments, []string{"list", "tables"}) {
+			if deleted {
+				return nil, nil
+			}
 			return []byte("table inet vps_panel_cn_block\n"), nil
 		}
 		if reflect.DeepEqual(arguments, []string{"list", "chain", "inet", chinaFirewallTable, "input"}) {
@@ -611,12 +615,136 @@ func TestChinaInboundFirewallOwnershipDisableAndMissingNFT(t *testing.T) {
 			if string(data) != "delete table inet vps_panel_cn_block\n" {
 				t.Fatalf("disable batch = %q", data)
 			}
+			deleted = true
 			return nil, nil
 		}
 		return nil, errors.New("unexpected command")
 	}
 	if err := manager.disable(t.Context()); err != nil {
 		t.Fatalf("disable managed table: %v", err)
+	}
+}
+
+func TestRestrictedChinaFirewallPreservesUnknownAndManagedState(t *testing.T) {
+	manager, _ := newTestChinaInboundFirewall(t)
+	manager.hasNetAdmin = func() (bool, error) { return false, nil }
+	manager.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		t.Fatal("unexpected nft access for unverified legacy state")
+		return nil, nil
+	}
+	if err := manager.apply(t.Context(), desiredState{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.purge(t.Context()); err == nil {
+		t.Fatal("unverified state allowed decommission")
+	}
+	if err := manager.writeJournal("active"); err != nil {
+		t.Fatal(err)
+	}
+	manager.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("netlink: Operation not permitted"), errors.New("exit status 1")
+	}
+	if err := manager.disable(t.Context()); !errors.Is(err, errChinaNFTPrivileges) {
+		t.Fatalf("cleanup = %v", err)
+	}
+	if _, err := os.Stat(manager.journalPath()); err != nil {
+		t.Fatalf("ownership journal was removed: %v", err)
+	}
+}
+
+func TestChinaFirewallJournalNamespaceAndReboot(t *testing.T) {
+	manager, _ := newTestChinaInboundFirewall(t)
+	manager.bootID = func() (string, error) { return "boot-1", nil }
+	if err := manager.writeJournal("active"); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := manager.readJournal()
+	if err != nil || journal.BootID != "boot-1" {
+		t.Fatalf("read journal: %+v, %v", journal, err)
+	}
+	manager.networkNamespace = func() (string, error) { return "net:[other]", nil }
+	if err := manager.verifyJournalNamespace(journal); err == nil {
+		t.Fatal("different namespace in the same boot must remain unverified")
+	}
+	manager.bootID = func() (string, error) { return "boot-2", nil }
+	if err := manager.verifyJournalNamespace(journal); err != nil {
+		t.Fatalf("reboot must allow ownership inspection in new namespace: %v", err)
+	}
+	journal.BootID = ""
+	if err := manager.verifyJournalNamespace(journal); err == nil {
+		t.Fatal("missing boot identity must not assume a reboot")
+	}
+}
+
+func TestChinaFirewallNoNFTCannotConfirmLegacyCleanup(t *testing.T) {
+	manager, _ := newTestChinaInboundFirewall(t)
+	manager.lookPath = func(string) (string, error) { return "", errors.New("missing") }
+	if err := manager.disable(t.Context()); err != nil || !manager.legacyUnverified {
+		t.Fatalf("disable = %v, unverified = %v", err, manager.legacyUnverified)
+	}
+	if err := manager.purge(t.Context()); err == nil {
+		t.Fatal("decommission must not treat missing nft as verified cleanup")
+	}
+}
+
+func TestChinaFirewallCapabilityProbe(t *testing.T) {
+	manager, _ := newTestChinaInboundFirewall(t)
+	manager.hasNetAdmin = func() (bool, error) { return false, nil }
+	manager.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		t.Fatal("probe ran nft without CAP_NET_ADMIN")
+		return nil, nil
+	}
+	if got := probeChinaFirewall(t.Context(), manager); got != "unsupported" {
+		t.Fatalf("no capability: %s", got)
+	}
+	manager.hasNetAdmin = func() (bool, error) { return false, errors.New("unavailable") }
+	if got := probeChinaFirewall(t.Context(), manager); got != "unknown" {
+		t.Fatalf("unknown capability: %s", got)
+	}
+	manager.hasNetAdmin = func() (bool, error) { return true, nil }
+	manager.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("temporary netlink failure")
+	}
+	if got := probeChinaFirewall(t.Context(), manager); got != "temporarily_unavailable" {
+		t.Fatalf("transient failure: %s", got)
+	}
+	manager.runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"list", "tables"}) {
+			return nil, nil
+		}
+		if len(args) != 2 || args[0] != "-f" {
+			t.Fatalf("unexpected nft command: %v", args)
+		}
+		batch, err := os.ReadFile(args[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(batch)), "\n")
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "create table inet vps_panel_probe_") || lines[1] != strings.Replace(lines[0], "create table", "delete table", 1) {
+			t.Fatalf("probe must atomically create and delete its own table: %q", batch)
+		}
+		return nil, nil
+	}
+	if got := probeChinaFirewall(t.Context(), manager); got != "supported" {
+		t.Fatalf("supported: %s", got)
+	}
+}
+
+func TestParseEffectiveNetAdmin(t *testing.T) {
+	for _, tc := range []struct {
+		status  string
+		capable bool
+		invalid bool
+	}{
+		{"Name:\tagent\nCapEff:\t0000000000001000\n", true, false},
+		{"CapEff:\t0000000000000000\n", false, false},
+		{"Name:\tagent\n", false, true},
+		{"CapEff:\tinvalid\n", false, true},
+	} {
+		capable, err := parseEffectiveNetAdmin(tc.status)
+		if capable != tc.capable || (err != nil) != tc.invalid {
+			t.Fatalf("%q: capable=%v, error=%v", tc.status, capable, err)
+		}
 	}
 }
 
@@ -725,6 +853,8 @@ func newTestChinaInboundFirewall(t *testing.T) (*chinaInboundFirewall, time.Time
 	now := time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC)
 	manager := newChinaInboundFirewall()
 	manager.cachePath = filepath.Join(t.TempDir(), "firewall", "cn-prefixes.json")
+	manager.networkNamespace = func() (string, error) { return "net:[test]", nil }
+	manager.hasNetAdmin = func() (bool, error) { return true, nil }
 	manager.now = func() time.Time { return now }
 	manager.lookPath = func(name string) (string, error) {
 		if name != "nft" {

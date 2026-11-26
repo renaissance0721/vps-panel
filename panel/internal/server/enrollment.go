@@ -28,7 +28,7 @@ func (s *Service) CreateEnrollment(ctx context.Context, id int64) (CreatedServer
 		 servers.traffic_reset_day, servers.traffic_reset_time,
 		 agent.last_seen_at, agent.implementation, agent.version, agent.api_version, agent.capabilities_json,
 		 agent.upgrade_target_version, agent.upgrade_status, agent.upgrade_error,
-		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at,
+		 agent.applied_config_version, agent.config_sync_status, agent.config_sync_error, agent.config_synced_at, agent.config_components_json,
 		 system_info.hostname, system_info.os_name, system_info.os_version,
 		 system_info.kernel, system_info.arch, system_info.ipv4, system_info.ipv6, system_info.public_ipv4, system_info.public_ipv6, system_info.country_code,
 		 system_info.agent_version, system_info.reported_at,

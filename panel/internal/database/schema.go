@@ -130,6 +130,7 @@ func schemaStatements() []string {
 			config_sync_status TEXT NOT NULL DEFAULT 'pending'
 				CHECK (config_sync_status IN ('pending', 'success', 'failed')),
 			config_sync_error TEXT NOT NULL DEFAULT '',
+			config_components_json TEXT NOT NULL DEFAULT '{}',
 			config_synced_at INTEGER,
 			upgrade_target_version TEXT NOT NULL DEFAULT '',
 			upgrade_status TEXT NOT NULL DEFAULT ''

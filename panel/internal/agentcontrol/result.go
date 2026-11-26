@@ -3,6 +3,7 @@ package agentcontrol
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -15,6 +16,28 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 		(result.Status != ConfigSyncSuccess && result.Status != ConfigSyncFailed) ||
 		len(result.Message) > maxConfigSyncErrorBytes {
 		return ErrInvalidConfigResult
+	}
+	for name, status := range result.Components {
+		if name == "firewall_environment" {
+			if status != "supported" && status != "unsupported" && status != "unknown" && status != "temporarily_unavailable" {
+				return ErrInvalidConfigResult
+			}
+			continue
+		}
+		if (name != "xray" && name != "realm" && name != "china_firewall") ||
+			(status != "success" && status != "failed" && status != "unsupported" && status != "unknown") {
+			return ErrInvalidConfigResult
+		}
+	}
+	if result.Components != nil {
+		for _, name := range []string{"xray", "realm", "china_firewall"} {
+			if result.Components[name] == "" {
+				return ErrInvalidConfigResult
+			}
+		}
+		if result.Status == ConfigSyncSuccess && (result.Components["xray"] != "success" || result.Components["realm"] != "success" || result.Components["china_firewall"] == "failed" || result.Components["china_firewall"] == "unsupported") {
+			return ErrInvalidConfigResult
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -41,6 +64,18 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 	}
 	if result.Version < appliedVersion {
 		return nil
+	}
+	if result.Version < desiredVersion {
+		return nil
+	}
+	if result.Components != nil && result.Status == ConfigSyncSuccess && result.Components["china_firewall"] != "success" {
+		var enabled bool
+		if err := tx.QueryRowContext(ctx, `SELECT block_china_inbound FROM servers WHERE id = ?`, serverID).Scan(&enabled); err != nil {
+			return err
+		}
+		if enabled {
+			return ErrInvalidConfigResult
+		}
 	}
 	// An older Agent may ignore an additive desired-state field and claim success.
 	// Never record that claim for an enabled, nonempty whitelist.
@@ -83,6 +118,17 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 	}
 	if err != nil {
 		return fmt.Errorf("save Agent config result: %w", err)
+	}
+	var componentResult *ComponentResults
+	if result.Components != nil {
+		componentResult = &ComponentResults{Version: result.Version, Statuses: result.Components}
+	}
+	components, err := json.Marshal(componentResult)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agents SET config_components_json = ? WHERE id = ? AND server_id = ?`, string(components), agentID, serverID); err != nil {
+		return fmt.Errorf("save Agent component results: %w", err)
 	}
 	if err := operation.RecordReceiptTx(ctx, tx, serverID, result.Version, result.Status, result.Message, time.Unix(now, 0)); err != nil {
 		return err

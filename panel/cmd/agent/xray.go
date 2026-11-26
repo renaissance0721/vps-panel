@@ -146,9 +146,6 @@ func (m *xrayManager) purge(ctx context.Context) error {
 	}
 	if !managed {
 		m.acmeDomains = nil
-		if err := m.purgeManagedFirewall(ctx); err != nil {
-			return fmt.Errorf("%w: clear managed Xray firewall: %v", errManagedRuntimePurge, err)
-		}
 		return nil
 	}
 	if m.unitPath == "" {

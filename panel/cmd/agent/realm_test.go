@@ -312,8 +312,8 @@ func TestManagedRealmPurgeRemovesOnlyOwnedRuntimeAndIsIdempotent(t *testing.T) {
 	if err := manager.apply(t.Context(), state); err != nil {
 		t.Fatalf("repeat purge: %v", err)
 	}
-	if firewallPurges != 2 {
-		t.Fatalf("repeat purge did not verify firewall cleanup: %d", firewallPurges)
+	if firewallPurges != 1 {
+		t.Fatalf("repeat purge accessed firewall without an ownership marker: %d", firewallPurges)
 	}
 }
 
@@ -322,7 +322,7 @@ func TestManagedRealmPurgeMissingPathsIsIdempotent(t *testing.T) {
 	firewallPurges := 0
 	manager.purgeFirewall = func(context.Context) error {
 		firewallPurges++
-		return nil
+		return errors.New("nft: Operation not permitted")
 	}
 	state := desiredRealmState{Purge: true}
 	for range 2 {
@@ -330,7 +330,7 @@ func TestManagedRealmPurgeMissingPathsIsIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if firewallPurges != 2 || len(commands.calls) != 0 {
+	if firewallPurges != 0 || len(commands.calls) != 0 {
 		t.Fatalf("missing-path purges = %d, service calls = %v", firewallPurges, commands.calls)
 	}
 }

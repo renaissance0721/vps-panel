@@ -182,9 +182,6 @@ func (m *realmManager) purge(ctx context.Context) error {
 		return fmt.Errorf("%w: inspect managed Realm marker: %v", errManagedRuntimePurge, err)
 	}
 	if !managed {
-		if err := m.purgeManagedFirewall(ctx); err != nil {
-			return fmt.Errorf("%w: clear managed Realm firewall: %v", errManagedRuntimePurge, err)
-		}
 		return nil
 	}
 	if m.unitPath == "" {

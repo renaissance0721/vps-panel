@@ -2,7 +2,7 @@
 
 VPS Panel 是一个轻量的多 VPS 管理面板，集服务器管理、代理节点、中转、订阅和轻量探针于一体。
 
-Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、Xray / Realm 配置、流量和网络探测。
+Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、Xray / Sing-box / Realm 配置、流量和网络探测。
 
 ## ✨ 功能
 
@@ -12,7 +12,7 @@ Panel 与 Agent 通过认证 WebSocket 保持连接，统一管理 VPS 状态、
 | 轻量探针 | CPU / RAM / Disk、网络速度、周期流量；TCPing / ICMP Ping 与 1h / 6h / 24h 延迟历史 |
 | Telegram | Server 离线、恢复和流量阈值通知 |
 | 邮件服务 | 可选的标准 SMTP 配置、管理员测试邮件与账号邮箱验证，支持 TLS、STARTTLS 和无 TLS |
-| 代理节点 | 直连 / 落地分类；受管 Xray；VLESS over TCP、TLS、REALITY、Shadowsocks 2022 |
+| 代理节点 | 直连 / 落地分类；Xray 的 VLESS、Shadowsocks 2022，以及 Sing-box 的 Hysteria2 |
 | 中转 | 受管 Realm；TCP、UDP、TCP+UDP；目标可选代理节点、外部节点或手动地址 |
 | 外部节点 | 导入 VLESS / Shadowsocks / 认证 SOCKS5 分享链接，支持直连 / 落地用途分类。SOCKS5 可用于 Mihomo 和 Shadowrocket 个人订阅 |
 | Client 与流量 | 独立凭据、流量配额、到期控制、分享链接与二维码；Server / Client 流量统计 |
@@ -81,7 +81,7 @@ Agent 安装和脚本升级会检查 `nft`。需要中国 IP 入站过滤时，�
 3. 在目标 VPS 以 root 执行页面提供的命令。
 4. Agent 注册成功后连接 Panel，服务器状态与指标会自动更新。
 
-使用页面生成的完整命令，避免手动拼接安装令牌。Agent 支持自动重连、Metrics、Probe 和受管 Xray / Realm 配置同步。
+使用页面生成的完整命令，避免手动拼接安装令牌。Agent 支持自动重连、Metrics、Probe 和受管 Xray / Sing-box / Realm 配置同步。
 管理员可升级符合条件的官方 Agent；第三方 Agent 的可用功能取决于其声明的能力。
 
 正常移除 Server 会请求兼容 Agent 清理受管服务并自卸载，成功后归档服务器。
@@ -91,10 +91,20 @@ Agent 安装和脚本升级会检查 `nft`。需要中国 IP 入站过滤时，�
 
 ### 自动 TLS
 
-VLESS TLS 支持手动证书，也支持通过 Let's Encrypt HTTP-01 申请证书。
+VLESS TLS 和 Hysteria2 支持手动证书，也支持通过 Let's Encrypt HTTP-01 申请证书。
 自动申请时，节点域名应正确解析到对应 Agent VPS，并保持该 VPS 的 TCP 80 可访问；Agent 负责自动续期。
 
 Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
+
+### Hysteria2
+
+创建代理时选择 Hysteria2，内核自动使用 Sing-box。填写 UDP 监听端口、证书域名和客户端名称；可选设置带宽和 Salamander 混淆。Agent 首次应用时下载校验过的官方稳定版 Sing-box，并独立管理其服务。目标 Agent 必须声明 `proxy.hysteria2.singbox` 能力，旧 Agent 需要升级。
+
+请在主机和服务商侧放行或转发相应 UDP 端口；NAT VPS 还需确认公网 UDP 映射。自动签发证书另外需要域名解析到该服务器并开放公网 TCP 80。页面显示的应用成功不等于公网连通，可从外部网络导入客户端链接测试。
+
+应用失败时先查看服务器详情中的 Sing-box 组件结果，再核对证书有效期、域名、UDP 监听端口和 Agent 日志。systemd 环境可在目标服务器执行 `journalctl -u vps-panel-sing-box` 查看服务日志；OpenRC 环境请查看系统服务日志。
+
+每个客户端使用独立密码，可复制 `hysteria2://` 链接或显示二维码。个人订阅的 URI/Base64 和 Mihomo 输出支持 Hysteria2；Shadowrocket 完整配置输出目前不支持 Hysteria2，会返回错误。Hysteria2 不提供客户端流量统计或额度，不可用于需要客户端流量计费的订阅套餐。
 
 ### 探针与通知
 

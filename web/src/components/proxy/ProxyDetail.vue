@@ -41,12 +41,14 @@ const {
       <dl class="server-details">
         <div><dt>节点用途</dt><dd>{{ nodeRoleLabel(selectedProxy.node_role) }}</dd></div>
         <div><dt>名称</dt><dd>{{ selectedProxy.name }}</dd></div><div><dt>服务器</dt><dd>{{ selectedProxy.server_name }}</dd></div>
+		<div><dt>内核</dt><dd>{{ selectedProxy.kernel === 'sing-box' ? 'Sing-box' : 'Xray' }}</dd></div>
         <div><dt>入口模式</dt><dd>{{ selectedProxy.entry_host_mode === 'auto' ? '自动检测' : '手动输入' }}</dd></div><div><dt>入口地址</dt><dd>{{ selectedProxy.entry_address || '未检测' }}</dd></div>
         <div><dt>监听地址</dt><dd>0.0.0.0:{{ selectedProxy.listen_port }}</dd></div><div><dt>配置状态</dt><dd>{{ selectedProxy.enabled ? '启用' : '禁用' }}</dd></div>
         <div><dt>当前可用情况</dt><dd title="当前连接与地址信息，不代表连通性探测结果">{{ proxyResourceAvailability(selectedProxy, servers.find(server => server.id === selectedProxy?.server_id)).label }}</dd></div>
       </dl>
       <h3>协议</h3>
 		<dl v-if="selectedProxy.protocol === 'vless'" class="server-details"><div><dt>协议</dt><dd>VLESS</dd></div><div><dt>传输</dt><dd>TCP</dd></div><div><dt>流控</dt><dd>XTLS Vision</dd></div><div><dt>安全层</dt><dd>{{ selectedProxy.config.security === 'tls' ? 'TLS' : 'REALITY' }}</dd></div></dl>
+		<dl v-else-if="selectedProxy.protocol === 'hysteria2'" class="server-details"><div><dt>协议</dt><dd>Hysteria2</dd></div><div><dt>网络</dt><dd>UDP</dd></div><div><dt>SNI</dt><dd>{{ selectedProxy.config.server_name }}</dd></div><div><dt>混淆</dt><dd>{{ selectedProxy.config.obfs_enabled ? 'Salamander' : '关闭' }}</dd></div></dl>
 		<dl v-else class="server-details"><div><dt>协议</dt><dd>Shadowsocks</dd></div><div><dt>加密方法</dt><dd>{{ selectedProxy.config.method }}</dd></div><div><dt>网络</dt><dd>TCP + UDP</dd></div></dl>
 		<h3 v-if="selectedProxy.protocol === 'vless'">{{ selectedProxy.config.security === 'tls' ? 'TLS' : 'REALITY' }}</h3>
 		<dl v-if="selectedProxy.protocol === 'vless'" class="server-details">

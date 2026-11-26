@@ -8,6 +8,9 @@ import (
 const (
 	ProtocolVLESS       = "vless"
 	ProtocolShadowsocks = "shadowsocks"
+	ProtocolHysteria2   = "hysteria2"
+	KernelXray          = "xray"
+	KernelSingbox       = "sing-box"
 	TransportTCP        = "tcp"
 	SecurityTLS         = "tls"
 	SecurityReality     = "reality"
@@ -40,7 +43,9 @@ var (
 	ErrInvalidTLSMode                 = errors.New("TLS mode must be acme or manual")
 	ErrInvalidACMEDomain              = errors.New("ACME TLS requires a valid DNS hostname")
 	ErrInvalidReality                 = errors.New("REALITY server name or target is invalid")
-	ErrInvalidProtocol                = errors.New("protocol must be vless or shadowsocks")
+	ErrInvalidProtocol                = errors.New("protocol must be vless, shadowsocks, or hysteria2")
+	ErrInvalidKernel                  = errors.New("kernel does not support the selected protocol")
+	ErrInvalidHysteria2               = errors.New("invalid Hysteria2 settings")
 	ErrInvalidShadowsocksMethod       = errors.New("unsupported Shadowsocks method")
 	ErrImmutableProtocol              = errors.New("proxy protocol cannot be changed")
 	ErrImmutableShadowsocksMethod     = errors.New("Shadowsocks method cannot be changed")
@@ -78,6 +83,7 @@ type Proxy struct {
 	ServerPublicIPv6 string
 	Name             string
 	Protocol         string
+	Kernel           string
 	ListenFamily     string
 	ListenPort       int
 	EntryHostMode    string
@@ -101,10 +107,14 @@ type PublicConfig struct {
 	RealityTarget            string
 	Method                   string
 	Network                  string
+	UpMbps                   int
+	DownMbps                 int
+	ObfsEnabled              bool
 }
 
 type ClientSummary struct {
 	ID                  int64
+	Protocol            string
 	ProxyID             int64
 	Name                string
 	AssignedUserID      *int64
@@ -178,6 +188,10 @@ type CreateInput struct {
 	FirstClientName   string
 	FirstClientUDP443 bool
 	Protocol          string
+	Kernel            string
+	UpMbps            int
+	DownMbps          int
+	ObfsPassword      string
 	Method            string
 }
 
@@ -196,11 +210,16 @@ type UpdateInput struct {
 	PrivateKey    *string
 	RealityTarget *string
 	Protocol      *string
+	Kernel        *string
+	UpMbps        *int
+	DownMbps      *int
+	ObfsPassword  *string
 	Method        *string
 }
 
 type ClientCreateInput struct {
 	Name         string
+	Password     *string
 	ClientUDP443 bool
 	Enabled      bool
 	ExpiresAt    *time.Time
@@ -221,6 +240,7 @@ type AssignedClientCreateInput struct {
 
 type ClientUpdateInput struct {
 	Name         *string
+	Password     *string
 	ClientUDP443 *bool
 	Enabled      *bool
 	ExpiresAtSet bool
@@ -250,6 +270,13 @@ type storedConfig struct {
 	TLS         *storedTLS         `json:"tls,omitempty"`
 	Reality     *storedReality     `json:"reality,omitempty"`
 	Shadowsocks *storedShadowsocks `json:"shadowsocks,omitempty"`
+	Hysteria2   *storedHysteria2   `json:"hysteria2,omitempty"`
+}
+
+type storedHysteria2 struct {
+	UpMbps       int    `json:"up_mbps,omitempty"`
+	DownMbps     int    `json:"down_mbps,omitempty"`
+	ObfsPassword string `json:"obfs_password,omitempty"`
 }
 
 type storedCredential struct {

@@ -79,7 +79,8 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost, Enabled: enabled, Security: request.Security,
 		ServerName: request.ServerName, TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey,
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
-		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Method: request.Method,
+		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Kernel: request.Kernel, Method: request.Method,
+		UpMbps: request.UpMbps, DownMbps: request.DownMbps, ObfsPassword: request.ObfsPassword,
 	}
 	if capability, message := requiredCreateProxyCapability(request); capability != "" {
 		supported, err := s.serverSupportsCapability(r, request.ServerID, capability)
@@ -137,14 +138,15 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		NodeRole: request.NodeRole, Name: request.Name, ListenFamily: request.ListenFamily, ListenPort: request.ListenPort, EntryHostMode: request.EntryHostMode, EntryHost: request.EntryHost,
 		Enabled: request.Enabled, Security: request.Security, ServerName: request.ServerName,
 		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
-		Protocol: request.Protocol, Method: request.Method,
+		Protocol: request.Protocol, Kernel: request.Kernel, Method: request.Method,
+		UpMbps: request.UpMbps, DownMbps: request.DownMbps, ObfsPassword: request.ObfsPassword,
 	}
 	validated, err := s.proxies.ValidateUpdate(r.Context(), id, input)
 	if err != nil {
 		writeProxyError(w, err)
 		return
 	}
-	if validated.Enabled && (proxystore.ProxyRuntimeChanged(previous, validated) || (request.Certificate != nil && strings.TrimSpace(*request.Certificate) != "") || (request.PrivateKey != nil && strings.TrimSpace(*request.PrivateKey) != "")) {
+	if validated.Enabled && (proxystore.ProxyRuntimeChanged(previous, validated) || (request.Certificate != nil && strings.TrimSpace(*request.Certificate) != "") || (request.PrivateKey != nil && strings.TrimSpace(*request.PrivateKey) != "") || request.ObfsPassword != nil) {
 		capability, message := requiredProxyCapability(validated)
 		supported, err := s.serverSupportsCapability(r, validated.ServerID, capability)
 		if err != nil {
@@ -182,6 +184,9 @@ func requiredCreateProxyCapability(request createProxyRequest) (string, string) 
 	if protocol == proxystore.ProtocolShadowsocks {
 		return agentcontrol.CapabilityProxyShadowsocks, "当前 Agent 不支持 Shadowsocks"
 	}
+	if protocol == proxystore.ProtocolHysteria2 {
+		return agentcontrol.CapabilityProxyHysteria2, "当前 Agent 不支持 Hysteria2，请升级 Agent"
+	}
 	if protocol != proxystore.ProtocolVLESS {
 		return "", ""
 	}
@@ -210,6 +215,9 @@ func requiredCreateProxyCapability(request createProxyRequest) (string, string) 
 }
 
 func requiredProxyCapability(value proxystore.Proxy) (string, string) {
+	if value.Protocol == proxystore.ProtocolHysteria2 {
+		return agentcontrol.CapabilityProxyHysteria2, "当前 Agent 不支持 Hysteria2，请升级 Agent"
+	}
 	if value.Protocol == proxystore.ProtocolShadowsocks {
 		return agentcontrol.CapabilityProxyShadowsocks, "当前 Agent 不支持 Shadowsocks"
 	}
@@ -333,7 +341,11 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrInvalidReality):
 		writeError(w, http.StatusBadRequest, "REALITY SNI 或目标地址无效")
 	case errors.Is(err, proxystore.ErrInvalidProtocol):
-		writeError(w, http.StatusBadRequest, "协议仅支持 VLESS 或 Shadowsocks")
+		writeError(w, http.StatusBadRequest, "代理协议无效")
+	case errors.Is(err, proxystore.ErrInvalidKernel):
+		writeError(w, http.StatusBadRequest, "所选内核不支持该协议")
+	case errors.Is(err, proxystore.ErrInvalidHysteria2):
+		writeError(w, http.StatusBadRequest, "Hysteria2 设置无效或不支持此客户端流量配置")
 	case errors.Is(err, proxystore.ErrInvalidShadowsocksMethod):
 		writeError(w, http.StatusBadRequest, "Shadowsocks 加密方法无效")
 	case errors.Is(err, proxystore.ErrImmutableProtocol):

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +176,31 @@ func TestUnsupportedHistoricalProxyCanBeDisabledAndDeletedButNotReenabled(t *tes
 	setAgentCapabilities(t, fixture.db, fixture.serverID, "third-party-agent", []string{agentcontrol.CapabilityManagedRuntimePurge})
 	if response := performRequest(t, fixture.handler, http.MethodDelete, path, nil, fixture.cookie); response.Code != http.StatusNoContent {
 		t.Fatalf("delete last purge-capable proxy = %d, %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHysteria2RequiresExplicitAgentCapability(t *testing.T) {
+	fixture := newCapabilityAPIFixture(t, "", nil)
+	request := createProxyRequest{Name: "HY2", Protocol: "hysteria2", Kernel: "sing-box", ListenPort: 443, EntryHostMode: "manual", EntryHost: "node.example.com", Security: "tls", TLSMode: "acme", ServerName: "tls.example.com", FirstClientName: "client", ObfsPassword: "fixture-obfuscation"}
+	if response := fixture.createProxy(t, request); response.Code != http.StatusConflict {
+		t.Fatalf("legacy Agent accepted Hysteria2: %d %s", response.Code, response.Body.String())
+	}
+	setAgentCapabilities(t, fixture.db, fixture.serverID, "vps-panel-agent", []string{agentcontrol.CapabilityProxyHysteria2})
+	response := fixture.createProxy(t, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create Hysteria2: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), request.ObfsPassword) {
+		t.Fatal("ordinary proxy response leaked obfuscation password")
+	}
+	var result struct {
+		Proxy proxyResponse `json:"proxy"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Proxy.Kernel != "sing-box" || result.Proxy.Protocol != "hysteria2" || len(result.Proxy.Clients) != 1 {
+		t.Fatalf("Hysteria2 response: %+v, %v", result, err)
+	}
+	if result.Proxy.Clients[0].Metrics != nil {
+		t.Fatal("Hysteria2 must not report unmeasured traffic as zero")
 	}
 }
 

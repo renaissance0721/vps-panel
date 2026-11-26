@@ -75,7 +75,7 @@ func TestProxyAPIAuthenticationLifecycleAndDesiredState(t *testing.T) {
 	if err := json.Unmarshal(creation.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Proxy.Clients) != 1 ||
+	if len(created.Proxy.Clients) != 1 || created.Proxy.Kernel != proxystore.KernelXray ||
 		created.Proxy.EntryHostMode != "auto" || created.Proxy.EntryHost != "" || created.Proxy.EntryAddress != "" {
 		t.Fatalf("created proxy = %+v", created.Proxy)
 	}

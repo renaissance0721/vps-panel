@@ -12,6 +12,7 @@ type DesiredProxy struct {
 	Listen      string              `json:"listen"`
 	Port        int                 `json:"port"`
 	Protocol    string              `json:"protocol"`
+	Kernel      string              `json:"kernel,omitempty"`
 	Transport   string              `json:"transport,omitempty"`
 	Security    string              `json:"security,omitempty"`
 	ServerFlow  string              `json:"server_flow,omitempty"`
@@ -19,7 +20,14 @@ type DesiredProxy struct {
 	TLS         *DesiredTLS         `json:"tls,omitempty"`
 	Reality     *DesiredReality     `json:"reality,omitempty"`
 	Shadowsocks *DesiredShadowsocks `json:"shadowsocks,omitempty"`
+	Hysteria2   *DesiredHysteria2   `json:"hysteria2,omitempty"`
 	Clients     []DesiredClient     `json:"clients"`
+}
+
+type DesiredHysteria2 struct {
+	UpMbps       int    `json:"up_mbps,omitempty"`
+	DownMbps     int    `json:"down_mbps,omitempty"`
+	ObfsPassword string `json:"obfs_password,omitempty"`
 }
 
 type DesiredShadowsocks struct {
@@ -51,7 +59,7 @@ func ListDesired(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, serverID int64) ([]DesiredProxy, error) {
 	rows, err := query.QueryContext(ctx,
-		`SELECT id, listen_family, listen_port, protocol, config_json FROM proxies
+		`SELECT id, listen_family, listen_port, protocol, config_json, kernel FROM proxies
 		 WHERE server_id = ? AND enabled = 1 ORDER BY id`, serverID,
 	)
 	if err != nil {
@@ -66,8 +74,11 @@ func ListDesired(ctx context.Context, query interface {
 		var value DesiredProxy
 		var configJSON string
 		var listenFamily string
-		if err := rows.Scan(&value.ID, &listenFamily, &value.Port, &value.Protocol, &configJSON); err != nil {
+		if err := rows.Scan(&value.ID, &listenFamily, &value.Port, &value.Protocol, &configJSON, &value.Kernel); err != nil {
 			return nil, fmt.Errorf("scan desired proxy: %w", err)
+		}
+		if (value.Protocol == ProtocolHysteria2 && value.Kernel != KernelSingbox) || (value.Protocol != ProtocolHysteria2 && value.Kernel != KernelXray) {
+			return nil, ErrInvalidKernel
 		}
 		config, err := decodeConfig(value.Protocol, configJSON)
 		if err != nil {
@@ -83,10 +94,13 @@ func ListDesired(ctx context.Context, query interface {
 			value.Security = config.Security
 			value.ServerFlow = config.ServerFlow
 			value.ServerName = config.ServerName
-		} else {
+		} else if value.Protocol == ProtocolShadowsocks {
 			value.Shadowsocks = &DesiredShadowsocks{
 				Method: config.Shadowsocks.Method, Network: config.Shadowsocks.Network, Password: config.Shadowsocks.Password,
 			}
+		} else {
+			value.Security, value.ServerName = config.Security, config.ServerName
+			value.Hysteria2 = &DesiredHysteria2{UpMbps: config.Hysteria2.UpMbps, DownMbps: config.Hysteria2.DownMbps, ObfsPassword: config.Hysteria2.ObfsPassword}
 		}
 		records = append(records, desiredRecord{value: value, config: config})
 	}
@@ -137,7 +151,7 @@ func ListDesired(ctx context.Context, query interface {
 		if err := clientRows.Close(); err != nil {
 			return nil, fmt.Errorf("close desired clients: %w", err)
 		}
-		if value.Protocol == ProtocolShadowsocks && len(value.Clients) == 0 {
+		if (value.Protocol == ProtocolShadowsocks || value.Protocol == ProtocolHysteria2) && len(value.Clients) == 0 {
 			continue
 		}
 		values = append(values, value)

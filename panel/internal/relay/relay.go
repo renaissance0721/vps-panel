@@ -90,6 +90,9 @@ func (s *Service) GetTx(ctx context.Context, tx *sql.Tx, id int64) (Relay, error
 
 // NetworkCompatible 判断中转网络是否能够承载目标代理协议。
 func NetworkCompatible(network, protocol string) bool {
+	if protocol == "hysteria2" {
+		return network == NetworkUDP || network == NetworkBoth
+	}
 	return !(protocol == "vless" && network == NetworkUDP)
 }
 

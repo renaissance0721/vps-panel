@@ -17,8 +17,8 @@ import (
 )
 
 type preparedCreate struct {
-	protocol, name, clientName, listenFamily, entryHostMode, entryHost, nodeRole string
-	configJSON, credentialJSON                                                   []byte
+	protocol, kernel, name, clientName, listenFamily, entryHostMode, entryHost, nodeRole string
+	configJSON, credentialJSON                                                           []byte
 }
 
 func prepareCreateInput(input CreateInput) (preparedCreate, error) {
@@ -31,6 +31,13 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 	protocol, err := normalizeProtocol(input.Protocol)
 	if err != nil {
 		return preparedCreate{}, err
+	}
+	kernel := KernelXray
+	if protocol == ProtocolHysteria2 {
+		kernel = KernelSingbox
+	}
+	if input.Kernel != "" && input.Kernel != kernel {
+		return preparedCreate{}, ErrInvalidKernel
 	}
 	name, err := validateName(input.Name)
 	if err != nil {
@@ -70,6 +77,16 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 			return preparedCreate{}, ErrShadowsocksClientUDP443
 		}
 		config, credential, err = newShadowsocksConfigAndCredential(input.Method)
+	case ProtocolHysteria2:
+		if input.FirstClientUDP443 || input.UpMbps < 0 || input.DownMbps < 0 || len(input.ObfsPassword) > 256 || input.Security != "" && input.Security != SecurityTLS || input.Method != "" || input.RealityTarget != "" {
+			return preparedCreate{}, ErrInvalidHysteria2
+		}
+		config, err = newStoredConfig(SecurityTLS, input.ServerName, input.TLSMode, input.Certificate, input.PrivateKey, "")
+		if err == nil {
+			config.Transport, config.ServerFlow, config.Fingerprint = "", "", ""
+			config.Hysteria2 = &storedHysteria2{UpMbps: input.UpMbps, DownMbps: input.DownMbps, ObfsPassword: input.ObfsPassword}
+			credential, err = newCredentialForProxy(protocol, config)
+		}
 	}
 	if err != nil {
 		return preparedCreate{}, err
@@ -83,7 +100,7 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 		return preparedCreate{}, fmt.Errorf("encode client credential: %w", err)
 	}
 	return preparedCreate{
-		protocol: protocol, name: name, clientName: clientName, listenFamily: listenFamily, nodeRole: input.NodeRole,
+		protocol: protocol, kernel: kernel, name: name, clientName: clientName, listenFamily: listenFamily, nodeRole: input.NodeRole,
 		entryHostMode: entryHostMode, entryHost: entryHost,
 		configJSON: configJSON, credentialJSON: credentialJSON,
 	}, nil
@@ -129,9 +146,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
-		 (server_id, name, protocol, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at, node_role)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		input.ServerID, prepared.name, prepared.protocol, prepared.listenFamily, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
+		 (server_id, name, protocol, kernel, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at, node_role)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		input.ServerID, prepared.name, prepared.protocol, prepared.kernel, prepared.listenFamily, input.ListenPort, prepared.entryHostMode, prepared.entryHost, input.Enabled,
 		string(prepared.configJSON), now.Unix(), now.Unix(), prepared.nodeRole,
 	)
 	if isUniqueConstraint(err) || listener.IsConflict(err) {
@@ -182,7 +199,7 @@ func (s *Service) list(ctx context.Context, originCondition string) ([]Proxy, er
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role, proxies.kernel
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -231,7 +248,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Proxy, error) {
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role, proxies.kernel
 		 FROM proxies
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
@@ -279,6 +296,9 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 		if protocol != value.Protocol {
 			return Proxy{}, storedConfig{}, ErrImmutableProtocol
 		}
+	}
+	if input.Kernel != nil && *input.Kernel != value.Kernel {
+		return Proxy{}, storedConfig{}, ErrInvalidKernel
 	}
 	if input.Name != nil {
 		value.Name, err = validateName(*input.Name)
@@ -352,6 +372,28 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 		if input.Security != nil || input.TLSMode != nil || input.ServerName != nil || input.Certificate != nil || input.PrivateKey != nil || input.RealityTarget != nil {
 			return Proxy{}, storedConfig{}, ErrInvalidShadowsocksUpdate
 		}
+	case ProtocolHysteria2:
+		if config.Hysteria2 == nil || input.Method != nil || input.RealityTarget != nil || (input.Security != nil && *input.Security != SecurityTLS) {
+			return Proxy{}, storedConfig{}, ErrInvalidHysteria2
+		}
+		settings := *config.Hysteria2
+		if input.UpMbps != nil {
+			settings.UpMbps = *input.UpMbps
+		}
+		if input.DownMbps != nil {
+			settings.DownMbps = *input.DownMbps
+		}
+		if input.ObfsPassword != nil {
+			settings.ObfsPassword = *input.ObfsPassword
+		}
+		if settings.UpMbps < 0 || settings.DownMbps < 0 || len(settings.ObfsPassword) > 256 {
+			return Proxy{}, storedConfig{}, ErrInvalidHysteria2
+		}
+		if err := updateStoredConfig(&config, input); err != nil {
+			return Proxy{}, storedConfig{}, err
+		}
+		config.Transport, config.ServerFlow, config.Fingerprint = "", "", ""
+		config.Hysteria2 = &settings
 	default:
 		return Proxy{}, storedConfig{}, ErrInvalidProtocol
 	}
@@ -514,8 +556,11 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 	var createdAt, updatedAt int64
 	if err := row.Scan(&value.ID, &value.ServerID, &value.ServerName, &ipv4JSON, &ipv6JSON,
 		&publicIPv4, &publicIPv6, &value.Name, &value.Protocol, &value.ListenFamily, &value.ListenPort, &value.EntryHostMode, &value.EntryHost, &enabled,
-		&configJSON, &createdAt, &updatedAt, &value.NodeRole); err != nil {
+		&configJSON, &createdAt, &updatedAt, &value.NodeRole, &value.Kernel); err != nil {
 		return Proxy{}, storedConfig{}, err
+	}
+	if (value.Protocol == ProtocolHysteria2 && value.Kernel != KernelSingbox) || (value.Protocol != ProtocolHysteria2 && value.Kernel != KernelXray) {
+		return Proxy{}, storedConfig{}, ErrInvalidKernel
 	}
 	entryHostMode, entryHost, err := normalizeEntryHost(value.EntryHostMode, value.EntryHost)
 	if err != nil || entryHostMode != value.EntryHostMode || entryHost != value.EntryHost {
@@ -572,7 +617,7 @@ func getProxyForMutation(ctx context.Context, query interface {
 		`SELECT proxies.id, proxies.server_id, servers.name, system_info.ipv4, system_info.ipv6,
 		 system_info.public_ipv4, system_info.public_ipv6, proxies.name, proxies.protocol, proxies.listen_family, proxies.listen_port,
 		 proxies.entry_host_mode, proxies.entry_host, proxies.enabled,
-		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role
+		 proxies.config_json, proxies.created_at, proxies.updated_at, proxies.node_role, proxies.kernel
 		 FROM proxies JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN server_system_info AS system_info ON system_info.server_id = servers.id
 		 WHERE proxies.id = ? AND servers.archived_at IS NULL`, id,

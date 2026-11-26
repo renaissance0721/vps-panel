@@ -35,6 +35,9 @@ type mihomoProxy struct {
 	Cipher            string             `yaml:"cipher,omitempty"`
 	Username          string             `yaml:"username,omitempty"`
 	Password          string             `yaml:"password,omitempty"`
+	SNI               string             `yaml:"sni,omitempty"`
+	Obfs              string             `yaml:"obfs,omitempty"`
+	ObfsPassword      string             `yaml:"obfs-password,omitempty"`
 	DialerProxy       string             `yaml:"dialer-proxy,omitempty"`
 }
 
@@ -517,6 +520,7 @@ func resolvedNodeFromClientShare(share proxystore.ClientShare) ResolvedSubscript
 		ServerName: share.ServerName, Flow: flow, Fingerprint: share.Fingerprint,
 		RealityPublicKey: share.RealityPublicKey, RealityShortID: share.RealityShortID,
 		Method: share.Method, Network: share.Network, ShadowsocksPassword: share.ShadowsocksPassword,
+		Hysteria2Password: share.Password, Hysteria2Obfs: share.ObfsPassword,
 		URI: share.URI,
 	}
 }
@@ -553,6 +557,14 @@ func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 		value.Password = share.ShadowsocksPassword
 		if value.Password == "" {
 			return mihomoProxy{}, fmt.Errorf("render Shadowsocks node %q: password is empty", share.Name)
+		}
+	case proxystore.ProtocolHysteria2:
+		if share.Hysteria2Password == "" || share.ServerName == "" {
+			return mihomoProxy{}, errors.New("Hysteria2 node is missing authentication or SNI")
+		}
+		value.Type, value.Password, value.SNI = "hysteria2", share.Hysteria2Password, share.ServerName
+		if share.Hysteria2Obfs != "" {
+			value.Obfs, value.ObfsPassword = "salamander", share.Hysteria2Obfs
 		}
 	default:
 		return mihomoProxy{}, fmt.Errorf("render subscription node %q: unsupported protocol %q", share.Name, share.Protocol)

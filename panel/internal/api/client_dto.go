@@ -13,6 +13,7 @@ import (
 
 type createClientRequest struct {
 	Name         string          `json:"name"`
+	Password     *string         `json:"password"`
 	ClientUDP443 bool            `json:"client_udp443"`
 	Enabled      *bool           `json:"enabled"`
 	ExpiresAt    json.RawMessage `json:"expires_at"`
@@ -21,6 +22,7 @@ type createClientRequest struct {
 
 type updateClientRequest struct {
 	Name         *string         `json:"name"`
+	Password     *string         `json:"password"`
 	ClientUDP443 *bool           `json:"client_udp443"`
 	Enabled      *bool           `json:"enabled"`
 	ExpiresAt    json.RawMessage `json:"expires_at"`
@@ -37,61 +39,61 @@ type clientTrafficRequest struct {
 }
 
 type clientSummaryResponse struct {
-	ID                  int64                 `json:"id"`
-	ProxyID             int64                 `json:"proxy_id"`
-	Name                string                `json:"name"`
-	AssignedUserID      *int64                `json:"assigned_user_id"`
-	AssignedUsername    string                `json:"assigned_username"`
-	BillingPeriodMonths *int                  `json:"billing_period_months"`
-	UserRelayPortStart  *int                  `json:"user_relay_port_start"`
-	UserRelayPortEnd    *int                  `json:"user_relay_port_end"`
-	UserRelayPortCount  int                   `json:"user_relay_port_count"`
-	ClientUDP443        bool                  `json:"client_udp443"`
-	Enabled             bool                  `json:"enabled"`
-	ExpiresAt           *time.Time            `json:"expires_at"`
-	Expired             bool                  `json:"expired"`
-	QuotaExhausted      bool                  `json:"quota_exhausted"`
-	EffectiveEnabled    bool                  `json:"effective_enabled"`
-	Status              string                `json:"status"`
-	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
-	TrafficResetMode    string                `json:"traffic_reset_mode"`
-	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
-	TrafficResetDay     int                   `json:"traffic_reset_day"`
-	TrafficResetTime    string                `json:"traffic_reset_time"`
-	NextResetAt         *time.Time            `json:"next_reset_at"`
-	Metrics             clientMetricsResponse `json:"metrics"`
-	CreatedAt           time.Time             `json:"created_at"`
-	UpdatedAt           time.Time             `json:"updated_at"`
-	SubscriptionManaged bool                  `json:"subscription_managed"`
+	ID                  int64                  `json:"id"`
+	ProxyID             int64                  `json:"proxy_id"`
+	Name                string                 `json:"name"`
+	AssignedUserID      *int64                 `json:"assigned_user_id"`
+	AssignedUsername    string                 `json:"assigned_username"`
+	BillingPeriodMonths *int                   `json:"billing_period_months"`
+	UserRelayPortStart  *int                   `json:"user_relay_port_start"`
+	UserRelayPortEnd    *int                   `json:"user_relay_port_end"`
+	UserRelayPortCount  int                    `json:"user_relay_port_count"`
+	ClientUDP443        bool                   `json:"client_udp443"`
+	Enabled             bool                   `json:"enabled"`
+	ExpiresAt           *time.Time             `json:"expires_at"`
+	Expired             bool                   `json:"expired"`
+	QuotaExhausted      bool                   `json:"quota_exhausted"`
+	EffectiveEnabled    bool                   `json:"effective_enabled"`
+	Status              string                 `json:"status"`
+	TrafficLimitBytes   *int64                 `json:"traffic_limit_bytes"`
+	TrafficResetMode    string                 `json:"traffic_reset_mode"`
+	TrafficResetWeekday int                    `json:"traffic_reset_weekday"`
+	TrafficResetDay     int                    `json:"traffic_reset_day"`
+	TrafficResetTime    string                 `json:"traffic_reset_time"`
+	NextResetAt         *time.Time             `json:"next_reset_at"`
+	Metrics             *clientMetricsResponse `json:"metrics"`
+	CreatedAt           time.Time              `json:"created_at"`
+	UpdatedAt           time.Time              `json:"updated_at"`
+	SubscriptionManaged bool                   `json:"subscription_managed"`
 }
 
 type clientResponse struct {
-	ID                  int64                 `json:"id"`
-	ProxyID             int64                 `json:"proxy_id"`
-	Name                string                `json:"name"`
-	AssignedUserID      *int64                `json:"assigned_user_id"`
-	AssignedUsername    string                `json:"assigned_username"`
-	BillingPeriodMonths *int                  `json:"billing_period_months"`
-	UserRelayPortStart  *int                  `json:"user_relay_port_start"`
-	UserRelayPortEnd    *int                  `json:"user_relay_port_end"`
-	UserRelayPortCount  int                   `json:"user_relay_port_count"`
-	ClientUDP443        bool                  `json:"client_udp443"`
-	Enabled             bool                  `json:"enabled"`
-	ExpiresAt           *time.Time            `json:"expires_at"`
-	Expired             bool                  `json:"expired"`
-	QuotaExhausted      bool                  `json:"quota_exhausted"`
-	EffectiveEnabled    bool                  `json:"effective_enabled"`
-	Status              string                `json:"status"`
-	TrafficLimitBytes   *int64                `json:"traffic_limit_bytes"`
-	TrafficResetMode    string                `json:"traffic_reset_mode"`
-	TrafficResetWeekday int                   `json:"traffic_reset_weekday"`
-	TrafficResetDay     int                   `json:"traffic_reset_day"`
-	TrafficResetTime    string                `json:"traffic_reset_time"`
-	NextResetAt         *time.Time            `json:"next_reset_at"`
-	Metrics             clientMetricsResponse `json:"metrics"`
-	CreatedAt           time.Time             `json:"created_at"`
-	UpdatedAt           time.Time             `json:"updated_at"`
-	SubscriptionManaged bool                  `json:"subscription_managed"`
+	ID                  int64                  `json:"id"`
+	ProxyID             int64                  `json:"proxy_id"`
+	Name                string                 `json:"name"`
+	AssignedUserID      *int64                 `json:"assigned_user_id"`
+	AssignedUsername    string                 `json:"assigned_username"`
+	BillingPeriodMonths *int                   `json:"billing_period_months"`
+	UserRelayPortStart  *int                   `json:"user_relay_port_start"`
+	UserRelayPortEnd    *int                   `json:"user_relay_port_end"`
+	UserRelayPortCount  int                    `json:"user_relay_port_count"`
+	ClientUDP443        bool                   `json:"client_udp443"`
+	Enabled             bool                   `json:"enabled"`
+	ExpiresAt           *time.Time             `json:"expires_at"`
+	Expired             bool                   `json:"expired"`
+	QuotaExhausted      bool                   `json:"quota_exhausted"`
+	EffectiveEnabled    bool                   `json:"effective_enabled"`
+	Status              string                 `json:"status"`
+	TrafficLimitBytes   *int64                 `json:"traffic_limit_bytes"`
+	TrafficResetMode    string                 `json:"traffic_reset_mode"`
+	TrafficResetWeekday int                    `json:"traffic_reset_weekday"`
+	TrafficResetDay     int                    `json:"traffic_reset_day"`
+	TrafficResetTime    string                 `json:"traffic_reset_time"`
+	NextResetAt         *time.Time             `json:"next_reset_at"`
+	Metrics             *clientMetricsResponse `json:"metrics"`
+	CreatedAt           time.Time              `json:"created_at"`
+	UpdatedAt           time.Time              `json:"updated_at"`
+	SubscriptionManaged bool                   `json:"subscription_managed"`
 }
 
 type clientMetricsResponse struct {
@@ -137,7 +139,7 @@ func toClientSummaryResponse(value proxystore.ClientSummary) clientSummaryRespon
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: client.NextResetAt(time.Now()),
-		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		Metrics: toClientMetricsForProtocol(value.Protocol, value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		SubscriptionManaged: value.SubscriptionManaged,
 	}
 }
@@ -156,7 +158,7 @@ func toClientResponse(value proxystore.Client) clientResponse {
 		TrafficLimitBytes: value.TrafficLimitBytes, TrafficResetMode: value.TrafficResetMode,
 		TrafficResetWeekday: value.TrafficResetWeekday, TrafficResetDay: value.TrafficResetDay,
 		TrafficResetTime: value.TrafficResetTime, NextResetAt: value.NextResetAt(time.Now()),
-		Metrics: toClientMetricsResponse(value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		Metrics: toClientMetricsForProtocol(value.Protocol, value.Metrics), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		SubscriptionManaged: value.SubscriptionManaged,
 	}
 }
@@ -171,6 +173,14 @@ func toClientMetricsResponse(value *proxystore.ClientMetrics) clientMetricsRespo
 		UsedBytes:      proxystore.ClientUsedBytes(value),
 		CycleStartedAt: &cycleStartedAt, LastActivityAt: value.LastActivityAt, UpdatedAt: &updatedAt,
 	}
+}
+
+func toClientMetricsForProtocol(protocol string, value *proxystore.ClientMetrics) *clientMetricsResponse {
+	if protocol == proxystore.ProtocolHysteria2 {
+		return nil
+	}
+	result := toClientMetricsResponse(value)
+	return &result
 }
 
 var clientTrafficAmountPattern = regexp.MustCompile(`^\d+(?:\.\d+)?$`)

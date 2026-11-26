@@ -119,14 +119,29 @@ func decodeConfig(protocol, value string) (storedConfig, error) {
 	}
 	if protocol == ProtocolShadowsocks {
 		if config.Shadowsocks == nil || config.Transport != "" || config.Security != "" || config.ServerFlow != "" ||
-			config.ServerName != "" || config.Fingerprint != "" || config.TLS != nil || config.Reality != nil ||
+			config.ServerName != "" || config.Fingerprint != "" || config.TLS != nil || config.Reality != nil || config.Hysteria2 != nil ||
 			config.Shadowsocks.Network != ShadowsocksNetwork ||
 			!validShadowsocksKey(config.Shadowsocks.Password, config.Shadowsocks.Method) {
 			return storedConfig{}, errors.New("invalid stored Shadowsocks proxy config")
 		}
 		return config, nil
 	}
-	if protocol != ProtocolVLESS || config.Shadowsocks != nil {
+	if protocol == ProtocolHysteria2 {
+		if config.Hysteria2 == nil || config.Hysteria2.UpMbps < 0 || config.Hysteria2.DownMbps < 0 || len(config.Hysteria2.ObfsPassword) > 256 || config.Transport != "" || config.Security != SecurityTLS || config.ServerFlow != "" || config.Fingerprint != "" || config.Reality != nil || config.Shadowsocks != nil || config.TLS == nil {
+			return storedConfig{}, ErrInvalidHysteria2
+		}
+		serverName, err := normalizeHost(config.ServerName, false)
+		if err != nil || serverName != config.ServerName {
+			return storedConfig{}, ErrInvalidServerName
+		}
+		mode, err := normalizeTLSMode(config.TLS.Mode, config.TLS.Certificate, config.TLS.PrivateKey)
+		if err != nil || validateTLSConfig(mode, config.ServerName, config.TLS.Certificate, config.TLS.PrivateKey) != nil {
+			return storedConfig{}, ErrInvalidTLS
+		}
+		config.TLS.Mode = mode
+		return config, nil
+	}
+	if protocol != ProtocolVLESS || config.Shadowsocks != nil || config.Hysteria2 != nil {
 		return storedConfig{}, errors.New("invalid stored proxy protocol config")
 	}
 	if config.Transport != TransportTCP || config.ServerFlow != ServerFlow || config.Fingerprint != Fingerprint {
@@ -173,6 +188,10 @@ func publicConfig(config storedConfig) PublicConfig {
 	if config.Shadowsocks != nil {
 		value.Method = config.Shadowsocks.Method
 		value.Network = config.Shadowsocks.Network
+	}
+	if config.Hysteria2 != nil {
+		value.UpMbps, value.DownMbps = config.Hysteria2.UpMbps, config.Hysteria2.DownMbps
+		value.ObfsEnabled = config.Hysteria2.ObfsPassword != ""
 	}
 	if config.TLS != nil {
 		value.TLSMode = config.TLS.Mode

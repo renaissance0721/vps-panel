@@ -41,6 +41,10 @@ func newRealmFirewall() *proxyFirewall {
 	return &proxyFirewall{owner: "realm", lookPath: exec.LookPath, runCommand: runFirewallCommand, hasNetAdmin: hasEffectiveNetAdmin}
 }
 
+func newSingboxFirewall() *proxyFirewall {
+	return &proxyFirewall{owner: "singbox", lookPath: exec.LookPath, runCommand: runFirewallCommand, hasNetAdmin: hasEffectiveNetAdmin}
+}
+
 func runFirewallCommand(ctx context.Context, name string, arguments ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, arguments...)
 	output := &cappedBuffer{limit: managedProxyFirewallOutputMax}
@@ -320,6 +324,9 @@ func firewallComment(protocol string) string {
 }
 
 func (f *proxyFirewall) firewallComment(protocol string) string {
+	if f.owner == "singbox" {
+		return "vps-panel-singbox-" + protocol
+	}
 	if f.owner == "realm" {
 		if protocol == "udp" {
 			return managedRealmFirewallUDPComment

@@ -35,6 +35,7 @@ var (
 	ErrInvalidNodeName                 = errors.New("published node name must be 1-100 characters")
 	ErrInvalidNodeMode                 = errors.New("published node mode must be direct or relay")
 	ErrTargetProxyNotFound             = errors.New("target proxy not found")
+	ErrHysteriaPlanUnsupported         = errors.New("Hysteria2 cannot be used in traffic-accounted subscription plans")
 	ErrSourceServerNotFound            = errors.New("source server not found")
 	ErrSourceServerRequired            = errors.New("source server is required for relay mode")
 	ErrInvalidNodeUpdate               = errors.New("published node update is empty")
@@ -464,6 +465,8 @@ type ResolvedSubscriptionNode struct {
 	Method              string
 	Network             string
 	ShadowsocksPassword string
+	Hysteria2Password   string `json:"-"`
+	Hysteria2Obfs       string `json:"-"`
 	SOCKSUsername       string `json:"-"`
 	SOCKSPassword       string `json:"-"`
 	URI                 string

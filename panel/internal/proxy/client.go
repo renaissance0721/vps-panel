@@ -87,9 +87,21 @@ func (s *Service) CreateClient(ctx context.Context, proxyID int64, input ClientC
 	if proxyValue.Protocol == ProtocolShadowsocks && input.ClientUDP443 {
 		return Client{}, Mutation{}, ErrShadowsocksClientUDP443
 	}
+	if proxyValue.Protocol == ProtocolHysteria2 && (input.ClientUDP443 || traffic.LimitBytes != nil || traffic.ResetMode != TrafficResetNever) {
+		return Client{}, Mutation{}, ErrInvalidHysteria2
+	}
 	credential, err := newCredentialForProxy(proxyValue.Protocol, config)
 	if err != nil {
 		return Client{}, Mutation{}, err
+	}
+	if input.Password != nil {
+		if proxyValue.Protocol != ProtocolHysteria2 {
+			return Client{}, Mutation{}, ErrInvalidHysteria2
+		}
+		if err := validateHysteriaPassword(ctx, tx, proxyID, 0, *input.Password); err != nil {
+			return Client{}, Mutation{}, err
+		}
+		credential.Password = *input.Password
 	}
 	credentialJSON, err := json.Marshal(credential)
 	if err != nil {
@@ -209,6 +221,9 @@ func (s *Service) createAssignedClient(ctx context.Context, input AssignedClient
 	}
 	if proxyValue.Protocol == ProtocolShadowsocks && input.ClientUDP443 {
 		return Client{}, Mutation{}, ErrShadowsocksClientUDP443
+	}
+	if proxyValue.Protocol == ProtocolHysteria2 && (input.ClientUDP443 || traffic.LimitBytes != nil || traffic.ResetMode != TrafficResetNever) {
+		return Client{}, Mutation{}, ErrInvalidHysteria2
 	}
 	credential, err := newCredentialForProxy(proxyValue.Protocol, config)
 	if err != nil {
@@ -443,6 +458,22 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 	if value.SubscriptionManaged {
 		return Client{}, Mutation{}, ErrSubscriptionManagedClient
 	}
+	if input.Password != nil {
+		if value.Protocol != ProtocolHysteria2 {
+			return Client{}, Mutation{}, ErrInvalidHysteria2
+		}
+		if err := validateHysteriaPassword(ctx, tx, value.ProxyID, id, *input.Password); err != nil {
+			return Client{}, Mutation{}, err
+		}
+		encoded, err := json.Marshal(storedCredential{Password: *input.Password})
+		if err != nil {
+			return Client{}, Mutation{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE clients SET credential_json = ? WHERE id = ?`, string(encoded), id); err != nil {
+			return Client{}, Mutation{}, fmt.Errorf("update client credential: %w", err)
+		}
+		value.Password = *input.Password
+	}
 	if input.Name != nil {
 		value.Name, err = validateName(*input.Name)
 		if err != nil {
@@ -452,6 +483,9 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 	if input.ClientUDP443 != nil {
 		if value.Protocol == ProtocolShadowsocks && *input.ClientUDP443 {
 			return Client{}, Mutation{}, ErrShadowsocksClientUDP443
+		}
+		if value.Protocol == ProtocolHysteria2 && *input.ClientUDP443 {
+			return Client{}, Mutation{}, ErrInvalidHysteria2
 		}
 		value.ClientUDP443 = *input.ClientUDP443
 	}
@@ -465,6 +499,9 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 		traffic, normalizeErr := normalizeClientTrafficConfig(*input.Traffic)
 		if normalizeErr != nil {
 			return Client{}, Mutation{}, normalizeErr
+		}
+		if value.Protocol == ProtocolHysteria2 && (traffic.LimitBytes != nil || traffic.ResetMode != TrafficResetNever) {
+			return Client{}, Mutation{}, ErrInvalidHysteria2
 		}
 		value.TrafficLimitBytes = traffic.LimitBytes
 		value.TrafficResetMode = traffic.ResetMode
@@ -492,6 +529,20 @@ func (s *Service) UpdateClient(ctx context.Context, id int64, input ClientUpdate
 	}
 	updated, err := s.GetClient(ctx, id)
 	return updated, Mutation{ServerID: serverID, Version: version}, err
+}
+
+func validateHysteriaPassword(ctx context.Context, tx *sql.Tx, proxyID, exceptID int64, password string) error {
+	if strings.TrimSpace(password) == "" || len(password) > 256 || strings.ContainsAny(password, "\x00\r\n") {
+		return ErrInvalidHysteria2
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM clients WHERE proxy_id = ? AND id != ? AND json_extract(credential_json, '$.password') = ?)`, proxyID, exceptID, password).Scan(&exists); err != nil {
+		return fmt.Errorf("check client credential: %w", err)
+	}
+	if exists {
+		return ErrInvalidHysteria2
+	}
+	return nil
 }
 
 func (s *Service) DeleteClient(ctx context.Context, id int64) (Mutation, error) {
@@ -544,6 +595,12 @@ func newCredentialForProxy(protocol string, config storedConfig) (storedCredenti
 		}
 		password, err := newShadowsocksKey(config.Shadowsocks.Method)
 		return storedCredential{Password: password}, err
+	case ProtocolHysteria2:
+		value := make([]byte, 32)
+		if _, err := rand.Read(value); err != nil {
+			return storedCredential{}, fmt.Errorf("generate Hysteria2 client password: %w", err)
+		}
+		return storedCredential{Password: base64.RawURLEncoding.EncodeToString(value)}, nil
 	default:
 		return storedCredential{}, ErrInvalidProtocol
 	}
@@ -574,6 +631,10 @@ func decodeCredential(protocol, value string) (storedCredential, error) {
 		decoded, err := base64.StdEncoding.Strict().DecodeString(credential.Password)
 		if err != nil || (len(decoded) != 16 && len(decoded) != 32) {
 			return storedCredential{}, ErrInvalidShadowsocksCredential
+		}
+	case ProtocolHysteria2:
+		if credential.UUID != "" || credential.Password == "" || len(credential.Password) > 256 {
+			return storedCredential{}, ErrInvalidHysteria2
 		}
 	default:
 		return storedCredential{}, ErrInvalidProtocol
@@ -656,7 +717,7 @@ func scanClient(row rowScanner) (Client, error) {
 
 func summarizeClient(value Client) ClientSummary {
 	return ClientSummary{
-		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
+		ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, Protocol: value.Protocol,
 		AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 		BillingPeriodMonths: value.BillingPeriodMonths,
 		UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,

@@ -1,4 +1,4 @@
-export type ProxyProtocol = 'vless' | 'shadowsocks'
+export type ProxyProtocol = 'vless' | 'shadowsocks' | 'hysteria2'
 export type ProxyListenFamily = 'ipv4' | 'ipv6'
 export type ShadowsocksMethod = '2022-blake3-aes-128-gcm' | '2022-blake3-aes-256-gcm'
 export type ClientTrafficLimitUnit = 'G' | 'T'
@@ -37,6 +37,7 @@ export function manualEntryHostMatchesFamily(host: string, family: ProxyListenFa
 }
 
 export function proxyListProtocolFields(protocol: ProxyProtocol, security?: 'tls' | 'reality') {
+	if (protocol === 'hysteria2') return { protocol: 'HY2', transport: 'UDP', security: 'TLS', flow: '--' }
   if (protocol === 'shadowsocks') {
     return { protocol: 'SS', transport: '--', security: '--', flow: '--' }
   }

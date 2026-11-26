@@ -27,6 +27,7 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
   const clientFormMode = ref<'create' | 'edit'>('create')
   const editingClientID = ref<number | null>(null)
   const clientName = ref('')
+  const clientPassword = ref('')
   const clientEnabled = ref(true)
   const clientUDP443 = ref(false)
   const clientTrafficLimit = ref<string | number>('')
@@ -47,6 +48,7 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
     clientFormMode.value = 'create'
     editingClientID.value = null
     clientName.value = ''
+    clientPassword.value = ''
     clientEnabled.value = true
     clientUDP443.value = false
     clientTrafficLimit.value = ''
@@ -68,6 +70,7 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
       clientFormMode.value = 'edit'
       editingClientID.value = client.id
       clientName.value = response.client.name
+      clientPassword.value = ''
       clientEnabled.value = response.client.enabled
       clientUDP443.value = response.client.client_udp443
       const limit = formatClientTrafficLimitInput(response.client.traffic_limit_bytes)
@@ -115,14 +118,17 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
     await run(async () => {
       const body = JSON.stringify({
         name: clientName.value,
+        ...(proxy.protocol === 'hysteria2' && clientPassword.value ? { password: clientPassword.value } : {}),
         enabled: clientEnabled.value,
         client_udp443: proxy.protocol === 'vless' && clientUDP443.value,
+        ...(proxy.protocol === 'hysteria2' ? {} : {
         traffic_limit: clientTrafficLimit.value,
         limit_unit: clientTrafficLimitUnit.value,
         traffic_reset_mode: clientTrafficResetMode.value,
         traffic_reset_weekday: clientTrafficResetWeekday.value,
         traffic_reset_day: clientTrafficResetDay.value,
         traffic_reset_time: clientTrafficResetTime.value,
+        }),
         expires_at: clientExpirationMode.value === 'specified' ? clientExpiresAt.value : null,
       })
       let saved: ClientRecord
@@ -151,6 +157,7 @@ export function useClientForm(selectedProxy: Ref<ProxyRecord | null>, error: Ref
     clientFormMode,
     editingClientID,
     clientName,
+    clientPassword,
     clientEnabled,
     clientUDP443,
     clientTrafficLimit,

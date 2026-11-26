@@ -155,7 +155,7 @@ func recordClientTraffic(ctx context.Context, tx *sql.Tx, serverID int64, report
 		 JOIN proxies ON proxies.id = clients.proxy_id
 		 JOIN servers ON servers.id = proxies.server_id
 		 LEFT JOIN client_metrics AS metrics ON metrics.client_id = clients.id
-		 WHERE clients.id = ? AND proxies.server_id = ? AND servers.archived_at IS NULL`,
+		 WHERE clients.id = ? AND proxies.server_id = ? AND proxies.kernel = 'xray' AND servers.archived_at IS NULL`,
 		report.ClientID, serverID,
 	).Scan(
 		&previousUplink, &previousDownlink, &cycleUplink, &cycleDownlink,
@@ -395,6 +395,9 @@ func (s *Service) ResetClientTrafficWithMutation(ctx context.Context, clientID i
 	}
 	if value.SubscriptionManaged {
 		return Client{}, Mutation{}, ErrSubscriptionManagedClient
+	}
+	if value.Protocol == ProtocolHysteria2 {
+		return Client{}, Mutation{}, ErrInvalidHysteria2
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE client_metrics

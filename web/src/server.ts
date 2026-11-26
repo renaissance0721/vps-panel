@@ -87,6 +87,7 @@ export const agentCapabilities = {
   proxyVLESSTLSACME: 'proxy.vless.tls.acme',
   proxyVLESSTLSManual: 'proxy.vless.tls.manual',
   proxyShadowsocks: 'proxy.shadowsocks',
+  proxyHysteria2: 'proxy.hysteria2.singbox',
   relayRealm: 'relay.realm',
   outboundPreference: 'outbound_preference',
   diagnosticsV1: 'diagnostics_v1',

@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 48
+const LatestSchemaVersion = 50
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -79,6 +79,66 @@ var migrations = []migration{
 	{version: 46, name: "personal_shadowrocket_defaults", up: addPersonalShadowrocketDefaults},
 	{version: 47, name: "optional_personal_node_names", up: allowAutomaticPersonalNodeNames},
 	{version: 48, name: "agent_component_results", up: addAgentComponentResults},
+	{version: 49, name: "proxy_kernel", up: addProxyKernel},
+	{version: 50, name: "hysteria2_proxy_listeners", up: migrateHysteria2ProxyListeners, disableForeignKeys: true},
+}
+
+func migrateHysteria2ProxyListeners(ctx context.Context, tx *sql.Tx) error {
+	var sequence sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM sqlite_sequence WHERE name='proxies'`).Scan(&sequence); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE TABLE proxies_v50 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless','shadowsocks','hysteria2')),
+			kernel TEXT NOT NULL DEFAULT 'xray' CHECK (kernel IN ('xray','sing-box')),
+			listen_family TEXT NOT NULL DEFAULT 'ipv4' CHECK (listen_family IN ('ipv4','ipv6')),
+			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+			entry_host_mode TEXT NOT NULL DEFAULT 'auto' CHECK (entry_host_mode IN ('auto','manual')),
+			entry_host TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+			config_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			node_role TEXT NOT NULL DEFAULT 'direct' CHECK (node_role IN ('direct','landing'))
+		)`,
+		`INSERT INTO proxies_v50 (id,server_id,name,protocol,kernel,listen_family,listen_port,entry_host_mode,entry_host,enabled,config_json,created_at,updated_at,node_role)
+		 SELECT id,server_id,name,protocol,kernel,listen_family,listen_port,entry_host_mode,entry_host,enabled,config_json,created_at,updated_at,node_role FROM proxies`,
+		`DROP TABLE proxies`,
+		`ALTER TABLE proxies_v50 RENAME TO proxies`,
+		`CREATE INDEX idx_proxies_server_id ON proxies(server_id)`,
+		`CREATE TRIGGER proxies_listener_insert AFTER INSERT ON proxies BEGIN
+		 INSERT INTO server_listener_reservations (server_id,resource_type,resource_id,port,network,created_at)
+		 VALUES (NEW.server_id,'proxy',NEW.id,NEW.listen_port,CASE NEW.protocol WHEN 'shadowsocks' THEN 'both' WHEN 'hysteria2' THEN 'udp' ELSE 'tcp' END,NEW.created_at); END`,
+		`CREATE TRIGGER proxies_listener_update AFTER UPDATE OF server_id,listen_port,protocol ON proxies BEGIN
+		 UPDATE server_listener_reservations SET server_id=NEW.server_id,port=NEW.listen_port,
+		 network=CASE NEW.protocol WHEN 'shadowsocks' THEN 'both' WHEN 'hysteria2' THEN 'udp' ELSE 'tcp' END
+		 WHERE resource_type='proxy' AND resource_id=NEW.id; END`,
+		`CREATE TRIGGER proxies_listener_delete AFTER DELETE ON proxies BEGIN
+		 DELETE FROM server_listener_reservations WHERE resource_type='proxy' AND resource_id=OLD.id; END`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	if sequence.Valid {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sqlite_sequence(name,seq) SELECT 'proxies',? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='proxies')`, sequence.Int64); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='proxies'`, sequence.Int64); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addProxyKernel(ctx context.Context, tx *sql.Tx) error {
+	exists, err := migrationColumnExists(ctx, tx, "proxies", "kernel")
+	if err != nil || exists {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `ALTER TABLE proxies ADD COLUMN kernel TEXT NOT NULL DEFAULT 'xray' CHECK (kernel IN ('xray', 'sing-box'))`)
+	return err
 }
 
 func addAgentComponentResults(ctx context.Context, tx *sql.Tx) error {

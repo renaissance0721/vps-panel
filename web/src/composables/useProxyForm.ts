@@ -18,6 +18,7 @@ import {
 } from '../api/client'
 import {
   agentCapabilities,
+  agentDeclaresCapability,
   agentSupportsCapability,
   serverHasAutoPublicIPv6,
   serverIPv6State,
@@ -42,6 +43,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyEnabled = ref(true)
   const proxyProtocol = ref<ProxyProtocol>('vless')
   const proxyMethod = ref<ShadowsocksMethod>('2022-blake3-aes-128-gcm')
+  const proxyUpMbps = ref(0)
+  const proxyDownMbps = ref(0)
+  const proxyObfsEnabled = ref(false)
+  const proxyObfsPassword = ref('')
+  const originalObfsEnabled = ref(false)
   const proxySecurity = ref<'tls' | 'reality'>('reality')
   const proxyTLSMode = ref<'acme' | 'manual'>('acme')
   const proxyServerName = ref('')
@@ -66,8 +72,9 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
 	const selectedServerIPv6State = computed(() => serverIPv6State(selectedServer.value))
 	const selectedServerIPv6Status = computed(() => serverIPv6StatusMessage(selectedServer.value))
   const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
-  const proxyTLSACMESupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
-  const proxyTLSManualSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
+  const proxyHysteria2Supported = computed(() => selectedServer.value !== null && agentDeclaresCapability(selectedServer.value, agentCapabilities.proxyHysteria2))
+  const proxyTLSACMESupported = computed(() => proxyProtocol.value === 'hysteria2' ? proxyHysteria2Supported.value : selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
+  const proxyTLSManualSupported = computed(() => proxyProtocol.value === 'hysteria2' ? proxyHysteria2Supported.value : selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
   const proxyVLESSSupported = computed(() => proxyVLESSRealitySupported.value || proxyTLSACMESupported.value || proxyTLSManualSupported.value)
   const proxyTLSSupported = computed(() => proxyTLSACMESupported.value || proxyTLSManualSupported.value)
   const proxyShadowsocksSupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyShadowsocks))
@@ -76,9 +83,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEntryHostMode.value, proxyEntryHost.value, selectedServerBoundDomain.value, proxyEnabled.value,
     proxyProtocol.value, proxyMethod.value, proxySecurity.value, proxyTLSMode.value,
     proxyServerName.value, proxyCertificate.value, proxyPrivateKey.value, proxyRealityTarget.value,
+    proxyUpMbps.value, proxyDownMbps.value, proxyObfsEnabled.value, proxyObfsPassword.value,
   ]))
   const proxyRoleOnlyUpdate = computed(() => proxyFormMode.value === 'edit' && runtimeFields.value === originalRuntimeFields.value)
   const proxyCapabilityWarning = computed(() => {
+    if (proxyProtocol.value === 'hysteria2') return proxyHysteria2Supported.value ? '' : '当前 Agent 不支持 Hysteria2，请先升级 Agent'
     if (proxyProtocol.value === 'shadowsocks') {
       return proxyShadowsocksSupported.value ? '' : '当前 Agent 不支持 Shadowsocks'
     }
@@ -148,6 +157,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEnabled.value = value.enabled
     proxyProtocol.value = value.protocol
     proxyMethod.value = value.config.method ?? '2022-blake3-aes-128-gcm'
+    proxyUpMbps.value = value.config.up_mbps ?? 0
+    proxyDownMbps.value = value.config.down_mbps ?? 0
+    proxyObfsEnabled.value = value.config.obfs_enabled ?? false
+    originalObfsEnabled.value = proxyObfsEnabled.value
+    proxyObfsPassword.value = ''
     proxySecurity.value = value.config.security ?? 'reality'
     proxyTLSMode.value = value.config.tls_mode ?? (value.config.tls_certificate_configured ? 'manual' : 'acme')
     proxyServerName.value = value.config.server_name ?? ''
@@ -170,6 +184,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEnabled.value = true
     proxyProtocol.value = 'vless'
     proxyMethod.value = '2022-blake3-aes-128-gcm'
+    proxyUpMbps.value = 0
+    proxyDownMbps.value = 0
+    proxyObfsEnabled.value = false
+    originalObfsEnabled.value = false
+    proxyObfsPassword.value = ''
     proxySecurity.value = 'reality'
     proxyTLSMode.value = 'acme'
     proxyServerName.value = ''
@@ -185,8 +204,12 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
 	  error.value = proxyCapabilityWarning.value
 	  return
 	}
-    if (!proxyName.value.trim() || (proxyProtocol.value === 'vless' && !proxyServerName.value.trim())) {
-      error.value = proxyProtocol.value === 'vless' ? '请填写节点名称和 SNI' : '请填写节点名称'
+    if (!proxyName.value.trim() || (proxyProtocol.value !== 'shadowsocks' && !proxyServerName.value.trim())) {
+      error.value = proxyProtocol.value !== 'shadowsocks' ? '请填写节点名称和 SNI' : '请填写节点名称'
+      return
+    }
+    if (proxyProtocol.value === 'hysteria2' && (!Number.isInteger(proxyUpMbps.value) || proxyUpMbps.value < 0 || !Number.isInteger(proxyDownMbps.value) || proxyDownMbps.value < 0 || (proxyObfsEnabled.value && !proxyObfsPassword.value && (proxyFormMode.value === 'create' || !originalObfsEnabled.value)))) {
+      error.value = '带宽必须是非负整数，启用混淆时请填写密码'
       return
     }
     if (!Number.isInteger(proxyPort.value) || proxyPort.value < 1 || proxyPort.value > 65535) {
@@ -243,7 +266,12 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
           } : {}),
           reality_target: proxyRealityTarget.value,
         }
-        : {}
+        : proxyProtocol.value === 'hysteria2' ? {
+          kernel: 'sing-box', security: 'tls', server_name: proxyServerName.value, tls_mode: proxyTLSMode.value,
+          ...(proxyTLSMode.value === 'manual' ? { certificate: proxyCertificate.value, private_key: proxyPrivateKey.value } : {}),
+          up_mbps: proxyUpMbps.value, down_mbps: proxyDownMbps.value,
+          ...(!proxyObfsEnabled.value ? { obfs_password: '' } : proxyObfsPassword.value ? { obfs_password: proxyObfsPassword.value } : {}),
+        } : {}
       let value: ProxyRecord
       if (proxyFormMode.value === 'create') {
         const response = await api<{ proxy: ProxyRecord }>('/api/proxies', {
@@ -288,6 +316,11 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEnabled,
     proxyProtocol,
     proxyMethod,
+    proxyUpMbps,
+    proxyDownMbps,
+    proxyObfsEnabled,
+    proxyObfsPassword,
+    proxyHysteria2Supported,
     proxySecurity,
     proxyTLSMode,
     proxyServerName,

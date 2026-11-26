@@ -147,9 +147,9 @@ History 继续以当前已启用、已分配且能力支持的任务为展示范
 
 精确超时、任务上限、结果枚举、窗口统计及 API 字段见 [网络探测协议](docs/agent-api-v1.md#network-probes)。
 
-## 9. Proxy / Xray
+## 9. Proxy / Xray / Sing-box
 
-Proxy 保存服务端入站配置，Client 保存其下独立凭据。当前支持 VLESS over TCP 的 TLS / REALITY，以及 Shadowsocks 2022。
+Proxy 保存服务端入站配置和内核归属，Client 保存其下独立凭据。VLESS 和 Shadowsocks 使用 Xray，Hysteria2 使用 Sing-box；历史 Proxy 默认 Xray。
 
 节点来源与用途是两个维度：受管来源为 Proxy，外部来源为 Landing；两者各自支持 `node_role=direct|landing`（直连节点 / 落地节点）。字段保存在 `proxies`、`landing_nodes`，只表示 Panel 业务用途，不改变协议、凭据或网络能力。新增及历史节点默认 direct，以保留既有个人订阅分发行为，不根据名称、协议或拓扑推断用途。
 
@@ -165,6 +165,7 @@ REALITY 的公钥、私钥和客户端展示参数分开处理。普通列表 DT
 需要分享信息时，通过已有受权限控制的接口获取。
 
 Agent 管理专属的 Xray 二进制、配置、服务与防火墙规则；不接管任意既有 Xray 安装。
+Sing-box 使用独立二进制、服务、配置、UDP 防火墙归属和组件结果。Agent 对候选配置执行 `sing-box check`，再替换并检查服务；失败时尝试恢复旧配置。ACME 使用独立证书与续期状态，避免 Xray 清理影响 Sing-box。Hysteria2 不参与客户端流量统计和额度。
 禁用最后一个 Proxy 与删除最后一条 Proxy 记录不同：前者停用，后者会请求清理受管运行时。
 已记录非空 Agent 版本时，删除最后一条记录要求显式清理能力；版本为空时当前入口跳过此检查，不能据此认定远端支持清理。
 

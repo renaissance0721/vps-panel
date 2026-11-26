@@ -173,7 +173,8 @@ func schemaStatements() []string {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
-			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks')),
+			protocol TEXT NOT NULL CHECK (protocol IN ('vless', 'shadowsocks', 'hysteria2')),
+			kernel TEXT NOT NULL DEFAULT 'xray' CHECK (kernel IN ('xray', 'sing-box')),
 			listen_family TEXT NOT NULL DEFAULT 'ipv4'
 				CHECK (listen_family IN ('ipv4', 'ipv6')),
 			listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
@@ -183,8 +184,7 @@ func schemaStatements() []string {
 			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
 			config_json TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL,
-			UNIQUE (server_id, listen_port)
+			updated_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_proxies_server_id ON proxies(server_id)`,
 		`CREATE TABLE IF NOT EXISTS user_proxy_order (

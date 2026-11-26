@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,8 +15,47 @@ import (
 	"github.com/coder/websocket"
 	"github.com/renaissance0721/vps-panel/panel/internal/agentcontrol"
 	"github.com/renaissance0721/vps-panel/panel/internal/database"
+	proxystore "github.com/renaissance0721/vps-panel/panel/internal/proxy"
 	serverstore "github.com/renaissance0721/vps-panel/panel/internal/server"
 )
+
+func TestAgentDesiredStateSeparatesSingboxAndChecksCapability(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	created, err := serverstore.NewService(db).Create(t.Context(), "Dual kernel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := agentcontrol.NewService(db, time.Now)
+	registered, err := agents.RegisterAgent(t.Context(), created.EnrollmentToken, "test", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxies := proxystore.NewService(db)
+	_, _, err = proxies.Create(t.Context(), proxystore.CreateInput{ServerID: created.ID, Name: "HY2", Protocol: proxystore.ProtocolHysteria2, ListenPort: 443, EntryHostMode: proxystore.EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: proxystore.TLSModeACME, FirstClientName: "client", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agents.GetDesiredState(t.Context(), registered.ID, created.ID); !errors.Is(err, agentcontrol.ErrSingboxUnsupported) {
+		t.Fatalf("legacy agent accepted Sing-box state: %v", err)
+	}
+	setAgentCapabilities(t, db, created.ID, "vps-panel-agent", []string{agentcontrol.CapabilityProxyHysteria2})
+	state, err := agents.GetDesiredState(t.Context(), registered.ID, created.ID)
+	if err != nil || !state.SupportsSingbox || len(state.Proxies) != 0 || len(state.SingboxProxies) != 1 || !state.XrayPurge || state.SingboxPurge {
+		t.Fatalf("HY2-only desired state: %+v, %v", state, err)
+	}
+	_, _, err = proxies.Create(t.Context(), proxystore.CreateInput{ServerID: created.ID, Name: "VLESS", ListenPort: 443, EntryHostMode: proxystore.EntryHostManual, EntryHost: "node.example.com", Security: proxystore.SecurityReality, ServerName: "tls.example.com", RealityTarget: "tls.example.com:443", FirstClientName: "client", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = agents.GetDesiredState(t.Context(), registered.ID, created.ID)
+	if err != nil || len(state.Proxies) != 1 || len(state.SingboxProxies) != 1 || state.XrayPurge || state.SingboxPurge {
+		t.Fatalf("dual-kernel desired state: %+v, %v", state, err)
+	}
+}
 
 func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
 	db, err := database.Open(t.TempDir())

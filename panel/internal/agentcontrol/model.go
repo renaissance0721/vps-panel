@@ -72,6 +72,9 @@ type DesiredState struct {
 	XrayPurge             bool
 	RealmPurge            bool
 	Proxies               []proxystore.DesiredProxy
+	SingboxProxies        []proxystore.DesiredProxy
+	SingboxPurge          bool
+	SupportsSingbox       bool
 	Relays                []relaystore.DesiredRelay
 }
 

@@ -44,6 +44,12 @@ func TestRelayProtocolAwarePortConflicts(t *testing.T) {
 	}
 }
 
+func TestHysteria2RequiresUDPRelay(t *testing.T) {
+	if NetworkCompatible(NetworkTCP, "hysteria2") || !NetworkCompatible(NetworkUDP, "hysteria2") || !NetworkCompatible(NetworkBoth, "hysteria2") {
+		t.Fatal("Hysteria2 relay must carry UDP")
+	}
+}
+
 func TestRelayValidationRejectsUnsafeValues(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

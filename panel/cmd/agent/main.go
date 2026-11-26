@@ -57,6 +57,7 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilityProxyVLESSManual,
 	agentcontrol.CapabilityProxyVLESSReality,
 	agentcontrol.CapabilityProxyShadowsocks,
+	agentcontrol.CapabilityProxyHysteria2,
 	agentcontrol.CapabilityRelayRealm,
 	agentcontrol.CapabilityOutboundPreference,
 	agentcontrol.CapabilityMetrics,

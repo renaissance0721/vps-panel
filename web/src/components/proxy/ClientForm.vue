@@ -20,6 +20,7 @@ const props = defineProps<{
     | 'clientFormMode'
     | 'saveClient'
     | 'clientName'
+    | 'clientPassword'
     | 'selectedProxy'
     | 'clientUDP443'
     | 'clientTrafficLimit'
@@ -43,6 +44,7 @@ const {
   clientFormMode,
   saveClient,
   clientName,
+  clientPassword,
   selectedProxy,
   clientUDP443,
   clientTrafficLimit,
@@ -67,12 +69,16 @@ const {
       <form class="proxy-form" @submit.prevent="saveClient">
         <label><span>名称</span><n-input v-model:value="clientName" maxlength="100" /></label>
 		<p>客户端凭据由系统自动生成，不会在普通 API 中显示。</p>
+		<label v-if="selectedProxy?.protocol === 'hysteria2'"><span>客户端密码</span><n-input v-model:value="clientPassword" type="password" show-password-on="click" :placeholder="clientFormMode === 'create' ? '留空自动生成' : '留空保留现有密码'" /></label>
 		<div v-if="selectedProxy?.protocol === 'vless'" class="switch-row"><span>允许 UDP/443 / QUIC</span><n-switch v-model:value="clientUDP443" /></div>
+		<p v-if="selectedProxy?.protocol === 'hysteria2'">Hysteria2 不统计客户端流量，也不支持流量额度。</p>
+		<template v-if="selectedProxy?.protocol !== 'hysteria2'">
         <label><span>流量额度</span><div class="inline-fields"><input v-model="clientTrafficLimit" class="settings-input" type="number" min="0" step="any" placeholder="留空表示不限" /><select v-model="clientTrafficLimitUnit" class="settings-input"><option value="G">G</option><option value="T">T</option></select></div></label>
         <label><span>重置周期</span><select v-model="clientTrafficResetMode" class="settings-input"><option value="never">不重置</option><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
         <label v-if="clientTrafficResetMode === 'weekly'"><span>星期</span><select v-model.number="clientTrafficResetWeekday" class="settings-input"><option :value="1">周一</option><option :value="2">周二</option><option :value="3">周三</option><option :value="4">周四</option><option :value="5">周五</option><option :value="6">周六</option><option :value="7">周日</option></select></label>
         <label v-if="clientTrafficResetMode === 'monthly'"><span>日期</span><input v-model.number="clientTrafficResetDay" class="settings-input" type="number" min="1" max="31" /></label>
         <label v-if="clientTrafficResetMode !== 'never'"><span>重置时间（上海时区）</span><input v-model="clientTrafficResetTime" class="settings-input" type="time" /></label>
+		</template>
         <label><span>到期时间</span><select v-model="clientExpirationMode" class="settings-input"><option value="unlimited">不限</option><option value="specified">指定日期时间</option></select></label>
         <label v-if="clientExpirationMode === 'specified'"><span>到期日期时间（上海时区）</span><input v-model="clientExpiresAt" class="settings-input" type="datetime-local" /></label>
         <div class="switch-row"><span>启用客户端</span><n-switch v-model:value="clientEnabled" /></div>

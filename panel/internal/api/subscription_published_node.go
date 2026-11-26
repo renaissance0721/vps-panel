@@ -266,6 +266,8 @@ func writeSubscriptionPublishedNodeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "所属共享订阅无效；同一共享订阅不能包含多个指向同一 Proxy 的发布节点")
 	case errors.Is(err, subscriptionstore.ErrTargetProxyNotFound):
 		writeError(w, http.StatusNotFound, "落地节点不存在或已移除")
+	case errors.Is(err, subscriptionstore.ErrHysteriaPlanUnsupported):
+		writeError(w, http.StatusBadRequest, "Hysteria2 不支持客户端流量统计，不能用于订阅套餐发布节点")
 	case errors.Is(err, subscriptionstore.ErrSourceServerNotFound):
 		writeError(w, http.StatusNotFound, "中转服务器不存在或已移除")
 	case errors.Is(err, subscriptionstore.ErrPublishedNodeReferenced):

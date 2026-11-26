@@ -16,6 +16,7 @@ const (
 	CapabilityProxyVLESSManual    = "proxy.vless.tls.manual"
 	CapabilityProxyVLESSReality   = "proxy.vless.reality"
 	CapabilityProxyShadowsocks    = "proxy.shadowsocks"
+	CapabilityProxyHysteria2      = "proxy.hysteria2.singbox"
 	CapabilityRelayRealm          = "relay.realm"
 	CapabilityOutboundPreference  = "outbound_preference"
 	CapabilityMetrics             = "metrics"

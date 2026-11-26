@@ -14,6 +14,7 @@ import (
 )
 
 var ErrChinaWhitelistUnsupported = errors.New("Agent does not support China inbound whitelist")
+var ErrSingboxUnsupported = errors.New("Agent does not support Sing-box Hysteria2")
 
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -110,18 +111,44 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 			return DesiredState{}, ErrChinaWhitelistUnsupported
 		}
 	}
-	state.Proxies, err = proxystore.ListDesired(ctx, tx, serverID)
+	allProxies, err := proxystore.ListDesired(ctx, tx, serverID)
 	if err != nil {
 		return DesiredState{}, err
 	}
-	var hasProxies, hasRelays bool
+	state.Proxies, state.SingboxProxies = []proxystore.DesiredProxy{}, []proxystore.DesiredProxy{}
+	for _, value := range allProxies {
+		switch value.Kernel {
+		case proxystore.KernelXray:
+			state.Proxies = append(state.Proxies, value)
+		case proxystore.KernelSingbox:
+			state.SingboxProxies = append(state.SingboxProxies, value)
+		default:
+			return DesiredState{}, errors.New("invalid proxy kernel")
+		}
+	}
+	var capabilitiesJSON, implementation string
+	var apiVersion int
+	if err := tx.QueryRowContext(ctx, `SELECT implementation, api_version, capabilities_json FROM agents WHERE id = ?`, agentID).Scan(&implementation, &apiVersion, &capabilitiesJSON); err != nil {
+		return DesiredState{}, err
+	}
+	capabilities, err := DecodeCapabilities(capabilitiesJSON)
+	if err != nil {
+		return DesiredState{}, err
+	}
+	state.SupportsSingbox = DeclaresCapability(Metadata{Implementation: implementation, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityProxyHysteria2)
+	var hasProxies, hasSingbox, hasRelays bool
 	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM proxies WHERE server_id = ?),
-		        EXISTS(SELECT 1 FROM relays WHERE server_id = ?)`, serverID, serverID,
-	).Scan(&hasProxies, &hasRelays); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM proxies WHERE server_id = ? AND kernel = 'xray'),
+		        EXISTS(SELECT 1 FROM proxies WHERE server_id = ? AND kernel = 'sing-box'),
+		        EXISTS(SELECT 1 FROM relays WHERE server_id = ?)`, serverID, serverID, serverID,
+	).Scan(&hasProxies, &hasSingbox, &hasRelays); err != nil {
 		return DesiredState{}, fmt.Errorf("read managed runtime presence: %w", err)
 	}
 	state.XrayPurge = !hasProxies
+	state.SingboxPurge = !hasSingbox
+	if hasSingbox && !state.SupportsSingbox {
+		return DesiredState{}, ErrSingboxUnsupported
+	}
 	state.RealmPurge = !hasRelays
 	state.Relays, err = relays.ListDesired(ctx, tx, serverID)
 	if err != nil {

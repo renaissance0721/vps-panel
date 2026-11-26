@@ -24,6 +24,10 @@ type createProxyRequest struct {
 	FirstClientName   string `json:"first_client_name"`
 	FirstClientUDP443 bool   `json:"first_client_udp443"`
 	Protocol          string `json:"protocol"`
+	Kernel            string `json:"kernel"`
+	UpMbps            int    `json:"up_mbps"`
+	DownMbps          int    `json:"down_mbps"`
+	ObfsPassword      string `json:"obfs_password"`
 	Method            string `json:"method"`
 }
 
@@ -42,6 +46,10 @@ type updateProxyRequest struct {
 	PrivateKey    *string `json:"private_key"`
 	RealityTarget *string `json:"reality_target"`
 	Protocol      *string `json:"protocol"`
+	Kernel        *string `json:"kernel"`
+	UpMbps        *int    `json:"up_mbps"`
+	DownMbps      *int    `json:"down_mbps"`
+	ObfsPassword  *string `json:"obfs_password"`
 	Method        *string `json:"method"`
 }
 
@@ -56,6 +64,7 @@ type proxyResponse struct {
 	ServerPublicIPv6 string                  `json:"server_public_ipv6"`
 	Name             string                  `json:"name"`
 	Protocol         string                  `json:"protocol"`
+	Kernel           string                  `json:"kernel"`
 	ListenPort       int                     `json:"listen_port"`
 	ListenFamily     string                  `json:"listen_family"`
 	EntryHostMode    string                  `json:"entry_host_mode"`
@@ -79,6 +88,9 @@ type proxyConfigResponse struct {
 	RealityTarget            string `json:"reality_target,omitempty"`
 	Method                   string `json:"method,omitempty"`
 	Network                  string `json:"network,omitempty"`
+	UpMbps                   int    `json:"up_mbps,omitempty"`
+	DownMbps                 int    `json:"down_mbps,omitempty"`
+	ObfsEnabled              bool   `json:"obfs_enabled,omitempty"`
 }
 
 func toProxyResponse(value proxystore.Proxy) proxyResponse {
@@ -86,7 +98,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 		NodeRole: value.NodeRole, ID: value.ID, ServerID: value.ServerID, ServerName: value.ServerName,
 		ServerIPv4: value.ServerIPv4, ServerIPv6: value.ServerIPv6, Name: value.Name,
 		ServerPublicIPv4: value.ServerPublicIPv4, ServerPublicIPv6: value.ServerPublicIPv6,
-		Protocol: value.Protocol, ListenFamily: value.ListenFamily, ListenPort: value.ListenPort,
+		Protocol: value.Protocol, Kernel: value.Kernel, ListenFamily: value.ListenFamily, ListenPort: value.ListenPort,
 		EntryHostMode: value.EntryHostMode, EntryHost: value.EntryHost, EntryAddress: value.EntryAddress,
 		Enabled: value.Enabled, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 		Config: proxyConfigResponse{
@@ -96,6 +108,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 			Fingerprint:              value.Config.Fingerprint,
 			TLSCertificateConfigured: value.Config.TLSCertificateConfigured,
 			RealityTarget:            value.Config.RealityTarget, Method: value.Config.Method, Network: value.Config.Network,
+			UpMbps: value.Config.UpMbps, DownMbps: value.Config.DownMbps, ObfsEnabled: value.Config.ObfsEnabled,
 		},
 	}
 	if value.Clients != nil {

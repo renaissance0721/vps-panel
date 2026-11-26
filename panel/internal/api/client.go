@@ -34,7 +34,7 @@ func (s *server) listProxyClients(w http.ResponseWriter, r *http.Request, user a
 	response := make([]clientSummaryResponse, 0, len(values))
 	for _, value := range values {
 		response = append(response, toClientSummaryResponse(proxystore.ClientSummary{
-			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name,
+			ID: value.ID, ProxyID: value.ProxyID, Name: value.Name, Protocol: value.Protocol,
 			AssignedUserID: value.AssignedUserID, AssignedUsername: value.AssignedUsername,
 			BillingPeriodMonths: value.BillingPeriodMonths,
 			UserRelayPortStart:  value.UserRelayPortStart, UserRelayPortEnd: value.UserRelayPortEnd,
@@ -165,7 +165,7 @@ func (s *server) createProxyClient(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	value, mutation, err := s.proxies.CreateClient(r.Context(), id, proxystore.ClientCreateInput{
-		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: enabled,
+		Name: request.Name, Password: request.Password, ClientUDP443: request.ClientUDP443, Enabled: enabled,
 		ExpiresAt: expiresAt, Traffic: traffic,
 	})
 	if err != nil {
@@ -223,7 +223,7 @@ func (s *server) updateProxyClient(w http.ResponseWriter, r *http.Request, user 
 		traffic = &parsed
 	}
 	value, mutation, err := s.proxies.UpdateClient(r.Context(), id, proxystore.ClientUpdateInput{
-		Name: request.Name, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled,
+		Name: request.Name, Password: request.Password, ClientUDP443: request.ClientUDP443, Enabled: request.Enabled,
 		ExpiresAtSet: expiresAtSet, ExpiresAt: expiresAt, Traffic: traffic,
 	})
 	if err != nil {

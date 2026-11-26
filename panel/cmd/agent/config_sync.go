@@ -31,13 +31,20 @@ const (
 )
 
 type desiredState struct {
-	Version               int64             `json:"version"`
-	ComponentResults      bool              `json:"component_results"`
-	Decommission          bool              `json:"decommission"`
-	BlockChinaInbound     bool              `json:"block_china_inbound"`
-	ChinaInboundWhitelist []string          `json:"china_inbound_whitelist"`
-	Xray                  desiredXrayState  `json:"xray"`
-	Realm                 desiredRealmState `json:"realm"`
+	Version               int64                `json:"version"`
+	ComponentResults      bool                 `json:"component_results"`
+	Decommission          bool                 `json:"decommission"`
+	BlockChinaInbound     bool                 `json:"block_china_inbound"`
+	ChinaInboundWhitelist []string             `json:"china_inbound_whitelist"`
+	Xray                  desiredXrayState     `json:"xray"`
+	Singbox               *desiredSingboxState `json:"singbox,omitempty"`
+	Realm                 desiredRealmState    `json:"realm"`
+}
+
+type desiredSingboxState struct {
+	Enabled bool           `json:"enabled"`
+	Purge   bool           `json:"purge"`
+	Proxies []desiredProxy `json:"proxies"`
 }
 
 type desiredXrayState struct {
@@ -59,7 +66,14 @@ type desiredProxy struct {
 	TLS         *desiredTLS         `json:"tls,omitempty"`
 	Reality     *desiredReality     `json:"reality,omitempty"`
 	Shadowsocks *desiredShadowsocks `json:"shadowsocks,omitempty"`
+	Hysteria2   *desiredHysteria2   `json:"hysteria2,omitempty"`
 	Clients     []desiredClient     `json:"clients"`
+}
+
+type desiredHysteria2 struct {
+	UpMbps       int    `json:"up_mbps,omitempty"`
+	DownMbps     int    `json:"down_mbps,omitempty"`
+	ObfsPassword string `json:"obfs_password,omitempty"`
 }
 
 type desiredShadowsocks struct {
@@ -134,11 +148,25 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 	realm := newRealmManager()
 	chinaFirewall := newChinaInboundFirewall()
 	acme := xray.acme
+	singboxACME := newACMEManager()
+	singboxACME.certDir = managedSingboxACMECertDir
+	singboxACME.homeDir = "/var/lib/vps-panel/acme-singbox"
+	singbox := newSingboxManager(singboxACME)
 	runner := newAgentDiagnosticRunner(xray, realm)
 	var synchronizer *configSynchronizer
-	synchronizer = &configSynchronizer{config: value, client: client, renewCertificates: xray.renewCertificates, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
+	synchronizer = &configSynchronizer{config: value, client: client, renewCertificates: func(ctx context.Context) error {
+		return errors.Join(xray.renewCertificates(ctx), singbox.renewCertificates(ctx))
+	}, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
 		var err error
 		synchronizer.components, err = applyManagedComponents(ctx, state, xray.apply, realm.apply, chinaFirewall)
+		if state.Singbox != nil {
+			singboxErr := singbox.apply(ctx, *state.Singbox)
+			synchronizer.components["singbox"] = "success"
+			if singboxErr != nil {
+				synchronizer.components["singbox"] = "failed"
+			}
+			err = errors.Join(err, singboxErr)
+		}
 		return err
 	}, applyDecommission: func(ctx context.Context, state desiredState) error {
 		if state.BlockChinaInbound || state.Xray.Enabled || !state.Xray.Purge || len(state.Xray.Proxies) != 0 ||
@@ -151,6 +179,9 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 		if err := realm.purge(ctx); err != nil {
 			return err
 		}
+		if err := singbox.purge(ctx); err != nil {
+			return err
+		}
 		if err := chinaFirewall.purge(ctx); err != nil {
 			return err
 		}
@@ -158,6 +189,9 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 			if err := acme.purge(ctx); err != nil {
 				return err
 			}
+		}
+		if err := singboxACME.purge(ctx); err != nil {
+			return err
 		}
 		log.Print("Managed firewall cleanup complete")
 		return nil
@@ -430,6 +464,15 @@ func desiredStateErrorMessage(err error) string {
 		errManagedRealmConflict,
 		errManagedRealmArch,
 		errManagedRealmFirewall,
+		errSingboxDownload,
+		errSingboxChecksum,
+		errSingboxValidation,
+		errSingboxStart,
+		errSingboxHealth,
+		errSingboxTLS,
+		errSingboxArchitecture,
+		errSingboxConflict,
+		errSingboxBinary,
 		errManagedChinaInboundRequiresNFT,
 		errChinaNFTCleanup,
 		errChinaNFTTooLarge,

@@ -10,7 +10,7 @@ import type {
 import type { ServerRecord } from './server'
 
 export type ServerOption = Pick<ServerRecord,
-  'id' | 'name' | 'status' | 'bound_domain_ipv4' | 'bound_domain_ipv6' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities'
+  'id' | 'name' | 'status' | 'bound_domain_ipv4' | 'bound_domain_ipv6' | 'system_info' | 'agent_implementation' | 'agent_api_version' | 'agent_capabilities' | 'agent_config_components' | 'desired_state_version'
 >
 
 export type ProxyConfig = {
@@ -24,6 +24,9 @@ export type ProxyConfig = {
   reality_target?: string
   method?: ShadowsocksMethod
   network?: 'tcp,udp'
+  up_mbps?: number
+  down_mbps?: number
+  obfs_enabled?: boolean
 }
 
 export type ClientSummary = {
@@ -50,7 +53,7 @@ export type ClientSummary = {
   traffic_reset_day: number
   traffic_reset_time: string
   next_reset_at: string | null
-  metrics: ClientMetrics
+  metrics: ClientMetrics | null
   created_at: string
   updated_at: string
 }
@@ -79,7 +82,7 @@ export type ClientRecord = {
   traffic_reset_day: number
   traffic_reset_time: string
   next_reset_at: string | null
-  metrics: ClientMetrics
+  metrics: ClientMetrics | null
   created_at: string
   updated_at: string
 }
@@ -95,6 +98,7 @@ export type ProxyRecord = {
   server_public_ipv6: string
   name: string
   protocol: ProxyProtocol
+  kernel: 'xray' | 'sing-box'
   listen_family: 'ipv4' | 'ipv6'
   listen_port: number
   entry_host_mode: 'auto' | 'manual'

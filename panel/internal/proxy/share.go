@@ -30,6 +30,7 @@ type ClientShare struct {
 	Method              string
 	Network             string
 	ShadowsocksPassword string
+	ObfsPassword        string
 	URI                 string
 	DisplayName         string
 }
@@ -164,10 +165,23 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		share.Network = config.Shadowsocks.Network
 		share.ShadowsocksPassword = config.Shadowsocks.Password + ":" + share.Password
 		share.URI = buildShadowsocksURI(share)
+	case ProtocolHysteria2:
+		share.ObfsPassword = config.Hysteria2.ObfsPassword
+		share.URI = buildHysteria2URI(share)
 	default:
 		return ClientShare{}, ErrInvalidProtocol
 	}
 	return share, nil
+}
+
+func buildHysteria2URI(share ClientShare) string {
+	query := url.Values{}
+	query.Set("sni", share.ServerName)
+	if share.ObfsPassword != "" {
+		query.Set("obfs", "salamander")
+		query.Set("obfs-password", share.ObfsPassword)
+	}
+	return (&url.URL{Scheme: "hysteria2", User: url.User(share.Password), Host: net.JoinHostPort(share.Address, strconv.Itoa(share.Port)), Path: "/", RawQuery: query.Encode(), Fragment: share.DisplayName}).String()
 }
 
 func resolveEntryAddress(family, mode, entryHost, publicIPv4, publicIPv6 string) (string, error) {

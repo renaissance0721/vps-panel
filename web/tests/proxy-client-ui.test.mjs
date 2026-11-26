@@ -10,7 +10,7 @@ test('Proxy 详情隐藏 Client UUID 并保留两种协议的分享 URI 复制',
   assert.match(source, /selectedShare\.protocol === 'vless'/)
 	assert.match(source, /copyClientURI\(client\)/)
 	assert.match(source, /copyShareURI\(selectedShare\.uri\)/)
-	assert.match(source, /selectedShare\.protocol === 'vless' \? 'VLESS' : 'Shadowsocks'/)
+	assert.match(source, /selectedShare\.protocol === 'hysteria2' \? 'Hysteria2' : 'Shadowsocks'/)
   assert.match(source, /<th>已用 \/ 总量<\/th><th>周期<\/th><th>到期时间<\/th><th>最近活动<\/th>/)
 	assert.match(source, /showsVLESSClientFields\(selectedProxy\.protocol\).*UDP\/443/)
 	assert.doesNotMatch(source, /<th[^>]*>UUID<\/th>/)

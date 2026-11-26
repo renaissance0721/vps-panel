@@ -716,16 +716,20 @@ func getProxyTopology(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id int64, notFound error) (proxyTopology, error) {
 	var value proxyTopology
+	var protocol string
 	err := query.QueryRowContext(ctx,
-		`SELECT proxies.id, proxies.server_id, proxies.entry_host_mode, proxies.entry_host
+		`SELECT proxies.id, proxies.server_id, proxies.entry_host_mode, proxies.entry_host, proxies.protocol
 		 FROM proxies JOIN servers ON servers.id = proxies.server_id
 		 WHERE proxies.id = ? AND servers.archived_at IS NULL`, id,
-	).Scan(&value.id, &value.serverID, &value.entryHostMode, &value.entryHost)
+	).Scan(&value.id, &value.serverID, &value.entryHostMode, &value.entryHost, &protocol)
 	if errors.Is(err, sql.ErrNoRows) {
 		return proxyTopology{}, notFound
 	}
 	if err != nil {
 		return proxyTopology{}, fmt.Errorf("read published node proxy: %w", err)
+	}
+	if protocol == proxystore.ProtocolHysteria2 {
+		return proxyTopology{}, ErrHysteriaPlanUnsupported
 	}
 	return value, nil
 }

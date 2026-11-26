@@ -665,6 +665,13 @@ func managedChinaInboundPorts(state desiredState) ([]int, []int) {
 			}
 		}
 	}
+	if state.Singbox != nil && state.Singbox.Enabled {
+		for _, proxy := range state.Singbox.Proxies {
+			if proxy.Protocol == "hysteria2" && proxy.Port >= 1 && proxy.Port <= 65535 {
+				udp[proxy.Port] = true
+			}
+		}
+	}
 	if state.Realm.Enabled {
 		for _, relay := range state.Realm.Relays {
 			if relay.ListenPort < 1 || relay.ListenPort > 65535 {

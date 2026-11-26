@@ -40,6 +40,9 @@ func (s *Service) CreateSubscriberClientTx(
 	if err != nil {
 		return 0, 0, err
 	}
+	if proxyValue.Protocol == ProtocolHysteria2 {
+		return 0, 0, ErrInvalidHysteria2
+	}
 	credential, err := newCredentialForProxy(proxyValue.Protocol, config)
 	if err != nil {
 		return 0, 0, err

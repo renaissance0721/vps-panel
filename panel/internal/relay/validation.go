@@ -257,6 +257,8 @@ func ProxyPortAvailable(ctx context.Context, query interface {
 	network := NetworkTCP
 	if protocol == "shadowsocks" {
 		network = NetworkBoth
+	} else if protocol == "hysteria2" {
+		network = NetworkUDP
 	}
 	options := listener.AvailabilityOptions{}
 	if len(excludeProxyID) != 0 {

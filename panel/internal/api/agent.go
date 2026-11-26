@@ -47,13 +47,16 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, agentcontrol.ErrChinaWhitelistUnsupported) {
 			message = "当前 Agent 不支持中国 IP 入站白名单，请升级 Agent"
 		}
+		if errors.Is(err, agentcontrol.ErrSingboxUnsupported) {
+			message = "当前 Agent 不支持 Sing-box Hysteria2，请升级 Agent"
+		}
 		if recordErr := s.agents.RecordDesiredStateFailure(r.Context(), agent.ID, agent.ServerID, message); recordErr != nil {
 			log.Printf("record desired state failure for server %d: %v", agent.ServerID, recordErr)
 		}
 		writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, agentDesiredStateResponse{
+	response := agentDesiredStateResponse{
 		Version:               state.Version,
 		ComponentResults:      true,
 		Decommission:          state.Decommission,
@@ -70,7 +73,11 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 			Purge:   state.RealmPurge,
 			Relays:  state.Relays,
 		},
-	})
+	}
+	if state.SupportsSingbox {
+		response.Singbox = &agentDesiredSingboxState{Enabled: len(state.SingboxProxies) > 0, Purge: state.SingboxPurge, Proxies: state.SingboxProxies}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func desiredStateFailureMessage() string {

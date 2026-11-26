@@ -425,12 +425,16 @@ func (s *server) serverSupportsCapability(r *http.Request, serverID int64, capab
 	if err != nil {
 		return false, err
 	}
-	return agentcontrol.SupportsCapability(agentcontrol.Metadata{
+	metadata := agentcontrol.Metadata{
 		Implementation: value.AgentImplementation,
 		Version:        value.AgentVersion,
 		APIVersion:     value.AgentAPIVersion,
 		Capabilities:   value.AgentCapabilities,
-	}, capability), nil
+	}
+	if capability == agentcontrol.CapabilityProxyHysteria2 {
+		return agentcontrol.DeclaresCapability(metadata, capability), nil
+	}
+	return agentcontrol.SupportsCapability(metadata, capability), nil
 }
 
 func (s *server) updateTrafficAdjustment(w http.ResponseWriter, r *http.Request, user auth.User) {
@@ -574,6 +578,8 @@ func (s *server) notifyServerMutations(mutations []serverstore.ConfigMutation) {
 
 func writeServerError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, agentcontrol.ErrSingboxUnsupported):
+		writeError(w, http.StatusConflict, "当前 Agent 不支持 Sing-box Hysteria2，请升级 Agent")
 	case errors.Is(err, monitor.ErrTaskLimit):
 		writeMonitorError(w, err)
 	case errors.Is(err, serverstore.ErrInvalidName):

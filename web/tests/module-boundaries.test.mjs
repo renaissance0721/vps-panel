@@ -852,6 +852,33 @@ test('Proxy 表单拆分保持 ACME 默认、manual 回填和原始提交字段'
   assert.equal(calls[1].body.private_key, 'test-key')
 })
 
+test('HY2 表单检查 Agent 能力并发送 Sing-box 与 UDP 配置', async t => {
+  const calls = []
+  const server = { id: 7, name: 'VPS', system_info: null, agent_implementation: 'vps-panel-agent', agent_api_version: 1, agent_capabilities: ['proxy.hysteria2.singbox'] }
+  t.mock.method(globalThis, 'fetch', async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return json({ proxy: { id: 4 } }) })
+  const error = ref('')
+  const form = useProxyForm({ servers: [server] }, ref(null), error, action => action(), async () => {}, async () => {})
+  form.openCreateProxy()
+  form.proxyProtocol.value = 'hysteria2'
+  form.proxyName.value = 'HY2'
+  form.proxyServerName.value = 'tls.example.com'
+  form.proxyUpMbps.value = 100
+  form.proxyObfsEnabled.value = true
+  await form.saveProxy()
+  assert.match(error.value, /混淆/)
+  assert.equal(calls.length, 0)
+  form.proxyObfsPassword.value = 'obfs-secret'
+  await form.saveProxy()
+  assert.equal(calls[0].body.protocol, 'hysteria2')
+  assert.equal(calls[0].body.kernel, 'sing-box')
+  assert.equal(calls[0].body.security, 'tls')
+  assert.equal(calls[0].body.obfs_password, 'obfs-secret')
+  assert.equal(calls[0].body.up_mbps, 100)
+  const legacy = useProxyForm({ servers: [{ ...server, agent_capabilities: [] }] }, ref(null), ref(''), action => action(), async () => {}, async () => {})
+  legacy.openCreateProxy(); legacy.proxyProtocol.value = 'hysteria2'
+  assert.match(legacy.proxyCapabilityWarning.value, /不支持/)
+})
+
 test('Proxy 入口选择将绑定域名映射为现有 manual 请求并按服务器刷新', async t => {
   const calls = []
   const servers = [

@@ -50,6 +50,11 @@ const props = defineProps<{
     | 'proxyVLESSRealitySupported'
     | 'proxyTLSSupported'
     | 'proxyShadowsocksSupported'
+    | 'proxyHysteria2Supported'
+    | 'proxyUpMbps'
+    | 'proxyDownMbps'
+    | 'proxyObfsEnabled'
+    | 'proxyObfsPassword'
     | 'proxyCapabilityWarning'
   >
 }>()
@@ -85,6 +90,11 @@ const {
   proxyVLESSRealitySupported,
   proxyTLSSupported,
   proxyShadowsocksSupported,
+  proxyHysteria2Supported,
+  proxyUpMbps,
+  proxyDownMbps,
+  proxyObfsEnabled,
+  proxyObfsPassword,
   proxyCapabilityWarning,
 } = toRefs(props.model)
 </script>
@@ -104,10 +114,11 @@ const {
 		<label v-if="proxyFormMode === 'create'">
 			<span>协议</span>
 			<select v-model="proxyProtocol" class="settings-input">
-				<option value="vless" :disabled="!proxyVLESSSupported">VLESS</option><option value="shadowsocks" :disabled="!proxyShadowsocksSupported">Shadowsocks</option>
+				<option value="vless" :disabled="!proxyVLESSSupported">VLESS</option><option value="shadowsocks" :disabled="!proxyShadowsocksSupported">Shadowsocks</option><option value="hysteria2" :disabled="!proxyHysteria2Supported">Hysteria2</option>
 			</select>
 		</label>
-		<div v-else class="fixed-fields"><span>协议：{{ proxyProtocol === 'vless' ? 'VLESS' : 'Shadowsocks' }}</span></div>
+		<div v-else class="fixed-fields"><span>协议：{{ proxyProtocol === 'vless' ? 'VLESS' : proxyProtocol === 'hysteria2' ? 'Hysteria2' : 'Shadowsocks' }}</span></div>
+		<div class="fixed-fields"><span>内核：{{ proxyProtocol === 'hysteria2' ? 'Sing-box' : 'Xray' }}</span></div>
 		<label>
 		  <span>监听 IP 类型</span>
 		  <select v-model="proxyListenFamily" class="settings-input" @change="onProxyFamilyChange">
@@ -138,6 +149,15 @@ const {
         <label><span>SNI / Server Name</span><n-input v-model:value="proxyServerName" placeholder="例如：www.example.com" /></label>
         <TLSForm v-if="proxySecurity === 'tls'" :model="model" />
 		<RealityForm v-else :model="model" />
+		</template>
+		<template v-else-if="proxyProtocol === 'hysteria2'">
+		  <n-alert type="info">Hysteria2 使用 UDP。NAT 服务器还需要服务商转发对应的公网 UDP 端口；本地启动成功不代表公网可达。</n-alert>
+		  <label><span>证书域名 / SNI</span><n-input v-model:value="proxyServerName" placeholder="例如：hy2.example.com" /></label>
+		  <TLSForm :model="model" />
+		  <label><span>上传带宽（Mbps，0 为不限）</span><input v-model.number="proxyUpMbps" class="settings-input" type="number" min="0" /></label>
+		  <label><span>下载带宽（Mbps，0 为不限）</span><input v-model.number="proxyDownMbps" class="settings-input" type="number" min="0" /></label>
+		  <div class="switch-row"><span>Salamander 混淆</span><n-switch v-model:value="proxyObfsEnabled" /></div>
+		  <label v-if="proxyObfsEnabled"><span>混淆密码</span><n-input v-model:value="proxyObfsPassword" type="password" show-password-on="click" :placeholder="proxyFormMode === 'edit' ? '留空保留现有密码' : '填写混淆密码'" /></label>
 		</template>
 		<ShadowsocksForm v-else :model="model" />
 		<n-alert v-if="proxyCapabilityWarning" type="warning">{{ proxyCapabilityWarning }}</n-alert>

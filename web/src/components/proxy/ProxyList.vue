@@ -67,6 +67,14 @@ function proxyEntryLabel(value: ProxyRecord) {
   return host === '未检测' ? host : relayEndpointLabel(host ?? '', value.listen_port)
 }
 
+function kernelApplyStatus(value: ProxyRecord) {
+  const server = servers.value.find((item) => item.id === value.server_id)
+  const components = server?.agent_config_components
+  if (!server || !components || components.version !== server.desired_state_version) return '应用状态未知或待同步'
+  const status = components.statuses[value.kernel === 'sing-box' ? 'singbox' : 'xray']
+  return status === 'success' ? '内核配置已应用' : status === 'failed' ? '内核应用失败' : '应用状态未知'
+}
+
 function startDrag(event: DragEvent, id: number) {
   if (reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
   const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
@@ -135,10 +143,11 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
               <span>{{ proxyEntryLabel(value) }}</span>
               <small v-if="proxyAddressLines(value)[1]" class="secondary-text">{{ proxyAddressLines(value)[1] }}</small>
             </td>
-			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).protocol }}</td>
+			<td>{{ proxyListProtocolFields(value.protocol, value.config.security).protocol }}<small class="secondary-text">{{ value.kernel === 'sing-box' ? 'Sing-box' : 'Xray' }}<template v-if="value.protocol === 'hysteria2'"> · UDP {{ value.listen_port }}</template></small></td>
             <td>
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
               <small class="secondary-text" title="当前连接与地址信息，不代表连通性探测结果">{{ proxyResourceAvailability(value, servers.find(server => server.id === value.server_id)).label }}</small>
+			  <small class="secondary-text">{{ kernelApplyStatus(value) }}</small>
             </td>
             <td class="server-actions">
               <div class="server-action-buttons">

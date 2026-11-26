@@ -172,6 +172,7 @@ test('Agent capability 常量集中定义当前 Phase 2 能力', () => {
     proxyVLESSTLSACME: 'proxy.vless.tls.acme',
     proxyVLESSTLSManual: 'proxy.vless.tls.manual',
     proxyShadowsocks: 'proxy.shadowsocks',
+    proxyHysteria2: 'proxy.hysteria2.singbox',
     relayRealm: 'relay.realm',
     outboundPreference: 'outbound_preference',
     diagnosticsV1: 'diagnostics_v1',

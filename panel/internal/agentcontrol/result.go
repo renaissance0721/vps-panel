@@ -24,7 +24,7 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 			}
 			continue
 		}
-		if (name != "xray" && name != "realm" && name != "china_firewall") ||
+		if (name != "xray" && name != "singbox" && name != "realm" && name != "china_firewall") ||
 			(status != "success" && status != "failed" && status != "unsupported" && status != "unknown") {
 			return ErrInvalidConfigResult
 		}
@@ -35,7 +35,7 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 				return ErrInvalidConfigResult
 			}
 		}
-		if result.Status == ConfigSyncSuccess && (result.Components["xray"] != "success" || result.Components["realm"] != "success" || result.Components["china_firewall"] == "failed" || result.Components["china_firewall"] == "unsupported") {
+		if result.Status == ConfigSyncSuccess && (result.Components["xray"] != "success" || result.Components["realm"] != "success" || result.Components["singbox"] != "" && result.Components["singbox"] != "success" || result.Components["china_firewall"] == "failed" || result.Components["china_firewall"] == "unsupported") {
 			return ErrInvalidConfigResult
 		}
 	}

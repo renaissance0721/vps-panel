@@ -347,6 +347,7 @@ function diagnosticCheckMeta(check: DiagnosticCheck) {
               </dl>
               <p v-if="selectedServer.agent_config_components?.version === selectedServer.desired_state_version" class="secondary-text">
                 Xray：{{ selectedServer.agent_config_components.statuses.xray === 'success' ? '已应用' : '应用失败' }}；
+				<span v-if="selectedServer.agent_config_components.statuses.singbox">Sing-box：{{ selectedServer.agent_config_components.statuses.singbox === 'success' ? '已应用' : '应用失败' }}；</span>
                 Realm：{{ selectedServer.agent_config_components.statuses.realm === 'success' ? '已应用' : '应用失败' }}。
                 <span v-if="selectedServer.agent_config_components.statuses.firewall_environment">
                   防火墙环境：{{ ({ supported: '支持', unsupported: '不支持', unknown: '未知', temporarily_unavailable: '暂时不可用' } as Record<string, string>)[selectedServer.agent_config_components.statuses.firewall_environment] }}。

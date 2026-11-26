@@ -11,7 +11,7 @@ func normalizeProtocol(value string) (string, error) {
 	if value == "" {
 		return ProtocolVLESS, nil
 	}
-	if value != ProtocolVLESS && value != ProtocolShadowsocks {
+	if value != ProtocolVLESS && value != ProtocolShadowsocks && value != ProtocolHysteria2 {
 		return "", ErrInvalidProtocol
 	}
 	return value, nil

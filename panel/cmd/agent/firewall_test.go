@@ -513,3 +513,46 @@ func TestRealmFirewallPortChangeAndCleanupDoNotTouchProxyOrUserRules(t *testing.
 		t.Fatalf("Realm disable/delete retained rules: %+v", managed)
 	}
 }
+
+func TestSingboxFirewallUDPReplacementAndCleanupIsIsolated(t *testing.T) {
+	managed := map[firewallRule]bool{{port: 443, protocol: "udp"}: true}
+	firewall := &proxyFirewall{owner: "singbox"}
+	firewall.lookPath = func(name string) (string, error) {
+		if name == "iptables" {
+			return name, nil
+		}
+		return "", errors.New("not installed")
+	}
+	firewall.runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if args[0] == "-S" {
+			lines := []string{"-P INPUT DROP", "-A INPUT -p udp --dport 443 -m comment --comment vps-panel-proxy-udp -j ACCEPT", "-A INPUT -p tcp --dport 22 -j ACCEPT"}
+			for rule := range managed {
+				lines = append(lines, "-A INPUT "+strings.Join(firewall.managedIPTablesRule(rule), " "))
+			}
+			return []byte(strings.Join(lines, "\n")), nil
+		}
+		if !containsFields(args, "--comment", "vps-panel-singbox-udp") {
+			return nil, errors.New("attempted to change another owner's rule")
+		}
+		portValue, _ := fieldAfter(args, "--dport")
+		port, _ := strconv.Atoi(portValue)
+		rule := firewallRule{port: port, protocol: "udp"}
+		if args[0] == "-I" {
+			managed[rule] = true
+		} else if args[0] == "-D" {
+			delete(managed, rule)
+		} else {
+			return nil, errors.New("unexpected firewall operation")
+		}
+		return nil, nil
+	}
+	if err := firewall.reconcileRules(t.Context(), []firewallRule{{port: 8443, protocol: "udp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(managed) != 1 || !managed[firewallRule{port: 8443, protocol: "udp"}] {
+		t.Fatal("UDP replacement failed")
+	}
+	if err := firewall.reconcileRules(t.Context(), nil); err != nil || len(managed) != 0 {
+		t.Fatalf("UDP cleanup failed: %v", err)
+	}
+}

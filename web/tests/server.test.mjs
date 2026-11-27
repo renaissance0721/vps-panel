@@ -211,7 +211,7 @@ test('Server owner 与删除 UI 保持列表简洁并在详情保留管理员强
   assert.doesNotMatch(detail, /正在退役|退役失败|退役清理失败|开始退役/)
 })
 
-test('Agent 配置同步状态只显示在正常服务器列表', async () => {
+test('Agent 配置同步状态位于正常服务器列表，节点失败时显示服务器错误', async () => {
   const [serverList, proxyList, relayList, proxyTypes] = await Promise.all([
     'components/server/ServerList.vue', 'components/proxy/ProxyList.vue',
     'views/RelaysView.vue', 'types/proxy.ts',
@@ -235,8 +235,10 @@ test('Agent 配置同步状态只显示在正常服务器列表', async () => {
   assert.doesNotMatch(archivedList, /agent_config_sync_status|agent_config_sync_error|已应用|同步中|应用失败/)
 
   for (const source of [proxyList, relayList, proxyTypes]) {
-    assert.doesNotMatch(source, /syncState|agent_config_sync_status|agent_config_sync_error/)
+    assert.doesNotMatch(source, /syncState|agent_config_sync_status/)
   }
+  assert.match(proxyList, /服务器配置错误：\{\{ kernelApplyError\(value\) \}\}/)
+  assert.doesNotMatch(relayList, /agent_config_sync_error/)
   assert.doesNotMatch(proxyList, />已应用<|>同步中<|>应用失败</)
   assert.doesNotMatch(relayList, />已应用<|>同步中<|>应用失败</)
 })

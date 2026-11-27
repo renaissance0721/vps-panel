@@ -30,6 +30,21 @@ const external = (id, node_role = 'direct') => ({ id, node_role, name: `external
 const relay = (id, subscription_published = false) => ({ id, server_id: 1, subscription_published, name: `relay-${id}`, server_name: 'server',
   entry_address: 'relay.example.com', listen_address: '0.0.0.0', listen_port: 35152, entry_host_mode: 'auto', target_type: 'manual', target_host: 'example.com', target_port: 443,
   target_address_ready: true, target_client_name: '', enabled: true })
+
+test('节点列表只在当前版本内核失败时显示服务器配置错误', async () => {
+  const server = { id: 1, status: 'online', desired_state_version: 4,
+    agent_config_sync_error: 'Sing-box installation failed',
+    agent_config_components: { version: 4, statuses: { singbox: 'failed' } } }
+  const model = useProxies({ servers: [server], users: [] })
+  model.proxies.value = [{ ...proxy(1), kernel: 'sing-box', protocol: 'hysteria2' }]
+  model.loading.value = false
+  const render = () => renderToString(createSSRApp(ProxyList, { model: reactive(model) }))
+  assert.match(await render(), /服务器配置错误：Sing-box installation failed/)
+  server.agent_config_components.version = 3
+  assert.doesNotMatch(await render(), /Sing-box installation failed/)
+  server.agent_config_components = { version: 4, statuses: { singbox: 'success' } }
+  assert.doesNotMatch(await render(), /Sing-box installation failed/)
+})
 async function withState(component, seed, props = {}) {
   const setup = component.setup
   let state

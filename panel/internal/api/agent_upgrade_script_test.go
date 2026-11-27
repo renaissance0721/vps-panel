@@ -54,6 +54,8 @@ func TestUpgradeAgentScriptMatchesInstallerAndPreparesSandbox(t *testing.T) {
 		`install -d -m 0755 /opt/vps-panel/xray /opt/vps-panel/realm`,
 		`install -d -m 0700 /var/lib/vps-panel/agent`,
 		`install -d -m 0700 /etc/vps-panel/xray /etc/vps-panel/realm`,
+		`install -d -m 0755 /opt/vps-panel/sing-box`,
+		`install -d -m 0700 /etc/vps-panel/sing-box /etc/vps-panel/acme/sing-box /var/lib/vps-panel/acme-singbox`,
 	} {
 		if !strings.Contains(directoryCommands, command) || !strings.Contains(installer, command) {
 			t.Fatalf("upgrade and installation must both prepare %q", command)

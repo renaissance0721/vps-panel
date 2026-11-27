@@ -75,12 +75,13 @@ func TestSingboxRenderAndValidation(t *testing.T) {
 type testSingboxService struct {
 	active      bool
 	failRestart bool
+	installErr  error
 	restarts    int
 	path        string
 }
 
 func (s *testSingboxService) Path() string                       { return s.path }
-func (s *testSingboxService) Install() (bool, error)             { return false, nil }
+func (s *testSingboxService) Install() (bool, error)             { return false, s.installErr }
 func (s *testSingboxService) DaemonReload(context.Context) error { return nil }
 func (s *testSingboxService) Enable(context.Context) error       { return nil }
 func (s *testSingboxService) Disable(context.Context) error      { return nil }
@@ -95,6 +96,54 @@ func (s *testSingboxService) Restart(context.Context) error {
 	}
 	s.active = true
 	return nil
+}
+
+func TestSingboxApplyReportsSafeDeploymentAndServiceErrors(t *testing.T) {
+	state := desiredSingboxState{Enabled: true, Proxies: []desiredProxy{testSingboxProxy(t, 1, 443)}}
+	t.Run("installation directory", func(t *testing.T) {
+		m, _ := newTestSingboxManager(t)
+		m.binaryPath = t.TempDir()
+		if got := desiredStateErrorMessage(m.apply(t.Context(), state)); got != errSingboxInstall.Error() {
+			t.Fatalf("installation error = %q", got)
+		}
+	})
+	t.Run("certificate directory", func(t *testing.T) {
+		m, _ := newTestSingboxManager(t)
+		blocked := filepath.Join(t.TempDir(), "blocked")
+		if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m.acme = newACMEManager()
+		m.acme.certDir = filepath.Join(blocked, "certificates")
+		proxy := testSingboxProxy(t, 1, 443)
+		proxy.TLS = &desiredTLS{Mode: "acme"}
+		if got := desiredStateErrorMessage(m.apply(t.Context(), desiredSingboxState{Enabled: true, Proxies: []desiredProxy{proxy}})); got != errSingboxTLSSetup.Error() {
+			t.Fatalf("certificate error = %q", got)
+		}
+	})
+	t.Run("configuration directory", func(t *testing.T) {
+		m, _ := newTestSingboxManager(t)
+		if err := os.WriteFile(m.configDir, []byte("blocked"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := desiredStateErrorMessage(m.apply(t.Context(), state)); got != errSingboxConfigWrite.Error() {
+			t.Fatalf("configuration error = %q", got)
+		}
+	})
+	t.Run("service installation", func(t *testing.T) {
+		m, service := newTestSingboxManager(t)
+		service.installErr = errors.New("private diagnostic")
+		if got := desiredStateErrorMessage(m.apply(t.Context(), state)); got != errSingboxServiceSetup.Error() {
+			t.Fatalf("service error = %q", got)
+		}
+	})
+	t.Run("service restart", func(t *testing.T) {
+		m, service := newTestSingboxManager(t)
+		service.failRestart = true
+		if got := desiredStateErrorMessage(m.apply(t.Context(), state)); got != errSingboxStart.Error() {
+			t.Fatalf("restart error = %q", got)
+		}
+	})
 }
 func (s *testSingboxService) IsActive(context.Context) (bool, error) { return s.active, nil }
 

@@ -51,7 +51,7 @@ func TestInstallAgentScript(t *testing.T) {
 		"RestartSec=3",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
-		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /var/lib/vps-panel/agent /etc/systemd/system",
+		"ReadWritePaths=/opt/vps-panel/agent /opt/vps-panel/xray /etc/vps-panel/xray /opt/vps-panel/realm /etc/vps-panel/realm /opt/vps-panel/acme /var/lib/vps-panel/acme /var/lib/vps-panel/agent /opt/vps-panel/sing-box /etc/vps-panel/sing-box /etc/vps-panel/acme/sing-box /var/lib/vps-panel/acme-singbox /etc/systemd/system",
 		"install -d -m 0700 /var/lib/vps-panel/agent",
 		"systemctl enable",
 		"systemctl restart",

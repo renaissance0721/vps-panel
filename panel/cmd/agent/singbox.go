@@ -44,6 +44,10 @@ var (
 	errSingboxArchitecture = errors.New("Sing-box is unsupported on this architecture")
 	errSingboxConflict     = errors.New("unmanaged Sing-box files or service conflict with managed paths")
 	errSingboxBinary       = errors.New("Sing-box executable or archive is invalid")
+	errSingboxInstall      = errors.New("Sing-box installation failed: check managed directory access and available disk space")
+	errSingboxConfigWrite  = errors.New("Sing-box configuration deployment failed: check managed directory access and available disk space")
+	errSingboxTLSSetup     = errors.New("Sing-box certificate preparation failed: check managed certificate and ACME directory access")
+	errSingboxServiceSetup = errors.New("Sing-box service installation or enablement failed")
 )
 
 type singboxManager struct {
@@ -100,7 +104,7 @@ func (m *singboxManager) apply(ctx context.Context, state desiredSingboxState) (
 				return errManagedACME
 			}
 			if _, err := m.acme.ensureCertificate(ctx, proxy.ServerName); err != nil {
-				return err
+				return fmt.Errorf("%w: %w", errSingboxTLSSetup, err)
 			}
 			seen[proxy.ServerName] = true
 			domains = append(domains, proxy.ServerName)
@@ -112,7 +116,7 @@ func (m *singboxManager) apply(ctx context.Context, state desiredSingboxState) (
 	}
 	previousBinary, upgraded, err := m.ensureBinary(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errSingboxInstall, err)
 	}
 	defer func() {
 		if applyErr != nil && upgraded && len(previousBinary) != 0 {
@@ -128,11 +132,11 @@ func (m *singboxManager) apply(ctx context.Context, state desiredSingboxState) (
 		}
 	}()
 	if err := ensureSecureDirectory(m.configDir, 0o700); err != nil {
-		return fmt.Errorf("prepare Sing-box configuration directory: %w", err)
+		return fmt.Errorf("%w: prepare configuration directory: %w", errSingboxConfigWrite, err)
 	}
 	path, err := writeTemporaryFile(m.configDir, ".candidate-*.json", candidate, 0o600)
 	if err != nil {
-		return fmt.Errorf("write Sing-box candidate: %w", err)
+		return fmt.Errorf("%w: write candidate: %w", errSingboxConfigWrite, err)
 	}
 	defer os.Remove(path)
 	if _, err := m.runCommand(ctx, m.binaryPath, "check", "-c", path); err != nil {
@@ -140,19 +144,19 @@ func (m *singboxManager) apply(ctx context.Context, state desiredSingboxState) (
 	}
 	changed, err := m.service.Install()
 	if err != nil {
-		return fmt.Errorf("install Sing-box service: %w", err)
+		return fmt.Errorf("%w: install service: %w", errSingboxServiceSetup, err)
 	}
 	if changed {
 		if err := m.service.DaemonReload(ctx); err != nil {
-			return fmt.Errorf("reload Sing-box service: %w", err)
+			return fmt.Errorf("%w: reload service: %w", errSingboxServiceSetup, err)
 		}
 	}
 	if err := m.service.Enable(ctx); err != nil {
-		return fmt.Errorf("enable Sing-box service: %w", err)
+		return fmt.Errorf("%w: enable service: %w", errSingboxServiceSetup, err)
 	}
 	previous, exists, err := readOptionalFile(m.configPath)
 	if err != nil {
-		return fmt.Errorf("read Sing-box configuration: %w", err)
+		return fmt.Errorf("%w: read configuration: %w", errSingboxConfigWrite, err)
 	}
 	active, err := m.service.IsActive(ctx)
 	if err != nil {
@@ -166,11 +170,11 @@ func (m *singboxManager) apply(ctx context.Context, state desiredSingboxState) (
 	}
 	if exists {
 		if err := writeFileAtomically(m.previousPath, previous, 0o600); err != nil {
-			return fmt.Errorf("save previous Sing-box configuration: %w", err)
+			return fmt.Errorf("%w: save previous configuration: %w", errSingboxConfigWrite, err)
 		}
 	}
 	if err := replaceFile(path, m.configPath, 0o600); err != nil {
-		return fmt.Errorf("install Sing-box configuration: %w", err)
+		return fmt.Errorf("%w: install configuration: %w", errSingboxConfigWrite, err)
 	}
 	if err := m.service.Restart(ctx); err != nil {
 		return m.rollback(ctx, previous, exists, errSingboxStart)

@@ -75,6 +75,14 @@ function kernelApplyStatus(value: ProxyRecord) {
   return status === 'success' ? '内核配置已应用' : status === 'failed' ? '内核应用失败' : '应用状态未知'
 }
 
+function kernelApplyError(value: ProxyRecord) {
+  const server = servers.value.find((item) => item.id === value.server_id)
+  const components = server?.agent_config_components
+  if (!server || !components || components.version !== server.desired_state_version ||
+      components.statuses[value.kernel === 'sing-box' ? 'singbox' : 'xray'] !== 'failed') return ''
+  return server.agent_config_sync_error || ''
+}
+
 function startDrag(event: DragEvent, id: number) {
   if (reorderingID.value !== null || search.value.trim() || !event.dataTransfer) return
   const source = (event.currentTarget as HTMLElement | null)?.closest('tr') as HTMLElement | null
@@ -148,6 +156,7 @@ onUnmounted(() => { if (draggedID.value !== null) endDrag() })
               <n-tag :type="value.enabled ? 'success' : 'default'" size="small">{{ value.enabled ? '启用' : '禁用' }}</n-tag>
               <small class="secondary-text" title="当前连接与地址信息，不代表连通性探测结果">{{ proxyResourceAvailability(value, servers.find(server => server.id === value.server_id)).label }}</small>
 			  <small class="secondary-text">{{ kernelApplyStatus(value) }}</small>
+			  <small v-if="kernelApplyError(value)" class="secondary-text">服务器配置错误：{{ kernelApplyError(value) }}</small>
             </td>
             <td class="server-actions">
               <div class="server-action-buttons">

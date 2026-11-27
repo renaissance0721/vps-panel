@@ -96,13 +96,17 @@ func TestUpgradeAgentSandboxDirectoriesPreserveExistingConfigs(t *testing.T) {
 	sh := upgradeTestShell(t)
 	commands := upgradeScriptSection(t, upgradeAgentScript,
 		`install -d -m 0755 "$AGENT_DIR"`, `if [ -f "$BINARY_PATH" ]; then`)
+	var replacements []string
 	for _, path := range []string{
+		"/var/lib/vps-panel/acme-singbox", "/etc/vps-panel/acme/sing-box",
+		"/opt/vps-panel/sing-box", "/etc/vps-panel/sing-box",
 		"/opt/vps-panel/xray", "/opt/vps-panel/realm", "/opt/vps-panel/acme",
 		"/etc/vps-panel/xray", "/etc/vps-panel/realm",
 		"/var/lib/vps-panel/acme", "/var/lib/vps-panel/agent",
 	} {
-		commands = strings.ReplaceAll(commands, path, `"${TEST_ROOT}`+path+`"`)
+		replacements = append(replacements, path, `"${TEST_ROOT}`+path+`"`)
 	}
+	commands = strings.NewReplacer(replacements...).Replace(commands)
 	for _, test := range []struct {
 		name          string
 		xrayExisting  bool
@@ -162,9 +166,13 @@ func TestUpgradeAgentSandboxDirectoriesPreserveExistingConfigs(t *testing.T) {
 				{filepath.Join(root, "opt", "vps-panel", "xray"), 0o755},
 				{filepath.Join(root, "opt", "vps-panel", "realm"), 0o755},
 				{filepath.Join(root, "opt", "vps-panel", "acme"), 0o755},
+				{filepath.Join(root, "opt", "vps-panel", "sing-box"), 0o755},
 				{filepath.Join(root, "etc", "vps-panel", "xray"), 0o700},
 				{filepath.Join(root, "etc", "vps-panel", "realm"), 0o700},
+				{filepath.Join(root, "etc", "vps-panel", "sing-box"), 0o700},
+				{filepath.Join(root, "etc", "vps-panel", "acme", "sing-box"), 0o700},
 				{filepath.Join(root, "var", "lib", "vps-panel", "acme"), 0o700},
+				{filepath.Join(root, "var", "lib", "vps-panel", "acme-singbox"), 0o700},
 				{filepath.Join(root, "var", "lib", "vps-panel", "agent"), 0o700},
 			} {
 				info, err := os.Stat(directory.path)

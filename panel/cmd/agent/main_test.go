@@ -717,8 +717,10 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	})
 	agentHeartbeatInterval = 10 * time.Millisecond
 	var metricsCollectorCount atomic.Int32
+	metricsCreated := make(chan struct{}, 2)
 	newAgentMetrics = func() *metricsCollector {
 		metricsCollectorCount.Add(1)
+		metricsCreated <- struct{}{}
 		return &metricsCollector{}
 	}
 	reconnectDelay := make(chan time.Duration, 1)
@@ -811,6 +813,13 @@ func TestConnectAgentSendsHeartbeatAndReconnectsAfterDisconnect(t *testing.T) {
 	}
 	if connectionCount.Load() != 2 {
 		t.Fatalf("system information connection count = %d, want 2", connectionCount.Load())
+	}
+	for range 2 {
+		select {
+		case <-metricsCreated:
+		case <-time.After(time.Second):
+			t.Fatal("Agent did not create a metrics collector for each connection")
+		}
 	}
 	if metricsCollectorCount.Load() != 2 {
 		t.Fatalf("metrics collector count = %d, want one fresh baseline per connection", metricsCollectorCount.Load())

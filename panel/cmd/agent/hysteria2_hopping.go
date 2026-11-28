@@ -37,11 +37,16 @@ type hy2HoppingManager struct {
 	lookPath    func(string) (string, error)
 	runCommand  func(context.Context, string, ...string) ([]byte, error)
 	checkUDP    func([]hy2HoppingRule) error
+	checkLegacy func(context.Context, []hy2HoppingRule) error
 	journalPath string
 }
 
 func newHY2HoppingManager() *hy2HoppingManager {
-	return &hy2HoppingManager{lookPath: exec.LookPath, runCommand: runFirewallCommand, checkUDP: checkHY2HoppingUDPListeners, journalPath: "/var/lib/vps-panel/agent/hy2-hopping-owned"}
+	m := &hy2HoppingManager{lookPath: exec.LookPath, runCommand: runFirewallCommand, checkUDP: checkHY2HoppingUDPListeners, journalPath: "/var/lib/vps-panel/agent/hy2-hopping-owned"}
+	m.checkLegacy = func(ctx context.Context, rules []hy2HoppingRule) error {
+		return inspectLegacyNAT(ctx, rules, m.lookPath, m.runCommand, os.ReadFile)
+	}
+	return m
 }
 
 // The disposable table is created and deleted in one nft transaction, so a
@@ -179,6 +184,11 @@ func (m *hy2HoppingManager) apply(ctx context.Context, rules []hy2HoppingRule) e
 		if err := checkForeignNATRules(output, rules); err != nil {
 			return err
 		}
+		if m.checkLegacy != nil {
+			if err := m.checkLegacy(ctx, rules); err != nil {
+				return err
+			}
+		}
 	}
 	if !exists && len(rules) == 0 {
 		if ownedBefore {
@@ -249,14 +259,82 @@ func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
 	if err := json.Unmarshal(data, &document); err != nil || document.Nftables == nil {
 		return errHoppingNATInspect
 	}
+	// Propagate the base-chain context through static jumps. Regular chains do
+	// not carry a type or hook of their own in nft's JSON representation.
+	type chainKey struct{ family, table, chain string }
+	type chainInfo struct{ kind, hook string }
+	chains := map[chainKey]chainInfo{}
+	edges := map[chainKey][]chainKey{}
+	natReachable := map[chainKey]bool{}
+	filterReachable := map[chainKey]bool{}
+	otherReachable := map[chainKey]bool{}
+	for _, item := range document.Nftables {
+		if raw, ok := item["chain"]; ok {
+			var c struct{ Family, Table, Name, Type, Hook string }
+			if json.Unmarshal(raw, &c) != nil || c.Family == "" || c.Table == "" || c.Name == "" {
+				return errHoppingNATInspect
+			}
+			key := chainKey{c.Family, c.Table, c.Name}
+			chains[key] = chainInfo{c.Type, c.Hook}
+			if c.Hook == "prerouting" && c.Type == "nat" {
+				natReachable[key] = true
+			}
+			if c.Hook == "prerouting" && c.Type == "filter" {
+				filterReachable[key] = true
+			}
+			if c.Hook != "" && c.Hook != "prerouting" {
+				otherReachable[key] = true
+			}
+		}
+		if raw, ok := item["rule"]; ok {
+			var rule struct {
+				Family, Table, Chain string
+				Expr                 []map[string]json.RawMessage `json:"expr"`
+			}
+			if json.Unmarshal(raw, &rule) != nil {
+				return errHoppingNATInspect
+			}
+			key := chainKey{rule.Family, rule.Table, rule.Chain}
+			for _, expr := range rule.Expr {
+				for _, name := range []string{"jump", "goto"} {
+					if target, ok := expr[name]; ok {
+						var jump struct{ Target string }
+						if json.Unmarshal(target, &jump) != nil || jump.Target == "" {
+							return errHoppingNATInspect
+						}
+						edges[key] = append(edges[key], chainKey{rule.Family, rule.Table, jump.Target})
+					}
+				}
+			}
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for from, targets := range edges {
+			for _, to := range targets {
+				if natReachable[from] && !natReachable[to] {
+					natReachable[to] = true
+					changed = true
+				}
+				if filterReachable[from] && !filterReachable[to] {
+					filterReachable[to] = true
+					changed = true
+				}
+				if otherReachable[from] && !otherReachable[to] {
+					otherReachable[to] = true
+					changed = true
+				}
+			}
+		}
+	}
 	for _, item := range document.Nftables {
 		raw, ok := item["rule"]
 		if !ok {
 			continue
 		}
 		var rule struct {
-			Family, Table string
-			Expr          []map[string]json.RawMessage `json:"expr"`
+			Family, Table, Chain string
+			Expr                 []map[string]json.RawMessage `json:"expr"`
 		}
 		if json.Unmarshal(raw, &rule) != nil || rule.Expr == nil {
 			return errHoppingNATInspect
@@ -265,8 +343,23 @@ func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
 			continue
 		}
 		var applicable []hy2HoppingRule
+		familyMatch := ""
+		for _, expr := range rule.Expr {
+			if rawMatch, ok := expr["match"]; ok {
+				var match struct {
+					Op   string `json:"op"`
+					Left struct {
+						Meta struct{ Key string } `json:"meta"`
+					} `json:"left"`
+					Right string `json:"right"`
+				}
+				if json.Unmarshal(rawMatch, &match) == nil && match.Op == "==" && match.Left.Meta.Key == "nfproto" && (match.Right == "ipv4" || match.Right == "ipv6") {
+					familyMatch = match.Right
+				}
+			}
+		}
 		for _, candidate := range ranges {
-			if rule.Family == "ip" && candidate.listen == "::" || rule.Family == "ip6" && candidate.listen != "::" {
+			if (rule.Family == "ip" || familyMatch == "ipv4") && candidate.listen == "::" || (rule.Family == "ip6" || familyMatch == "ipv6") && candidate.listen != "::" {
 				continue
 			}
 			applicable = append(applicable, candidate)
@@ -274,21 +367,47 @@ func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
 		if len(applicable) == 0 {
 			continue
 		}
-		nat, tcpOnly, safePort := false, false, false
+		key := chainKey{rule.Family, rule.Table, rule.Chain}
+		info, knownChain := chains[key]
+		if knownChain && info.hook != "" && info.hook != "prerouting" {
+			continue
+		}
+		if otherReachable[key] && !natReachable[key] && !filterReachable[key] {
+			continue
+		}
+		nat, tcpOnly, unknownPort := false, false, false
+		possible := make([][2]int, 0, len(applicable))
+		for _, r := range applicable {
+			possible = append(possible, [2]int{r.start, r.end})
+		}
 		for _, expr := range rule.Expr {
-			if _, ok := expr["dnat"]; ok {
+			if raw, ok := expr["dnat"]; ok {
 				nat = true
+				var value map[string]json.RawMessage
+				if json.Unmarshal(raw, &value) != nil {
+					unknownPort = true
+				}
 			}
-			if _, ok := expr["redirect"]; ok {
+			if raw, ok := expr["redirect"]; ok {
 				nat = true
+				var value map[string]json.RawMessage
+				if json.Unmarshal(raw, &value) != nil {
+					unknownPort = true
+				}
 			}
 			if _, ok := expr["vmap"]; ok {
-				nat = true
+				// A vmap in a filter-only path is an ordinary verdict map.
+				// A NAT-reachable or unclassified map may jump to NAT rules.
+				if natReachable[key] || (!filterReachable[key] && (!knownChain || info.kind != "filter")) {
+					nat = true
+					unknownPort = true
+				}
 			}
 			// Compatibility targets and transparent proxying may redirect
 			// packets without exposing a directly inspectable NAT statement.
 			if _, ok := expr["xt"]; ok {
 				nat = true
+				unknownPort = true
 			}
 			if _, ok := expr["tproxy"]; ok {
 				nat = true
@@ -302,7 +421,17 @@ func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
 					} `json:"left"`
 					Right json.RawMessage `json:"right"`
 				}
-				if json.Unmarshal(rawMatch, &match) != nil || match.Op != "==" {
+				if json.Unmarshal(rawMatch, &match) != nil {
+					unknownPort = true
+					continue
+				}
+				if match.Left.Payload.Field == "dport" && match.Left.Payload.Protocol != "udp" && match.Left.Payload.Protocol != "tcp" {
+					unknownPort = true
+				}
+				if match.Op != "==" {
+					if match.Left.Payload.Protocol == "udp" && match.Left.Payload.Field == "dport" {
+						unknownPort = true
+					}
 					continue
 				}
 				if match.Left.Payload.Protocol == "tcp" {
@@ -313,22 +442,23 @@ func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
 				}
 				if match.Left.Payload.Protocol == "udp" && match.Left.Payload.Field == "dport" {
 					if ports, ok := nftPortIntervals(match.Right); ok {
-						overlaps := false
+						var intersection [][2]int
 						for _, p := range ports {
-							for _, r := range applicable {
-								if p[0] <= r.end && p[1] >= r.start {
-									overlaps = true
+							for _, r := range possible {
+								lo, hi := max(p[0], r[0]), min(p[1], r[1])
+								if lo <= hi {
+									intersection = append(intersection, [2]int{lo, hi})
 								}
 							}
 						}
-						if !overlaps {
-							safePort = true
-						}
+						possible = intersection
+					} else {
+						unknownPort = true
 					}
 				}
 			}
 		}
-		if nat && !tcpOnly && !safePort {
+		if nat && !tcpOnly && (unknownPort || len(possible) > 0) {
 			return errHoppingNATConflict
 		}
 	}

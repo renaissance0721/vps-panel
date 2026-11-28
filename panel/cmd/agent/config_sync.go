@@ -566,6 +566,8 @@ func desiredStateErrorMessage(err error) string {
 		errSingboxTLSSetup,
 		errSingboxServiceSetup,
 		errHoppingUnsupported,
+		errHoppingLegacyInspect,
+		errHoppingLegacyConflict,
 		errHoppingNATInspect,
 		errHoppingNATConflict,
 		errHoppingConflict,

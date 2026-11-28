@@ -150,6 +150,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Proxy, Mutatio
 		}
 		return Proxy{}, Mutation{}, err
 	}
+	if input.PortHoppingEnabled {
+		if err := listener.HoppingRangeAvailable(ctx, tx, input.ServerID, input.PortHoppingStart, input.PortHoppingEnd, 0); err != nil {
+			if errors.Is(err, listener.ErrConflict) {
+				return Proxy{}, Mutation{}, ErrPortConflict
+			}
+			return Proxy{}, Mutation{}, err
+		}
+	}
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO proxies
 		 (server_id, name, protocol, kernel, listen_family, listen_port, entry_host_mode, entry_host, enabled, config_json, created_at, updated_at, node_role)
@@ -423,6 +431,14 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 			return Proxy{}, storedConfig{}, ErrPortConflict
 		}
 		return Proxy{}, storedConfig{}, err
+	}
+	if config.Hysteria2 != nil && config.Hysteria2.PortHoppingEnabled {
+		if err := listener.HoppingRangeAvailable(ctx, query, value.ServerID, config.Hysteria2.PortHoppingStart, config.Hysteria2.PortHoppingEnd, value.ID); err != nil {
+			if errors.Is(err, listener.ErrConflict) {
+				return Proxy{}, storedConfig{}, ErrPortConflict
+			}
+			return Proxy{}, storedConfig{}, err
+		}
 	}
 	value.Config = publicConfig(config)
 	return value, config, nil

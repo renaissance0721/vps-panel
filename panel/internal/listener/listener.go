@@ -43,6 +43,26 @@ type executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+// HoppingRangeAvailable checks UDP reservations without expanding the range.
+func HoppingRangeAvailable(ctx context.Context, query queryer, serverID int64, start, end int, excludeProxyID int64) error {
+	rows, err := query.QueryContext(ctx, `SELECT 1 FROM server_listener_reservations
+		WHERE server_id = ? AND port BETWEEN ? AND ? AND network IN ('udp','both')
+		AND NOT (resource_type = 'proxy' AND resource_id = ?)
+		UNION ALL SELECT 1 FROM proxies WHERE server_id = ? AND id != ? AND protocol = 'hysteria2'
+		AND json_extract(config_json, '$.hysteria2.port_hopping_enabled') = 1
+		AND json_extract(config_json, '$.hysteria2.port_hopping_start') <= ?
+		AND json_extract(config_json, '$.hysteria2.port_hopping_end') >= ? LIMIT 1`,
+		serverID, start, end, excludeProxyID, serverID, excludeProxyID, end, start)
+	if err != nil {
+		return fmt.Errorf("check hopping range reservations: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return ErrConflict
+	}
+	return rows.Err()
+}
+
 func ListenerAvailable(ctx context.Context, query queryer, serverID int64, port int, network string, options AvailabilityOptions) error {
 	network, err := NormalizeNetwork(network)
 	if err != nil {

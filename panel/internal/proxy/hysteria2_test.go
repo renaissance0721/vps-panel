@@ -194,3 +194,54 @@ func TestHoppingWithExistingRealmNetwork(t *testing.T) {
 		})
 	}
 }
+
+func TestHoppingServiceChecksBothDirections(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	hy := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100}
+	created, _, err := service.Create(t.Context(), hy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := CreateInput{ServerID: serverID, Name: "SS", Protocol: ProtocolShadowsocks, Method: ShadowsocksMethodAES128GCM, ListenPort: 20050, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", Enabled: true, FirstClientName: "first"}
+	if _, _, err = service.Create(t.Context(), ss); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("shadowsocks in range: %v", err)
+	}
+	vless := CreateInput{ServerID: serverID, Name: "VLESS", Protocol: ProtocolVLESS, ListenPort: 20050, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", Enabled: true, Security: SecurityReality, ServerName: "example.com", RealityTarget: "example.com:443", FirstClientName: "first"}
+	if _, _, err = service.Create(t.Context(), vless); err != nil {
+		t.Fatalf("vless in range: %v", err)
+	}
+	ss.ListenPort = 21050
+	ssNode, _, err := service.Create(t.Context(), ss)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, end := 21000, 21100
+	if _, err = service.ValidateUpdate(t.Context(), created.ID, UpdateInput{PortHoppingStart: &start, PortHoppingEnd: &end}); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("validate range update: %v", err)
+	}
+	if _, _, err = service.Update(t.Context(), created.ID, UpdateInput{PortHoppingStart: &start, PortHoppingEnd: &end}); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("range update: %v", err)
+	}
+	port := 20051
+	if _, _, err = service.Update(t.Context(), ssNode.ID, UpdateInput{ListenPort: &port}); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("reverse update: %v", err)
+	}
+	if _, err = service.Delete(t.Context(), ssNode.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = service.Update(t.Context(), created.ID, UpdateInput{PortHoppingStart: &start, PortHoppingEnd: &end}); err != nil {
+		t.Fatalf("released range: %v", err)
+	}
+}
+
+func TestHoppingServiceRejectsExistingShadowsocks(t *testing.T) {
+	_, service, serverID := newTestService(t)
+	ss := CreateInput{ServerID: serverID, Name: "SS", Protocol: ProtocolShadowsocks, Method: ShadowsocksMethodAES128GCM, ListenPort: 20050, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", Enabled: true, FirstClientName: "first"}
+	if _, _, err := service.Create(t.Context(), ss); err != nil {
+		t.Fatal(err)
+	}
+	hy := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100}
+	if _, _, err := service.Create(t.Context(), hy); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("existing shadowsocks conflict: %v", err)
+	}
+}

@@ -50,6 +50,9 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, agentcontrol.ErrSingboxUnsupported) {
 			message = "当前 Agent 不支持 Sing-box Hysteria2，请升级 Agent"
 		}
+		if errors.Is(err, agentcontrol.ErrHysteria2PortHoppingUnsupported) {
+			message = "当前 Agent 不支持 Hysteria2 端口跳跃，请升级 Agent"
+		}
 		if recordErr := s.agents.RecordDesiredStateFailure(r.Context(), agent.ID, agent.ServerID, message); recordErr != nil {
 			log.Printf("record desired state failure for server %d: %v", agent.ServerID, recordErr)
 		}
@@ -57,11 +60,12 @@ func (s *server) getAgentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := agentDesiredStateResponse{
-		Version:               state.Version,
-		ComponentResults:      true,
-		Decommission:          state.Decommission,
-		BlockChinaInbound:     state.BlockChinaInbound,
-		ChinaInboundWhitelist: state.ChinaInboundWhitelist,
+		Version:                 state.Version,
+		ComponentResults:        true,
+		Hysteria2HoppingControl: state.SupportsHopping,
+		Decommission:            state.Decommission,
+		BlockChinaInbound:       state.BlockChinaInbound,
+		ChinaInboundWhitelist:   state.ChinaInboundWhitelist,
 		Xray: agentDesiredXrayState{
 			Enabled:            len(state.Proxies) > 0,
 			Purge:              state.XrayPurge,

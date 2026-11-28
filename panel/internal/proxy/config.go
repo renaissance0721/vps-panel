@@ -192,6 +192,9 @@ func publicConfig(config storedConfig) PublicConfig {
 	if config.Hysteria2 != nil {
 		value.UpMbps, value.DownMbps = config.Hysteria2.UpMbps, config.Hysteria2.DownMbps
 		value.ObfsEnabled = config.Hysteria2.ObfsPassword != ""
+		value.PortHoppingEnabled = config.Hysteria2.PortHoppingEnabled
+		value.PortHoppingStart = config.Hysteria2.PortHoppingStart
+		value.PortHoppingEnd = config.Hysteria2.PortHoppingEnd
 	}
 	if config.TLS != nil {
 		value.TLSMode = config.TLS.Mode

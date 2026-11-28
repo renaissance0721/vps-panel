@@ -24,6 +24,45 @@ func TestHysteria2MihomoFields(t *testing.T) {
 	}
 }
 
+func TestHysteria2MihomoHoppingPorts(t *testing.T) {
+	share := proxystore.ClientShare{Client: proxystore.Client{Password: "client-password"}, Protocol: proxystore.ProtocolHysteria2, DisplayName: "HY2", Address: "node.example.com", Port: 443, ServerName: "tls.example.com", ObfsPassword: "obfs", Hysteria2Ports: "20000-30000"}
+	value, err := renderMihomoProxy(resolvedNodeFromClientShare(share))
+	if err != nil || value.Ports != "20000-30000" || value.Port != 443 || value.Password != share.Password || value.SNI != share.ServerName || value.ObfsPassword != "obfs" {
+		t.Fatalf("Hysteria2 hopping export = %+v, %v", value, err)
+	}
+}
+
+func TestRemoteHysteria2HoppingURIAndMihomo(t *testing.T) {
+	raw := "hysteria2://synthetic%40password@[2001:db8::1]:20000-30000/?sni=tls.example.com&obfs=salamander&obfs-password=synthetic#Original"
+	parsed, err := parseRemoteSubscription([]byte(raw))
+	if err != nil || len(parsed.nodes) != 1 {
+		t.Fatalf("parse hopping URI: %v", err)
+	}
+	node := ResolvedSubscriptionNode{Name: "Renamed", Protocol: "hysteria2", RemoteFormat: "uri", RemotePayload: raw}
+	value, err := renderRemoteMihomo(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := value.Decode(&fields); err != nil || fields["ports"] != "20000-30000" || fields["password"] != "synthetic@password" || fields["sni"] != "tls.example.com" {
+		t.Fatalf("Mihomo hopping fields invalid: %v", err)
+	}
+	uri, err := remoteURI(node)
+	if err != nil || !strings.Contains(uri, "]:20000-30000/") || !strings.HasSuffix(uri, "#Renamed") {
+		t.Fatalf("hopping URI did not retain range: %v", err)
+	}
+	for _, ports := range []string{"0-10", "20-10", "1-65536", "1-5;delete", "1,,2"} {
+		if _, ok := validateRemoteHysteriaPorts(ports); ok {
+			t.Fatalf("accepted invalid port range %q", ports)
+		}
+	}
+	mihomo := ResolvedSubscriptionNode{Name: "Renamed", Protocol: "hysteria2", RemoteFormat: "mihomo", RemotePayload: "name: Old\ntype: hysteria2\nserver: node.example.com\nport: 443\nports: 20000-30000\npassword: synthetic\nsni: tls.example.com\n"}
+	uri, err = remoteURI(mihomo)
+	if err != nil || !strings.Contains(uri, "@node.example.com:20000-30000") {
+		t.Fatalf("Mihomo-to-URI hopping conversion failed: %v", err)
+	}
+}
+
 func TestHysteria2URIAndUnsupportedShadowrocketConfig(t *testing.T) {
 	share := proxystore.ClientShare{Client: proxystore.Client{Password: "secret"}, Protocol: proxystore.ProtocolHysteria2, DisplayName: "HY2", Address: "node.example.com", Port: 443, ServerName: "tls.example.com", URI: "hysteria2://secret@node.example.com:443/?sni=tls.example.com#HY2"}
 	encoded := RenderBase64Subscription(SubscriptionData{Nodes: []proxystore.ClientShare{share}})

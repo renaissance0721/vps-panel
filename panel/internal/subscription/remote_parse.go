@@ -24,6 +24,73 @@ const remoteMaxNodes = 10000
 
 var errRemoteContent = errors.New("远程订阅格式无效")
 
+// Go's generic URL parser rejects Hysteria's multi-port authority. Parse with
+// a temporary numeric port, while retaining the original port list separately.
+func parseRemoteNodeURI(raw string) (*url.URL, string, error) {
+	if parsed, err := url.Parse(raw); err == nil {
+		return parsed, "", nil
+	}
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || remoteProtocol(scheme) != "hysteria2" {
+		return nil, "", errRemoteContent
+	}
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	authority, suffix := rest[:end], rest[end:]
+	userinfo := ""
+	hostport := authority
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		userinfo, hostport = authority[:at+1], authority[at+1:]
+	}
+	host, ports, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return nil, "", errRemoteContent
+	}
+	first, ok := validateRemoteHysteriaPorts(ports)
+	if !ok {
+		return nil, "", errRemoteContent
+	}
+	parsed, err := url.Parse(scheme + "://" + userinfo + net.JoinHostPort(host, strconv.Itoa(first)) + suffix)
+	if err != nil {
+		return nil, "", errRemoteContent
+	}
+	return parsed, ports, nil
+}
+
+func validateRemoteHysteriaPorts(value string) (int, bool) {
+	if value == "" || len(value) > 256 {
+		return 0, false
+	}
+	first := 0
+	for _, part := range strings.Split(value, ",") {
+		bounds := strings.Split(part, "-")
+		if len(bounds) < 1 || len(bounds) > 2 {
+			return 0, false
+		}
+		for _, bound := range bounds {
+			if bound == "" || strings.Trim(bound, "0123456789") != "" {
+				return 0, false
+			}
+		}
+		start, err := strconv.Atoi(bounds[0])
+		if err != nil || start < 1 || start > 65535 {
+			return 0, false
+		}
+		if len(bounds) == 2 {
+			end, err := strconv.Atoi(bounds[1])
+			if err != nil || end < start || end > 65535 {
+				return 0, false
+			}
+		}
+		if first == 0 {
+			first = start
+		}
+	}
+	return first, first != 0
+}
+
 // Payload contains credentials and must be encrypted before persistence; it
 // must never be included in ordinary API responses, logs, or warnings.
 type remoteParsedNode struct {
@@ -95,7 +162,7 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 		if len(result.nodes)+len(result.warnings) >= remoteMaxNodes || len(line) > 32<<10 {
 			return remoteParseResult{}, errRemoteContent
 		}
-		parsed, err := url.Parse(line)
+		parsed, ports, err := parseRemoteNodeURI(line)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点格式无效", index+1))
@@ -110,6 +177,9 @@ func parseRemoteSubscription(body []byte) (remoteParseResult, error) {
 			result.invalid = true
 			result.warnings = append(result.warnings, fmt.Sprintf("第 %d 行节点缺少必要连接字段", index+1))
 			continue
+		}
+		if ports != "" {
+			parsed.Host = net.JoinHostPort(parsed.Hostname(), ports)
 		}
 		name := strings.TrimSpace(parsed.Fragment)
 		if !remoteDisplayName(name) {

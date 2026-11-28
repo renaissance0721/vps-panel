@@ -42,11 +42,15 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
   const proxyEntryHost = ref('')
   const proxyEnabled = ref(true)
   const proxyProtocol = ref<ProxyProtocol>('vless')
+  const proxyKernel = ref<'xray' | 'sing-box'>('xray')
   const proxyMethod = ref<ShadowsocksMethod>('2022-blake3-aes-128-gcm')
   const proxyUpMbps = ref(0)
   const proxyDownMbps = ref(0)
   const proxyObfsEnabled = ref(false)
   const proxyObfsPassword = ref('')
+  const proxyPortHoppingEnabled = ref(false)
+  const proxyPortHoppingStart = ref(20000)
+  const proxyPortHoppingEnd = ref(30000)
   const originalObfsEnabled = ref(false)
   const proxySecurity = ref<'tls' | 'reality'>('reality')
   const proxyTLSMode = ref<'acme' | 'manual'>('acme')
@@ -73,6 +77,9 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
 	const selectedServerIPv6Status = computed(() => serverIPv6StatusMessage(selectedServer.value))
   const proxyVLESSRealitySupported = computed(() => selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSReality))
   const proxyHysteria2Supported = computed(() => selectedServer.value !== null && agentDeclaresCapability(selectedServer.value, agentCapabilities.proxyHysteria2))
+  const proxyPortHoppingSupported = computed(() => selectedServer.value !== null &&
+    agentDeclaresCapability(selectedServer.value, agentCapabilities.proxyHysteria2PortHopping) &&
+    agentDeclaresCapability(selectedServer.value, proxyListenFamily.value === 'ipv6' ? agentCapabilities.proxyHysteria2HoppingIPv6 : agentCapabilities.proxyHysteria2HoppingIPv4))
   const proxyTLSACMESupported = computed(() => proxyProtocol.value === 'hysteria2' ? proxyHysteria2Supported.value : selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSACME))
   const proxyTLSManualSupported = computed(() => proxyProtocol.value === 'hysteria2' ? proxyHysteria2Supported.value : selectedServer.value === null || agentSupportsCapability(selectedServer.value, agentCapabilities.proxyVLESSTLSManual))
   const proxyVLESSSupported = computed(() => proxyVLESSRealitySupported.value || proxyTLSACMESupported.value || proxyTLSManualSupported.value)
@@ -84,10 +91,15 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyProtocol.value, proxyMethod.value, proxySecurity.value, proxyTLSMode.value,
     proxyServerName.value, proxyCertificate.value, proxyPrivateKey.value, proxyRealityTarget.value,
     proxyUpMbps.value, proxyDownMbps.value, proxyObfsEnabled.value, proxyObfsPassword.value,
+    proxyPortHoppingEnabled.value, proxyPortHoppingStart.value, proxyPortHoppingEnd.value,
   ]))
   const proxyRoleOnlyUpdate = computed(() => proxyFormMode.value === 'edit' && runtimeFields.value === originalRuntimeFields.value)
   const proxyCapabilityWarning = computed(() => {
-    if (proxyProtocol.value === 'hysteria2') return proxyHysteria2Supported.value ? '' : '当前 Agent 不支持 Hysteria2，请先升级 Agent'
+    if (proxyProtocol.value === 'hysteria2') {
+      if (!proxyHysteria2Supported.value) return '当前 Agent 不支持 Hysteria2，请先升级 Agent'
+      if (proxyPortHoppingEnabled.value && !proxyPortHoppingSupported.value) return '当前 Agent 不支持端口跳跃，请先升级 Agent'
+      return ''
+    }
     if (proxyProtocol.value === 'shadowsocks') {
       return proxyShadowsocksSupported.value ? '' : '当前 Agent 不支持 Shadowsocks'
     }
@@ -156,10 +168,14 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEntryHost.value = value.entry_host
     proxyEnabled.value = value.enabled
     proxyProtocol.value = value.protocol
+    proxyKernel.value = value.kernel
     proxyMethod.value = value.config.method ?? '2022-blake3-aes-128-gcm'
     proxyUpMbps.value = value.config.up_mbps ?? 0
     proxyDownMbps.value = value.config.down_mbps ?? 0
     proxyObfsEnabled.value = value.config.obfs_enabled ?? false
+    proxyPortHoppingEnabled.value = value.config.port_hopping_enabled ?? false
+    proxyPortHoppingStart.value = value.config.port_hopping_start ?? 20000
+    proxyPortHoppingEnd.value = value.config.port_hopping_end ?? 30000
     originalObfsEnabled.value = proxyObfsEnabled.value
     proxyObfsPassword.value = ''
     proxySecurity.value = value.config.security ?? 'reality'
@@ -183,10 +199,14 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEntryHost.value = ''
     proxyEnabled.value = true
     proxyProtocol.value = 'vless'
+    proxyKernel.value = 'xray'
     proxyMethod.value = '2022-blake3-aes-128-gcm'
     proxyUpMbps.value = 0
     proxyDownMbps.value = 0
     proxyObfsEnabled.value = false
+    proxyPortHoppingEnabled.value = false
+    proxyPortHoppingStart.value = 20000
+    proxyPortHoppingEnd.value = 30000
     originalObfsEnabled.value = false
     proxyObfsPassword.value = ''
     proxySecurity.value = 'reality'
@@ -214,6 +234,14 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     }
     if (!Number.isInteger(proxyPort.value) || proxyPort.value < 1 || proxyPort.value > 65535) {
       error.value = '监听端口必须在 1–65535 之间'
+      return
+    }
+    if (proxyProtocol.value === 'hysteria2' && proxyPortHoppingEnabled.value &&
+        (!Number.isInteger(proxyPortHoppingStart.value) || !Number.isInteger(proxyPortHoppingEnd.value) ||
+         proxyPortHoppingStart.value < 1 || proxyPortHoppingEnd.value > 65535 ||
+         proxyPortHoppingStart.value > proxyPortHoppingEnd.value ||
+         (proxyPort.value >= proxyPortHoppingStart.value && proxyPort.value <= proxyPortHoppingEnd.value))) {
+      error.value = '跳跃范围必须在 1–65535 之间，起始端口不大于结束端口，且不能包含基础监听端口'
       return
     }
     if (proxyFormMode.value === 'create' && proxyServerID.value === null) {
@@ -270,6 +298,9 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
           kernel: 'sing-box', security: 'tls', server_name: proxyServerName.value, tls_mode: proxyTLSMode.value,
           ...(proxyTLSMode.value === 'manual' ? { certificate: proxyCertificate.value, private_key: proxyPrivateKey.value } : {}),
           up_mbps: proxyUpMbps.value, down_mbps: proxyDownMbps.value,
+          port_hopping_enabled: proxyPortHoppingEnabled.value,
+          port_hopping_start: proxyPortHoppingEnabled.value ? proxyPortHoppingStart.value : 0,
+          port_hopping_end: proxyPortHoppingEnabled.value ? proxyPortHoppingEnd.value : 0,
           ...(!proxyObfsEnabled.value ? { obfs_password: '' } : proxyObfsPassword.value ? { obfs_password: proxyObfsPassword.value } : {}),
         } : {}
       let value: ProxyRecord
@@ -315,11 +346,16 @@ export function useProxyForm(props: { servers: ServerOption[] }, selectedProxy: 
     proxyEntryHost,
     proxyEnabled,
     proxyProtocol,
+    proxyKernel,
     proxyMethod,
     proxyUpMbps,
     proxyDownMbps,
     proxyObfsEnabled,
     proxyObfsPassword,
+    proxyPortHoppingEnabled,
+    proxyPortHoppingStart,
+    proxyPortHoppingEnd,
+    proxyPortHoppingSupported,
     proxyHysteria2Supported,
     proxySecurity,
     proxyTLSMode,

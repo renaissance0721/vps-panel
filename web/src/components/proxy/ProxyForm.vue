@@ -29,6 +29,7 @@ const props = defineProps<{
     | 'proxyServerID'
     | 'servers'
     | 'proxyProtocol'
+    | 'proxyKernel'
     | 'proxyPort'
 	| 'proxyListenFamily'
     | 'proxyEntryHostMode'
@@ -55,6 +56,10 @@ const props = defineProps<{
     | 'proxyDownMbps'
     | 'proxyObfsEnabled'
     | 'proxyObfsPassword'
+    | 'proxyPortHoppingEnabled'
+    | 'proxyPortHoppingStart'
+    | 'proxyPortHoppingEnd'
+    | 'proxyPortHoppingSupported'
     | 'proxyCapabilityWarning'
   >
 }>()
@@ -69,6 +74,7 @@ const {
   proxyServerID,
   servers,
   proxyProtocol,
+  proxyKernel,
   proxyPort,
 	proxyListenFamily,
   proxyEntryHostMode,
@@ -95,6 +101,10 @@ const {
   proxyDownMbps,
   proxyObfsEnabled,
   proxyObfsPassword,
+  proxyPortHoppingEnabled,
+  proxyPortHoppingStart,
+  proxyPortHoppingEnd,
+  proxyPortHoppingSupported,
   proxyCapabilityWarning,
 } = toRefs(props.model)
 </script>
@@ -118,7 +128,7 @@ const {
 			</select>
 		</label>
 		<div v-else class="fixed-fields"><span>协议：{{ proxyProtocol === 'vless' ? 'VLESS' : proxyProtocol === 'hysteria2' ? 'Hysteria2' : 'Shadowsocks' }}</span></div>
-		<div class="fixed-fields"><span>内核：{{ proxyProtocol === 'hysteria2' ? 'Sing-box' : 'Xray' }}</span></div>
+		<div class="fixed-fields"><span>内核：{{ (proxyFormMode === 'edit' ? proxyKernel === 'sing-box' : proxyProtocol === 'hysteria2') ? 'Sing-box' : 'Xray' }}</span></div>
 		<label>
 		  <span>监听 IP 类型</span>
 		  <select v-model="proxyListenFamily" class="settings-input" @change="onProxyFamilyChange">
@@ -154,10 +164,19 @@ const {
 		  <n-alert type="info">Hysteria2 使用 UDP。NAT 服务器还需要服务商转发对应的公网 UDP 端口；本地启动成功不代表公网可达。</n-alert>
 		  <label><span>证书域名 / SNI</span><n-input v-model:value="proxyServerName" placeholder="例如：hy2.example.com" /></label>
 		  <TLSForm :model="model" />
-		  <label><span>上传带宽（Mbps，0 为不限）</span><input v-model.number="proxyUpMbps" class="settings-input" type="number" min="0" /></label>
-		  <label><span>下载带宽（Mbps，0 为不限）</span><input v-model.number="proxyDownMbps" class="settings-input" type="number" min="0" /></label>
+		  <label><span>上传带宽参数（Mbps，0 为不设置）</span><input v-model.number="proxyUpMbps" class="settings-input" type="number" min="0" /></label>
+		  <label><span>下载带宽参数（Mbps，0 为不设置）</span><input v-model.number="proxyDownMbps" class="settings-input" type="number" min="0" /></label>
+		  <p>带宽参数用于 Hysteria2 拥塞控制，不是 VPS 网卡带宽上限。</p>
 		  <div class="switch-row"><span>Salamander 混淆</span><n-switch v-model:value="proxyObfsEnabled" /></div>
 		  <label v-if="proxyObfsEnabled"><span>混淆密码</span><n-input v-model:value="proxyObfsPassword" type="password" show-password-on="click" :placeholder="proxyFormMode === 'edit' ? '留空保留现有密码' : '填写混淆密码'" /></label>
+		  <div class="switch-row"><span>UDP 端口跳跃</span><n-switch v-model:value="proxyPortHoppingEnabled" :disabled="!proxyPortHoppingSupported && !proxyPortHoppingEnabled" /></div>
+		  <template v-if="proxyPortHoppingEnabled">
+		    <p>基础监听端口：{{ proxyPort }}/UDP</p>
+		    <label><span>跳跃起始端口</span><input v-model.number="proxyPortHoppingStart" class="settings-input" type="number" min="1" max="65535" /></label>
+		    <label><span>跳跃结束端口</span><input v-model.number="proxyPortHoppingEnd" class="settings-input" type="number" min="1" max="65535" /></label>
+		    <n-alert type="warning">请在云厂商安全组和其他主机防火墙中开放整个 UDP 范围；Agent 无法自动配置云安全组。</n-alert>
+		  </template>
+		  <p v-if="!proxyPortHoppingSupported">当前 Agent 未声明端口跳跃能力。</p>
 		</template>
 		<ShadowsocksForm v-else :model="model" />
 		<n-alert v-if="proxyCapabilityWarning" type="warning">{{ proxyCapabilityWarning }}</n-alert>

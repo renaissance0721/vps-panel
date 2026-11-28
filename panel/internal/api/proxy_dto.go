@@ -7,50 +7,56 @@ import (
 )
 
 type createProxyRequest struct {
-	NodeRole          string `json:"node_role"`
-	ServerID          int64  `json:"server_id"`
-	Name              string `json:"name"`
-	ListenPort        int    `json:"listen_port"`
-	ListenFamily      string `json:"listen_family"`
-	EntryHostMode     string `json:"entry_host_mode"`
-	EntryHost         string `json:"entry_host"`
-	Enabled           *bool  `json:"enabled"`
-	Security          string `json:"security"`
-	TLSMode           string `json:"tls_mode"`
-	ServerName        string `json:"server_name"`
-	Certificate       string `json:"certificate"`
-	PrivateKey        string `json:"private_key"`
-	RealityTarget     string `json:"reality_target"`
-	FirstClientName   string `json:"first_client_name"`
-	FirstClientUDP443 bool   `json:"first_client_udp443"`
-	Protocol          string `json:"protocol"`
-	Kernel            string `json:"kernel"`
-	UpMbps            int    `json:"up_mbps"`
-	DownMbps          int    `json:"down_mbps"`
-	ObfsPassword      string `json:"obfs_password"`
-	Method            string `json:"method"`
+	NodeRole           string `json:"node_role"`
+	ServerID           int64  `json:"server_id"`
+	Name               string `json:"name"`
+	ListenPort         int    `json:"listen_port"`
+	ListenFamily       string `json:"listen_family"`
+	EntryHostMode      string `json:"entry_host_mode"`
+	EntryHost          string `json:"entry_host"`
+	Enabled            *bool  `json:"enabled"`
+	Security           string `json:"security"`
+	TLSMode            string `json:"tls_mode"`
+	ServerName         string `json:"server_name"`
+	Certificate        string `json:"certificate"`
+	PrivateKey         string `json:"private_key"`
+	RealityTarget      string `json:"reality_target"`
+	FirstClientName    string `json:"first_client_name"`
+	FirstClientUDP443  bool   `json:"first_client_udp443"`
+	Protocol           string `json:"protocol"`
+	Kernel             string `json:"kernel"`
+	UpMbps             int    `json:"up_mbps"`
+	DownMbps           int    `json:"down_mbps"`
+	ObfsPassword       string `json:"obfs_password"`
+	PortHoppingEnabled bool   `json:"port_hopping_enabled"`
+	PortHoppingStart   int    `json:"port_hopping_start"`
+	PortHoppingEnd     int    `json:"port_hopping_end"`
+	Method             string `json:"method"`
 }
 
 type updateProxyRequest struct {
-	NodeRole      *string `json:"node_role"`
-	Name          *string `json:"name"`
-	ListenPort    *int    `json:"listen_port"`
-	ListenFamily  *string `json:"listen_family"`
-	EntryHostMode *string `json:"entry_host_mode"`
-	EntryHost     *string `json:"entry_host"`
-	Enabled       *bool   `json:"enabled"`
-	Security      *string `json:"security"`
-	TLSMode       *string `json:"tls_mode"`
-	ServerName    *string `json:"server_name"`
-	Certificate   *string `json:"certificate"`
-	PrivateKey    *string `json:"private_key"`
-	RealityTarget *string `json:"reality_target"`
-	Protocol      *string `json:"protocol"`
-	Kernel        *string `json:"kernel"`
-	UpMbps        *int    `json:"up_mbps"`
-	DownMbps      *int    `json:"down_mbps"`
-	ObfsPassword  *string `json:"obfs_password"`
-	Method        *string `json:"method"`
+	NodeRole           *string `json:"node_role"`
+	Name               *string `json:"name"`
+	ListenPort         *int    `json:"listen_port"`
+	ListenFamily       *string `json:"listen_family"`
+	EntryHostMode      *string `json:"entry_host_mode"`
+	EntryHost          *string `json:"entry_host"`
+	Enabled            *bool   `json:"enabled"`
+	Security           *string `json:"security"`
+	TLSMode            *string `json:"tls_mode"`
+	ServerName         *string `json:"server_name"`
+	Certificate        *string `json:"certificate"`
+	PrivateKey         *string `json:"private_key"`
+	RealityTarget      *string `json:"reality_target"`
+	Protocol           *string `json:"protocol"`
+	Kernel             *string `json:"kernel"`
+	UpMbps             *int    `json:"up_mbps"`
+	DownMbps           *int    `json:"down_mbps"`
+	ObfsPassword       *string `json:"obfs_password"`
+	PortHoppingEnabled *bool   `json:"port_hopping_enabled"`
+	PortHoppingStart   *int    `json:"port_hopping_start"`
+	PortHoppingEnd     *int    `json:"port_hopping_end"`
+	Method             *string `json:"method"`
 }
 
 type proxyResponse struct {
@@ -91,6 +97,9 @@ type proxyConfigResponse struct {
 	UpMbps                   int    `json:"up_mbps,omitempty"`
 	DownMbps                 int    `json:"down_mbps,omitempty"`
 	ObfsEnabled              bool   `json:"obfs_enabled,omitempty"`
+	PortHoppingEnabled       bool   `json:"port_hopping_enabled,omitempty"`
+	PortHoppingStart         int    `json:"port_hopping_start,omitempty"`
+	PortHoppingEnd           int    `json:"port_hopping_end,omitempty"`
 }
 
 func toProxyResponse(value proxystore.Proxy) proxyResponse {
@@ -109,6 +118,7 @@ func toProxyResponse(value proxystore.Proxy) proxyResponse {
 			TLSCertificateConfigured: value.Config.TLSCertificateConfigured,
 			RealityTarget:            value.Config.RealityTarget, Method: value.Config.Method, Network: value.Config.Network,
 			UpMbps: value.Config.UpMbps, DownMbps: value.Config.DownMbps, ObfsEnabled: value.Config.ObfsEnabled,
+			PortHoppingEnabled: value.Config.PortHoppingEnabled, PortHoppingStart: value.Config.PortHoppingStart, PortHoppingEnd: value.Config.PortHoppingEnd,
 		},
 	}
 	if value.Clients != nil {

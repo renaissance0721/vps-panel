@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -345,7 +346,7 @@ func safeRemoteNodeName(node remoteParsedNode) string {
 	}
 	containsSecret := func(value string) bool { return value != "" && strings.Contains(name, value) }
 	if node.format == "uri" {
-		parsed, err := url.Parse(node.payload)
+		parsed, _, err := parseRemoteNodeURI(node.payload)
 		if err != nil {
 			return "节点名称已隐藏"
 		}
@@ -437,7 +438,7 @@ func safeRemoteNodeNames(nodes []remoteParsedNode, address string) []string {
 	failed := false
 	for _, node := range nodes {
 		if node.format == "uri" {
-			parsed, err := url.Parse(node.payload)
+			parsed, _, err := parseRemoteNodeURI(node.payload)
 			if err != nil {
 				failed = true
 				break
@@ -872,9 +873,12 @@ func (s *RemoteService) reconcileRemoteIdentities(ctx context.Context, tx *sql.T
 		node.name, node.payload = plaintext[2*i], plaintext[2*i+1]
 		switch node.format {
 		case "uri":
-			value, err := url.Parse(node.payload)
+			value, ports, err := parseRemoteNodeURI(node.payload)
 			if err != nil {
 				return errRemoteContent
+			}
+			if ports != "" {
+				value.Host = net.JoinHostPort(value.Hostname(), ports)
 			}
 			value.Fragment, value.RawFragment = "", ""
 			node.connection = remoteDigest([]byte(value.String()))

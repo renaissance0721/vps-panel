@@ -72,6 +72,23 @@ func TestSingboxRenderAndValidation(t *testing.T) {
 	}
 }
 
+func TestSingboxPortHoppingDoesNotChangeInboundSchema(t *testing.T) {
+	proxy := testSingboxProxy(t, 1, 443)
+	base, err := renderManagedSingboxConfig([]desiredProxy{proxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.Hysteria2.PortHoppingEnabled = true
+	proxy.Hysteria2.PortHoppingStart, proxy.Hysteria2.PortHoppingEnd = 20000, 30000
+	hopping, err := renderManagedSingboxConfig([]desiredProxy{proxy})
+	if err != nil || !bytes.Equal(base, hopping) {
+		t.Fatalf("port hopping changed Sing-box inbound schema: %v", err)
+	}
+	if strings.Contains(string(hopping), "server_ports") || strings.Contains(string(hopping), "hop_interval") {
+		t.Fatal("client-only hopping fields leaked into Sing-box inbound")
+	}
+}
+
 type testSingboxService struct {
 	active      bool
 	failRestart bool

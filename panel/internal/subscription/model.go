@@ -467,6 +467,7 @@ type ResolvedSubscriptionNode struct {
 	ShadowsocksPassword string
 	Hysteria2Password   string `json:"-"`
 	Hysteria2Obfs       string `json:"-"`
+	Hysteria2Ports      string `json:"-"`
 	SOCKSUsername       string `json:"-"`
 	SOCKSPassword       string `json:"-"`
 	URI                 string

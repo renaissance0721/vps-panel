@@ -100,6 +100,10 @@ Panel 页面使用的 HTTPS 与代理节点的 TLS 证书分别管理。
 
 创建代理时选择 Hysteria2，内核自动使用 Sing-box。填写 UDP 监听端口、证书域名和客户端名称；可选设置带宽和 Salamander 混淆。Agent 首次应用时下载校验过的官方稳定版 Sing-box，并独立管理其服务。目标 Agent 必须声明 `proxy.hysteria2.singbox` 能力，旧 Agent 需要升级。
 
+可选的 UDP 端口跳跃使用独立的 nftables NAT 表，将选择的端口范围重定向到基础监听端口。基础端口不能位于该范围内；Panel 会检查受管端口冲突。此功能需要 Agent 声明端口跳跃及相应 IP 版本的能力、主机支持 inet NAT 并允许 Agent 管理 nftables；能力声明不保证运行环境可用。Agent 报告规则状态，实际公网连通仍需验证。
+
+分享链接和 Mihomo 配置包含跳跃端口范围；端口切换间隔由客户端决定。启用时必须自行在云服务商安全组、上游 NAT 和其他主机防火墙中开放或转发整个 UDP 范围，Agent 无法代替这些设置。
+
 请在主机和服务商侧放行或转发相应 UDP 端口；NAT VPS 还需确认公网 UDP 映射。自动签发证书另外需要域名解析到该服务器并开放公网 TCP 80。页面显示的应用成功不等于公网连通，可从外部网络导入客户端链接测试。
 
 应用失败时先查看服务器详情中的 Sing-box 组件结果，再核对证书有效期、域名、UDP 监听端口和 Agent 日志。systemd 环境可在目标服务器执行 `journalctl -u vps-panel-sing-box` 查看服务日志；OpenRC 环境请查看系统服务日志。

@@ -64,6 +64,10 @@ proxy.vless.tls.acme
 proxy.vless.tls.manual
 proxy.vless.reality
 proxy.shadowsocks
+proxy.hysteria2.singbox
+proxy.hysteria2.port_hopping
+proxy.hysteria2.port_hopping.ipv4
+proxy.hysteria2.port_hopping.ipv6
 relay.realm
 outbound_preference
 metrics
@@ -79,6 +83,8 @@ probe.icmp
 ```
 
 Unknown but syntactically valid capabilities are retained. For an explicitly identified API v1 Agent, the Panel uses declared capabilities to control Proxy and Relay creation or enablement, IPv4/IPv6 outbound preference, and diagnostics UI availability. Disabling and restoring outbound preference to `auto` remain available. Deletion still follows resource-reference checks; deleting the last Proxy or Relay row additionally requires explicit `managed_runtime_purge` support when the Server has a nonempty stored Agent version. The current deletion handlers skip this capability guard when that version is empty; this exception does not establish remote cleanup support. Legacy Agents keep the previous compatibility behavior for ordinary configuration capabilities, but are not assumed to support managed cleanup.
+
+`proxy.hysteria2.port_hopping` and its `ipv4` / `ipv6` variants declare implementation support, not the availability of nftables, NAT kernel support, firewall privileges, or external port forwarding. The Panel requires both the general and selected family capability before enabling a hopping configuration. The Agent reports runtime failure separately through `hy2_port_hopping`; a successful configuration result must confirm that component. Hopping settings are additive fields on the Hysteria2 desired configuration; old configurations omit them. `hysteria2_hopping_control` tells a compatible Agent that the Panel accepts this component result.
 
 `firewall.cn_block` is intentionally stricter: an Agent must identify as API v1 and explicitly declare the capability before the Panel allows the Server setting to change from disabled to enabled. Legacy Agents are not assumed to support it. Disabling the setting remains available.
 

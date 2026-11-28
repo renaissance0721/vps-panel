@@ -46,6 +46,7 @@ var (
 	ErrInvalidProtocol                = errors.New("protocol must be vless, shadowsocks, or hysteria2")
 	ErrInvalidKernel                  = errors.New("kernel does not support the selected protocol")
 	ErrInvalidHysteria2               = errors.New("invalid Hysteria2 settings")
+	ErrInvalidPortHopping             = errors.New("invalid Hysteria2 port hopping range")
 	ErrInvalidShadowsocksMethod       = errors.New("unsupported Shadowsocks method")
 	ErrImmutableProtocol              = errors.New("proxy protocol cannot be changed")
 	ErrImmutableShadowsocksMethod     = errors.New("Shadowsocks method cannot be changed")
@@ -110,6 +111,9 @@ type PublicConfig struct {
 	UpMbps                   int
 	DownMbps                 int
 	ObfsEnabled              bool
+	PortHoppingEnabled       bool
+	PortHoppingStart         int
+	PortHoppingEnd           int
 }
 
 type ClientSummary struct {
@@ -171,50 +175,56 @@ type Client struct {
 }
 
 type CreateInput struct {
-	NodeRole          string
-	ServerID          int64
-	Name              string
-	ListenPort        int
-	ListenFamily      string
-	EntryHostMode     string
-	EntryHost         string
-	Enabled           bool
-	Security          string
-	TLSMode           string
-	ServerName        string
-	Certificate       string
-	PrivateKey        string
-	RealityTarget     string
-	FirstClientName   string
-	FirstClientUDP443 bool
-	Protocol          string
-	Kernel            string
-	UpMbps            int
-	DownMbps          int
-	ObfsPassword      string
-	Method            string
+	NodeRole           string
+	ServerID           int64
+	Name               string
+	ListenPort         int
+	ListenFamily       string
+	EntryHostMode      string
+	EntryHost          string
+	Enabled            bool
+	Security           string
+	TLSMode            string
+	ServerName         string
+	Certificate        string
+	PrivateKey         string
+	RealityTarget      string
+	FirstClientName    string
+	FirstClientUDP443  bool
+	Protocol           string
+	Kernel             string
+	UpMbps             int
+	DownMbps           int
+	ObfsPassword       string
+	PortHoppingEnabled bool
+	PortHoppingStart   int
+	PortHoppingEnd     int
+	Method             string
 }
 
 type UpdateInput struct {
-	NodeRole      *string
-	Name          *string
-	ListenPort    *int
-	ListenFamily  *string
-	EntryHostMode *string
-	EntryHost     *string
-	Enabled       *bool
-	Security      *string
-	TLSMode       *string
-	ServerName    *string
-	Certificate   *string
-	PrivateKey    *string
-	RealityTarget *string
-	Protocol      *string
-	Kernel        *string
-	UpMbps        *int
-	DownMbps      *int
-	ObfsPassword  *string
-	Method        *string
+	NodeRole           *string
+	Name               *string
+	ListenPort         *int
+	ListenFamily       *string
+	EntryHostMode      *string
+	EntryHost          *string
+	Enabled            *bool
+	Security           *string
+	TLSMode            *string
+	ServerName         *string
+	Certificate        *string
+	PrivateKey         *string
+	RealityTarget      *string
+	Protocol           *string
+	Kernel             *string
+	UpMbps             *int
+	DownMbps           *int
+	ObfsPassword       *string
+	PortHoppingEnabled *bool
+	PortHoppingStart   *int
+	PortHoppingEnd     *int
+	Method             *string
 }
 
 type ClientCreateInput struct {
@@ -274,9 +284,12 @@ type storedConfig struct {
 }
 
 type storedHysteria2 struct {
-	UpMbps       int    `json:"up_mbps,omitempty"`
-	DownMbps     int    `json:"down_mbps,omitempty"`
-	ObfsPassword string `json:"obfs_password,omitempty"`
+	UpMbps             int    `json:"up_mbps,omitempty"`
+	DownMbps           int    `json:"down_mbps,omitempty"`
+	ObfsPassword       string `json:"obfs_password,omitempty"`
+	PortHoppingEnabled bool   `json:"port_hopping_enabled,omitempty"`
+	PortHoppingStart   int    `json:"port_hopping_start,omitempty"`
+	PortHoppingEnd     int    `json:"port_hopping_end,omitempty"`
 }
 
 type storedCredential struct {

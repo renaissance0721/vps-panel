@@ -31,14 +31,15 @@ const (
 )
 
 type desiredState struct {
-	Version               int64                `json:"version"`
-	ComponentResults      bool                 `json:"component_results"`
-	Decommission          bool                 `json:"decommission"`
-	BlockChinaInbound     bool                 `json:"block_china_inbound"`
-	ChinaInboundWhitelist []string             `json:"china_inbound_whitelist"`
-	Xray                  desiredXrayState     `json:"xray"`
-	Singbox               *desiredSingboxState `json:"singbox,omitempty"`
-	Realm                 desiredRealmState    `json:"realm"`
+	Version                 int64                `json:"version"`
+	ComponentResults        bool                 `json:"component_results"`
+	Hysteria2HoppingControl bool                 `json:"hysteria2_hopping_control"`
+	Decommission            bool                 `json:"decommission"`
+	BlockChinaInbound       bool                 `json:"block_china_inbound"`
+	ChinaInboundWhitelist   []string             `json:"china_inbound_whitelist"`
+	Xray                    desiredXrayState     `json:"xray"`
+	Singbox                 *desiredSingboxState `json:"singbox,omitempty"`
+	Realm                   desiredRealmState    `json:"realm"`
 }
 
 type desiredSingboxState struct {
@@ -71,9 +72,12 @@ type desiredProxy struct {
 }
 
 type desiredHysteria2 struct {
-	UpMbps       int    `json:"up_mbps,omitempty"`
-	DownMbps     int    `json:"down_mbps,omitempty"`
-	ObfsPassword string `json:"obfs_password,omitempty"`
+	UpMbps             int    `json:"up_mbps,omitempty"`
+	DownMbps           int    `json:"down_mbps,omitempty"`
+	ObfsPassword       string `json:"obfs_password,omitempty"`
+	PortHoppingEnabled bool   `json:"port_hopping_enabled,omitempty"`
+	PortHoppingStart   int    `json:"port_hopping_start,omitempty"`
+	PortHoppingEnd     int    `json:"port_hopping_end,omitempty"`
 }
 
 type desiredShadowsocks struct {
@@ -130,6 +134,7 @@ type configSynchronizer struct {
 	applyDecommission     func(context.Context, desiredState) error
 	prepareSelfUninstall  func() (*preparedSelfUninstall, error)
 	renewCertificates     func(context.Context) error
+	refreshHopping        func(context.Context, desiredState) error
 	diagnoseState         func(context.Context, desiredState) []diagnostic.Check
 	chinaFirewall         *chinaInboundFirewall
 	now                   func() time.Time
@@ -152,22 +157,37 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 	singboxACME.certDir = managedSingboxACMECertDir
 	singboxACME.homeDir = "/var/lib/vps-panel/acme-singbox"
 	singbox := newSingboxManager(singboxACME)
+	hopping := newHY2HoppingManager()
 	runner := newAgentDiagnosticRunner(xray, realm)
 	var synchronizer *configSynchronizer
 	synchronizer = &configSynchronizer{config: value, client: client, renewCertificates: func(ctx context.Context) error {
 		return errors.Join(xray.renewCertificates(ctx), singbox.renewCertificates(ctx))
+	}, refreshHopping: func(ctx context.Context, state desiredState) error {
+		var proxies []desiredProxy
+		if state.Singbox != nil {
+			proxies = state.Singbox.Proxies
+		}
+		rules, err := hy2HoppingRules(proxies)
+		if err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			for _, proxy := range state.Xray.Proxies {
+				if proxy.Port >= rule.start && proxy.Port <= rule.end {
+					return errHoppingConflict
+				}
+			}
+			for _, relay := range state.Realm.Relays {
+				if relay.ListenPort >= rule.start && relay.ListenPort <= rule.end {
+					return errHoppingConflict
+				}
+			}
+		}
+		return hopping.apply(ctx, rules)
 	}, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
 		var err error
 		synchronizer.components, err = applyManagedComponents(ctx, state, xray.apply, realm.apply, chinaFirewall)
-		if state.Singbox != nil {
-			singboxErr := singbox.apply(ctx, *state.Singbox)
-			synchronizer.components["singbox"] = "success"
-			if singboxErr != nil {
-				synchronizer.components["singbox"] = "failed"
-			}
-			err = errors.Join(err, singboxErr)
-		}
-		return err
+		return errors.Join(err, applySingboxAndHopping(ctx, state, singbox, synchronizer.refreshHopping, synchronizer.components))
 	}, applyDecommission: func(ctx context.Context, state desiredState) error {
 		if state.BlockChinaInbound || state.Xray.Enabled || !state.Xray.Purge || len(state.Xray.Proxies) != 0 ||
 			state.Realm.Enabled || !state.Realm.Purge || len(state.Realm.Relays) != 0 {
@@ -177,6 +197,9 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 			return err
 		}
 		if err := realm.purge(ctx); err != nil {
+			return err
+		}
+		if err := hopping.apply(ctx, nil); err != nil {
 			return err
 		}
 		if err := singbox.purge(ctx); err != nil {
@@ -197,6 +220,55 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 		return nil
 	}}
 	return synchronizer
+}
+
+func applySingboxAndHopping(ctx context.Context, state desiredState, singbox *singboxManager, refresh func(context.Context, desiredState) error, components map[string]string) error {
+	var previous []byte
+	var hadPrevious bool
+	var previousDomains []string
+	if state.Hysteria2HoppingControl && state.Singbox != nil {
+		var err error
+		previous, hadPrevious, err = readOptionalFile(singbox.configPath)
+		if err != nil {
+			components["singbox"], components["hy2_port_hopping"] = "failed", "unknown"
+			return fmt.Errorf("%w: read previous configuration", errSingboxConfigWrite)
+		}
+		previousDomains = append([]string(nil), singbox.domains...)
+	}
+	if state.Singbox != nil {
+		if err := singbox.apply(ctx, *state.Singbox); err != nil {
+			components["singbox"] = "failed"
+			if state.Hysteria2HoppingControl {
+				components["hy2_port_hopping"] = "unknown"
+			}
+			return err
+		}
+		components["singbox"] = "success"
+	}
+	if !state.Hysteria2HoppingControl {
+		return nil
+	}
+	if err := refresh(ctx, state); err != nil {
+		components["hy2_port_hopping"] = "failed"
+		if errors.Is(err, errHoppingUnsupported) {
+			components["hy2_port_hopping"] = "unsupported"
+		}
+		if state.Singbox != nil {
+			current, exists, readErr := readOptionalFile(singbox.configPath)
+			if readErr != nil {
+				components["singbox"] = "failed"
+				return errors.Join(err, errSingboxConfigWrite)
+			}
+			if exists != hadPrevious || !bytes.Equal(previous, current) {
+				err = singbox.rollback(ctx, previous, hadPrevious, err)
+				singbox.domains = previousDomains
+				components["singbox"] = "failed"
+			}
+		}
+		return err
+	}
+	components["hy2_port_hopping"] = "success"
+	return nil
 }
 
 func applyManagedComponents(ctx context.Context, state desiredState, applyXray func(context.Context, desiredState) error, applyRealm func(context.Context, desiredRealmState) error, firewall *chinaInboundFirewall) (map[string]string, error) {
@@ -251,7 +323,16 @@ func (s *configSynchronizer) sync(ctx context.Context) error {
 		return err
 	}
 	if state.Version == s.lastSuccessfulVersion {
-		return nil
+		if !state.Hysteria2HoppingControl || s.refreshHopping == nil {
+			return nil
+		}
+		refreshCtx, cancelRefresh := context.WithTimeout(ctx, configRequestTimeout)
+		refreshErr := s.refreshHopping(refreshCtx, state)
+		cancelRefresh()
+		if refreshErr == nil {
+			return nil
+		}
+		s.lastSuccessfulVersion = 0
 	}
 	if state.Version == s.firewallRetryVersion && s.now().Before(s.firewallRetryAt) {
 		return nil
@@ -477,6 +558,9 @@ func desiredStateErrorMessage(err error) string {
 		errSingboxConfigWrite,
 		errSingboxTLSSetup,
 		errSingboxServiceSetup,
+		errHoppingUnsupported,
+		errHoppingConflict,
+		errHoppingApply,
 		errManagedChinaInboundRequiresNFT,
 		errChinaNFTCleanup,
 		errChinaNFTTooLarge,

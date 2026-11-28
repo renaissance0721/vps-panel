@@ -15,6 +15,7 @@ import (
 
 var ErrChinaWhitelistUnsupported = errors.New("Agent does not support China inbound whitelist")
 var ErrSingboxUnsupported = errors.New("Agent does not support Sing-box Hysteria2")
+var ErrHysteria2PortHoppingUnsupported = errors.New("Agent does not support Hysteria2 port hopping")
 
 func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) (DesiredState, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -136,6 +137,18 @@ func (s *Service) GetDesiredState(ctx context.Context, agentID, serverID int64) 
 		return DesiredState{}, err
 	}
 	state.SupportsSingbox = DeclaresCapability(Metadata{Implementation: implementation, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityProxyHysteria2)
+	state.SupportsHopping = DeclaresCapability(Metadata{Implementation: implementation, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityHysteria2PortHopping)
+	for _, value := range state.SingboxProxies {
+		if value.Hysteria2 != nil && value.Hysteria2.PortHoppingEnabled {
+			familyCapability := CapabilityHysteria2HoppingIPv4
+			if value.Listen == "::" {
+				familyCapability = CapabilityHysteria2HoppingIPv6
+			}
+			if !state.SupportsHopping || !DeclaresCapability(Metadata{Implementation: implementation, APIVersion: apiVersion, Capabilities: capabilities}, familyCapability) {
+				return DesiredState{}, ErrHysteria2PortHoppingUnsupported
+			}
+		}
+	}
 	var hasProxies, hasSingbox, hasRelays bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM proxies WHERE server_id = ? AND kernel = 'xray'),

@@ -75,6 +75,7 @@ type DesiredState struct {
 	SingboxProxies        []proxystore.DesiredProxy
 	SingboxPurge          bool
 	SupportsSingbox       bool
+	SupportsHopping       bool
 	Relays                []relaystore.DesiredRelay
 }
 

@@ -24,6 +24,7 @@ type mihomoProxy struct {
 	Type              string             `yaml:"type"`
 	Server            string             `yaml:"server"`
 	Port              int                `yaml:"port"`
+	Ports             string             `yaml:"ports,omitempty"`
 	UUID              string             `yaml:"uuid,omitempty"`
 	Network           string             `yaml:"network,omitempty"`
 	UDP               bool               `yaml:"udp"`
@@ -520,7 +521,7 @@ func resolvedNodeFromClientShare(share proxystore.ClientShare) ResolvedSubscript
 		ServerName: share.ServerName, Flow: flow, Fingerprint: share.Fingerprint,
 		RealityPublicKey: share.RealityPublicKey, RealityShortID: share.RealityShortID,
 		Method: share.Method, Network: share.Network, ShadowsocksPassword: share.ShadowsocksPassword,
-		Hysteria2Password: share.Password, Hysteria2Obfs: share.ObfsPassword,
+		Hysteria2Password: share.Password, Hysteria2Obfs: share.ObfsPassword, Hysteria2Ports: share.Hysteria2Ports,
 		URI: share.URI,
 	}
 }
@@ -563,6 +564,7 @@ func renderMihomoProxy(share ResolvedSubscriptionNode) (mihomoProxy, error) {
 			return mihomoProxy{}, errors.New("Hysteria2 node is missing authentication or SNI")
 		}
 		value.Type, value.Password, value.SNI = "hysteria2", share.Hysteria2Password, share.ServerName
+		value.Ports = share.Hysteria2Ports
 		if share.Hysteria2Obfs != "" {
 			value.Obfs, value.ObfsPassword = "salamander", share.Hysteria2Obfs
 		}

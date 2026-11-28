@@ -45,6 +45,28 @@ test('节点列表只在当前版本内核失败时显示服务器配置错误',
   server.agent_config_components = { version: 4, statuses: { singbox: 'success' } }
   assert.doesNotMatch(await render(), /Sing-box installation failed/)
 })
+
+test('Hysteria2 端口跳跃要求 Agent 能力并校验端口范围', async () => {
+  const server = reactive({ id: 1, name: 'server', agent_implementation: 'vps-panel-agent', agent_api_version: 1,
+    agent_capabilities: ['proxy.hysteria2.singbox', 'proxy.hysteria2.port_hopping', 'proxy.hysteria2.port_hopping.ipv4'] })
+  const model = useProxies({ servers: [server], users: [] })
+  model.openCreateProxy()
+  model.proxyProtocol.value = 'hysteria2'
+  model.proxyPortHoppingEnabled.value = true
+  model.proxyName.value = 'HY2'
+  model.proxyServerName.value = 'tls.example.com'
+  model.proxyPortHoppingStart.value = 20000
+  model.proxyPortHoppingEnd.value = 30000
+  let html = await renderToString(createSSRApp(ProxyForm, { model: reactive(model) }))
+  assert.match(html, /跳跃起始端口/)
+  assert.match(html, /云厂商安全组/)
+  model.proxyPortHoppingStart.value = 443
+  await model.saveProxy()
+  assert.match(model.error.value, /不能包含基础监听端口/)
+  server.agent_capabilities = ['proxy.hysteria2.singbox']
+  html = await renderToString(createSSRApp(ProxyForm, { model: reactive(model) }))
+  assert.match(html, /不支持端口跳跃/)
+})
 async function withState(component, seed, props = {}) {
   const setup = component.setup
   let state

@@ -7,6 +7,81 @@ import (
 	"testing"
 )
 
+func TestManagedKernelProtocolCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		protocol, kernel string
+		want             bool
+	}{
+		{ProtocolVLESS, KernelXray, true},
+		{ProtocolShadowsocks, KernelXray, true},
+		{ProtocolHysteria2, KernelSingbox, true},
+		{ProtocolVLESS, KernelSingbox, false},
+		{ProtocolShadowsocks, KernelSingbox, false},
+		{ProtocolHysteria2, KernelXray, false},
+		{"unknown", KernelXray, false},
+	} {
+		if got := supportsKernel(tc.protocol, tc.kernel); got != tc.want {
+			t.Errorf("supportsKernel(%q, %q) = %v, want %v", tc.protocol, tc.kernel, got, tc.want)
+		}
+	}
+	_, service, serverID := newTestService(t)
+	input := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelXray, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true}
+	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrInvalidKernel) {
+		t.Fatalf("unsupported kernel create error = %v", err)
+	}
+	input.Kernel = KernelSingbox
+	created, _, err := service.Create(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKernel := KernelXray
+	if _, _, err := service.Update(t.Context(), created.ID, UpdateInput{Kernel: &wrongKernel}); !errors.Is(err, ErrInvalidKernel) {
+		t.Fatalf("unsupported kernel migration error = %v", err)
+	}
+}
+
+func TestHysteria2PortHoppingReservationsAndShare(t *testing.T) {
+	db, service, serverID := newTestService(t)
+	input := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100}
+	first, _, err := service.Create(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	share, err := service.GetClientShare(t.Context(), first.Clients[0].ID)
+	if err != nil || !strings.Contains(share.URI, "@node.example.com:20000-20100/") || share.Hysteria2Ports != "20000-20100" {
+		t.Fatalf("invalid hopping share: %v", err)
+	}
+	input.ListenPort = 8443
+	input.PortHoppingStart, input.PortHoppingEnd = 20050, 20200
+	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("overlapping hopping range error = %v", err)
+	}
+	input.PortHoppingEnabled = false
+	input.ListenPort = 20005
+	if _, _, err := service.Create(t.Context(), input); !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("listener inside hopping range error = %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO relays(server_id,name,listen_address,listen_port,target_type,target_host,target_port,network,enabled,created_at,updated_at) VALUES (?, 'conflict','0.0.0.0',20020,'manual','example.com',443,'udp',1,1,1)`, serverID); err == nil {
+		t.Fatal("relay inside hopping range accepted")
+	}
+	enabled := false
+	if _, _, err := service.Update(t.Context(), first.ID, UpdateInput{PortHoppingEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	input.ListenPort = 20005
+	if _, _, err := service.Create(t.Context(), input); err != nil {
+		t.Fatalf("released hopping port unavailable: %v", err)
+	}
+}
+
+func TestHysteria2HoppingURIEscapesCredentialsAndIPv6(t *testing.T) {
+	share := ClientShare{Client: Client{Password: "p@ss:/?"}, Protocol: ProtocolHysteria2, Address: "2001:db8::1", Port: 443, Hysteria2Ports: "20000-30000", ServerName: "tls.example.com", ObfsPassword: "mix &/secret", DisplayName: "IPv6 node"}
+	uri := buildHysteria2URI(share)
+	if !strings.HasPrefix(uri, "hysteria2://p%40ss%3A%2F%3F@[2001:db8::1]:20000-30000/") || !strings.Contains(uri, "sni=tls.example.com") || !strings.Contains(uri, "obfs=salamander") || !strings.Contains(uri, "obfs-password=mix+%26%2Fsecret") {
+		t.Fatal("hopping URI failed to encode IPv6 or credentials")
+	}
+}
+
 func TestHysteria2ProxyClientsDesiredAndShare(t *testing.T) {
 	db, service, serverID := newTestService(t)
 	input := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, UpMbps: 100, ObfsPassword: "mix &/密码"}

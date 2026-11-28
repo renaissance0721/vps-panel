@@ -71,11 +71,38 @@ func ListenerAvailable(ctx context.Context, query queryer, serverID int64, port 
 			continue
 		}
 		if NetworksOverlap(network, reservation.Network) {
+			rows.Close()
 			return ErrConflict
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return fmt.Errorf("iterate listener reservations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	{
+		ranges, err := query.QueryContext(ctx, `SELECT id FROM proxies
+			WHERE server_id = ? AND protocol = 'hysteria2'
+			AND json_extract(config_json, '$.hysteria2.port_hopping_enabled') = 1
+			AND ? BETWEEN json_extract(config_json, '$.hysteria2.port_hopping_start') AND json_extract(config_json, '$.hysteria2.port_hopping_end')`, serverID, port)
+		if err != nil {
+			return fmt.Errorf("list port hopping reservations: %w", err)
+		}
+		defer ranges.Close()
+		for ranges.Next() {
+			var proxyID int64
+			if err := ranges.Scan(&proxyID); err != nil {
+				return err
+			}
+			if options.ExcludeResourceType != ResourceProxy || options.ExcludeResourceID != proxyID {
+				return ErrConflict
+			}
+		}
+		if err := ranges.Err(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -98,6 +125,33 @@ func ListOccupiedListeners(ctx context.Context, query queryer, serverID int64, s
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate occupied listeners: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	ranges, err := query.QueryContext(ctx, `SELECT id,
+		json_extract(config_json, '$.hysteria2.port_hopping_start'),
+		json_extract(config_json, '$.hysteria2.port_hopping_end')
+		FROM proxies WHERE server_id = ? AND protocol = 'hysteria2'
+		AND json_extract(config_json, '$.hysteria2.port_hopping_enabled') = 1
+		AND json_extract(config_json, '$.hysteria2.port_hopping_start') <= ?
+		AND json_extract(config_json, '$.hysteria2.port_hopping_end') >= ?`, serverID, end, start)
+	if err != nil {
+		return nil, fmt.Errorf("list occupied hopping ranges: %w", err)
+	}
+	defer ranges.Close()
+	for ranges.Next() {
+		var id int64
+		var first, last int
+		if err := ranges.Scan(&id, &first, &last); err != nil {
+			return nil, err
+		}
+		for port := max(start, first); port <= min(end, last); port++ {
+			values = append(values, Reservation{ServerID: serverID, ResourceType: ResourceProxy, ResourceID: id, Port: port, Network: NetworkUDP})
+		}
+	}
+	if err := ranges.Err(); err != nil {
+		return nil, err
 	}
 	return values, nil
 }

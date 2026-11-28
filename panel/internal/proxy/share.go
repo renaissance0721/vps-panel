@@ -31,6 +31,7 @@ type ClientShare struct {
 	Network             string
 	ShadowsocksPassword string
 	ObfsPassword        string
+	Hysteria2Ports      string
 	URI                 string
 	DisplayName         string
 }
@@ -167,6 +168,12 @@ func (s *Service) getClientShare(ctx context.Context, id int64, endpoint *ShareE
 		share.URI = buildShadowsocksURI(share)
 	case ProtocolHysteria2:
 		share.ObfsPassword = config.Hysteria2.ObfsPassword
+		if endpoint == nil && config.Hysteria2.PortHoppingEnabled {
+			share.Hysteria2Ports = strconv.Itoa(config.Hysteria2.PortHoppingStart)
+			if config.Hysteria2.PortHoppingStart != config.Hysteria2.PortHoppingEnd {
+				share.Hysteria2Ports = fmt.Sprintf("%d-%d", config.Hysteria2.PortHoppingStart, config.Hysteria2.PortHoppingEnd)
+			}
+		}
 		share.URI = buildHysteria2URI(share)
 	default:
 		return ClientShare{}, ErrInvalidProtocol
@@ -181,7 +188,11 @@ func buildHysteria2URI(share ClientShare) string {
 		query.Set("obfs", "salamander")
 		query.Set("obfs-password", share.ObfsPassword)
 	}
-	return (&url.URL{Scheme: "hysteria2", User: url.User(share.Password), Host: net.JoinHostPort(share.Address, strconv.Itoa(share.Port)), Path: "/", RawQuery: query.Encode(), Fragment: share.DisplayName}).String()
+	port := strconv.Itoa(share.Port)
+	if share.Hysteria2Ports != "" {
+		port = share.Hysteria2Ports
+	}
+	return (&url.URL{Scheme: "hysteria2", User: url.User(share.Password), Host: net.JoinHostPort(share.Address, port), Path: "/", RawQuery: query.Encode(), Fragment: share.DisplayName}).String()
 }
 
 func resolveEntryAddress(family, mode, entryHost, publicIPv4, publicIPv6 string) (string, error) {

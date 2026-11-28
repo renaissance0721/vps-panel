@@ -81,6 +81,7 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		RealityTarget: request.RealityTarget, FirstClientName: request.FirstClientName,
 		FirstClientUDP443: request.FirstClientUDP443, Protocol: request.Protocol, Kernel: request.Kernel, Method: request.Method,
 		UpMbps: request.UpMbps, DownMbps: request.DownMbps, ObfsPassword: request.ObfsPassword,
+		PortHoppingEnabled: request.PortHoppingEnabled, PortHoppingStart: request.PortHoppingStart, PortHoppingEnd: request.PortHoppingEnd,
 	}
 	if capability, message := requiredCreateProxyCapability(request); capability != "" {
 		supported, err := s.serverSupportsCapability(r, request.ServerID, capability)
@@ -94,6 +95,17 @@ func (s *server) createProxy(w http.ResponseWriter, r *http.Request, user auth.U
 				return
 			}
 			writeError(w, http.StatusConflict, message)
+			return
+		}
+	}
+	if request.PortHoppingEnabled {
+		supported, err := s.supportsHysteria2Hopping(r, request.ServerID, request.ListenFamily)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if !supported {
+			writeError(w, http.StatusConflict, "当前 Agent 不支持 Hysteria2 端口跳跃，请升级 Agent")
 			return
 		}
 	}
@@ -140,11 +152,23 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 		TLSMode: request.TLSMode, Certificate: request.Certificate, PrivateKey: request.PrivateKey, RealityTarget: request.RealityTarget,
 		Protocol: request.Protocol, Kernel: request.Kernel, Method: request.Method,
 		UpMbps: request.UpMbps, DownMbps: request.DownMbps, ObfsPassword: request.ObfsPassword,
+		PortHoppingEnabled: request.PortHoppingEnabled, PortHoppingStart: request.PortHoppingStart, PortHoppingEnd: request.PortHoppingEnd,
 	}
 	validated, err := s.proxies.ValidateUpdate(r.Context(), id, input)
 	if err != nil {
 		writeProxyError(w, err)
 		return
+	}
+	if validated.Config.PortHoppingEnabled {
+		supported, err := s.supportsHysteria2Hopping(r, validated.ServerID, validated.ListenFamily)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if !supported {
+			writeError(w, http.StatusConflict, "当前 Agent 不支持 Hysteria2 端口跳跃，请升级 Agent")
+			return
+		}
 	}
 	if validated.Enabled && (proxystore.ProxyRuntimeChanged(previous, validated) || (request.Certificate != nil && strings.TrimSpace(*request.Certificate) != "") || (request.PrivateKey != nil && strings.TrimSpace(*request.PrivateKey) != "") || request.ObfsPassword != nil) {
 		capability, message := requiredProxyCapability(validated)
@@ -174,6 +198,18 @@ func (s *server) updateProxy(w http.ResponseWriter, r *http.Request, user auth.U
 	}
 	s.recordAudit(r, user, "proxy.update", "proxy", value.ID, "更新代理节点 "+value.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": toProxyResponse(value)})
+}
+
+func (s *server) supportsHysteria2Hopping(r *http.Request, serverID int64, family string) (bool, error) {
+	supported, err := s.serverSupportsCapability(r, serverID, agentcontrol.CapabilityHysteria2PortHopping)
+	if err != nil || !supported {
+		return supported, err
+	}
+	familyCapability := agentcontrol.CapabilityHysteria2HoppingIPv4
+	if family == proxystore.ListenFamilyIPv6 {
+		familyCapability = agentcontrol.CapabilityHysteria2HoppingIPv6
+	}
+	return s.serverSupportsCapability(r, serverID, familyCapability)
 }
 
 func requiredCreateProxyCapability(request createProxyRequest) (string, string) {
@@ -346,6 +382,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "所选内核不支持该协议")
 	case errors.Is(err, proxystore.ErrInvalidHysteria2):
 		writeError(w, http.StatusBadRequest, "Hysteria2 设置无效或不支持此客户端流量配置")
+	case errors.Is(err, proxystore.ErrInvalidPortHopping):
+		writeError(w, http.StatusBadRequest, "端口跳跃范围无效，且不能包含基础监听端口")
 	case errors.Is(err, proxystore.ErrInvalidShadowsocksMethod):
 		writeError(w, http.StatusBadRequest, "Shadowsocks 加密方法无效")
 	case errors.Is(err, proxystore.ErrImmutableProtocol):

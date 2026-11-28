@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  computed,
   toRefs,
 } from 'vue'
 import {
@@ -31,6 +32,15 @@ const {
   error,
   servers,
 } = toRefs(props.model)
+const runtimeComponents = computed(() => {
+  const proxy = selectedProxy.value
+  const server = servers.value.find(item => item.id === proxy?.server_id)
+  const components = server?.agent_config_components
+  return server && components?.version === server.desired_state_version ? components.statuses : null
+})
+function componentStatus(value: string | undefined) {
+  return value === 'success' ? '已应用' : value === 'failed' ? '应用失败' : value === 'unsupported' ? '不支持' : '未知或待同步'
+}
 </script>
 
 <template>
@@ -49,6 +59,7 @@ const {
       <h3>协议</h3>
 		<dl v-if="selectedProxy.protocol === 'vless'" class="server-details"><div><dt>协议</dt><dd>VLESS</dd></div><div><dt>传输</dt><dd>TCP</dd></div><div><dt>流控</dt><dd>XTLS Vision</dd></div><div><dt>安全层</dt><dd>{{ selectedProxy.config.security === 'tls' ? 'TLS' : 'REALITY' }}</dd></div></dl>
 		<dl v-else-if="selectedProxy.protocol === 'hysteria2'" class="server-details"><div><dt>协议</dt><dd>Hysteria2</dd></div><div><dt>网络</dt><dd>UDP</dd></div><div><dt>SNI</dt><dd>{{ selectedProxy.config.server_name }}</dd></div><div><dt>混淆</dt><dd>{{ selectedProxy.config.obfs_enabled ? 'Salamander' : '关闭' }}</dd></div></dl>
+		<dl v-if="selectedProxy.protocol === 'hysteria2'" class="server-details"><div><dt>基础监听端口</dt><dd>{{ selectedProxy.listen_port }}/UDP</dd></div><div><dt>端口跳跃</dt><dd>{{ selectedProxy.config.port_hopping_enabled ? `${selectedProxy.config.port_hopping_start}–${selectedProxy.config.port_hopping_end}/UDP` : '关闭' }}</dd></div><div><dt>Sing-box 配置状态</dt><dd>{{ componentStatus(runtimeComponents?.singbox) }}</dd></div><div v-if="selectedProxy.config.port_hopping_enabled"><dt>端口跳跃规则状态</dt><dd>{{ componentStatus(runtimeComponents?.hy2_port_hopping) }}</dd></div></dl>
 		<dl v-else class="server-details"><div><dt>协议</dt><dd>Shadowsocks</dd></div><div><dt>加密方法</dt><dd>{{ selectedProxy.config.method }}</dd></div><div><dt>网络</dt><dd>TCP + UDP</dd></div></dl>
 		<h3 v-if="selectedProxy.protocol === 'vless'">{{ selectedProxy.config.security === 'tls' ? 'TLS' : 'REALITY' }}</h3>
 		<dl v-if="selectedProxy.protocol === 'vless'" class="server-details">

@@ -431,7 +431,7 @@ func (s *server) serverSupportsCapability(r *http.Request, serverID int64, capab
 		APIVersion:     value.AgentAPIVersion,
 		Capabilities:   value.AgentCapabilities,
 	}
-	if capability == agentcontrol.CapabilityProxyHysteria2 {
+	if capability == agentcontrol.CapabilityProxyHysteria2 || capability == agentcontrol.CapabilityHysteria2PortHopping || capability == agentcontrol.CapabilityHysteria2HoppingIPv4 || capability == agentcontrol.CapabilityHysteria2HoppingIPv6 {
 		return agentcontrol.DeclaresCapability(metadata, capability), nil
 	}
 	return agentcontrol.SupportsCapability(metadata, capability), nil
@@ -578,6 +578,8 @@ func (s *server) notifyServerMutations(mutations []serverstore.ConfigMutation) {
 
 func writeServerError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, agentcontrol.ErrHysteria2PortHoppingUnsupported):
+		writeError(w, http.StatusConflict, "当前 Agent 不支持 Hysteria2 端口跳跃，请升级 Agent")
 	case errors.Is(err, agentcontrol.ErrSingboxUnsupported):
 		writeError(w, http.StatusConflict, "当前 Agent 不支持 Sing-box Hysteria2，请升级 Agent")
 	case errors.Is(err, monitor.ErrTaskLimit):

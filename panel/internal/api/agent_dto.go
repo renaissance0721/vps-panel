@@ -21,14 +21,15 @@ type agentRegistrationResponse struct {
 }
 
 type agentDesiredStateResponse struct {
-	Version               int64                     `json:"version"`
-	ComponentResults      bool                      `json:"component_results"`
-	Decommission          bool                      `json:"decommission"`
-	BlockChinaInbound     bool                      `json:"block_china_inbound"`
-	ChinaInboundWhitelist []string                  `json:"china_inbound_whitelist"`
-	Xray                  agentDesiredXrayState     `json:"xray"`
-	Singbox               *agentDesiredSingboxState `json:"singbox,omitempty"`
-	Realm                 agentDesiredRealmState    `json:"realm"`
+	Version                 int64                     `json:"version"`
+	ComponentResults        bool                      `json:"component_results"`
+	Hysteria2HoppingControl bool                      `json:"hysteria2_hopping_control,omitempty"`
+	Decommission            bool                      `json:"decommission"`
+	BlockChinaInbound       bool                      `json:"block_china_inbound"`
+	ChinaInboundWhitelist   []string                  `json:"china_inbound_whitelist"`
+	Xray                    agentDesiredXrayState     `json:"xray"`
+	Singbox                 *agentDesiredSingboxState `json:"singbox,omitempty"`
+	Realm                   agentDesiredRealmState    `json:"realm"`
 }
 
 type agentDesiredSingboxState struct {

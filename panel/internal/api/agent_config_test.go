@@ -57,6 +57,53 @@ func TestAgentDesiredStateSeparatesSingboxAndChecksCapability(t *testing.T) {
 	}
 }
 
+func TestAgentPortHoppingRequiresDeclaredCapabilities(t *testing.T) {
+	db, err := database.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server, err := serverstore.NewService(db).Create(t.Context(), "Hopping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents := agentcontrol.NewService(db, time.Now)
+	agent, err := agents.RegisterAgent(t.Context(), server.EnrollmentToken, "test", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxies := proxystore.NewService(db)
+	_, _, err = proxies.Create(t.Context(), proxystore.CreateInput{ServerID: server.ID, Name: "HY2", Protocol: proxystore.ProtocolHysteria2, ListenPort: 443, EntryHostMode: proxystore.EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: proxystore.TLSModeACME, FirstClientName: "client", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAgentCapabilities(t, db, server.ID, "vps-panel-agent", []string{agentcontrol.CapabilityProxyHysteria2, agentcontrol.CapabilityHysteria2PortHopping})
+	if _, err := agents.GetDesiredState(t.Context(), agent.ID, server.ID); !errors.Is(err, agentcontrol.ErrHysteria2PortHoppingUnsupported) {
+		t.Fatalf("Agent without IPv4 hopping capability = %v", err)
+	}
+	setAgentCapabilities(t, db, server.ID, "vps-panel-agent", []string{agentcontrol.CapabilityProxyHysteria2, agentcontrol.CapabilityHysteria2PortHopping, agentcontrol.CapabilityHysteria2HoppingIPv4})
+	state, err := agents.GetDesiredState(t.Context(), agent.ID, server.ID)
+	if err != nil || !state.SupportsHopping || len(state.SingboxProxies) != 1 || state.SingboxProxies[0].Hysteria2.PortHoppingStart != 20000 {
+		t.Fatalf("hopping desired state = %+v, %v", state, err)
+	}
+	if err := agents.RecordConfigResult(t.Context(), agent.ID, server.ID, agentcontrol.ConfigResult{Version: state.Version, Status: agentcontrol.ConfigSyncSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT config_sync_status FROM agents WHERE id = ?`, agent.ID).Scan(&status); err != nil || status != agentcontrol.ConfigSyncFailed {
+		t.Fatalf("unconfirmed hopping result status = %q, %v", status, err)
+	}
+	if _, err := db.Exec(`UPDATE servers SET decommission_status = 'pending' WHERE id = ?`, server.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := agents.RecordConfigResult(t.Context(), agent.ID, server.ID, agentcontrol.ConfigResult{Version: state.Version, Status: agentcontrol.ConfigSyncSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT config_sync_status FROM agents WHERE id = ?`, agent.ID).Scan(&status); err != nil || status != agentcontrol.ConfigSyncSuccess {
+		t.Fatalf("decommission cleanup result status = %q, %v", status, err)
+	}
+}
+
 func TestAgentConfigAPIAuthenticationAndInitialState(t *testing.T) {
 	db, err := database.Open(t.TempDir())
 	if err != nil {

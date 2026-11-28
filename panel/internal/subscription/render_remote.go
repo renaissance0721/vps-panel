@@ -33,7 +33,7 @@ func renderRemoteMihomo(node ResolvedSubscriptionNode) (*yaml.Node, error) {
 	if node.RemoteFormat != "uri" {
 		return nil, ErrRemoteUnsupported
 	}
-	u, err := url.Parse(node.RemotePayload)
+	u, ports, err := parseRemoteNodeURI(node.RemotePayload)
 	if err != nil || u.Hostname() == "" {
 		return nil, ErrRemoteUnsupported
 	}
@@ -72,6 +72,12 @@ func renderRemoteMihomo(node ResolvedSubscriptionNode) (*yaml.Node, error) {
 		}
 	}
 	m := map[string]any{"name": node.Name, "type": node.Protocol, "server": u.Hostname(), "port": port}
+	if ports != "" {
+		if node.Protocol != "hysteria2" {
+			return nil, ErrRemoteUnsupported
+		}
+		m["ports"] = ports
+	}
 	user := ""
 	pass := ""
 	if u.User != nil {
@@ -266,12 +272,15 @@ func remoteURI(node ResolvedSubscriptionNode) (string, error) {
 	if node.RemoteFormat != "uri" {
 		return "", ErrRemoteUnsupported
 	}
-	u, err := url.Parse(node.RemotePayload)
+	u, ports, err := parseRemoteNodeURI(node.RemotePayload)
 	if err != nil || u.Scheme == "" {
 		return "", ErrRemoteUnsupported
 	}
 	u.Fragment = node.Name
 	u.RawFragment = ""
+	if ports != "" {
+		u.Host = net.JoinHostPort(u.Hostname(), ports)
+	}
 	return u.String(), nil
 }
 
@@ -289,7 +298,7 @@ func remoteYAMLURI(node ResolvedSubscriptionNode) (string, error) {
 		"vless":     {"uuid", "tls", "servername", "flow", "client-fingerprint", "reality-opts", "network"},
 		"ss":        {"cipher", "password"},
 		"trojan":    {"password", "sni", "network"},
-		"hysteria2": {"password", "sni", "obfs", "obfs-password"},
+		"hysteria2": {"password", "sni", "obfs", "obfs-password", "ports"},
 		"tuic":      {"uuid", "password", "sni", "congestion-controller", "udp-relay-mode"},
 	}
 	keys, ok := protocolKeys[node.Protocol]
@@ -332,6 +341,12 @@ func remoteYAMLURI(node ResolvedSubscriptionNode) (string, error) {
 		return "", ErrRemoteUnsupported
 	}
 	u := url.URL{Scheme: node.Protocol, Host: net.JoinHostPort(host, strconv.Itoa(port)), Fragment: node.Name}
+	if node.Protocol == "hysteria2" && str("ports") != "" {
+		if _, ok := validateRemoteHysteriaPorts(str("ports")); !ok {
+			return "", ErrRemoteUnsupported
+		}
+		u.Host = net.JoinHostPort(host, str("ports"))
+	}
 	q := url.Values{}
 	switch node.Protocol {
 	case "vless":
@@ -547,7 +562,7 @@ func renderRemoteShadowrocket(node ResolvedSubscriptionNode) (string, error) {
 }
 
 func remoteStringFieldsValid(values map[string]any) bool {
-	for _, key := range []string{"name", "type", "server", "uuid", "password", "cipher", "servername", "sni", "flow", "network", "client-fingerprint", "obfs", "obfs-password", "congestion-controller", "udp-relay-mode"} {
+	for _, key := range []string{"name", "type", "server", "uuid", "password", "cipher", "servername", "sni", "flow", "network", "client-fingerprint", "obfs", "obfs-password", "congestion-controller", "udp-relay-mode", "ports"} {
 		if value, exists := values[key]; exists {
 			if _, ok := value.(string); !ok {
 				return false

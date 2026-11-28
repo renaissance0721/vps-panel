@@ -32,12 +32,12 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 	if err != nil {
 		return preparedCreate{}, err
 	}
-	kernel := KernelXray
-	if protocol == ProtocolHysteria2 {
-		kernel = KernelSingbox
-	}
-	if input.Kernel != "" && input.Kernel != kernel {
+	kernel := protocolKernels[protocol][0]
+	if input.Kernel != "" && !supportsKernel(protocol, input.Kernel) {
 		return preparedCreate{}, ErrInvalidKernel
+	}
+	if input.Kernel != "" {
+		kernel = input.Kernel
 	}
 	name, err := validateName(input.Name)
 	if err != nil {
@@ -66,6 +66,9 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 	}
 	var config storedConfig
 	var credential storedCredential
+	if protocol != ProtocolHysteria2 && (input.PortHoppingEnabled || input.PortHoppingStart != 0 || input.PortHoppingEnd != 0) {
+		return preparedCreate{}, ErrInvalidPortHopping
+	}
 	switch protocol {
 	case ProtocolVLESS:
 		config, err = newStoredConfig(input.Security, input.ServerName, input.TLSMode, input.Certificate, input.PrivateKey, input.RealityTarget)
@@ -84,7 +87,10 @@ func prepareCreateInput(input CreateInput) (preparedCreate, error) {
 		config, err = newStoredConfig(SecurityTLS, input.ServerName, input.TLSMode, input.Certificate, input.PrivateKey, "")
 		if err == nil {
 			config.Transport, config.ServerFlow, config.Fingerprint = "", "", ""
-			config.Hysteria2 = &storedHysteria2{UpMbps: input.UpMbps, DownMbps: input.DownMbps, ObfsPassword: input.ObfsPassword}
+			config.Hysteria2 = &storedHysteria2{UpMbps: input.UpMbps, DownMbps: input.DownMbps, ObfsPassword: input.ObfsPassword, PortHoppingEnabled: input.PortHoppingEnabled, PortHoppingStart: input.PortHoppingStart, PortHoppingEnd: input.PortHoppingEnd}
+			if err = validatePortHopping(config.Hysteria2, input.ListenPort); err != nil {
+				return preparedCreate{}, err
+			}
 			credential, err = newCredentialForProxy(protocol, config)
 		}
 	}
@@ -348,6 +354,9 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 	if input.Enabled != nil {
 		value.Enabled = *input.Enabled
 	}
+	if value.Protocol != ProtocolHysteria2 && (input.PortHoppingEnabled != nil || input.PortHoppingStart != nil || input.PortHoppingEnd != nil) {
+		return Proxy{}, storedConfig{}, ErrInvalidPortHopping
+	}
 	switch value.Protocol {
 	case ProtocolVLESS:
 		if input.Method != nil {
@@ -385,6 +394,18 @@ func prepareUpdate(ctx context.Context, query proxyUpdateQuery, id int64, input 
 		}
 		if input.ObfsPassword != nil {
 			settings.ObfsPassword = *input.ObfsPassword
+		}
+		if input.PortHoppingEnabled != nil {
+			settings.PortHoppingEnabled = *input.PortHoppingEnabled
+		}
+		if input.PortHoppingStart != nil {
+			settings.PortHoppingStart = *input.PortHoppingStart
+		}
+		if input.PortHoppingEnd != nil {
+			settings.PortHoppingEnd = *input.PortHoppingEnd
+		}
+		if err := validatePortHopping(&settings, value.ListenPort); err != nil {
+			return Proxy{}, storedConfig{}, err
 		}
 		if settings.UpMbps < 0 || settings.DownMbps < 0 || len(settings.ObfsPassword) > 256 {
 			return Proxy{}, storedConfig{}, ErrInvalidHysteria2
@@ -559,7 +580,7 @@ func scanProxy(row rowScanner) (Proxy, storedConfig, error) {
 		&configJSON, &createdAt, &updatedAt, &value.NodeRole, &value.Kernel); err != nil {
 		return Proxy{}, storedConfig{}, err
 	}
-	if (value.Protocol == ProtocolHysteria2 && value.Kernel != KernelSingbox) || (value.Protocol != ProtocolHysteria2 && value.Kernel != KernelXray) {
+	if !supportsKernel(value.Protocol, value.Kernel) {
 		return Proxy{}, storedConfig{}, ErrInvalidKernel
 	}
 	entryHostMode, entryHost, err := normalizeEntryHost(value.EntryHostMode, value.EntryHost)

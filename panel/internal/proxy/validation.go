@@ -6,12 +6,41 @@ import (
 	"unicode/utf8"
 )
 
+// These are the protocol implementations actually managed by this Panel, not
+// every inbound that an upstream kernel may support.
+var protocolKernels = map[string][]string{
+	ProtocolVLESS:       {KernelXray},
+	ProtocolShadowsocks: {KernelXray},
+	ProtocolHysteria2:   {KernelSingbox},
+}
+
+func supportsKernel(protocol, kernel string) bool {
+	for _, supported := range protocolKernels[protocol] {
+		if supported == kernel {
+			return true
+		}
+	}
+	return false
+}
+
+func validatePortHopping(settings *storedHysteria2, listenPort int) error {
+	if settings == nil || !settings.PortHoppingEnabled {
+		return nil
+	}
+	if settings.PortHoppingStart < 1 || settings.PortHoppingEnd > 65535 ||
+		settings.PortHoppingStart > settings.PortHoppingEnd ||
+		(listenPort >= settings.PortHoppingStart && listenPort <= settings.PortHoppingEnd) {
+		return ErrInvalidPortHopping
+	}
+	return nil
+}
+
 func normalizeProtocol(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
 		return ProtocolVLESS, nil
 	}
-	if value != ProtocolVLESS && value != ProtocolShadowsocks && value != ProtocolHysteria2 {
+	if _, ok := protocolKernels[value]; !ok {
 		return "", ErrInvalidProtocol
 	}
 	return value, nil

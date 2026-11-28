@@ -24,7 +24,7 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 			}
 			continue
 		}
-		if (name != "xray" && name != "singbox" && name != "realm" && name != "china_firewall") ||
+		if (name != "xray" && name != "singbox" && name != "realm" && name != "china_firewall" && name != "hy2_port_hopping") ||
 			(status != "success" && status != "failed" && status != "unsupported" && status != "unknown") {
 			return ErrInvalidConfigResult
 		}
@@ -35,7 +35,7 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 				return ErrInvalidConfigResult
 			}
 		}
-		if result.Status == ConfigSyncSuccess && (result.Components["xray"] != "success" || result.Components["realm"] != "success" || result.Components["singbox"] != "" && result.Components["singbox"] != "success" || result.Components["china_firewall"] == "failed" || result.Components["china_firewall"] == "unsupported") {
+		if result.Status == ConfigSyncSuccess && (result.Components["xray"] != "success" || result.Components["realm"] != "success" || result.Components["singbox"] != "" && result.Components["singbox"] != "success" || result.Components["hy2_port_hopping"] != "" && result.Components["hy2_port_hopping"] != "success" || result.Components["china_firewall"] == "failed" || result.Components["china_firewall"] == "unsupported") {
 			return ErrInvalidConfigResult
 		}
 	}
@@ -94,6 +94,25 @@ func (s *Service) RecordConfigResult(ctx context.Context, agentID, serverID int6
 			if !DeclaresCapability(Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}, CapabilityFirewallCNWhitelist) {
 				result.Status = ConfigSyncFailed
 				result.Message = "当前 Agent 不支持中国 IP 入站白名单，请升级 Agent"
+			}
+		}
+		var needsHoppingIPv4, needsHoppingIPv6 bool
+		if err := tx.QueryRowContext(ctx, `SELECT
+			EXISTS(SELECT 1 FROM proxies p JOIN servers s ON s.id = p.server_id WHERE p.server_id = ? AND s.decommission_status = '' AND p.enabled = 1 AND p.protocol = 'hysteria2' AND p.listen_family = 'ipv4' AND json_extract(p.config_json, '$.hysteria2.port_hopping_enabled') = 1),
+			EXISTS(SELECT 1 FROM proxies p JOIN servers s ON s.id = p.server_id WHERE p.server_id = ? AND s.decommission_status = '' AND p.enabled = 1 AND p.protocol = 'hysteria2' AND p.listen_family = 'ipv6' AND json_extract(p.config_json, '$.hysteria2.port_hopping_enabled') = 1)`, serverID, serverID).Scan(&needsHoppingIPv4, &needsHoppingIPv6); err != nil {
+			return err
+		}
+		if needsHoppingIPv4 || needsHoppingIPv6 {
+			capabilities, err := DecodeCapabilities(capabilitiesJSON)
+			if err != nil {
+				return err
+			}
+			metadata := Metadata{Implementation: implementation, Version: version, APIVersion: apiVersion, Capabilities: capabilities}
+			if !DeclaresCapability(metadata, CapabilityHysteria2PortHopping) ||
+				(needsHoppingIPv4 && !DeclaresCapability(metadata, CapabilityHysteria2HoppingIPv4)) ||
+				(needsHoppingIPv6 && !DeclaresCapability(metadata, CapabilityHysteria2HoppingIPv6)) || result.Components["hy2_port_hopping"] != "success" {
+				result.Status = ConfigSyncFailed
+				result.Message = "Agent 未确认 Hysteria2 端口跳跃规则已应用"
 			}
 		}
 	}

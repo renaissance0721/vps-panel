@@ -27,6 +27,9 @@ export type ProxyConfig = {
   up_mbps?: number
   down_mbps?: number
   obfs_enabled?: boolean
+  port_hopping_enabled?: boolean
+  port_hopping_start?: number
+  port_hopping_end?: number
 }
 
 export type ClientSummary = {

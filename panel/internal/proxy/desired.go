@@ -25,9 +25,12 @@ type DesiredProxy struct {
 }
 
 type DesiredHysteria2 struct {
-	UpMbps       int    `json:"up_mbps,omitempty"`
-	DownMbps     int    `json:"down_mbps,omitempty"`
-	ObfsPassword string `json:"obfs_password,omitempty"`
+	UpMbps             int    `json:"up_mbps,omitempty"`
+	DownMbps           int    `json:"down_mbps,omitempty"`
+	ObfsPassword       string `json:"obfs_password,omitempty"`
+	PortHoppingEnabled bool   `json:"port_hopping_enabled,omitempty"`
+	PortHoppingStart   int    `json:"port_hopping_start,omitempty"`
+	PortHoppingEnd     int    `json:"port_hopping_end,omitempty"`
 }
 
 type DesiredShadowsocks struct {
@@ -77,7 +80,7 @@ func ListDesired(ctx context.Context, query interface {
 		if err := rows.Scan(&value.ID, &listenFamily, &value.Port, &value.Protocol, &configJSON, &value.Kernel); err != nil {
 			return nil, fmt.Errorf("scan desired proxy: %w", err)
 		}
-		if (value.Protocol == ProtocolHysteria2 && value.Kernel != KernelSingbox) || (value.Protocol != ProtocolHysteria2 && value.Kernel != KernelXray) {
+		if !supportsKernel(value.Protocol, value.Kernel) {
 			return nil, ErrInvalidKernel
 		}
 		config, err := decodeConfig(value.Protocol, configJSON)
@@ -100,7 +103,10 @@ func ListDesired(ctx context.Context, query interface {
 			}
 		} else {
 			value.Security, value.ServerName = config.Security, config.ServerName
-			value.Hysteria2 = &DesiredHysteria2{UpMbps: config.Hysteria2.UpMbps, DownMbps: config.Hysteria2.DownMbps, ObfsPassword: config.Hysteria2.ObfsPassword}
+			if err := validatePortHopping(config.Hysteria2, value.Port); err != nil {
+				return nil, err
+			}
+			value.Hysteria2 = &DesiredHysteria2{UpMbps: config.Hysteria2.UpMbps, DownMbps: config.Hysteria2.DownMbps, ObfsPassword: config.Hysteria2.ObfsPassword, PortHoppingEnabled: config.Hysteria2.PortHoppingEnabled, PortHoppingStart: config.Hysteria2.PortHoppingStart, PortHoppingEnd: config.Hysteria2.PortHoppingEnd}
 		}
 		records = append(records, desiredRecord{value: value, config: config})
 	}

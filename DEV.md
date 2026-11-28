@@ -21,7 +21,7 @@ Panel 保存业务状态，Agent 执行目标 VPS 操作。受管服务通过 de
 | 数据库 | SQLite，`modernc.org/sqlite` 驱动 |
 | Web | Vue 3、TypeScript、Vite、Naive UI |
 | 图表 / 分享 | ECharts、qrcode |
-| 受管服务 | Xray、Realm；acme.sh 用于自动 TLS |
+| 受管服务 | Xray、Sing-box、Realm；acme.sh 用于自动 TLS |
 | 网络探测 | TCP connect、pro-bing ICMP |
 | 通知 | Panel 直接调用 Telegram Bot API；独立 Mail Service 连接标准 SMTP Server |
 | 部署 | 原生 systemd；Agent 也支持 OpenRC；可选 Docker Compose |
@@ -56,7 +56,7 @@ Release workflow 使用 Node.js 22；本地使用该系列最新维护版本，�
 | --- | --- |
 | Server | 一台受管理 VPS 的业务记录；保存访问权限、归属、流量配置及 Agent 状态 |
 | Agent | Server 的执行端身份和连接；使用独立 Agent Token 认证 |
-| Proxy | Server 上的 Xray 入站及协议配置，不等于一个用户凭据 |
+| Proxy | Server 上属于单个内核的入站及协议配置，不等于一个用户凭据 |
 | Client | Proxy 下的凭据、配额与生命周期，可分配给拼车用户或由订阅系统管理 |
 | Relay | Server 上的 Realm 转发规则，引用目标 Proxy / Landing 或手动地址 |
 | Landing | Panel 保存的外部节点，不会因此在远端安装 Agent |
@@ -69,7 +69,7 @@ Release workflow 使用 Node.js 22；本地使用该系列最新维护版本，�
 ## 5. Panel / Agent 架构
 
 Panel 负责认证、业务校验、持久化、Web API、订阅输出、探测历史和通知。
-Agent 负责目标机上的系统采集、探测、Xray / Realm、受管防火墙、诊断和升级。
+Agent 负责目标机上的系统采集、探测、Xray / Sing-box / Realm、受管防火墙、诊断和升级。
 Web 提供管理与监控界面，不承担最终权限判断。
 
 配置变更在数据库事务内更新业务记录和 Server 的 desired-state version，并记录配置操作。

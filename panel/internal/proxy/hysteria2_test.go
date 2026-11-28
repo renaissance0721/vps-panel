@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/renaissance0721/vps-panel/panel/internal/listener"
 )
 
 func TestManagedKernelProtocolCompatibility(t *testing.T) {
@@ -142,5 +144,53 @@ func TestHysteria2ProxyClientsDesiredAndShare(t *testing.T) {
 	desired, err = ListDesired(t.Context(), db, serverID)
 	if err != nil || len(desired) != 1 || len(desired[0].Clients) != 1 || desired[0].Clients[0].Password != first.Password {
 		t.Fatalf("desired clients after deletion: %v", err)
+	}
+}
+
+func TestHoppingUDPReservations(t *testing.T) {
+	for _, tc := range []struct {
+		name, network string
+		conflict      bool
+	}{{"tcp", "tcp", false}, {"udp", "udp", true}, {"both", "both", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, service, serverID := newTestService(t)
+			input := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100}
+			if _, _, err := service.Create(t.Context(), input); err != nil {
+				t.Fatal(err)
+			}
+			err := listener.ListenerAvailable(t.Context(), db, serverID, 20001, tc.network, listener.AvailabilityOptions{})
+			if errors.Is(err, listener.ErrConflict) != tc.conflict {
+				t.Fatalf("availability = %v", err)
+			}
+			_, err = db.Exec(`INSERT INTO server_listener_reservations(server_id,resource_type,resource_id,port,network,created_at) VALUES (?, 'relay', 999, 20001, ?, 1)`, serverID, tc.network)
+			if (err != nil) != tc.conflict {
+				t.Fatalf("reservation = %v", err)
+			}
+		})
+	}
+	for _, bounds := range [][2]int{{1, 1024}, {1023, 1023}, {20000, 30000}, {30001, 30000}} {
+		if err := validatePortHopping(&storedHysteria2{PortHoppingEnabled: true, PortHoppingStart: bounds[0], PortHoppingEnd: bounds[1]}, 443); !errors.Is(err, ErrInvalidPortHopping) {
+			t.Fatalf("bounds %v = %v", bounds, err)
+		}
+	}
+}
+
+func TestHoppingWithExistingRealmNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		network  string
+		conflict bool
+	}{{"tcp", false}, {"udp", true}, {"tcp,udp", true}} {
+		t.Run(tc.network, func(t *testing.T) {
+			db, service, serverID := newTestService(t)
+			_, err := db.Exec(`INSERT INTO relays(server_id,name,listen_address,listen_port,target_type,target_host,target_port,network,enabled,created_at,updated_at) VALUES (?, 'realm','0.0.0.0',20001,'manual','example.com',443,?,1,1,1)`, serverID, tc.network)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := CreateInput{ServerID: serverID, Name: "HY2", Protocol: ProtocolHysteria2, Kernel: KernelSingbox, ListenPort: 443, EntryHostMode: EntryHostManual, EntryHost: "node.example.com", ServerName: "tls.example.com", TLSMode: TLSModeACME, FirstClientName: "first", Enabled: true, PortHoppingEnabled: true, PortHoppingStart: 20000, PortHoppingEnd: 20100}
+			_, _, err = service.Create(t.Context(), input)
+			if errors.Is(err, ErrPortConflict) != tc.conflict {
+				t.Fatalf("create with realm %s: %v", tc.network, err)
+			}
+		})
 	}
 }

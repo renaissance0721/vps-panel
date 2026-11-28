@@ -58,9 +58,6 @@ var agentCapabilities = []string{
 	agentcontrol.CapabilityProxyVLESSReality,
 	agentcontrol.CapabilityProxyShadowsocks,
 	agentcontrol.CapabilityProxyHysteria2,
-	agentcontrol.CapabilityHysteria2PortHopping,
-	agentcontrol.CapabilityHysteria2HoppingIPv4,
-	agentcontrol.CapabilityHysteria2HoppingIPv6,
 	agentcontrol.CapabilityRelayRealm,
 	agentcontrol.CapabilityOutboundPreference,
 	agentcontrol.CapabilityMetrics,
@@ -75,7 +72,20 @@ var agentCapabilities = []string{
 }
 
 func detectedAgentCapabilities(ctx context.Context) []string {
-	return agentCapabilitiesForFirewallEnvironment(probeChinaFirewall(ctx, newChinaInboundFirewall()))
+	return capabilitiesWithHopping(agentCapabilitiesForFirewallEnvironment(probeChinaFirewall(ctx, newChinaInboundFirewall())), newHY2HoppingManager().probe(ctx))
+}
+
+func capabilitiesWithHopping(capabilities []string, families [2]bool) []string {
+	if families[0] || families[1] {
+		capabilities = append(capabilities, agentcontrol.CapabilityHysteria2PortHopping)
+	}
+	if families[0] {
+		capabilities = append(capabilities, agentcontrol.CapabilityHysteria2HoppingIPv4)
+	}
+	if families[1] {
+		capabilities = append(capabilities, agentcontrol.CapabilityHysteria2HoppingIPv6)
+	}
+	return capabilities
 }
 
 func agentCapabilitiesForFirewallEnvironment(environment string) []string {
@@ -441,7 +451,8 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 	header.Set("X-VPS-Panel-Agent-Implementation", agentcontrol.OfficialImplementation)
 	header.Set("X-VPS-Panel-Agent-API", fmt.Sprintf("%d", agentcontrol.CurrentAPIVersion))
 	firewallEnvironment := probeChinaFirewall(ctx, newChinaInboundFirewall())
-	capabilities := strings.Join(agentCapabilitiesForFirewallEnvironment(firewallEnvironment), ",")
+	hoppingCapabilities := newHY2HoppingManager().probe(ctx)
+	capabilities := strings.Join(capabilitiesWithHopping(agentCapabilitiesForFirewallEnvironment(firewallEnvironment), hoppingCapabilities), ",")
 	header.Set("X-VPS-Panel-Agent-Capabilities", capabilities)
 	connection, response, err := dialAgentWebSocket(
 		ctx,
@@ -533,7 +544,7 @@ func connectAgentOnce(ctx context.Context, value config, configSync *configSynch
 		case <-disconnected:
 			return true, false
 		case <-capabilityTicker.C:
-			if probeChinaFirewall(connectionContext, newChinaInboundFirewall()) != firewallEnvironment {
+			if probeChinaFirewall(connectionContext, newChinaInboundFirewall()) != firewallEnvironment || newHY2HoppingManager().probe(connectionContext) != hoppingCapabilities {
 				configSync.capabilitiesChanged()
 				log.Print("Firewall capability changed; reconnecting to report the current environment")
 				return true, false

@@ -24,11 +24,25 @@ func supportsKernel(protocol, kernel string) bool {
 }
 
 func validatePortHopping(settings *storedHysteria2, listenPort int) error {
+	if err := validateLegacyPortHopping(settings, listenPort); err != nil {
+		return err
+	}
 	if settings == nil || !settings.PortHoppingEnabled {
 		return nil
 	}
-	if settings.PortHoppingStart < 1 || settings.PortHoppingEnd > 65535 ||
-		settings.PortHoppingStart > settings.PortHoppingEnd ||
+	if settings.PortHoppingStart < 1024 || settings.PortHoppingEnd-settings.PortHoppingStart+1 > 10000 {
+		return ErrInvalidPortHopping
+	}
+	return nil
+}
+
+// Existing databases can contain ranges accepted before schema v52. Keep
+// reading and returning them so they can be viewed and corrected safely.
+func validateLegacyPortHopping(settings *storedHysteria2, listenPort int) error {
+	if settings == nil || !settings.PortHoppingEnabled {
+		return nil
+	}
+	if settings.PortHoppingStart < 1 || settings.PortHoppingEnd > 65535 || settings.PortHoppingStart > settings.PortHoppingEnd ||
 		(listenPort >= settings.PortHoppingStart && listenPort <= settings.PortHoppingEnd) {
 		return ErrInvalidPortHopping
 	}

@@ -840,3 +840,46 @@ func assertForeignKeysValid(t *testing.T, db *sql.DB) {
 		t.Fatal("foreign_key_check returned a violation")
 	}
 }
+
+func TestHysteria2HoppingV52MigrationPreservesLegacyRanges(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hopping.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE proxies(id INTEGER PRIMARY KEY, server_id INTEGER, listen_port INTEGER, protocol TEXT, config_json TEXT);
+ CREATE TABLE server_listener_reservations(id INTEGER PRIMARY KEY,server_id INTEGER,resource_type TEXT,resource_id INTEGER,port INTEGER,network TEXT);
+ INSERT INTO proxies VALUES(1,1,443,'hysteria2','{"hysteria2":{"port_hopping_enabled":true,"port_hopping_start":20000,"port_hopping_end":30000}}');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = updateHysteria2PortHoppingConflicts(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var end int
+	if err = db.QueryRow(`SELECT json_extract(config_json,'$.hysteria2.port_hopping_end') FROM proxies WHERE id=1`).Scan(&end); err != nil || end != 30000 {
+		t.Fatalf("legacy config changed: %d %v", end, err)
+	}
+	for _, tc := range []struct {
+		network  string
+		conflict bool
+	}{{"tcp", false}, {"udp", true}, {"both", true}} {
+		_, err = db.Exec(`INSERT INTO server_listener_reservations(server_id,resource_type,resource_id,port,network) VALUES(1,'relay',5,20001,?)`, tc.network)
+		if (err != nil) != tc.conflict {
+			t.Fatalf("%s conflict=%v", tc.network, err)
+		}
+	}
+	for _, bounds := range [][2]int{{1, 1024}, {20000, 30000}} {
+		_, err = db.Exec(`UPDATE proxies SET config_json=json_set(config_json,'$.hysteria2.port_hopping_start',?,'$.hysteria2.port_hopping_end',?) WHERE id=1`, bounds[0], bounds[1])
+		if err == nil {
+			t.Fatalf("invalid range accepted: %v", bounds)
+		}
+	}
+}

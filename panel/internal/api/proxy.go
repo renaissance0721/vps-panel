@@ -383,7 +383,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, proxystore.ErrInvalidHysteria2):
 		writeError(w, http.StatusBadRequest, "Hysteria2 设置无效或不支持此客户端流量配置")
 	case errors.Is(err, proxystore.ErrInvalidPortHopping):
-		writeError(w, http.StatusBadRequest, "端口跳跃范围无效，且不能包含基础监听端口")
+		writeError(w, http.StatusBadRequest, "端口跳跃范围须在 1024–65535 内且最多包含 10000 个端口，不得包含基础监听端口")
 	case errors.Is(err, proxystore.ErrInvalidShadowsocksMethod):
 		writeError(w, http.StatusBadRequest, "Shadowsocks 加密方法无效")
 	case errors.Is(err, proxystore.ErrImmutableProtocol):

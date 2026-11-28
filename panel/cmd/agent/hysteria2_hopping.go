@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +22,8 @@ const (
 var (
 	errHoppingUnsupported = errors.New("Hysteria2 port hopping requires nftables and CAP_NET_ADMIN with inet NAT support")
 	errHoppingConflict    = errors.New("Hysteria2 port hopping conflicts with an existing UDP listener or unmanaged nftables table")
+	errHoppingNATInspect  = fmt.Errorf("%w: cannot inspect existing NAT rules safely", errHoppingConflict)
+	errHoppingNATConflict = fmt.Errorf("%w: an existing NAT rule may redirect UDP in the hopping range", errHoppingConflict)
 	errHoppingApply       = errors.New("Hysteria2 port hopping nftables synchronization failed; existing rules were retained")
 )
 
@@ -38,6 +42,33 @@ type hy2HoppingManager struct {
 
 func newHY2HoppingManager() *hy2HoppingManager {
 	return &hy2HoppingManager{lookPath: exec.LookPath, runCommand: runFirewallCommand, checkUDP: checkHY2HoppingUDPListeners, journalPath: "/var/lib/vps-panel/agent/hy2-hopping-owned"}
+}
+
+// The disposable table is created and deleted in one nft transaction, so a
+// failed probe cannot leave test rules in the host firewall.
+func (m *hy2HoppingManager) probe(ctx context.Context) [2]bool {
+	var supported [2]bool
+	command, err := m.lookPath("nft")
+	if err != nil {
+		return supported
+	}
+	for i, family := range []string{"ipv4", "ipv6"} {
+		table := fmt.Sprintf("vps_panel_hy2_probe_%d_%d", os.Getpid(), time.Now().UnixNano())
+		batch := fmt.Sprintf("add table inet %s\nadd chain inet %s prerouting { type nat hook prerouting priority dstnat; policy accept; }\nadd rule inet %s prerouting meta nfproto %s fib daddr type local udp dport 1024 redirect to :1025\ndelete table inet %s\n", table, table, table, family, table)
+		path, err := writeTemporaryFile(os.TempDir(), ".vps-panel-hy2-probe-*.nft", []byte(batch), 0o600)
+		if err != nil {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = m.runCommand(probeCtx, command, "-c", "-f", path)
+		if err == nil {
+			_, err = m.runCommand(probeCtx, command, "-f", path)
+		}
+		cancel()
+		os.Remove(path)
+		supported[i] = err == nil
+	}
+	return supported
 }
 
 func checkHY2HoppingUDPListeners(rules []hy2HoppingRule) error {
@@ -83,8 +114,9 @@ func hy2HoppingRules(proxies []desiredProxy) ([]hy2HoppingRule, error) {
 		}
 		if proxy.ID <= 0 || proxy.Port < 1 || proxy.Port > 65535 ||
 			(proxy.Listen != "0.0.0.0" && proxy.Listen != "::") ||
-			settings.PortHoppingStart < 1 || settings.PortHoppingEnd > 65535 ||
+			settings.PortHoppingStart < 1024 || settings.PortHoppingEnd > 65535 ||
 			settings.PortHoppingStart > settings.PortHoppingEnd ||
+			settings.PortHoppingEnd-settings.PortHoppingStart+1 > 10000 ||
 			(proxy.Port >= settings.PortHoppingStart && proxy.Port <= settings.PortHoppingEnd) {
 			return nil, errUnsupportedManagedConfig
 		}
@@ -93,7 +125,7 @@ func hy2HoppingRules(proxies []desiredProxy) ([]hy2HoppingRule, error) {
 	sort.Slice(rules, func(i, j int) bool { return rules[i].start < rules[j].start })
 	for i, rule := range rules {
 		for _, proxy := range proxies {
-			if proxy.Port >= rule.start && proxy.Port <= rule.end {
+			if proxy.Protocol != "vless" && proxy.Port >= rule.start && proxy.Port <= rule.end {
 				return nil, errHoppingConflict
 			}
 		}
@@ -137,6 +169,15 @@ func (m *hy2HoppingManager) apply(ctx context.Context, rules []hy2HoppingRule) e
 		}
 		if !strings.Contains(string(output), `comment "`+hy2HoppingMarker+`"`) {
 			return errHoppingConflict
+		}
+	}
+	if len(rules) > 0 {
+		output, err = m.runCommand(ctx, command, "-j", "list", "ruleset")
+		if err != nil {
+			return errHoppingNATInspect
+		}
+		if err := checkForeignNATRules(output, rules); err != nil {
+			return err
 		}
 	}
 	if !exists && len(rules) == 0 {
@@ -197,4 +238,138 @@ func (m *hy2HoppingManager) apply(ctx context.Context, rules []hy2HoppingRule) e
 		}
 	}
 	return nil
+}
+
+// Inspect nft's structured output. Unsupported dynamic NAT expressions are
+// rejected because their effective UDP destination ports cannot be proven safe.
+func checkForeignNATRules(data []byte, ranges []hy2HoppingRule) error {
+	var document struct {
+		Nftables []map[string]json.RawMessage `json:"nftables"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil || document.Nftables == nil {
+		return errHoppingNATInspect
+	}
+	for _, item := range document.Nftables {
+		raw, ok := item["rule"]
+		if !ok {
+			continue
+		}
+		var rule struct {
+			Family, Table string
+			Expr          []map[string]json.RawMessage `json:"expr"`
+		}
+		if json.Unmarshal(raw, &rule) != nil || rule.Expr == nil {
+			return errHoppingNATInspect
+		}
+		if rule.Family == "inet" && rule.Table == hy2HoppingTable {
+			continue
+		}
+		var applicable []hy2HoppingRule
+		for _, candidate := range ranges {
+			if rule.Family == "ip" && candidate.listen == "::" || rule.Family == "ip6" && candidate.listen != "::" {
+				continue
+			}
+			applicable = append(applicable, candidate)
+		}
+		if len(applicable) == 0 {
+			continue
+		}
+		nat, tcpOnly, safePort := false, false, false
+		for _, expr := range rule.Expr {
+			if _, ok := expr["dnat"]; ok {
+				nat = true
+			}
+			if _, ok := expr["redirect"]; ok {
+				nat = true
+			}
+			if _, ok := expr["vmap"]; ok {
+				nat = true
+			}
+			// Compatibility targets and transparent proxying may redirect
+			// packets without exposing a directly inspectable NAT statement.
+			if _, ok := expr["xt"]; ok {
+				nat = true
+			}
+			if _, ok := expr["tproxy"]; ok {
+				nat = true
+			}
+			if rawMatch, ok := expr["match"]; ok {
+				var match struct {
+					Op   string `json:"op"`
+					Left struct {
+						Payload struct{ Protocol, Field string } `json:"payload"`
+						Meta    struct{ Key string }             `json:"meta"`
+					} `json:"left"`
+					Right json.RawMessage `json:"right"`
+				}
+				if json.Unmarshal(rawMatch, &match) != nil || match.Op != "==" {
+					continue
+				}
+				if match.Left.Payload.Protocol == "tcp" {
+					tcpOnly = true
+				}
+				if match.Left.Meta.Key == "l4proto" && string(match.Right) == `"tcp"` {
+					tcpOnly = true
+				}
+				if match.Left.Payload.Protocol == "udp" && match.Left.Payload.Field == "dport" {
+					if ports, ok := nftPortIntervals(match.Right); ok {
+						overlaps := false
+						for _, p := range ports {
+							for _, r := range applicable {
+								if p[0] <= r.end && p[1] >= r.start {
+									overlaps = true
+								}
+							}
+						}
+						if !overlaps {
+							safePort = true
+						}
+					}
+				}
+			}
+		}
+		if nat && !tcpOnly && !safePort {
+			return errHoppingNATConflict
+		}
+	}
+	return nil
+}
+
+func nftPortIntervals(raw json.RawMessage) ([][2]int, bool) {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false
+	}
+	var parse func(any) ([][2]int, bool)
+	parse = func(v any) ([][2]int, bool) {
+		switch x := v.(type) {
+		case float64:
+			if x < 1 || x > 65535 || x != float64(int(x)) {
+				return nil, false
+			}
+			return [][2]int{{int(x), int(x)}}, true
+		case map[string]any:
+			if seq, ok := x["range"].([]any); ok && len(seq) == 2 {
+				a, aok := seq[0].(float64)
+				b, bok := seq[1].(float64)
+				if aok && bok && a >= 1 && b <= 65535 && a <= b && a == float64(int(a)) && b == float64(int(b)) {
+					return [][2]int{{int(a), int(b)}}, true
+				}
+				return nil, false
+			}
+			if seq, ok := x["set"].([]any); ok {
+				var result [][2]int
+				for _, item := range seq {
+					values, valid := parse(item)
+					if !valid {
+						return nil, false
+					}
+					result = append(result, values...)
+				}
+				return result, true
+			}
+		}
+		return nil, false
+	}
+	return parse(value)
 }

@@ -172,8 +172,8 @@ const {
 		  <div class="switch-row"><span>UDP 端口跳跃</span><n-switch v-model:value="proxyPortHoppingEnabled" :disabled="!proxyPortHoppingSupported && !proxyPortHoppingEnabled" /></div>
 		  <template v-if="proxyPortHoppingEnabled">
 		    <p>基础监听端口：{{ proxyPort }}/UDP</p>
-		    <label><span>跳跃起始端口</span><input v-model.number="proxyPortHoppingStart" class="settings-input" type="number" min="1" max="65535" /></label>
-		    <label><span>跳跃结束端口</span><input v-model.number="proxyPortHoppingEnd" class="settings-input" type="number" min="1" max="65535" /></label>
+		    <label><span>跳跃起始端口</span><input v-model.number="proxyPortHoppingStart" class="settings-input" type="number" min="1024" max="65535" /></label>
+		    <label><span>跳跃结束端口</span><input v-model.number="proxyPortHoppingEnd" class="settings-input" type="number" min="1024" max="65535" /></label>
 		    <n-alert type="warning">请在云厂商安全组和其他主机防火墙中开放整个 UDP 范围；Agent 无法自动配置云安全组。</n-alert>
 		  </template>
 		  <p v-if="!proxyPortHoppingSupported">当前 Agent 未声明端口跳跃能力。</p>

@@ -171,17 +171,8 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 		if err != nil {
 			return err
 		}
-		for _, rule := range rules {
-			for _, proxy := range state.Xray.Proxies {
-				if proxy.Port >= rule.start && proxy.Port <= rule.end {
-					return errHoppingConflict
-				}
-			}
-			for _, relay := range state.Realm.Relays {
-				if relay.ListenPort >= rule.start && relay.ListenPort <= rule.end {
-					return errHoppingConflict
-				}
-			}
+		if err := checkHoppingManagedListeners(rules, state); err != nil {
+			return err
 		}
 		return hopping.apply(ctx, rules)
 	}, diagnoseState: runner.run, chinaFirewall: chinaFirewall, now: time.Now, prepareSelfUninstall: prepareAgentSelfUninstall, applyState: func(ctx context.Context, state desiredState) error {
@@ -220,6 +211,22 @@ func newConfigSynchronizer(value config, client *http.Client) *configSynchronize
 		return nil
 	}}
 	return synchronizer
+}
+
+func checkHoppingManagedListeners(rules []hy2HoppingRule, state desiredState) error {
+	for _, rule := range rules {
+		for _, proxy := range state.Xray.Proxies {
+			if proxy.Protocol != "vless" && proxy.Port >= rule.start && proxy.Port <= rule.end {
+				return errHoppingConflict
+			}
+		}
+		for _, relay := range state.Realm.Relays {
+			if relay.Network != "tcp" && relay.ListenPort >= rule.start && relay.ListenPort <= rule.end {
+				return errHoppingConflict
+			}
+		}
+	}
+	return nil
 }
 
 func applySingboxAndHopping(ctx context.Context, state desiredState, singbox *singboxManager, refresh func(context.Context, desiredState) error, components map[string]string) error {
@@ -559,6 +566,8 @@ func desiredStateErrorMessage(err error) string {
 		errSingboxTLSSetup,
 		errSingboxServiceSetup,
 		errHoppingUnsupported,
+		errHoppingNATInspect,
+		errHoppingNATConflict,
 		errHoppingConflict,
 		errHoppingApply,
 		errManagedChinaInboundRequiresNFT,

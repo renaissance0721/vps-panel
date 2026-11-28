@@ -63,6 +63,14 @@ test('Hysteria2 端口跳跃要求 Agent 能力并校验端口范围', async () 
   model.proxyPortHoppingStart.value = 443
   await model.saveProxy()
   assert.match(model.error.value, /不能包含基础监听端口/)
+  model.proxyPortHoppingStart.value = 1023
+  model.proxyPortHoppingEnd.value = 1023
+  await model.saveProxy()
+  assert.match(model.error.value, /1024–65535/)
+  model.proxyPortHoppingStart.value = 20000
+  model.proxyPortHoppingEnd.value = 30000
+  await model.saveProxy()
+  assert.match(model.error.value, /最多 10000/)
   server.agent_capabilities = ['proxy.hysteria2.singbox']
   html = await renderToString(createSSRApp(ProxyForm, { model: reactive(model) }))
   assert.match(html, /不支持端口跳跃/)

@@ -82,7 +82,7 @@ func ListenerAvailable(ctx context.Context, query queryer, serverID int64, port 
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	{
+	if NetworksOverlap(network, NetworkUDP) {
 		ranges, err := query.QueryContext(ctx, `SELECT id FROM proxies
 			WHERE server_id = ? AND protocol = 'hysteria2'
 			AND json_extract(config_json, '$.hysteria2.port_hopping_enabled') = 1

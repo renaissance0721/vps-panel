@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const LatestSchemaVersion = 51
+const LatestSchemaVersion = 52
 
 const chinaInboundWhitelistStatement = `CREATE TABLE IF NOT EXISTS server_china_inbound_whitelist (
 	server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
@@ -82,6 +82,7 @@ var migrations = []migration{
 	{version: 49, name: "proxy_kernel", up: addProxyKernel},
 	{version: 50, name: "hysteria2_proxy_listeners", up: migrateHysteria2ProxyListeners, disableForeignKeys: true},
 	{version: 51, name: "hysteria2_port_hopping_conflicts", up: addHysteria2PortHoppingConflicts},
+	{version: 52, name: "hysteria2_udp_hopping_constraints", up: updateHysteria2PortHoppingConflicts},
 }
 
 func migrateHysteria2ProxyListeners(ctx context.Context, tx *sql.Tx) error {

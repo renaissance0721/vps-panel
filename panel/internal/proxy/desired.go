@@ -103,7 +103,7 @@ func ListDesired(ctx context.Context, query interface {
 			}
 		} else {
 			value.Security, value.ServerName = config.Security, config.ServerName
-			if err := validatePortHopping(config.Hysteria2, value.Port); err != nil {
+			if err := validateLegacyPortHopping(config.Hysteria2, value.Port); err != nil {
 				return nil, err
 			}
 			value.Hysteria2 = &DesiredHysteria2{UpMbps: config.Hysteria2.UpMbps, DownMbps: config.Hysteria2.DownMbps, ObfsPassword: config.Hysteria2.ObfsPassword, PortHoppingEnabled: config.Hysteria2.PortHoppingEnabled, PortHoppingStart: config.Hysteria2.PortHoppingStart, PortHoppingEnd: config.Hysteria2.PortHoppingEnd}
